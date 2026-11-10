@@ -372,6 +372,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                     runtime.enabled = reply.enabled;
                 }
                 if !runtime.invalidated {
+                    let mut launch_targets = reply.launch_targets;
                     runtime.contexts.extend(
                         reply
                             .contexts
@@ -395,6 +396,10 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                             }
                         }
                         runtime.dirty.remove(&screen);
+                        runtime.launch_targets.insert(
+                            screen.clone(),
+                            launch_targets.remove(&screen).unwrap_or_default(),
+                        );
                         runtime.views.insert(screen, view);
                     }
                 }

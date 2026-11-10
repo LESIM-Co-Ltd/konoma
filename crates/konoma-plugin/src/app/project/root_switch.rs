@@ -49,9 +49,8 @@ impl ProjectLoopState {
         let (tx, reply) = mpsc::channel();
         std::thread::spawn(move || {
             let result = (|| {
-                // Match konoma's navigation refusal before attempting project preparation.
-                if !root.is_dir() {
-                    return Err(format!(
+                let missing_root = || {
+                    format!(
                         "{}{}",
                         if lang == "ja" {
                             "見つかりません: "
@@ -59,7 +58,11 @@ impl ProjectLoopState {
                             "not found: "
                         },
                         root.display()
-                    ));
+                    )
+                };
+                // Match konoma's navigation refusal before attempting project preparation.
+                if !root.is_dir() {
+                    return Err(missing_root());
                 }
                 let mut prepared = super::super::prepare::prepare_registered(
                     registry,
@@ -69,7 +72,13 @@ impl ProjectLoopState {
                     services,
                     ProjectDetection::default(),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| {
+                    if root.is_dir() {
+                        error.to_string()
+                    } else {
+                        missing_root()
+                    }
+                })?;
                 prepared.settings = settings;
                 prepared.file_previews = file_previews;
                 let mut state = ProjectLoopState::new(&mut prepared, launch_enabled);
@@ -81,7 +90,16 @@ impl ProjectLoopState {
                 let current = state.info(&prepared, &cx);
                 // Adopt open replies through the same host facade as the live loop. All
                 // blocking receives here are on this preparation worker, never on the UI.
-                state.prepare_first_screen(&mut prepared, &current)?;
+                state
+                    .prepare_first_screen(&mut prepared, &current)
+                    .map_err(|error| {
+                        // The directory may disappear while the candidate owner opens.
+                        if root.is_dir() {
+                            error
+                        } else {
+                            missing_root()
+                        }
+                    })?;
                 prepared.notice = message.map(|m| m.get(lang).into()).or_else(|| {
                     Some(format!(
                         "{}: {}",
@@ -185,6 +203,12 @@ impl ProjectLoopState {
                     runtime.disconnect();
                 }
                 candidate.prepared.load_error = prepared.load_error.take();
+                #[cfg(any(test, feature = "test-hooks"))]
+                {
+                    candidate.prepared.test_observed = prepared.test_observed.take();
+                    candidate.prepared.test_observe_pending = prepared.test_observe_pending;
+                    candidate.prepared.test_clipboard = prepared.test_clipboard.take();
+                }
                 let old_prepared = std::mem::replace(prepared, candidate.prepared);
                 konoma_base::discard::discard_in_background((old_state, old_prepared));
                 if let Some(p) = pictures {

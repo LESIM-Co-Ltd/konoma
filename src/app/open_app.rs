@@ -97,7 +97,7 @@ impl App {
     pub(crate) fn verb_target(&self) -> VerbTarget {
         if self.project_active() {
             return self
-                .project_row_target()
+                .project_launch_target()
                 .map(VerbTarget::File)
                 .unwrap_or(VerbTarget::None);
         }
@@ -112,6 +112,12 @@ impl App {
         // The other lists (log, graph, branches, worktrees) have rows that are not files.
         if self.in_git_view() && !self.is_git_diff_preview() {
             return VerbTarget::None;
+        }
+        if self.tab.project_return.is_some() {
+            return self
+                .project_preview_launch_target()
+                .map(VerbTarget::File)
+                .unwrap_or(VerbTarget::None);
         }
         match self.tab.mode {
             Mode::Tree => match self.tab.entries.get(self.tab.selected) {

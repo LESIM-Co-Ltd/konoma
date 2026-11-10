@@ -29,6 +29,9 @@ use std::{
 };
 
 include!("vcs_app_write_cases.rs");
+include!("vcs_app_worktree_cases.rs");
+include!("vcs_app_launch_targets.rs");
+include!("vcs_app_root_jobs.rs");
 
 thread_local! {
     static TALLY: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
@@ -173,6 +176,9 @@ fn host_state(host: &Sim) -> ProjectStateSnapshot {
         menu,
         host.app.flash.clone(),
     );
+    state.root = Some(host.app.tab.root.clone());
+    state.open_dir = Some(host.app.tab.open_dir.clone());
+    state.target = host.app.project_row_target();
     state.chip = host
         .app
         .tab
@@ -376,11 +382,45 @@ fn run_roots(
     text: &str,
     steps: Vec<Step>,
     failure: bool,
+    check: impl FnMut(usize, &ProjectStateSnapshot, &Sim, &[String]),
+) {
+    run_roots_with(
+        (root, app_root),
+        id,
+        text,
+        steps,
+        failure,
+        RunOptions::default(),
+        check,
+    );
+}
+
+#[derive(Default)]
+struct RunOptions {
+    worktrees: bool,
+    remove_switch_target: bool,
+    launches: Option<Arc<Mutex<Vec<LaunchRecord>>>>,
+    root_jobs: Option<RootJobCase>,
+}
+
+fn run_roots_with(
+    (root, app_root): (&Path, &Path),
+    id: &str,
+    text: &str,
+    steps: Vec<Step>,
+    failure: bool,
+    options: RunOptions,
     mut check: impl FnMut(usize, &ProjectStateSnapshot, &Sim, &[String]),
 ) {
     use crate::plugins::test_projects::{ObservedVcs, VcsCalls};
     let host_calls = Arc::new(Mutex::new(VcsCalls::default()));
     let app_calls = Arc::new(Mutex::new(VcsCalls::default()));
+    let mut root_jobs = options
+        .root_jobs
+        .map(|case| RootJobs::new(root, app_root, case));
+    for calls in [&host_calls, &app_calls] {
+        calls.lock().unwrap().remove_switch_target = options.remove_switch_target;
+    }
     let mut cfg: Config = toml::from_str(text).unwrap();
     let plugin = || -> Arc<dyn Plugin> {
         match id {
@@ -397,7 +437,9 @@ fn run_roots(
         .map(|a| a.id)
         .collect();
     let (host_plugin, host_graph) = probe_graph_plugin_for_test(Arc::new(ObservedVcs {
-        plugin: plugin(),
+        plugin: root_jobs
+            .as_ref()
+            .map_or_else(plugin, |jobs| jobs.host.wrap(plugin())),
         calls: host_calls.clone(),
     }));
     static PROBE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -424,6 +466,11 @@ fn run_roots(
         .and_then(toml::Value::as_bool)
         == Some(true);
     let mut host = Sim::with_config_sized(root, cfg, 90, 14);
+    if options.launches.is_some() {
+        host.app.set_office_runner(Arc::new(|_| {
+            Err(std::io::Error::other("test: unexpected GUI launch"))
+        }));
+    }
     host.app.tab.projects.wait_for_result();
     host.app.poll_projects();
     host.key('p');
@@ -432,7 +479,9 @@ fn run_roots(
     let mut plugins: Vec<Arc<dyn Plugin>> =
         konoma_vcs::program().into_iter().map(Arc::from).collect();
     let (app_plugin, app_graph) = probe_graph_plugin_for_test(Arc::new(ObservedVcs {
-        plugin: plugin(),
+        plugin: root_jobs
+            .as_ref()
+            .map_or_else(plugin, |jobs| jobs.app.wrap(plugin())),
         calls: app_calls.clone(),
     }));
     *plugins
@@ -466,12 +515,18 @@ fn run_roots(
     );
     assert!(host.app.tab.projects.uses_injected_events());
     assert!(app.detection.uses_injected_events());
+    if let Some(jobs) = &mut root_jobs {
+        jobs.attach(&mut host, &mut app);
+    }
     let clipboard = app.clipboard_for_test();
     clipboard.fail(failure);
     let backend = Arc::new(Mutex::new(TestBackend::new(90, 14)));
     let mut terminal = Terminal::new(SharedBackend(backend.clone())).unwrap();
     let fixture = read_snapshot_for_test("vcs_app_chrome");
     let mut graph_fixture = read_snapshot_for_test("vcs_app_graph");
+    let worktree_fixture = options
+        .worktrees
+        .then(|| read_snapshot_for_test("vcs_app_worktrees"));
     if root != app_root {
         // These are the same §4-1:220 / §7-5:967 root-footer exceptions as U8b/U8c.
         let write_fixture = read_snapshot_for_test("vcs_app_writes");
@@ -489,6 +544,23 @@ fn run_roots(
         }
     }
     let mut host_writes = Vec::new();
+    let mut host_launches = Vec::new();
+    let app_launches = Arc::new(Mutex::new(Vec::new()));
+    let launch_backend = Arc::new(Mutex::new(id.to_owned()));
+    let launch = options.launches.as_ref().map(|_| {
+        let sink = app_launches.clone();
+        let backend = launch_backend.clone();
+        konoma_plugin::app::LaunchCx::new(app.config.editor.clone(), &app.config.external, vec![])
+            .with_hand_off(Arc::new(move |attempt, cwd, redraw| {
+                sink.lock().unwrap().push(LaunchRecord::new(
+                    attempt,
+                    cwd,
+                    &backend.lock().unwrap(),
+                ));
+                redraw()?;
+                Ok(Some(0))
+            }))
+    });
     let count = steps.len();
     let mut steps = steps.into_iter();
     let mut step = 0;
@@ -496,36 +568,104 @@ fn run_roots(
     let mut refresh_before = None;
     let cx = ProjectLoopCx {
         home: std::env::var_os("HOME").map(Into::into),
-        launch: None,
+        launch,
     };
     // Public prepared state can be reconfigured only between runs. Ordinary scenarios still
     // use one uninterrupted run; the submit-boundary case retains its real dialog and owners.
     loop {
         let mut policy_change = None;
-        run_project_fenced_state_for_test(
-        &mut terminal,
-        &mut app,
-        &cx,
-        None,
-        |idle, frame, mut state| {
+        let observe = |idle: konoma_plugin::app::project::ProjectIdleSnapshot,
+                       frame: Buffer,
+                       mut state: ProjectStateSnapshot| {
+            if let Some(jobs) = &mut root_jobs {
+                return jobs.observe(idle, frame, state, &mut host, &fixture, &graph_fixture);
+            }
             assert!(idle.is_idle());
+            if options.worktrees && !host.app.project_active() {
+                check_switched_tree(&mut host, &state, root, app_root);
+            }
+            if let Some(sink) = &options.launches {
+                let identity = if options.worktrees {
+                    root.parent().unwrap()
+                } else {
+                    root
+                };
+                let app_identity = if options.worktrees {
+                    app_root.parent().unwrap()
+                } else {
+                    app_root
+                };
+                let normalized_host: Vec<_> = host_launches
+                    .iter()
+                    .map(|r: &LaunchRecord| r.normalized(identity))
+                    .collect();
+                let normalized_app: Vec<_> = app_launches
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.normalized(app_identity))
+                    .collect();
+                if normalized_host != normalized_app {
+                    dump_parity_frame("host launch fence", &host.project_frame());
+                    dump_parity_frame("app launch fence", &frame);
+                }
+                assert_eq!(
+                    normalized_host, normalized_app,
+                    "step {step}: launch command/target/line/backend/cwd"
+                );
+                *sink.lock().unwrap() = normalized_app;
+                *launch_backend.lock().unwrap() = state.backend.clone().unwrap();
+            }
             let mut host_frame = host.project_frame();
             let mut frame = frame;
             let mut host_snapshot = host_state(&host);
             if root != app_root {
-                normalize_write_state(&mut host_snapshot, root);
-                normalize_write_state(&mut state, app_root);
+                let host_identity = if options.worktrees {
+                    root.parent().unwrap()
+                } else {
+                    root
+                };
+                let app_identity = if options.worktrees {
+                    app_root.parent().unwrap()
+                } else {
+                    app_root
+                };
+                normalize_write_state(&mut host_snapshot, host_identity);
+                normalize_write_state(&mut state, app_identity);
                 normalize_write_frame(&mut host_frame, root);
                 normalize_write_frame(&mut frame, app_root);
                 assert_write_repositories(root, app_root, id, step);
-                let writes = |calls: &Arc<Mutex<VcsCalls>>| calls.lock().unwrap().acts.iter().filter(|a| write_actions.contains(a)).cloned().collect::<Vec<_>>();
-                compare_dispatched_writes(&writes(&host_calls), &writes(&app_calls), &expected_acts)
-                    .unwrap_or_else(|e| panic!("step {step}: {e}"));
-                if let Some(((host_views, host_chips), (app_views, app_chips))) = refresh_before.take() {
+                let writes = |calls: &Arc<Mutex<VcsCalls>>| {
+                    calls
+                        .lock()
+                        .unwrap()
+                        .acts
+                        .iter()
+                        .filter(|a| write_actions.contains(a))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                compare_dispatched_writes(
+                    &writes(&host_calls),
+                    &writes(&app_calls),
+                    &expected_acts,
+                )
+                .unwrap_or_else(|e| panic!("step {step}: {e}"));
+                if let Some(((host_views, host_chips), (app_views, app_chips))) =
+                    refresh_before.take()
+                {
                     let host = host_calls.lock().unwrap();
                     let app = app_calls.lock().unwrap();
-                    assert_eq!(host.views - host_views, app.views - app_views, "step {step}: screen refresh count after write");
-                    assert_eq!(host.chips - host_chips, app.chips - app_chips, "step {step}: chip refresh count after write");
+                    let view_counts = (host.views - host_views, app.views - app_views);
+                    let chip_counts = (host.chips - host_chips, app.chips - app_chips);
+                    assert_eq!(
+                        view_counts.0, view_counts.1,
+                        "step {step}: screen refresh count after write"
+                    );
+                    assert_eq!(
+                        chip_counts.0, chip_counts.1,
+                        "step {step}: chip refresh count after write"
+                    );
                 }
             }
             let picker_cursor = |snapshot: &ProjectStateSnapshot| {
@@ -534,7 +674,10 @@ fn run_roots(
             };
             host_snapshot.graph = host_graph.snapshot(picker_cursor(&host_snapshot));
             state.graph = app_graph.snapshot(picker_cursor(&state));
-            compare_states(&host_snapshot, &state).unwrap_or_else(|e| panic!("step {step}: screen/identity/filter/cursor/marks/prompt/menu/notice/graph: {e}"));
+            let comparison = compare_states(&host_snapshot, &state);
+            comparison.unwrap_or_else(|e| {
+                panic!("step {step}: screen/identity/filter/cursor/marks/prompt/menu/notice/graph/root/open_dir: {e}")
+            });
             assert_eq!(
                 host_writes,
                 clipboard.writes(),
@@ -551,14 +694,43 @@ fn run_roots(
             }
             if root != app_root && cells(&host_frame, 0) != cells(&frame, 0) {
                 for (side, frame) in [("host", &host_frame), ("app", &frame)] {
-                    eprintln!("{side} complete frame ({}x{}):", frame.area.width, frame.area.height);
+                    eprintln!(
+                        "{side} complete frame ({}x{}):",
+                        frame.area.width, frame.area.height
+                    );
                     for y in 0..frame.area.height {
-                        let row: String = (0..frame.area.width).map(|x| frame[(x, y)].symbol()).collect();
+                        let row: String = (0..frame.area.width)
+                            .map(|x| frame[(x, y)].symbol())
+                            .collect();
                         eprintln!("{y:02}: {row}");
                     }
                 }
             }
-            frames(&host_frame, &frame, &state, &lang, &fixture, &graph_fixture, host.app.show_help);
+            if let Some(fixture) = &worktree_fixture {
+                let kind = if read_only { "readonly" } else { "write" };
+                let target = state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|row| row.kind == "worktree");
+                let row = if target {
+                    "target"
+                } else if state.selected.is_none() {
+                    "empty"
+                } else {
+                    "plain"
+                };
+                graph_fixture[&lang]["worktrees"] = fixture[&lang][kind][row].clone();
+                graph_fixture[&lang]["empty_worktrees"] = fixture[&lang][kind]["empty"].clone();
+            }
+            frames(
+                &host_frame,
+                &frame,
+                &state,
+                &lang,
+                &fixture,
+                &graph_fixture,
+                host.app.show_help,
+            );
             check(step, &state, &host, &host_writes);
             let Some(next) = steps.next() else {
                 return Next::End;
@@ -567,12 +739,19 @@ fn run_roots(
             let next = match next {
                 Step::BeforeKey(before, key) => {
                     before(root);
-                    if root != app_root { before(app_root); }
+                    if root != app_root {
+                        before(app_root);
+                    }
                     Step::Key(key)
                 }
                 Step::Write(key, action) => {
-                    let counts = |calls: &Arc<Mutex<VcsCalls>>| { let calls = calls.lock().unwrap(); (calls.views, calls.chips) };
-                    refresh_before = Some((counts(&host_calls), counts(&app_calls)));
+                    let counts = |calls: &Arc<Mutex<VcsCalls>>| {
+                        let calls = calls.lock().unwrap();
+                        (calls.views, calls.chips)
+                    };
+                    if !options.worktrees {
+                        refresh_before = Some((counts(&host_calls), counts(&app_calls)));
+                    }
                     expected_acts.push(action.into());
                     Step::Key(key)
                 }
@@ -593,6 +772,9 @@ fn run_roots(
                     let mut press = || {
                         host.press(key.code, key.modifiers);
                         drain(&mut host);
+                        if options.launches.is_some() {
+                            collect_host_launches(&mut host, &mut host_launches);
+                        }
                     };
                     if failure {
                         App::with_clipboard_failure_for_test(press);
@@ -608,9 +790,18 @@ fn run_roots(
                 Step::BeforeKey(..) | Step::Write(..) | Step::Policy(..) => unreachable!(),
             };
             Next::Event(event)
-        },
-    )
-    .unwrap();
+        };
+        if options.root_jobs.is_some() {
+            konoma_plugin::app::project::run_project_observed_for_test(
+                &mut terminal,
+                &mut app,
+                &cx,
+                observe,
+            )
+            .unwrap();
+        } else {
+            run_project_fenced_state_for_test(&mut terminal, &mut app, &cx, None, observe).unwrap();
+        }
         let Some(text) = policy_change else { break };
         let shared = SharedConfig::parse(&text).unwrap();
         let config: Config = toml::from_str(&text).unwrap();
@@ -622,10 +813,32 @@ fn run_roots(
         }
     }
     assert_eq!(step, count, "every input must reach its fence");
+    if let Some(jobs) = &root_jobs {
+        assert!(
+            jobs.finished,
+            "one uninterrupted root loop reaches its final late-reply fence"
+        );
+    }
     TALLY.with(|t| {
         let (runs, fences) = t.get();
-        t.set((runs + 1, fences + count + 1));
+        t.set((
+            runs + 1,
+            fences + root_jobs.as_ref().map_or(count + 1, |jobs| jobs.fences),
+        ));
     });
+}
+
+fn dump_parity_frame(side: &str, frame: &Buffer) {
+    eprintln!(
+        "{side} complete frame ({}x{}):",
+        frame.area.width, frame.area.height
+    );
+    for y in 0..frame.area.height {
+        let row: String = (0..frame.area.width)
+            .map(|x| frame[(x, y)].symbol())
+            .collect();
+        eprintln!("{y:02}: {row}");
+    }
 }
 
 #[test]

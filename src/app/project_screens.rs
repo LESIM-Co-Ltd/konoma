@@ -673,6 +673,34 @@ impl App {
         )
     }
 
+    pub(crate) fn project_launch_target(&self) -> Option<PathBuf> {
+        let path = self.project_row_target()?;
+        let nav = self.tab.project_navigation.as_ref()?;
+        self.project_runtimes
+            .get(&nav.project)?
+            .can_launch_target(&nav.frame()?.key, &path)
+            .then_some(path)
+    }
+
+    pub(crate) fn project_preview_launch_target(&self) -> Option<PathBuf> {
+        let path = self.tab.preview_path.as_ref()?;
+        let available = self
+            .diff_target_kind_cache
+            .as_ref()
+            .filter(|(target, _, _)| target == path)
+            .map(|(_, _, exists)| *exists)
+            .unwrap_or_else(|| {
+                self.tab.project_return.as_ref().is_some_and(|nav| {
+                    nav.frame().is_some_and(|frame| {
+                        self.project_runtimes
+                            .get(&nav.project)
+                            .is_some_and(|runtime| runtime.can_launch_target(&frame.key, path))
+                    })
+                })
+            });
+        available.then(|| path.clone())
+    }
+
     fn action_project(&self, action: PluginAct) -> Option<ProjectKey> {
         let detected: Vec<_> = self
             .tab

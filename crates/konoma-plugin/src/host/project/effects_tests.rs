@@ -24,6 +24,7 @@ fn reply() -> ProjectReply<()> {
     ProjectReply {
         watch_paths: None,
         views: vec![],
+        launch_targets: Default::default(),
         enabled: HashMap::new(),
         chip: None,
         chip_error: None,
@@ -31,6 +32,60 @@ fn reply() -> ProjectReply<()> {
         error: None,
         act_failed: false,
         contexts: HashMap::new(),
+    }
+}
+
+#[test]
+fn launch_decisions_are_adopted_only_with_accepted_live_views() {
+    let key = ScreenKey::new("list", 7);
+    let old = std::path::PathBuf::from("/project/old.txt");
+    let new = std::path::PathBuf::from("/project/new.txt");
+    for condition in ["invalidated", "closed", "no view"] {
+        let mut f = Fixture::new();
+        let runtime = f.runtimes.get_mut(&project()).unwrap();
+        runtime
+            .launch_targets
+            .insert(key.clone(), HashMap::from([(old.clone(), true)]));
+        runtime.views.insert(
+            key.clone(),
+            Arc::new(ProjectContent::List(ListView {
+                rows: vec![ListRow::new("file", vec![]).target(&old)],
+                ..Default::default()
+            })),
+        );
+        runtime.invalidated = condition == "invalidated";
+        let mut late = reply();
+        if condition != "no view" {
+            late.views.push((
+                key.clone(),
+                Arc::new(ProjectContent::List(ListView {
+                    rows: vec![ListRow::new("file", vec![]).target(&new)],
+                    ..Default::default()
+                })),
+            ));
+        }
+        late.launch_targets
+            .insert(key.clone(), HashMap::from([(new.clone(), true)]));
+        runtime.pending = Some(late);
+        let (mut host, context) = f.parts();
+        if condition == "closed" {
+            host.close_context(7);
+            host.poll(&mut [], &[info(19)], &[project()]);
+        } else {
+            host.poll(&mut [context], &[info(7)], &[project()]);
+        }
+        let runtime = &f.runtimes[&project()];
+        assert!(
+            !runtime.can_launch_target(&key, &new),
+            "{condition}: rejected view cannot install launch decisions"
+        );
+        assert_eq!(runtime.can_launch_target(&key, &old), condition != "closed");
+        if condition == "closed" {
+            assert!(
+                runtime.launch_targets.is_empty(),
+                "late decisions cannot revive a closed context"
+            );
+        }
     }
 }
 

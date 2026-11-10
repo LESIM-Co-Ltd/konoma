@@ -151,6 +151,7 @@ fn app() -> (App, crate::test_support::TmpDir) {
             refresh_watch: false,
             views: Default::default(),
             contexts: Default::default(),
+            launch_targets: Default::default(),
             enabled: Default::default(),
             chip: None,
             chip_dirty: false,

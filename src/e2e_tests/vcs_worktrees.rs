@@ -7,7 +7,7 @@ use crate::test_support::TmpDir;
 use konoma_vcs_core::git2;
 use std::path::{Path, PathBuf};
 
-fn git(root: &Path, args: &[&str]) -> String {
+pub(super) fn git(root: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .current_dir(root)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -23,7 +23,7 @@ fn git(root: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-fn commit(root: &Path, message: &str, time: i64) {
+pub(super) fn commit(root: &Path, message: &str, time: i64) {
     let repo = git2::Repository::open(root).unwrap();
     let mut index = repo.index().unwrap();
     index
@@ -58,6 +58,16 @@ struct Repo {
 
 fn repo() -> Repo {
     let dir = sandbox("vcs_worktrees").into_canonical().unwrap();
+    let (root, linked, detached) = seed(&dir);
+    Repo {
+        root,
+        linked,
+        detached,
+        _dir: dir,
+    }
+}
+
+pub(super) fn seed(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let root = dir.join("main");
     git2::Repository::init(&root).unwrap();
     git(&root, &["branch", "-m", "main"]);
@@ -101,12 +111,24 @@ fn repo() -> Repo {
             linked.to_str().unwrap(),
         ],
     );
-    Repo {
-        root,
-        linked,
-        detached,
-        _dir: dir,
-    }
+    (root, linked, detached)
+}
+
+pub(super) fn seed_bare(dir: &Path) -> (PathBuf, PathBuf) {
+    git(dir, &["clone", "-q", "--bare", "main", "bare"]);
+    let bare = dir.join("bare");
+    let linked = dir.join("bare-linked");
+    git(
+        &bare,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    (bare, linked)
 }
 
 fn pair(root: &Path, lang: &str, width: u16) -> (Sim, Sim) {
@@ -310,19 +332,7 @@ fn select(old: &mut Sim, new: &mut Sim, path: &Path) {
 #[test]
 fn e2e_vcs_worktrees_enter_each_kind_matches_legacy_root_open_dir_and_flash_including_l() {
     let repo = repo();
-    git(&repo._dir, &["clone", "-q", "--bare", "main", "bare"]);
-    let bare = repo._dir.join("bare");
-    let bare_linked = repo._dir.join("bare-linked");
-    git(
-        &bare,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "--detach",
-            bare_linked.to_str().unwrap(),
-        ],
-    );
+    let (bare, bare_linked) = seed_bare(&repo._dir);
     for lang in ["en", "ja"] {
         for (root, path, kind) in [
             (&repo.root, repo.linked.as_path(), "worktree"),
@@ -507,19 +517,7 @@ fn e2e_vcs_worktree_switch_vanished_after_plugin_check_keeps_screen_and_root() {
 #[test]
 fn e2e_vcs_worktrees_ctrl_t_without_target_does_nothing_and_has_no_help_or_footer_hint() {
     let repo = repo();
-    git(&repo._dir, &["clone", "-q", "--bare", "main", "bare"]);
-    let bare = repo._dir.join("bare");
-    let bare_linked = repo._dir.join("bare-linked");
-    git(
-        &bare,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "--detach",
-            bare_linked.to_str().unwrap(),
-        ],
-    );
+    let (bare, bare_linked) = seed_bare(&repo._dir);
     for (root, path) in [
         (&repo.root, repo.root.clone()),
         (&repo.root, repo._dir.join("prunable")),

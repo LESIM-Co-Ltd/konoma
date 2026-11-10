@@ -974,6 +974,13 @@ fn e2e_vcs_graph_jj_repository_tests_guard_optional_binary() {
         ),
         "the standalone graph/bookmarks test must skip when jj is absent"
     );
+    assert!(
+        jj_test_is_guarded(
+            include_str!("vcs_app_worktree_cases.rs"),
+            "project_launch_records_current_target_line_backend_and_cwd"
+        ),
+        "the standalone project-launch test must guard jj cases when jj is absent"
+    );
     assert!(jj_test_is_guarded("fn example ( ) { let unrelated = \"let dir { }\"; /* { */ if ! crate :: vcs :: jj :: available ( ) { return ; } jj (root); }", "example"));
     assert!(!jj_test_is_guarded(
         "fn example() { jj(root); if !crate::vcs::jj::available() { return; } }",
@@ -1082,7 +1089,7 @@ fn jj_test_is_guarded(source: &str, name: &str) -> bool {
     let setup = body.windows(2).position(|t| {
         matches!(
             t[0].as_str(),
-            "jj" | "jj_graph_fixture" | "graph_jj_fixture" | "jj_write_cases"
+            "jj" | "jj_graph_fixture" | "graph_jj_fixture" | "jj_write_cases" | "jj_launch_cases"
         ) && t[1] == "("
     });
     matches!((guarded, setup), (Some(guard), Some(setup)) if guard < setup)

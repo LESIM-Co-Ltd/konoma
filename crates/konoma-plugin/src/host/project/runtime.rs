@@ -1,7 +1,7 @@
 //! One owner thread per project. Neither session calls nor file/document rendering run on the UI.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 
 use crate::project::{Chip, ProjectView};
@@ -73,6 +73,8 @@ pub enum ProjectJob<E> {
 pub struct ProjectReply<E> {
     pub watch_paths: Option<Vec<PathBuf>>,
     pub views: Vec<(ScreenKey, Arc<ProjectContent>)>,
+    /// Worker decisions for exactly the views carried by this reply.
+    pub launch_targets: HashMap<ScreenKey, HashMap<PathBuf, bool>>,
     pub enabled: HashMap<String, bool>,
     pub chip: Option<Option<Chip>>,
     pub chip_error: Option<Failure>,
@@ -88,6 +90,7 @@ impl<E> ProjectReply<E> {
         Self {
             watch_paths: None,
             views: Vec::new(),
+            launch_targets: HashMap::new(),
             enabled: HashMap::new(),
             chip: None,
             chip_error: None,
@@ -105,6 +108,8 @@ pub struct ProjectRuntime<E: Send + 'static, I = ()> {
     pub refresh_watch: bool,
     pub project: MatchedProject,
     pub views: HashMap<ScreenKey, Arc<ProjectContent>>,
+    /// Replaced with each accepted view and discarded with its screen/context.
+    pub launch_targets: HashMap<ScreenKey, HashMap<PathBuf, bool>>,
     pub contexts: HashMap<ScreenKey, ProjectView>,
     pub enabled: HashMap<String, bool>,
     pub chip: Option<Chip>,
@@ -124,6 +129,13 @@ pub struct ProjectRuntime<E: Send + 'static, I = ()> {
 }
 
 impl<E: Send + 'static, I> ProjectRuntime<E, I> {
+    /// Read the owner's cached target decision; never stat from a per-frame consumer.
+    pub fn can_launch_target(&self, screen: &ScreenKey, path: &Path) -> bool {
+        self.launch_targets
+            .get(screen)
+            .and_then(|targets| targets.get(path))
+            == Some(&true)
+    }
     /// Retire the control plane before deferring reclamation of the root's cached data.
     /// This never waits for a busy session owner; its next reply observes disconnection.
     #[cfg(feature = "app")]
@@ -266,16 +278,11 @@ impl<E: Send + 'static, I> ProjectRuntime<E, I> {
                             if let Some(context) = &req.project {
                                 reply.contexts.insert(key.clone(), context.clone());
                             }
-                            reply.views.push((
-                                key,
-                                Arc::new(content(
-                                    session.view(&req, &cx)?,
-                                    &req,
-                                    &scope,
-                                    &theme,
-                                    &messages,
-                                )?),
-                            ));
+                            let view = session.view(&req, &cx)?;
+                            let targets = launch_targets(&view);
+                            let view = content(view, &req, &scope, &theme, &messages)?;
+                            reply.launch_targets.insert(key.clone(), targets);
+                            reply.views.push((key, Arc::new(view)));
                         }
                         ProjectJob::Act {
                             action,
@@ -318,11 +325,15 @@ impl<E: Send + 'static, I> ProjectRuntime<E, I> {
                                 if let Some(context) = &req.project {
                                     reply.contexts.insert(key.clone(), context.clone());
                                 }
-                                match session
-                                    .view(&req, &cx)
-                                    .and_then(|view| content(view, &req, &scope, &theme, &messages))
-                                {
-                                    Ok(view) => reply.views.push((key, Arc::new(view))),
+                                match session.view(&req, &cx).and_then(|view| {
+                                    let targets = launch_targets(&view);
+                                    content(view, &req, &scope, &theme, &messages)
+                                        .map(|view| (view, targets))
+                                }) {
+                                    Ok((view, targets)) => {
+                                        reply.launch_targets.insert(key.clone(), targets);
+                                        reply.views.push((key, Arc::new(view)));
+                                    }
                                     Err(error) => {
                                         reply.error = Some(error);
                                     }
@@ -367,6 +378,7 @@ impl<E: Send + 'static, I> ProjectRuntime<E, I> {
             refresh_watch: false,
             project,
             views: HashMap::new(),
+            launch_targets: HashMap::new(),
             contexts: HashMap::new(),
             enabled: HashMap::new(),
             chip,
@@ -390,10 +402,25 @@ impl<E: Send + 'static, I> ProjectRuntime<E, I> {
     /// The host also discards any pending invocation associated with this tab.
     pub fn tab_closed(&mut self, tab: u64) {
         self.views.retain(|key, _| key.tab != tab);
+        self.launch_targets.retain(|key, _| key.tab != tab);
         self.contexts.retain(|key, _| key.tab != tab);
         self.dirty.retain(|key| key.tab != tab);
         self.closed_tabs.insert(tab);
     }
+}
+
+fn launch_targets(view: &crate::View) -> HashMap<PathBuf, bool> {
+    let mut targets = HashMap::new();
+    if let crate::View::List(list) = view {
+        for path in list.rows.iter().filter_map(|row| row.target.as_deref()) {
+            // Worktree navigation targets can be outside the current root's document scope.
+            targets.entry(path.to_path_buf()).or_insert_with(|| {
+                std::fs::metadata(path)
+                    .is_ok_and(|metadata| metadata.is_file() || metadata.is_dir())
+            });
+        }
+    }
+    targets
 }
 
 fn resolved_watch_paths(

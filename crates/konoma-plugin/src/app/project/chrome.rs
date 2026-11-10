@@ -117,6 +117,28 @@ impl ProjectLoopState {
                 ),
             ]);
         }
+        if let Some(origin) = &prepared.worktree_origin {
+            use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+            let origin = if origin.width() <= 20 {
+                origin.clone()
+            } else {
+                let mut used = 0;
+                let mut label: String = origin
+                    .chars()
+                    .take_while(|c| {
+                        used += c.width().unwrap_or(0);
+                        used <= 19
+                    })
+                    .collect();
+                label.push('…');
+                label
+            };
+            header.extend([
+                Span::raw(" "),
+                Span::styled(" WT ", Style::new().fg(Color::Black).bg(Color::Cyan).bold()),
+                Span::raw(format!(" {origin}")).dim(),
+            ]);
+        }
         let path = match prepared.display.path_style {
             konoma_host_core::view_options::PathStyle::Home => "~",
             konoma_host_core::view_options::PathStyle::Full => t("abs", "絶対"),

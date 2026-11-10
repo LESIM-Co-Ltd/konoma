@@ -27,6 +27,10 @@ pub fn main() -> std::process::ExitCode {
 }
 
 impl ProjectServices for VcsServices {
+    fn worktree_origin(&self, root: &Path) -> Option<String> {
+        konoma_vcs_core::vcs::worktree_origin(root)
+    }
+
     fn root_switch_enabled(&self) -> bool {
         true
     }

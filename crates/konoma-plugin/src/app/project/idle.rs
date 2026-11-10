@@ -40,6 +40,19 @@ impl ProjectLoopState {
                 menu,
                 prepared.notice.clone(),
             );
+            state.root = Some(
+                self.screen
+                    .as_ref()
+                    .map_or_else(|| prepared.open_dir.clone(), |nav| nav.project.root.clone()),
+            );
+            state.open_dir = Some(prepared.open_dir.clone());
+            state.target = self.screen.as_ref().and_then(|nav| {
+                nav.selected_target(
+                    content.as_deref()?,
+                    self.viewport,
+                    prepared.settings.diff_layout,
+                )
+            });
             state.chip = self
                 .screen
                 .as_ref()

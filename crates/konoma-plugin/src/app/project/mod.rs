@@ -35,8 +35,8 @@ mod representation_test_hooks;
 #[doc(hidden)]
 pub use idle_test_hooks::{
     observe_project_state_for_test, read_snapshot_for_test, run_project_fenced_for_test,
-    run_project_fenced_state_for_test, ProjectIdleSnapshot, ProjectPromptSnapshot,
-    ProjectStateSnapshot, TestProjectClipboard,
+    run_project_fenced_state_for_test, run_project_observed_for_test, ProjectIdleSnapshot,
+    ProjectPromptSnapshot, ProjectStateSnapshot, TestProjectClipboard,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
@@ -98,6 +98,10 @@ pub struct ProjectServiceInfo {
 /// belong on workers. These return raw data only: shared Markdown/media workers choose baselines
 /// and prepare their own content. Classification and verbs remain registry/host decisions.
 pub trait ProjectServices: Send + Sync + 'static {
+    /// Read the linked worktree's origin during preparation, before entering the UI loop.
+    fn worktree_origin(&self, _: &Path) -> Option<String> {
+        None
+    }
     /// Opt in to preparing and replacing a project root. Notice-only hosts keep their
     /// existing navigation contract, just as services without a file-diff executor do.
     fn root_switch_enabled(&self) -> bool {
@@ -167,8 +171,11 @@ pub trait ProjectServices: Send + Sync + 'static {
 /// Everything settled before terminal entry, retaining the shared detection and serial owners.
 /// Preparation does not take the terminal or start the input loop.
 pub struct PreparedProjects {
+    worktree_origin: Option<String>,
     #[cfg(any(test, feature = "test-hooks"))]
     test_observed: Option<Arc<std::sync::Mutex<Option<ProjectStateSnapshot>>>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    test_observe_pending: bool,
     #[cfg(any(test, feature = "test-hooks"))]
     test_clipboard: Option<TestProjectClipboard>,
     file_preview: Option<preview::FilePreviewState>,

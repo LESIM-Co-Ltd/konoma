@@ -86,6 +86,11 @@ fn git_index_bytes(root: &Path, path: &str) -> Option<Vec<u8>> {
 }
 
 fn normalize_write_state(state: &mut ProjectStateSnapshot, root: &Path) {
+    for path in [&mut state.root, &mut state.open_dir, &mut state.target].into_iter().flatten() {
+        if let Ok(relative) = path.strip_prefix(root) {
+            *path = Path::new("<repo>").join(relative);
+        }
+    }
     let normalize = |s: &mut String| {
         *s = s.replace(root.to_str().unwrap(), "<repo>");
         let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
@@ -137,6 +142,35 @@ fn normalize_write_frame(frame: &mut Buffer, root: &Path) {
             {
                 for (i, c) in "side".chars().enumerate() {
                     frame[(x + 1 + i as u16, y)].set_symbol(&c.to_string());
+                }
+            }
+        }
+        let parent = root.parent().unwrap().parent().unwrap();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let parent_names = [
+            parent.to_string_lossy().into_owned(),
+            konoma_host_core::paths::home_relative_to(parent, home.as_deref()),
+        ];
+        for x in frame.area.width.saturating_sub(8)..frame.area.width {
+            let before: String = (0..x).map(|x| frame[(x, y)].symbol()).collect();
+            if !parent_names.iter().any(|parent| before.ends_with(parent)) {
+                continue;
+            }
+            // A narrow body can clip the identity component before its closing slash.
+            // Translate only that known path prefix, preserving clipping and all cell styles.
+            for length in (2..needle.len()).rev() {
+                if usize::from(x) + length > usize::from(frame.area.width) {
+                    continue;
+                }
+                let prefix_matches = needle[..length].iter().enumerate()
+                    .all(|(i, c)| frame[(x + i as u16, y)].symbol() == c);
+                let padding = (x + length as u16..frame.area.width)
+                    .all(|x| frame[(x, y)].symbol().trim().is_empty());
+                if prefix_matches && padding {
+                    for (i, c) in "side".chars().take(length - 1).enumerate() {
+                        frame[(x + 1 + i as u16, y)].set_symbol(&c.to_string());
+                    }
+                    break;
                 }
             }
         }

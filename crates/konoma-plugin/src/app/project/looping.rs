@@ -643,7 +643,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             let fenced = if events.project_fenced() {
                 prepared.detection.fence_watch_for_test();
                 let snapshot = state.idle_snapshot(prepared, &info, pictures.as_ref(), &fence);
-                if !snapshot.is_idle() {
+                if !snapshot.is_idle() && !prepared.test_observe_pending {
                     state.wait_idle_for_test(prepared, &snapshot, pictures.as_mut());
                     redraw = true;
                     continue;

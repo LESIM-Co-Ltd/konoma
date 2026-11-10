@@ -163,7 +163,12 @@ impl ProjectLoopState {
     ) -> bool {
         // Dialogs get the raw key first, just as in konoma's dispatcher.
         prepared.notice = None;
-        if self.dialog.is_none() && KeyPress::norm(&key) == KeyPress::ctrl_ch('c') {
+        let filtering = self
+            .screen
+            .as_ref()
+            .and_then(|nav| nav.frame())
+            .is_some_and(|frame| frame.filtering);
+        if self.dialog.is_none() && !filtering && KeyPress::norm(&key) == KeyPress::ctrl_ch('c') {
             return true;
         }
         if self.help.is_some()
@@ -286,6 +291,13 @@ impl ProjectLoopState {
                                 self.viewport,
                                 prepared.settings.diff_layout,
                             )
+                            .filter(|path| {
+                                nav.frame().is_some_and(|frame| {
+                                    self.runtimes.get(&nav.project).is_some_and(|runtime| {
+                                        runtime.can_launch_target(&frame.key, path)
+                                    })
+                                })
+                            })
                         });
                         if let Some(path) = target {
                             self.launch.file(
@@ -298,6 +310,14 @@ impl ProjectLoopState {
                                 path,
                                 None,
                             );
+                        } else {
+                            use konoma_host_core::help_msg::CoreMsg;
+                            let message = if op == Some(DiffUiOp::Edit) {
+                                CoreMsg::NoFileToEdit
+                            } else {
+                                CoreMsg::NoFileToOpenApp
+                            };
+                            prepared.notice = Some(message.tr(prepared.keys.lang()).into());
                         }
                     }
                     Some(DiffUiOp::Tool) => {

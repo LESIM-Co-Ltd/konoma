@@ -67,6 +67,7 @@ impl Fixture {
                 })),
             )]),
             contexts: HashMap::from([(key.clone(), view)]),
+            launch_targets: Default::default(),
             enabled: HashMap::from([("run".into(), true)]),
             chip: None,
             chip_dirty: false,

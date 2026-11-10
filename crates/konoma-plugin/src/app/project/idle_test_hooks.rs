@@ -12,6 +12,10 @@ use std::sync::{Arc, Mutex};
 /// Owned, read-only facts at a fence. No host surface or action types cross this seam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectStateSnapshot {
+    pub root: Option<std::path::PathBuf>,
+    pub open_dir: Option<std::path::PathBuf>,
+    pub target: Option<std::path::PathBuf>,
+    pub queued_inputs: usize,
     pub chip: Option<crate::project::Chip>,
     pub graph: Option<super::ProjectGraphSnapshot>,
     pub backend: Option<String>,
@@ -72,6 +76,7 @@ pub fn observe_project_state_for_test<I: PromptInvocation>(
             // Both hosts derive this from the query; the cursor is not observed independently.
             state.query_cursor = frame.query.chars().count();
             state.filtering = frame.filtering;
+            state.queued_inputs = frame.pending.len();
         }
     }
     if let Some(ProjectContent::List(list)) = content {
@@ -186,6 +191,20 @@ pub fn run_project_fenced_state_for_test<B: Backend>(
     result
 }
 
+/// Observe pending candidate/owner fences as well as idle frames, without ending the loop.
+/// The observer supplies ordinary terminal events; it never borrows or mutates loop state.
+pub fn run_project_observed_for_test<B: Backend>(
+    terminal: &mut Terminal<B>,
+    prepared: &mut PreparedProjects,
+    cx: &ProjectLoopCx,
+    observe: impl FnMut(ProjectIdleSnapshot, Buffer, ProjectStateSnapshot) -> Next,
+) -> Result<(), AppError> {
+    prepared.test_observe_pending = true;
+    let result = run_project_fenced_state_for_test(terminal, prepared, cx, None, observe);
+    prepared.test_observe_pending = false;
+    result
+}
+
 /// Each bit describes work owed by the current standalone surface, not worker lifetime.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectIdleSnapshot {
@@ -234,7 +253,7 @@ pub fn run_project_fenced_for_test<B: Backend>(
             prepared.config.external.preview_commands,
         ));
     }
-    struct Fence<F>(F);
+    struct Fence<F>(F, bool);
     impl<F: FnMut(ProjectIdleSnapshot, Buffer) -> Next> EventSource for Fence<F> {
         fn next(&mut self, _: Option<std::time::Duration>) -> Next {
             panic!("idle fence reached an unfenced input wait")
@@ -243,11 +262,21 @@ pub fn run_project_fenced_for_test<B: Backend>(
             true
         }
         fn project_idle(&mut self, snapshot: ProjectIdleSnapshot, frame: Buffer) -> Next {
-            assert!(snapshot.is_idle(), "project idle fence: {snapshot:?}");
+            assert!(
+                self.1 || snapshot.is_idle(),
+                "project idle fence: {snapshot:?}"
+            );
             (self.0)(snapshot, frame)
         }
     }
-    run_project_with(terminal, prepared, &mut Fence(observe), cx, pictures)
+    let pending = prepared.test_observe_pending;
+    run_project_with(
+        terminal,
+        prepared,
+        &mut Fence(observe, pending),
+        cx,
+        pictures,
+    )
 }
 
 /// Runtime fixture lookup shared by SDK and root tests. `serde_json` is already an app

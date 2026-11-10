@@ -12,6 +12,26 @@ mod graph;
 #[path = "vcs_worktrees.rs"]
 mod worktrees;
 
+pub(super) fn seed_worktrees(
+    dir: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    worktrees::seed(dir)
+}
+
+pub(super) fn worktree_git(root: &std::path::Path, args: &[&str]) -> String {
+    worktrees::git(root, args)
+}
+
+pub(super) fn seed_bare_worktrees(
+    dir: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    worktrees::seed_bare(dir)
+}
+
+pub(super) fn commit_worktree(root: &std::path::Path) {
+    worktrees::commit(root, "feature", 1_577_837_000);
+}
+
 pub(super) fn graph_picker_fixture() -> TmpDir {
     graph::picker_fixture()
 }

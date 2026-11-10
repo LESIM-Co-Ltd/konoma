@@ -45,6 +45,13 @@ impl Plugin for TestPlugin {
 }
 
 fn runtime(session: impl Session + 'static) -> ProjectRuntime<Option<Outcome>> {
+    runtime_with_actions(session, Vec::new())
+}
+
+fn runtime_with_actions(
+    session: impl Session + 'static,
+    actions: Vec<String>,
+) -> ProjectRuntime<Option<Outcome>> {
     let project = MatchedProject {
         plugin: "owner-test".into(),
         root: "/project-owner-test".into(),
@@ -55,7 +62,7 @@ fn runtime(session: impl Session + 'static) -> ProjectRuntime<Option<Outcome>> {
     let runtime = ProjectRuntime::start(
         project,
         Arc::new(TestPlugin(Mutex::new(Some(Box::new(session))))),
-        Vec::new(),
+        actions,
         None,
         env,
         |effect, outcome| *effect = Some(outcome),
@@ -63,6 +70,210 @@ fn runtime(session: impl Session + 'static) -> ProjectRuntime<Option<Outcome>> {
     let initial = reply(&runtime);
     assert!(initial.error.is_none());
     runtime
+}
+
+struct LaunchRowsSession {
+    path: std::path::PathBuf,
+    caller: ThreadId,
+    visible: bool,
+}
+
+impl Session for LaunchRowsSession {
+    fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        assert_ne!(std::thread::current().id(), self.caller);
+        let path = if req.project.as_ref().is_some_and(|p| p.screen == "other") {
+            self.path.with_file_name("other.txt")
+        } else {
+            self.path.clone()
+        };
+        Ok(View::List(crate::view::ListView {
+            rows: if self.visible {
+                vec![crate::view::ListRow::new("file", vec![]).target(path)]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        }))
+    }
+
+    fn act(&mut self, _: &str, _: &ActCx) -> Result<Outcome, Failure> {
+        self.visible = false;
+        Ok(Outcome::Redraw)
+    }
+
+    fn enabled(&self, action: &str) -> bool {
+        action == "allowed"
+    }
+}
+
+#[test]
+fn launch_target_rows_do_not_change_action_availability() {
+    let dir = konoma_test_support::unique_tmp("launch_gates");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("deleted.txt");
+    let runtime = runtime_with_actions(
+        LaunchRowsSession {
+            path: path.clone(),
+            caller: std::thread::current().id(),
+            visible: true,
+        },
+        vec!["allowed".into(), "refused".into()],
+    );
+    runtime
+        .tx
+        .send(ProjectJob::View {
+            key: key(1),
+            req: ViewReq::new(80, 20),
+        })
+        .unwrap();
+    let result = reply(&runtime);
+    assert!(result.error.is_none());
+    assert_eq!(
+        result.launch_targets[&key(1)].get(&path),
+        Some(&false),
+        "the first view of a fresh owner already classifies the deleted target"
+    );
+    assert_eq!(
+        result.enabled,
+        std::collections::HashMap::from([("allowed".into(), true), ("refused".into(), false),]),
+        "a target-bearing view carries only the session's action gates"
+    );
+}
+
+fn poll_launch_reply(f: &mut super::actions_tests::Fixture, result: ProjectReply<()>) {
+    use super::actions_tests::project;
+    f.runtimes.get_mut(&project()).unwrap().pending = Some(result);
+    let info = super::ProjectContextInfo {
+        id: 7,
+        root: project().root.clone(),
+        open_dir: project().root,
+        home: None,
+        icons: false,
+        viewport: super::ProjectViewport { cols: 80, rows: 20 },
+        surface: (),
+    };
+    let (mut host, context) = f.parts();
+    host.poll(&mut [context], &[info], &[project()]);
+}
+
+fn launch_reply(f: &super::actions_tests::Fixture) -> ProjectReply<()> {
+    f.runtimes[&super::actions_tests::project()]
+        .rx
+        .recv_timeout(TIMEOUT)
+        .expect("launch target owner reply")
+}
+
+fn launch_view(f: &mut super::actions_tests::Fixture, screen: &str) {
+    let result = launch_view_reply(f, screen);
+    poll_launch_reply(f, result);
+}
+
+fn launch_view_reply(f: &super::actions_tests::Fixture, screen: &str) -> ProjectReply<()> {
+    let key = ScreenKey::new(screen, 7);
+    f.runtimes[&super::actions_tests::project()]
+        .tx
+        .send(ProjectJob::View {
+            key,
+            req: ViewReq::new(80, 20).project(crate::ProjectView::new(screen).tab(7)),
+        })
+        .unwrap();
+    let result = launch_reply(f);
+    assert!(result.error.is_none());
+    result
+}
+
+#[test]
+fn launch_target_decisions_follow_live_views_and_not_row_history() {
+    use super::actions_tests::{project, Fixture};
+    let dir = konoma_test_support::unique_tmp("launch_live_rows");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("file.txt");
+    let other = dir.join("other.txt");
+    std::fs::write(&path, "file").unwrap();
+    std::fs::write(&other, "other").unwrap();
+    let mut f = Fixture::new();
+    let list_key = ScreenKey::new("list", 7);
+    let other_key = ScreenKey::new("other", 7);
+    let runtime = ProjectRuntime::start(
+        f.runtimes[&project()].project.clone(),
+        Arc::new(TestPlugin(Mutex::new(Some(Box::new(LaunchRowsSession {
+            path: path.clone(),
+            caller: std::thread::current().id(),
+            visible: true,
+        }))))),
+        vec!["allowed".into(), "refused".into()],
+        None,
+        env,
+        |_: &mut (), _| {},
+    );
+    f.runtimes.insert(project(), runtime);
+    let initial = launch_reply(&f);
+    poll_launch_reply(&mut f, initial);
+    launch_view(&mut f, "list");
+    let gates =
+        std::collections::HashMap::from([("allowed".into(), true), ("refused".into(), false)]);
+    assert_eq!(f.runtimes[&project()].enabled, gates);
+    assert!(f.runtimes[&project()].can_launch_target(&list_key, &path));
+    std::fs::remove_file(&path).unwrap();
+    launch_view(&mut f, "list");
+    assert!(!f.runtimes[&project()].can_launch_target(&list_key, &path));
+    std::fs::write(&path, "reappeared").unwrap();
+    launch_view(&mut f, "list");
+    assert!(f.runtimes[&project()].can_launch_target(&list_key, &path));
+    let mut other_view = launch_view_reply(&f, "other");
+    other_view.enabled.clear();
+    assert!(!other_view.launch_targets.is_empty());
+    poll_launch_reply(&mut f, other_view);
+    assert_eq!(
+        f.runtimes[&project()].enabled,
+        gates,
+        "a target-bearing reply with no availability update keeps the action gates"
+    );
+    assert!(f.runtimes[&project()].can_launch_target(&other_key, &other));
+    assert!(!f.runtimes[&project()].can_launch_target(&other_key, &path));
+    f.runtimes[&project()].tx.send(ProjectJob::Chip).unwrap();
+    let mut chip = launch_reply(&f);
+    assert!(
+        chip.launch_targets.is_empty(),
+        "non-view replies copy no row history"
+    );
+    chip.enabled.clear();
+    poll_launch_reply(&mut f, chip);
+    assert_eq!(
+        f.runtimes[&project()].enabled,
+        gates,
+        "an empty availability reply keeps the action gates"
+    );
+    assert!(f.runtimes[&project()].can_launch_target(&list_key, &path));
+    f.runtimes[&project()]
+        .tx
+        .send(ProjectJob::Act {
+            action: "remove rows".into(),
+            context: crate::ProjectAct::new(),
+            refresh: vec![(ScreenKey::new("list", 7), ViewReq::new(80, 20))],
+            chip: false,
+            watch: false,
+            effect: Box::new(()),
+        })
+        .unwrap();
+    let refreshed = launch_reply(&f);
+    assert!(refreshed.error.is_none());
+    assert_eq!(
+        refreshed.launch_targets.len(),
+        1,
+        "a refresh carries only its own screen's decisions"
+    );
+    assert!(refreshed.launch_targets[&list_key].is_empty());
+    poll_launch_reply(&mut f, refreshed);
+    assert!(
+        !f.runtimes[&project()].can_launch_target(&list_key, &path),
+        "a row removed by an action refresh must lose its old launch decision"
+    );
+    assert!(f.runtimes[&project()].can_launch_target(&other_key, &other));
+    assert!(f.runtimes[&project()].launch_targets[&list_key].is_empty());
+    f.runtimes.get_mut(&project()).unwrap().tab_closed(7);
+    assert!(f.runtimes[&project()].launch_targets.is_empty());
+    assert!(!f.runtimes[&project()].can_launch_target(&other_key, &other));
 }
 
 fn reply(runtime: &ProjectRuntime<Option<Outcome>>) -> ProjectReply<Option<Outcome>> {

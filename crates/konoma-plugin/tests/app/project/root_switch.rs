@@ -343,6 +343,7 @@ impl Fixture {
         runtime.pending = Some(ProjectReply {
             watch_paths: None,
             views: vec![],
+            launch_targets: Default::default(),
             enabled: Default::default(),
             chip: None,
             chip_error: None,

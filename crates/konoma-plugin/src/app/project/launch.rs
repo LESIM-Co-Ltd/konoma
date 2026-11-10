@@ -13,7 +13,7 @@ use crate::launch::{Launch, Opener};
 use crate::registry::Registry;
 use crate::{Verb, VerbDecl};
 
-/// The real selected file, its 1-based source line (if any), and that file's declarations.
+/// The selected file or worktree directory, its source line (if any), and its declarations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectLaunchTarget {
     pub path: PathBuf,
@@ -33,7 +33,7 @@ impl ProjectLaunchTarget {
         let _ = std::thread::Builder::new()
             .name("project-launch".into())
             .spawn(move || {
-                let target = path.is_file().then(|| Self {
+                let target = path.exists().then(|| Self {
                     verbs: services.launch_verbs(&path, &registry),
                     path,
                     line,
@@ -101,7 +101,7 @@ impl LaunchState {
             let _ = std::thread::Builder::new()
                 .name("project-preview-launch".into())
                 .spawn(move || {
-                    let target = path.is_file().then(|| {
+                    let target = path.exists().then(|| {
                         let resolved = source.resolve(&path, None);
                         ProjectLaunchTarget {
                             verbs: source.verbs(&resolved),
@@ -182,6 +182,19 @@ impl LaunchState {
                 .map_err(|e| std::io::Error::other(e.to_string()))
         };
         let mut handed = false;
+        if let Some((verb, None)) = target {
+            use konoma_host_core::help_msg::CoreMsg;
+            prepared.notice = Some(
+                if verb == Verb::Edit {
+                    CoreMsg::NoFileToEdit
+                } else {
+                    CoreMsg::NoFileToOpenApp
+                }
+                .tr(prepared.keys.lang())
+                .into(),
+            );
+            changed = true;
+        }
         if let Some((verb, Some(target))) = target {
             let facts = lc.facts(&target.verbs, &target.path);
             if (verb == Verb::Edit && !facts.edit_key()) || (verb == Verb::Open && !facts.open_key)

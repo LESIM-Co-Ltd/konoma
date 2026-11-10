@@ -214,8 +214,11 @@ fn prepare_at(
         _ => None,
     };
     Ok(PreparedProjects {
+        worktree_origin: services.worktree_origin(&dir),
         #[cfg(any(test, feature = "test-hooks"))]
         test_observed: None,
+        #[cfg(any(test, feature = "test-hooks"))]
+        test_observe_pending: false,
         #[cfg(any(test, feature = "test-hooks"))]
         test_clipboard: None,
         file_preview: None,

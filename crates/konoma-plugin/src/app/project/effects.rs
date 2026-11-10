@@ -142,6 +142,16 @@ impl ProjectLoopState {
             }
             self.ensure(info);
         }
+        let replacing_root = prepared.services.root_switch_enabled()
+            && update.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    ProjectCommand::Navigation {
+                        outcome: Outcome::SwitchRoot { .. },
+                        ..
+                    }
+                )
+            });
         for command in update.commands {
             match command {
                 ProjectCommand::EnsureView => self.ensure(info),
@@ -156,7 +166,9 @@ impl ProjectLoopState {
                     prepared.notice = Some(label.tr(prepared.keys.lang()).into());
                 }
                 ProjectCommand::Dispatch(id) => self.dispatch_act(prepared, info, id),
-                ProjectCommand::Label(label) => prepared.notice = Some(label),
+                // Candidate preparation owns the final notice. Keep the retained frame intact
+                // until its root has either been opened successfully or refused.
+                ProjectCommand::Label(label) => if !replacing_root { prepared.notice = Some(label) },
                 ProjectCommand::Flash(message) => prepared.notice = Some(message.get(prepared.lang).into()),
                 ProjectCommand::Copy(text) => prepared.notice = Some(match write_clipboard(prepared, &text) {
                     Ok(()) => konoma_host_core::copy::copied_preview_notice(prepared.keys.lang(), &text),
