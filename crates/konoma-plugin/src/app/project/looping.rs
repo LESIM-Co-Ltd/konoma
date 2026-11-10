@@ -384,6 +384,17 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     Some(&mut preview.gutter),
                 )?;
                 match exit {
+                    crate::app::looping::FileLoopExit::ReturnToSource => {
+                        state.file_preview = None;
+                        if let Some(p) = pictures.as_mut() {
+                            p.forget();
+                            p.forget_still();
+                        }
+                        if let Err(error) = state.diff.as_mut().unwrap().return_from_preview() {
+                            prepared.notice = Some(error.message.get(prepared.lang).into());
+                        }
+                        redraw = true;
+                    }
                     crate::app::looping::FileLoopExit::Yield => {
                         let retained: Vec<_> = state.runtimes.keys().cloned().collect();
                         let update = state.with_host(&info, |host, context| {
@@ -408,6 +419,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         state.diff = None;
                         state.screen = state.diff_return.take();
                         if let Some(p) = pictures.as_mut() {
+                            p.forget();
+                            p.forget_still();
+                            p.reset_document();
                             p.doc_pics().prune_media_diff_picture_cache();
                         }
                         redraw = true;
@@ -584,6 +598,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         if was_diff && state.diff_return.is_none() {
                             state.preview_open = None;
                             if let Some(p) = pictures.as_mut() {
+                                p.reset_document();
                                 p.doc_pics().prune_media_diff_picture_cache();
                             }
                         }

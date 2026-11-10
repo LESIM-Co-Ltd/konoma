@@ -318,6 +318,57 @@ fn project_row_and_diff_block_launch_record_target_line_and_cwd() {
 }
 
 #[test]
+fn terminal_handoff_retains_media_before_the_next_input() {
+    use konoma_plugin::app::Pictures;
+    use konoma_widgets::inline_images::MdImgEntry;
+    let (dir, mut prepared, events, mut terminal, log, cx) = setup(ProjectBackend::Git);
+    let mut pictures = Pictures::new(
+        ratatui_image::picker::Picker::halfblocks(),
+        "fixture",
+        &dir.join("first.launch"),
+        128,
+    )
+    .with_out(Box::new(std::io::sink()));
+    let entry = MdImgEntry {
+        failed: true,
+        ..Default::default()
+    };
+    let ticket = entry.wish.ticket();
+    pictures
+        .doc_pics()
+        .cache_for_test()
+        .cache
+        .insert("media-diff://handoff/old/1".into(), entry);
+    struct Check {
+        events: Events,
+        ticket: Arc<konoma_svg::image::DecodeTicket>,
+    }
+    impl EventSource for Check {
+        fn next(&mut self, wait: Option<Duration>) -> Next {
+            let next = self.events.next(wait);
+            if matches!(next, Next::End) {
+                assert!(
+                    !self.ticket.is_stale(),
+                    "terminal handoff retains the live media owner, as konoma does"
+                );
+            }
+            next
+        }
+    }
+    let mut events = Check { events, ticket };
+    events.events.keys = [Key::char('e')].into();
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut events,
+        &cx,
+        Some(pictures),
+    )
+    .unwrap();
+    assert_eq!(log.lock().unwrap().len(), 1, "the terminal launcher ran");
+}
+
+#[test]
 fn tool_selection_uses_current_backend_workdir_and_gate() {
     // Backend values are injected; no jj installation or tool process is needed.
     for backend in [ProjectBackend::Git, ProjectBackend::Jj] {

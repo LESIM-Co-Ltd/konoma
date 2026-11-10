@@ -331,6 +331,516 @@ fn preview_q_restores_exact_opening_project_frame() {
 }
 
 #[test]
+fn preview_r_reselects_source_instead_of_the_configured_default() {
+    let (_dir, mut prepared, mut terminal) = setup(false, true);
+    opening(&mut prepared, &mut terminal, "log");
+    diff(&mut prepared);
+    drive(&mut prepared, &mut terminal, vec![Key::char('R')]);
+    assert!(prepared.file_preview.is_some());
+    prepared.config.ui.diff_view = "preview".into();
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut vec![AppEvent::Key(Key::char('R'))].into_iter(),
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    assert!(prepared.file_preview.is_none(), "R must leave the Preview");
+    let diff = prepared.diff.as_ref().expect("return to the opening diff");
+    assert_eq!(diff.choice, DiffView::Source, "R explicitly selects Source");
+    assert_eq!(diff.effective, DiffView::Source);
+    assert!(prepared.screen.is_none());
+    assert!(prepared.diff_return.is_some());
+}
+
+#[test]
+fn preview_r_reopens_raw_diff_even_when_preview_owned_the_unlanded_reply() {
+    struct Replies(std::sync::Mutex<VecDeque<FileDiffReply>>);
+    impl super::super::ProjectServices for Replies {
+        fn inspect(
+            &self,
+            p: &MatchedProject,
+            s: &super::super::ProjectSettings,
+        ) -> Result<super::super::ProjectServiceInfo, Failure> {
+            Services.inspect(p, s)
+        }
+        fn file_diff(&self, _: &super::super::ProjectServiceInfo, _: &Path) -> Vec<DiffLine> {
+            unreachable!()
+        }
+        fn changed_files(&self, _: &super::super::ProjectServiceInfo) -> Vec<ChangeEntry> {
+            unreachable!()
+        }
+        fn base_contents(&self, _: &super::super::ProjectServiceInfo, _: &Path) -> Option<Vec<u8>> {
+            None
+        }
+        fn spawn_file_diff(self: Arc<Self>, _: FileDiffRequest) -> Result<FileDiffReply, Failure> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("one request per diff entry"))
+        }
+    }
+    let (_dir, mut p, mut terminal) = setup(false, true);
+    opening(&mut p, &mut terminal, "log");
+    let (stale, first) = mpsc::channel();
+    let (fresh, second) = mpsc::channel();
+    let services = Arc::new(Replies(std::sync::Mutex::new([first, second].into())));
+    p.services = services.clone();
+    diff(&mut p);
+    // Classification can publish before raw content, retaining the project return already.
+    p.diff_return = p.screen.take();
+    drive(&mut p, &mut terminal, vec![Key::char('R')]);
+    assert!(p.file_preview.is_some());
+    assert!(
+        p.diff.as_ref().unwrap().data.is_none(),
+        "the raw reply has not landed before Preview opens"
+    );
+    fresh
+        .send(Ok(FileDiffData {
+            lines: vec![DiffLine {
+                kind: konoma_vcs_core::git::DiffLineKind::Added,
+                old_no: None,
+                new_no: Some(1),
+                text: "fresh diff".into(),
+            }],
+            paths: vec![],
+        }))
+        .unwrap();
+    run_project_with(
+        &mut terminal,
+        &mut p,
+        &mut [AppEvent::Key(Key::char('R'))].into_iter(),
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    assert!(
+        services.0.lock().unwrap().is_empty(),
+        "return to the diff reopens raw ownership"
+    );
+    assert!(stale
+        .send(Err(Failure::external("late old raw reply")))
+        .is_err());
+    run_project_with(
+        &mut terminal,
+        &mut p,
+        &mut Vec::<AppEvent>::new().into_iter(),
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        p.diff.as_ref().unwrap().data.as_ref().unwrap().lines[0].text,
+        "fresh diff",
+        "the returned Source displays a real diff"
+    );
+}
+
+#[test]
+fn preview_return_hints_follow_real_keys_and_overlays() {
+    for remap in [false, true] {
+        let (_dir, mut p, mut terminal) = setup(false, true);
+        terminal.backend_mut().resize(160, 14);
+        if remap {
+            p.config = SharedConfig::parse("[ui]\nlang='en'\ndiff_view='source'\n[keys.text]\nx='cycle_representation'\nR='noop'\n").unwrap();
+            p.keys = crate::app::AppKeys::new(&p.config.keys, &p.config.ui.keys);
+        }
+        opening(&mut p, &mut terminal, "log");
+        diff(&mut p);
+        drive(&mut p, &mut terminal, vec![Key::char('R')]);
+        let key = if remap { 'x' } else { 'R' };
+        let text = || {
+            crate::app::draw::test_frame()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        assert!(
+            text().contains(&format!("{key}:back to diff")),
+            "Preview footer names the executable key"
+        );
+        let mut run = |keys: Vec<Key>| {
+            run_project_with(
+                &mut terminal,
+                &mut p,
+                &mut keys.into_iter().map(AppEvent::Key),
+                &ProjectLoopCx::default(),
+                None,
+            )
+            .unwrap();
+        };
+        if remap {
+            run(vec![Key::char('R')]);
+            assert!(
+                text().contains("x:back to diff"),
+                "the old R must leave the Preview unchanged after remap"
+            );
+        }
+        run(vec![Key::char('?'), Key::char(key)]);
+        assert!(
+            text().contains("back to diff"),
+            "help lists the return key of the screen underneath"
+        );
+        run(vec![Key::char('q'), Key::char(key)]);
+        assert!(
+            p.file_preview.is_none(),
+            "closing help restores the listed return key"
+        );
+        assert_eq!(p.diff.as_ref().unwrap().choice, DiffView::Source);
+        drive(&mut p, &mut terminal, vec![Key::char('R')]);
+        let mut run = |keys: Vec<Key>| {
+            run_project_with(
+                &mut terminal,
+                &mut p,
+                &mut keys.into_iter().map(AppEvent::Key),
+                &ProjectLoopCx::default(),
+                None,
+            )
+            .unwrap();
+        };
+        run(vec![Key::char(',')]);
+        assert!(
+            text().contains(&format!("{key}:back to diff")),
+            "options list the same return declaration"
+        );
+        run(vec![Key::char(key)]);
+        assert!(
+            p.file_preview.is_none(),
+            "the advertised menu item returns to the diff"
+        );
+        assert_eq!(p.diff.as_ref().unwrap().choice, DiffView::Source);
+    }
+}
+
+#[test]
+fn preview_return_key_waits_for_the_table_popup_to_close() {
+    for remap in [false, true] {
+        let (_dir, mut p, mut terminal) = setup(true, true);
+        terminal.backend_mut().resize(160, 14);
+        if remap {
+            p.config = SharedConfig::parse("[ui]\nlang='en'\ndiff_view='source'\n[keys.table]\nx='cycle_representation'\nR='noop'\n").unwrap();
+            p.keys = crate::app::AppKeys::new(&p.config.keys, &p.config.ui.keys);
+        }
+        opening(&mut p, &mut terminal, "log");
+        diff(&mut p);
+        drive(&mut p, &mut terminal, vec![Key::char('R')]);
+        let key = if remap { 'x' } else { 'R' };
+        let token = format!("{key}:back to diff");
+        let footer = || {
+            let frame = crate::app::draw::test_frame();
+            (0..frame.area.width)
+                .map(|x| frame[(x, frame.area.bottom() - 1)].symbol())
+                .collect::<String>()
+        };
+        assert!(footer().contains(&token));
+        let mut run = |keys: Vec<Key>| {
+            run_project_with(
+                &mut terminal,
+                &mut p,
+                &mut keys.into_iter().map(AppEvent::Key),
+                &ProjectLoopCx::default(),
+                None,
+            )
+            .unwrap();
+        };
+        run(vec![Key::new(crate::KeyCode::Enter)]);
+        assert!(
+            footer().contains("close"),
+            "real Enter opens the cell popup"
+        );
+        assert!(
+            !footer().contains(&token),
+            "the popup owns the key, so its footer cannot offer return to diff"
+        );
+        run(vec![Key::char(key)]);
+        assert!(
+            footer().contains("close"),
+            "the return key must leave the popup open"
+        );
+        run(vec![Key::char('?')]);
+        assert!(
+            !crate::app::draw::test_frame()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+                .contains("back to diff"),
+            "help over a popup cannot list the Preview return key"
+        );
+        run(vec![Key::char('q')]);
+        run(vec![Key::new(crate::KeyCode::Esc)]);
+        assert!(
+            footer().contains(&token),
+            "closing the popup restores the return hint"
+        );
+        run(vec![Key::char(key)]);
+        assert!(
+            p.file_preview.is_none(),
+            "the restored key returns to the diff"
+        );
+        assert_eq!(p.diff.as_ref().unwrap().choice, DiffView::Source);
+    }
+}
+
+#[test]
+fn preview_footer_tokens_act_in_popups_options_and_input_capture() {
+    use crate::app::{AppKeys, TableMode};
+    use konoma_host_core::keymap::{CoreContext, KeyPress};
+
+    fn footer_keys() -> Vec<KeyPress> {
+        let frame = crate::app::draw::test_frame();
+        let footer = (0..frame.area.width)
+            .map(|x| frame[(x, frame.area.bottom() - 1)].symbol())
+            .collect::<String>();
+        let keys: Vec<_> = footer
+            .split_whitespace()
+            .filter_map(|s| s.split_once(':'))
+            .filter(|(s, _)| !s.is_empty())
+            .flat_map(|(s, _)| s.split('/'))
+            .map(|s| KeyPress::parse(if s == "↵" { "Enter" } else { s }).unwrap())
+            .collect();
+        assert!(
+            !keys.is_empty(),
+            "footer must expose the state's keys: {footer}"
+        );
+        keys
+    }
+    fn run(p: &mut PreparedProjects, terminal: &mut Terminal<TestBackend>, keys: Vec<Key>) {
+        run_project_with(
+            terminal,
+            p,
+            &mut keys.into_iter().map(AppEvent::Key),
+            &ProjectLoopCx::default(),
+            None,
+        )
+        .unwrap();
+    }
+    let (_dir, mut p, mut terminal) = setup(true, true);
+    terminal.backend_mut().resize(240, 14);
+    opening(&mut p, &mut terminal, "log");
+    diff(&mut p);
+    drive(&mut p, &mut terminal, vec![Key::char('R')]);
+    run(&mut p, &mut terminal, vec![Key::new(crate::KeyCode::Enter)]);
+    let keys = AppKeys::defaults();
+    for key in footer_keys() {
+        let event = crossterm::event::KeyEvent::new(
+            key.code,
+            if key.ctrl {
+                crossterm::event::KeyModifiers::CONTROL
+            } else {
+                crossterm::event::KeyModifiers::NONE
+            },
+        );
+        let key = crate::host::typing::key_of(&event).unwrap();
+        assert!(
+            keys.table_acts_on(
+                &key,
+                false,
+                TableMode {
+                    popup: true,
+                    cells: true,
+                    ..Default::default()
+                }
+            ),
+            "every popup footer key must resolve through the popup handler: {key:?}"
+        );
+    }
+    run(
+        &mut p,
+        &mut terminal,
+        vec![Key::new(crate::KeyCode::Esc), Key::char(',')],
+    );
+    for key in footer_keys() {
+        assert!(
+            key == KeyPress::ch('R') || keys.options_op_for_test(CoreContext::Table, key).is_some(),
+            "every options footer key must resolve through the options handler: {key:?}"
+        );
+    }
+    run(&mut p, &mut terminal, vec![Key::char('R')]);
+    assert!(
+        p.file_preview.is_none(),
+        "the extra Preview menu item executes"
+    );
+
+    struct CapturePlugin;
+    impl Plugin for CapturePlugin {
+        fn manifest(&self) -> Manifest {
+            FilePlugin(false).manifest()
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(Capture(true)))
+        }
+    }
+    struct Capture(bool);
+    impl Session for Capture {
+        fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+            Ok(View::Canvas(
+                crate::view::CanvasView::new(req.cols, req.rows).text_input(self.0),
+            ))
+        }
+        fn key(&mut self, key: &Key, _: &ActCx) -> Result<Outcome, Failure> {
+            if key.code == crate::KeyCode::Esc {
+                self.0 = false;
+            }
+            Ok(Outcome::Redraw)
+        }
+    }
+    let mut registry = crate::registry::Registry::new();
+    registry
+        .register(
+            Arc::new(CapturePlugin),
+            crate::registry::PluginOrigin::Standard,
+        )
+        .unwrap();
+    p.file_previews = Some(crate::host::file_preview::FilePreviewSource::new(
+        Arc::new(registry),
+        Vec::new(),
+        false,
+    ));
+    drive(&mut p, &mut terminal, vec![Key::char('R')]);
+    assert_eq!(
+        footer_keys(),
+        vec![KeyPress::key(crossterm::event::KeyCode::Esc)],
+        "capture offers only the host's leave key"
+    );
+    run(&mut p, &mut terminal, vec![Key::char('R')]);
+    assert!(p.file_preview.is_some(), "capture owns the return key");
+    run(&mut p, &mut terminal, vec![Key::new(crate::KeyCode::Esc)]);
+    assert!(
+        !footer_keys()
+            .iter()
+            .any(|k| k.code == crossterm::event::KeyCode::Esc),
+        "the advertised Esc actually leaves capture"
+    );
+}
+
+#[test]
+fn preview_q_releases_each_picture_owner_once_before_late_encode() {
+    use konoma_widgets::inline_images::{
+        InlineImageCache, MdEncodeKey, MdEncodeResult, MdImgEntry,
+    };
+    struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Output {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let (_dir, mut p, mut terminal) = setup(false, true);
+    opening(&mut p, &mut terminal, "log");
+    diff(&mut p);
+    let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let picker = ratatui_image::picker::Picker::halfblocks();
+    let path = p.open_dir.join("file.txt");
+    let mut pictures = Pictures::new(picker.clone(), "preview-file", &path, 128)
+        .with_out(Box::new(Output(output.clone())));
+    let mut cache = InlineImageCache {
+        use_kitty: true,
+        ..Default::default()
+    };
+    let mut tickets = Vec::new();
+    let media = PathBuf::from("media-diff://old/hash/1");
+    for (i, key) in [
+        media.clone(),
+        p.open_dir.join("doc.png"),
+        PathBuf::from("math://one"),
+        PathBuf::from("mermaid-fence://one"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let entry = MdImgEntry {
+            failed: true,
+            ..Default::default()
+        };
+        tickets.push(entry.wish.ticket());
+        cache.cache.insert(key.clone(), entry);
+        cache.next_request(&key);
+        cache
+            .kitty_ids
+            .insert(key, [vec![71 + i as u32], vec![], vec![]]);
+    }
+    let born = cache.cache[&media].born;
+    let (late_tx, late_rx) = mpsc::channel();
+    *pictures.doc_pics() = crate::app::DocPics::new(
+        &picker,
+        "preview-file",
+        &path,
+        128,
+        Arc::new(crate::app::InProcessSvg),
+    )
+    .with_cache(cache, late_rx);
+    let (published, fence) = mpsc::channel();
+    p.preview_open_fence = Some(published);
+    struct Departure {
+        events: Events,
+        tickets: Vec<Arc<konoma_svg::image::DecodeTicket>>,
+        late: Option<(mpsc::Sender<MdEncodeResult>, MdEncodeResult)>,
+    }
+    impl EventSource for Departure {
+        fn next(&mut self, wait: Option<Duration>) -> Next {
+            let next = self.events.next(wait);
+            if matches!(next, Next::End) {
+                assert!(
+                    self.tickets.iter().all(|t| t.is_stale()),
+                    "q cancels every owner before the next project input"
+                );
+                if let Some((sender, reply)) = self.late.take() {
+                    sender.send(reply).unwrap();
+                    return Next::Timeout;
+                }
+            }
+            next
+        }
+    }
+    let mut events = Departure {
+        events: Events {
+            keys: [Key::char('R'), Key::char('q')].into(),
+            fence,
+            waiting: false,
+            read: 0,
+            ended: false,
+        },
+        tickets,
+        late: Some((
+            late_tx,
+            MdEncodeResult {
+                path: media,
+                key: MdEncodeKey::Full { cols: 4, rows: 2 },
+                image: None,
+                born,
+            },
+        )),
+    };
+    run_project_with(
+        &mut terminal,
+        &mut p,
+        &mut events,
+        &ProjectLoopCx::default(),
+        Some(pictures),
+    )
+    .unwrap();
+    let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+    for id in 71..75 {
+        assert_eq!(
+            output
+                .matches(&konoma_widgets::kitty::build_delete(id, false))
+                .count(),
+            1,
+            "each kitty picture is deleted once, including on final drop"
+        );
+    }
+    assert!(p.screen.is_some());
+}
+
+#[test]
 fn preview_exits_and_failures_in_the_project_app() {
     for keys in [
         vec![Key::char('Q')],
@@ -390,6 +900,11 @@ fn preview_exits_and_failures_in_the_project_app() {
     std::fs::remove_file(p.open_dir.join("file.txt")).unwrap();
     drive(&mut p, &mut t, vec![Key::char('R')]);
     assert!(p.notice.is_some(), "open failure is a diff notice");
+    assert_eq!(
+        p.diff.as_ref().unwrap().choice,
+        DiffView::Preview,
+        "failed Preview open preserves the user's choice"
+    );
     assert!(
         p.diff_return.is_some(),
         "open failure retains return ownership"

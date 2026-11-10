@@ -168,7 +168,7 @@ impl DiffScreenState {
         );
     }
 
-    fn adopt_markdown(&mut self, result: MdDiffResult) -> bool {
+    pub(super) fn adopt_markdown(&mut self, result: MdDiffResult) -> bool {
         let on_screen = result.path == self.request.path && result.kind == MdDiffKind::Rendered;
         let unavailable = matches!(
             result.outcome,

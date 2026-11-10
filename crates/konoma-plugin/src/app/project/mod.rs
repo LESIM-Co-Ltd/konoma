@@ -4,6 +4,11 @@ mod launch;
 mod looping;
 mod prepare;
 pub(in crate::app) mod preview;
+#[cfg(any(test, feature = "test-hooks"))]
+mod representation_test_hooks;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use representation_test_hooks::drive_diff_representation_for_test;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

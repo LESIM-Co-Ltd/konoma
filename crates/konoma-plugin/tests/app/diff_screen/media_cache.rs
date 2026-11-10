@@ -278,6 +278,141 @@ fn media_results_land_under_exact_keys_with_fixed_rgba() {
     }
 }
 
+#[test]
+fn preview_media_keys_and_kitty_slots_survive_document_crops() {
+    let f = fixture();
+    let (mut pics, encodes) = pictures();
+    let dir = konoma_test_support::unique_tmp("preview_media_crop");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("side.svg");
+    pics.set_path(&path);
+    pics.cache_for_test().use_kitty = true;
+    let outcome = pics.materialize_media_diff(computed(&f));
+    let keys = live_cache_keys(&outcome);
+    for key in &keys {
+        draw(&mut pics, &key.to_string_lossy());
+        let request = encodes.try_recv().unwrap();
+        assert_eq!(&request.path, key);
+        assert!(request.crop.is_some(), "the short page causes a crop");
+        assert!(
+            request.kitty.is_some(),
+            "a kitty slot has a fixed image number"
+        );
+    }
+    let numbering = pics.cache_for_test().kitty_ids.clone();
+    let born: Vec<_> = keys
+        .iter()
+        .map(|k| (k.clone(), pics.cache_for_test().cache[k].born))
+        .collect();
+    pics.reset();
+    pics.set_path(&path);
+    sync_document_resources(&mut pics);
+    assert_eq!(
+        pics.cache_for_test().kitty_ids,
+        numbering,
+        "Rendered/Preview retain the image numbering"
+    );
+    for (key, birth) in born {
+        assert_eq!(
+            pics.cache_for_test().cache[&key].born,
+            birth,
+            "the same URL retains its cache entry"
+        );
+    }
+    let next = pics.materialize_media_diff(computed(&f));
+    assert_eq!(
+        live_cache_keys(&next),
+        keys,
+        "the side/hash/page/raster URL rule is unchanged"
+    );
+    assert_eq!(pics.cache_for_test().kitty_ids, numbering);
+    assert!(
+        pics.take_kitty_deletes().is_empty(),
+        "neither representation deletes the other's pictures"
+    );
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../snapshots/representation_cycles.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    pics.reset();
+    let rgba = &fixture["new_rgba"];
+    let pixel = image::Rgba([
+        rgba[0].as_u64().unwrap() as u8,
+        rgba[1].as_u64().unwrap() as u8,
+        rgba[2].as_u64().unwrap() as u8,
+        rgba[3].as_u64().unwrap() as u8,
+    ]);
+    let picture_path = dir.join("picture.png");
+    image::RgbaImage::from_pixel(8, 80, pixel)
+        .save(&picture_path)
+        .unwrap();
+    pics.cache_for_test().cache.insert(
+        picture_path.clone(),
+        konoma_widgets::inline_images::MdImgEntry {
+            decoded: Some(Arc::new(image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_pixel(8, 80, pixel),
+            ))),
+            layout_px: Some((8, 80)),
+            ..Default::default()
+        },
+    );
+    let doc = konoma_plugin::view::DocumentView {
+        markdown: fixture["crop_document"].as_str().unwrap().into(),
+        origin: konoma_plugin::input::Origin::File(path),
+        resources: Default::default(),
+        options: Default::default(),
+        title: None,
+        truncated: false,
+    };
+    let body = pics.render(
+        &doc,
+        &doc.markdown,
+        20,
+        8,
+        konoma_host_core::lang::Lang::En,
+        &konoma_plugin::document_render::RenderSettings {
+            width: 20,
+            code: Default::default(),
+            code_theme: "base16-ocean.dark",
+            icons: false,
+            mermaid_caption: "",
+            details_open: &Default::default(),
+        },
+    );
+    assert_eq!(body.images.len(), 1);
+    let first = body.images[0].line;
+    let laid = Laid {
+        row_prefix: vec![],
+        lines: body.lines,
+        images: body.images,
+        max_line_cols: 20,
+    };
+    let area = Rect::new(0, 0, 20, 2);
+    let (_, paints) = konoma_widgets::picture_overlay::record_inline_paints_for_test(|| {
+        pics.draw(
+            &mut Buffer::empty(area),
+            area,
+            Some((&laid, laid.first_row_of(first) + 1)),
+        );
+    });
+    assert_eq!(paints.len(), 1);
+    assert_eq!(paints[0].1.row_offset, 1);
+    assert_eq!(paints[0].1.visible_rows, 2);
+    let request = encodes.try_recv().unwrap();
+    assert_eq!(request.path, picture_path);
+    assert!(request.crop.is_some());
+    assert_eq!(request.image.to_rgba8().get_pixel(0, 0), &pixel);
+    assert!(
+        keys.iter()
+            .all(|k| pics.cache_for_test().cache.contains_key(k)),
+        "cropped document layout preserves media"
+    );
+}
+
 fn sync_document_resources(pics: &mut DocPics) {
     use konoma_plugin::{
         input::{Origin, Resource, Resources},

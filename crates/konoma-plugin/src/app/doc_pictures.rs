@@ -232,7 +232,22 @@ impl DocPics {
 
     /// Leave the media diff, releasing only its pictures from the shared document cache.
     pub fn prune_media_diff_picture_cache(&mut self) {
-        media_diff::prune_media_diff_picture_cache(&mut self.cache.cache, None);
+        self.prune_media(None);
+    }
+
+    fn prune_media(&mut self, outcome: Option<&MediaDiffOutcome>) {
+        media_diff::prune_media_diff_picture_cache(&mut self.cache.cache, outcome);
+        let cache = &self.cache.cache;
+        self.cache.kitty_ids.retain(|key, slots| {
+            let removed = konoma_widgets::media_diff::is_media_diff_url(&key.to_string_lossy())
+                && !cache.contains_key(key);
+            if removed {
+                self.cache
+                    .kitty_deletes
+                    .extend(slots.iter().flatten().copied());
+            }
+            !removed
+        });
     }
 
     /// Adopt a worker's pixels into the ordinary document cache before its normal encode pass.
@@ -243,13 +258,14 @@ impl DocPics {
                 self.cache.evict_to(MD_IMAGE_CACHE_BYTES);
             }
         });
-        media_diff::prune_media_diff_picture_cache(&mut self.cache.cache, Some(&outcome));
+        self.prune_media(Some(&outcome));
         outcome
     }
 
     /// Retarget relative picture paths, dropping the previous file's in-flight results.
     pub fn set_path(&mut self, path: &std::path::Path) {
         if self.path != path {
+            self.prune_media_diff_picture_cache();
             self.reset();
             self.path = path.to_path_buf();
         }
@@ -317,7 +333,7 @@ impl DocPics {
         if same_resources(&self.resources, resources) {
             return;
         }
-        self.reset_document(true);
+        self.reset();
         self.render_truncated = Arc::new(AtomicBool::new(false));
         self.pictures = DocPicture::from_resources(resources, &self.render_truncated);
         self.resources = resources.clone();
@@ -546,12 +562,13 @@ impl DocPics {
         self.redraw |= self.cache.advance_gifs_at(now);
     }
 
-    /// The document is another one now: nothing of the old one stays. The decodes in flight are
+    /// The document is another one now: its own pictures go, while media-diff pictures stay
+    /// under their separate owner. The document decodes in flight are
     /// cancelled (their generation moves on), the channels are new ones (a result they were to
     /// send lands on nothing), the cached pictures are dropped with the kitty images they pinned,
     /// and the page is laid out again.
     pub fn reset(&mut self) {
-        self.reset_document(false);
+        self.reset_document();
     }
 
     fn apply_decoded(&mut self, res: DecodedImage) {
@@ -565,7 +582,7 @@ impl DocPics {
         }
     }
 
-    fn reset_document(&mut self, keep_media: bool) {
+    fn reset_document(&mut self) {
         let old = std::mem::replace(&mut self.generation, Arc::new(AtomicU64::new(0)));
         old.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         (self.res_tx, self.res_rx) = channel();
@@ -574,9 +591,8 @@ impl DocPics {
         self.remote_failed.clear();
         self.resources = Resources::new();
         self.pictures.clear();
-        let retained = |key: &PathBuf| {
-            keep_media && konoma_widgets::media_diff::is_media_diff_url(&key.to_string_lossy())
-        };
+        let retained =
+            |key: &PathBuf| konoma_widgets::media_diff::is_media_diff_url(&key.to_string_lossy());
         let pinned: HashSet<u32> = self
             .cache
             .kitty_ids
@@ -822,6 +838,97 @@ impl DocPics {
 mod tests {
     use super::*;
     use crate::{Failure, Manifest, Session, Value};
+
+    #[test]
+    fn preview_and_media_share_cache_without_cross_pruning() {
+        use konoma_widgets::inline_images::{EncodeApplied, MdEncodeKey, MdImgEntry};
+        let mut d = pics(None);
+        d.cache.use_kitty = true;
+        let media = PathBuf::from("media-diff://same-path/old/1");
+        let entry = MdImgEntry::default();
+        let ticket = entry.wish.ticket();
+        d.cache.cache.insert(media.clone(), entry);
+        d.cache.next_request(&media);
+        let born = d.cache.cache[&media].born;
+        d.cache
+            .kitty_ids
+            .insert(media.clone(), [vec![31], vec![], vec![]]);
+        let docs = ["/x/p.png", "math://expression", "mermaid-fence://diagram"];
+        for (i, key) in docs.iter().enumerate() {
+            d.cache
+                .cache
+                .insert(PathBuf::from(key), MdImgEntry::default());
+            d.cache
+                .kitty_ids
+                .insert(PathBuf::from(key), [vec![40 + i as u32], vec![], vec![]]);
+        }
+        // An ordinary Preview reset owns only document pictures, even on the same path.
+        d.reset();
+        assert!(
+            d.cache.cache.contains_key(&media),
+            "ordinary reset retains media"
+        );
+        assert!(!ticket.is_stale());
+        assert_eq!(
+            d.cache.kitty_ids[&media][0],
+            vec![31],
+            "image numbering survives Preview"
+        );
+        assert_eq!(
+            d.take_kitty_deletes().len(),
+            3,
+            "each document image deleted once"
+        );
+        assert!(d.take_kitty_deletes().is_empty());
+        d.sync_resources(&resources_of(&stripes()));
+        assert!(
+            d.cache.cache.contains_key(&media),
+            "document sync retains media"
+        );
+        for key in docs {
+            d.cache.cache.insert(key.into(), MdImgEntry::default());
+        }
+        d.prune_media_diff_picture_cache();
+        assert!(ticket.is_stale(), "departure cancels the media decode");
+        assert!(
+            docs.iter()
+                .all(|k| d.cache.cache.contains_key(&PathBuf::from(k))),
+            "media prune retains document, math and Mermaid"
+        );
+        assert_eq!(
+            d.take_kitty_deletes().len(),
+            1,
+            "media owner deletes its kitty image once"
+        );
+        let late = || MdEncodeResult {
+            path: media.clone(),
+            key: MdEncodeKey::Full { cols: 4, rows: 2 },
+            image: None,
+            born,
+        };
+        assert_eq!(
+            d.cache.apply_encode(late()),
+            EncodeApplied::Dropped,
+            "late encode after q is ignored"
+        );
+        let (late_tx, late_rx) = channel();
+        d.enc_rx = late_rx;
+        late_tx.send(late()).unwrap();
+        d.poll_at(std::time::Instant::now());
+        assert!(
+            !d.cache.cache.contains_key(&media),
+            "late encode after q is not adopted by the owner"
+        );
+        d.prune_media_diff_picture_cache();
+        assert!(
+            d.take_kitty_deletes().is_empty(),
+            "a repeated departure never deletes twice"
+        );
+        // Returning to the same URL cannot adopt an encode of its previous incarnation.
+        d.cache.cache.insert(media.clone(), MdImgEntry::default());
+        d.cache.next_request(&media);
+        assert_eq!(d.cache.apply_encode(late()), EncodeApplied::Dropped);
+    }
 
     struct Nothing;
 

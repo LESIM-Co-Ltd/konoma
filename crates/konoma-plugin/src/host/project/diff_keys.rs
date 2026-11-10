@@ -14,6 +14,32 @@ const OPERATIONS: &[HostOp] = &[
     HostOp::JumpPrevChange,
 ];
 
+/// An explicit diff choice and its target-rounded presentation. File Preview's own
+/// representation and the media page are deliberately outside this transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffViewTransition {
+    pub choice: konoma_host_core::project::DiffView,
+    pub effective: konoma_host_core::project::DiffView,
+}
+
+/// Plan `R` using executable diff representations. Returning from Preview explicitly
+/// selects Source, even when the target can only display Rendered.
+pub fn diff_view_transition(
+    current: konoma_host_core::project::DiffView,
+    reps: &[konoma_host_core::project::DiffView],
+) -> Option<DiffViewTransition> {
+    use konoma_host_core::project::{round_diff_view, DiffView};
+    let choice = if current == DiffView::Preview {
+        DiffView::Source
+    } else {
+        next_diff_view(current, reps)?
+    };
+    Some(DiffViewTransition {
+        choice,
+        effective: round_diff_view(choice, reps),
+    })
+}
+
 /// Cycle the effective representation through the host's executable, ordered capabilities.
 /// Unknown current values use index zero, preserving konoma's original rule.
 pub fn next_diff_view(

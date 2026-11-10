@@ -21,7 +21,7 @@ impl Plugin for Document {
     }
 }
 
-struct Services(std::thread::ThreadId);
+pub(super) struct Services(pub(super) std::thread::ThreadId);
 impl ProjectServices for Services {
     fn inspect(
         &self,

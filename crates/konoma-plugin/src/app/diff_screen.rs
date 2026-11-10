@@ -23,6 +23,8 @@ mod media;
 #[cfg(test)]
 mod preview_tests;
 mod rendered;
+#[cfg(test)]
+mod representation_tests;
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub mod test_hooks;
@@ -375,17 +377,21 @@ impl DiffScreenState {
                 PreviewOp::Cancel => Some(O::Cancel),
                 _ => None,
             });
-        let representation = (self.file_previews.is_some()
-            && self.keys.host_op(CoreContext::Diff, key)
-                == Some(konoma_host_core::keymap::HostOp::CycleRepresentation))
-        .then_some(O::View);
-        let Some(op) = fixed
-            .or(representation)
-            .or_else(|| O::resolve_file_diff(&self.keys, key))
-        else {
+        let Some(op) = fixed.or_else(|| self.op_for_key(key)) else {
             return Ok((DiffScreenAction::Stay, None));
         };
         self.execute_op(op)
+    }
+
+    fn op_for_key(&self, key: KeyPress) -> Option<DiffUiOp> {
+        if self.file_previews.is_some()
+            && self.keys.host_op(CoreContext::Diff, key)
+                == Some(konoma_host_core::keymap::HostOp::CycleRepresentation)
+        {
+            Some(DiffUiOp::View)
+        } else {
+            DiffUiOp::resolve_file_diff(&self.keys, key)
+        }
     }
 
     fn execute_op(&mut self, op: DiffUiOp) -> Result<(DiffScreenAction, Option<String>), Failure> {
@@ -424,12 +430,12 @@ impl DiffScreenState {
                 );
             }
             O::View => {
-                if let Some(next) = crate::host::project::diff_keys::next_diff_view(
+                if let Some(transition) = crate::host::project::diff_keys::diff_view_transition(
                     self.effective,
                     &self.representations(),
                 ) {
-                    self.choice = next;
-                    if next != DiffView::Preview {
+                    self.choice = transition.choice;
+                    if transition.effective != DiffView::Preview {
                         self.scroll = 0;
                         self.block = None;
                     }
@@ -541,6 +547,20 @@ impl DiffScreenState {
 
     pub(in crate::app) fn take_command(&mut self) -> Option<DiffScreenCommand> {
         self.command.take()
+    }
+
+    pub(in crate::app) fn return_from_preview(&mut self) -> Result<(), Failure> {
+        let transition = crate::host::project::diff_keys::diff_view_transition(
+            DiffView::Preview,
+            &self.representations(),
+        )
+        .expect("Preview returns to Source");
+        self.choice = transition.choice;
+        self.scroll = 0;
+        self.hscroll = 0;
+        self.block = None;
+        // The gutter may own the previous raw receiver. Reopen on the worker, as the host does.
+        self.reload()
     }
 
     #[cfg(test)]
@@ -682,7 +702,11 @@ impl DiffScreenState {
                     } else {
                         default_label(CoreContext::Diff, a).map(msg)
                     },
-                    help: default_help(CoreContext::Diff, a).map(msg),
+                    help: if op == DiffUiOp::Layout {
+                        Some(DiffMsg::GitLayout.tr(self.lang).into())
+                    } else {
+                        default_help(CoreContext::Diff, a).map(msg)
+                    },
                     launch: false,
                     layers: vec![],
                 })
@@ -704,7 +728,7 @@ impl DiffScreenState {
                 .chain(self.keys.contexts.values().flat_map(|t| t.keys()))
                 .chain(self.keys.types.values().flat_map(|t| t.keys()))
                 .copied()
-                .filter(|k| DiffUiOp::resolve_file_diff(&self.keys, *k) == Some(op))
+                .filter(|k| self.op_for_key(*k) == Some(op))
                 .collect();
             keys.sort_by_key(|k| konoma_host_core::help::display_order(*k));
             keys.dedup();
@@ -821,11 +845,30 @@ impl DiffScreenState {
                         self.word("rendered", "整形").into(),
                     ),
                     (
-                        DiffTextId::CyclePair,
+                        DiffTextId::Representation(DiffRepresentation::Preview),
+                        self.word("preview", "プレビュー").into(),
+                    ),
+                    (
+                        DiffTextId::CycleAll,
                         self.word(
-                            "cycle diff view (source ⇄ rendered)",
-                            "表現を切り替え（ソース ⇄ 整形）",
+                            "cycle diff view (source → rendered → preview)",
+                            "表現を切り替え（ソース → 整形 → プレビュー）",
                         )
+                        .into(),
+                    ),
+                    (
+                        DiffTextId::CyclePair,
+                        if self.representations().contains(&DiffView::Preview) {
+                            self.word(
+                                "cycle diff view (source ⇄ preview)",
+                                "表現を切り替え（ソース ⇄ プレビュー）",
+                            )
+                        } else {
+                            self.word(
+                                "cycle diff view (source ⇄ rendered)",
+                                "表現を切り替え（ソース ⇄ 整形）",
+                            )
+                        }
                         .into(),
                     ),
                 ],

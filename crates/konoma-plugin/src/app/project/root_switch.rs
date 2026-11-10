@@ -177,6 +177,7 @@ impl ProjectLoopState {
                     p.forget();
                     p.forget_still();
                     p.reset_document();
+                    p.doc_pics().prune_media_diff_picture_cache();
                 }
             }
             Err(error) => prepared.notice = Some(error),

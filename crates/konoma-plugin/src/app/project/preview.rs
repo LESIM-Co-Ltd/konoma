@@ -21,6 +21,65 @@ use std::time::Duration;
 #[path = "preview_worker_tests.rs"]
 mod worker_tests;
 
+/// One resolved declaration for the Preview's return key and all three hint surfaces.
+pub(in crate::app) struct PreviewReturnHint {
+    pub(in crate::app) keys: Vec<konoma_host_core::keymap::KeyPress>,
+    pub(in crate::app) label: &'static str,
+}
+
+impl PreviewReturnHint {
+    pub(in crate::app) fn new(
+        keys: &konoma_host_core::keymap::CoreKeys,
+        context: konoma_host_core::keymap::CoreContext,
+        lang: konoma_host_core::lang::Lang,
+    ) -> Self {
+        use konoma_host_core::keymap::HostOp;
+        let mut resolved: Vec<_> = keys
+            .global
+            .keys()
+            .chain(keys.basic.keys())
+            .chain(keys.contexts.values().flat_map(|t| t.keys()))
+            .chain(keys.types.values().flat_map(|t| t.keys()))
+            .copied()
+            .filter(|k| {
+                matches!(
+                    keys.host_op(context, *k),
+                    Some(HostOp::CycleRepresentation | HostOp::ImageReturnToDiff)
+                )
+            })
+            .collect();
+        resolved.sort_by_key(|k| konoma_host_core::help::display_order(*k));
+        resolved.dedup();
+        Self {
+            keys: resolved,
+            label: if lang == konoma_host_core::lang::Lang::Jp {
+                "diff に戻る"
+            } else {
+                "back to diff"
+            },
+        }
+    }
+
+    pub(in crate::app) fn pairs(&self) -> Vec<(String, String)> {
+        self.keys
+            .iter()
+            .map(|k| (konoma_host_core::help::help_key(*k), self.label.into()))
+            .collect()
+    }
+
+    pub(in crate::app) fn footer(&self) -> String {
+        format!(
+            "{}:{}",
+            self.keys
+                .iter()
+                .map(|k| konoma_host_core::help::footer_key(*k, false))
+                .collect::<Vec<_>>()
+                .join("/"),
+            self.label
+        )
+    }
+}
+
 pub(super) struct FilePreviewState {
     pub(super) opened: Opened,
     pub(super) runner: FileLoopState,
@@ -230,6 +289,10 @@ pub(super) struct PendingPreview {
 }
 
 impl PendingPreview {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn wait_for_test(&self) -> Result<Opened, AppError> {
+        self.reply.recv_timeout(Duration::from_secs(10)).unwrap()
+    }
     pub(super) fn matches(&self, diff: &DiffScreenReturn) -> bool {
         self.source.path == diff.path && diff.choice == konoma_host_core::project::DiffView::Preview
     }

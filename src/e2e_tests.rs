@@ -21422,6 +21422,8 @@ mod launch_parity;
 mod options_parity;
 mod plugin_act_parity;
 #[cfg(feature = "git")]
+mod preview_failure_choice;
+#[cfg(feature = "git")]
 mod preview_gutter_parity;
 mod preview_plan_parity;
 mod project_host;
@@ -21429,6 +21431,8 @@ mod project_host;
 mod project_launch_bridge;
 #[path = "e2e_tests/project_screens.rs"]
 mod project_screens;
+#[cfg(feature = "git")]
+mod representation_cycles;
 #[cfg(feature = "git")]
 mod selected_backend;
 mod space_menu_parity;

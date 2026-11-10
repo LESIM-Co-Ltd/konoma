@@ -245,12 +245,14 @@ impl App {
             return;
         };
         let reps = self.diff_representations(&path);
-        let Some(next) =
-            konoma_plugin::host::project::diff_keys::next_diff_view(self.tab.diff_view, &reps)
-        else {
+        let Some(transition) = konoma_plugin::host::project::diff_keys::diff_view_transition(
+            self.tab.diff_view,
+            &reps,
+        ) else {
             return;
         };
-        self.tab.diff_view_choice = next;
+        self.tab.diff_view_choice = transition.choice;
+        let next = transition.effective;
         if next == DiffView::Preview {
             #[cfg(feature = "git")]
             self.enter_diff_preview_representation(&path);
@@ -446,12 +448,19 @@ impl App {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
+        let transition = konoma_plugin::host::project::diff_keys::diff_view_transition(
+            DiffView::Preview,
+            // Reopening refreshes and rounds the target below. Returning from Preview selects
+            // Source independently of those capabilities; do not resolve the file twice here.
+            &[],
+        )
+        .expect("Preview returns to Source");
         self.open_git_diff_with(
             &path,
             super::git_view::DiffOpen {
                 read_context: self.tab.diff_read_context,
                 follow_scope: self.diff_follow_scope,
-                view: Some(DiffView::Source),
+                view: Some(transition.choice),
                 came_from_git_view: Some(self.tab.came_from_git_view),
                 ..Default::default()
             },

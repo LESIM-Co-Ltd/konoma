@@ -531,6 +531,15 @@ impl AppKeys {
         menu_view(&self.keys, ctx, menu, self.lang, false).filter(|m| !m.items.is_empty())
     }
 
+    #[cfg(test)]
+    pub(in crate::app) fn options_op_for_test(
+        &self,
+        ctx: CoreContext,
+        key: KeyPress,
+    ) -> Option<CoreAction> {
+        self.copy_menu_view(ctx, CoreMenu::Options)?.find(key)
+    }
+
     /// The which-key line of an open menu: the spans the host draws (a bold heading, dim items).
     fn which_key_line(
         &self,
@@ -1718,6 +1727,18 @@ pub(in crate::app) enum FileLoopExit {
     Quit,
     End,
     Yield,
+    ReturnToSource,
+}
+
+/// Availability on the screen underneath help. Options also offers the return key;
+/// the popup, a typing plugin and other menus consume it instead.
+fn preview_return_acts_on_screen(
+    preview: bool,
+    popup: bool,
+    capturing: bool,
+    menu: Option<CoreMenu>,
+) -> bool {
+    preview && !popup && !capturing && matches!(menu, None | Some(CoreMenu::Options))
 }
 
 /// The title of the frame: the path in the `style` the `,` menu chose, or the title the host gave
@@ -2159,15 +2180,29 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
         };
         // Whether the text is the file's, in the host's frame (the footer plan's selection keys).
         let windowed = windowed_text(&*base);
+        let return_hint = preview
+            .as_ref()
+            .map(|_| {
+                super::project::preview::PreviewReturnHint::new(&keys.keys, core_ctx, keys.lang())
+            })
+            .filter(|h| !h.keys.is_empty());
         // The actions of the plugin whose session this is (the destination's after a `Reopen`).
         let acts = st.acts(cx).clone();
         let en: Vec<String> = enabled_ids(&*sess!(), &acts);
         let act_on = |a: &str| en.iter().any(|e| e == a);
-        let capturing = typing::is_capturing(
+        let capture_on_screen = typing::is_capturing(
             st.input_left,
-            st.help.is_none(),
+            true,
             matches!(&*base, Frame::Canvas(c) if c.text_input),
         );
+        let capturing = st.help.is_none() && capture_on_screen;
+        let return_on_screen = preview_return_acts_on_screen(
+            preview.is_some(),
+            mode.is_some_and(|m| m.popup),
+            capture_on_screen,
+            st.menu.map(|(_, menu)| menu),
+        );
+        let return_acts_now = st.help.is_none() && return_on_screen;
         let footer;
         let mut panel: Option<HelpPanel> = None;
         let width = terminal.size().map(|s| s.width).unwrap_or(0);
@@ -2186,6 +2221,11 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                         keys.help_title_in(text_ctx(&*base)),
                     ),
                 };
+                if let Some(hint) = return_hint.as_ref().filter(|_| return_on_screen) {
+                    if let Some(section) = secs.first_mut() {
+                        section.rows.extend(hint.pairs());
+                    }
+                }
                 // The plugin's own keys: one section under its name, right after the screen's
                 // own (the host's order).
                 if let Some(own) = acts.help_section(act_ctx, &cx.lang, act_on) {
@@ -2314,6 +2354,17 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                 &mut *base
             }
         };
+        let mut footer = footer;
+        if return_acts_now && !footer.ends_with('…') {
+            if let Some(hint) = &return_hint {
+                use unicode_width::UnicodeWidthStr;
+                let token = hint.footer();
+                if footer.width() + token.width() + 2 <= usize::from(width) {
+                    footer.push_str("  ");
+                    footer.push_str(&token);
+                }
+            }
+        }
         // What the last key did, or the menu waiting for its key, takes the footer over.
         // The hints are dim, the notice bold and the menu's line a bold heading with dim items:
         // the host's footer, spans and all.
@@ -2329,6 +2380,19 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                 &keys.space_items(c, &cx.lang, &acts, act_ctx, windowed, act_on),
                 width,
             ),
+            (None, Some((c, CoreMenu::Options))) if return_acts_now && return_hint.is_some() => {
+                let hint = return_hint.as_ref().unwrap();
+                let mut pairs = keys
+                    .copy_menu_view(c, CoreMenu::Options)
+                    .map(|v| v.pairs())
+                    .unwrap_or_default();
+                pairs.extend(hint.keys.iter().map(|k| (*k, hint.label.to_string())));
+                konoma_widgets::footer_line::which_key_spans(
+                    CoreMsg::HintOptions.tr(keys.lang()),
+                    &konoma_host_core::help::which_key_items(&pairs),
+                    width,
+                )
+            }
             (None, Some((c, m))) => keys
                 .which_key_line(c, m, width)
                 .unwrap_or_else(|| hint_spans(footer)),
@@ -2450,6 +2514,14 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                         }
                     }
                     Some((ctx, menu)) => {
+                        if return_acts_now
+                            && menu == CoreMenu::Options
+                            && return_hint.as_ref().is_some_and(|h| {
+                                key_press(&key).is_some_and(|k| h.keys.contains(&k))
+                            })
+                        {
+                            return Ok(FileLoopExit::ReturnToSource);
+                        }
                         in_menu = true;
                         *need_view = false;
                         item =
@@ -2501,6 +2573,13 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                 }
                 let table_mode = table_mode(&*base, st.pages);
                 let popup_open = table_mode.is_some_and(|m| m.popup);
+                if return_acts_now
+                    && return_hint
+                        .as_ref()
+                        .is_some_and(|h| key_press(&key).is_some_and(|k| h.keys.contains(&k)))
+                {
+                    return Ok(FileLoopExit::ReturnToSource);
+                }
                 // After a failed page the message is on screen, but the table keys stay (the page
                 // keys turn on, as the host's do).
                 let table_keys = table_mode.is_some() || st.table_failed;
