@@ -1734,6 +1734,7 @@ dependencies = [
  "konoma-base",
  "konoma-code",
  "konoma-code-core",
+ "konoma-file-plugins",
  "konoma-host-core",
  "konoma-markdown",
  "konoma-markdown-core",
@@ -1812,6 +1813,21 @@ version = "0.1.0"
 dependencies = [
  "konoma-plugin",
  "konoma-plugin-ratatui",
+]
+
+[[package]]
+name = "konoma-file-plugins"
+version = "0.1.0"
+dependencies = [
+ "konoma-code",
+ "konoma-markdown",
+ "konoma-math",
+ "konoma-media",
+ "konoma-mermaid",
+ "konoma-office",
+ "konoma-plugin",
+ "konoma-table",
+ "konoma-test-support",
 ]
 
 [[package]]
@@ -2062,6 +2078,7 @@ name = "konoma-vcs"
 version = "0.1.0"
 dependencies = [
  "konoma-base",
+ "konoma-file-plugins",
  "konoma-plugin",
  "konoma-test-support",
  "konoma-vcs-core",

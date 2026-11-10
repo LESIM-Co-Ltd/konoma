@@ -682,6 +682,26 @@ fn other_keys_of_a_plugin_table_become_settings() {
 // ---- the declarations -----------------------------------------------------------------------
 
 #[test]
+fn standard_file_plugins_have_one_order_and_real_implementations() {
+    let plugins = konoma_file_plugins::plugins();
+    let expected: Vec<_> = plugins.iter().map(|p| p.manifest().id).collect();
+    let registry = build_registry(&[]);
+    let standard_ids: Vec<_> = registry
+        .ids()
+        .into_iter()
+        .filter(|id| expected.iter().any(|expected| expected == id))
+        .collect();
+    assert_eq!(
+        standard_ids, expected,
+        "host uses the shared file plugin order"
+    );
+    for plugin in plugins {
+        let id = plugin.manifest().id;
+        assert_eq!(registry.origin(&id), Some(PluginOrigin::Standard), "{id}");
+    }
+}
+
+#[test]
 fn the_standard_declarations_register_and_keep_the_expected_order() {
     let r = build_registry(&[]);
     assert_eq!(

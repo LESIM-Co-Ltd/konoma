@@ -11,11 +11,12 @@ description = "konoma's Git and Jujutsu project screens"
 konoma-base = { path = "../konoma-base", version = "0.1.0" }
 konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
 konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0" }
+konoma-file-plugins = { path = "../konoma-file-plugins", version = "0.1.0", default-features = false, optional = true }
 
 [features]
 default = ["git"]
 git = ["konoma-vcs-core/git"]
-app = ["konoma-plugin/app"]
+app = ["konoma-plugin/app", "dep:konoma-file-plugins"]
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }

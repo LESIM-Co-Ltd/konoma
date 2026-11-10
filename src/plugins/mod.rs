@@ -92,42 +92,12 @@ fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
     Manifest::new(id, env!("CARGO_PKG_VERSION")).name(name)
 }
 
-/// The declarations of the standard plugins, in registration order. The order is the order of the
-/// default `[[preview.rules]]` konoma had before plugins (svg before `image/*`, the mime rules for
-/// images and videos in their old places), so a file is decided exactly as it was.
+/// The declarations of the shared standard file plugins, in registration order.
 pub(crate) fn standard_manifests() -> Vec<Manifest> {
-    let md = konoma_markdown::markdown_manifest();
-    let mermaid = konoma_mermaid::mermaid_manifest();
-    let math = konoma_math::math_manifest();
-    let svg = konoma_media::svg_manifest();
-    let image = konoma_media::image_manifest();
-    let csv = konoma_table::csv_manifest();
-    let spreadsheet = konoma_office::spreadsheet_manifest();
-    let document = konoma_office::document_manifest();
-    let presentation = konoma_office::presentation_manifest();
-    let archive = konoma_table::archive_manifest();
-    let code = konoma_code::code_manifest();
-    let video = konoma_media::video_manifest();
-    let pdf = konoma_media::pdf_manifest();
-
-    // Every one of them already carries its own `edit` / `open` chain.
-    let mut out: Vec<Manifest> = vec![
-        md,
-        mermaid,
-        svg,
-        image,
-        csv,
-        spreadsheet,
-        document,
-        presentation,
-        archive,
-        code,
-        video,
-        pdf,
-    ];
-    // `math` only takes the formulas inside Markdown, so it has no file to edit or open.
-    out.insert(2, math);
-    out
+    konoma_file_plugins::plugins()
+        .into_iter()
+        .map(|plugin| plugin.manifest())
+        .collect()
 }
 
 /// The `verb` declared by the plugin `id` (`None` = it declares none, or is unknown).
@@ -158,26 +128,15 @@ fn internal_manifests() -> Vec<Manifest> {
     ]
 }
 
-/// The implementation behind a standard manifest: the plugins wired to the display are real, the
-/// others are declarations only.
+/// The implementation behind a shared file manifest or a host-internal pseudo plugin.
 fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
-    match m.id.as_str() {
-        konoma_table::CSV_ID => Arc::new(konoma_table::CsvPlugin),
-        konoma_table::ARCHIVE_ID => Arc::new(konoma_table::ArchivePlugin),
-        konoma_media::IMAGE_ID => Arc::new(konoma_media::ImagePlugin),
-        konoma_media::SVG_ID => Arc::new(konoma_media::SvgPlugin),
-        konoma_media::PDF_ID => Arc::new(konoma_media::PdfPlugin),
-        konoma_media::VIDEO_ID => Arc::new(konoma_media::VideoPlugin),
-        konoma_code::CODE_ID => Arc::new(konoma_code::CodePlugin),
-        konoma_office::SPREADSHEET_ID => Arc::new(konoma_office::SpreadsheetPlugin),
-        konoma_office::DOCUMENT_ID => Arc::new(konoma_office::DocumentPlugin),
-        konoma_office::PRESENTATION_ID => Arc::new(konoma_office::PresentationPlugin),
-        konoma_mermaid::MERMAID_ID => Arc::new(konoma_mermaid::MermaidPlugin),
-        konoma_math::MATH_ID => Arc::new(konoma_math::MathPlugin),
-        konoma_markdown::MARKDOWN_ID => Arc::new(konoma_markdown::MarkdownPlugin),
-        COMMAND_ID => Arc::new(CommandPlugin::unbound()),
-        _ => Arc::new(Declared(m)),
-    }
+    konoma_file_plugins::plugins()
+        .into_iter()
+        .find(|plugin| plugin.manifest().id == m.id)
+        .unwrap_or_else(|| match m.id.as_str() {
+            COMMAND_ID => Arc::new(CommandPlugin::unbound()),
+            _ => Arc::new(Declared(m)),
+        })
 }
 
 /// A registry of the standard plugins, with `disabled` ids switched off.
@@ -192,11 +151,11 @@ fn build_registry_with(disabled: &[String], linked: Option<&statics::StaticSet>)
     // What the program that started konoma linked in (`konoma::Host`): a replaced standard plugin
     // keeps its place in the order; the added ones follow the standard ones.
     if linked.is_none_or(|s| s.standard) {
-        for m in standard_manifests() {
+        for plugin in konoma_file_plugins::plugins() {
             // The declarations are static; a refusal would be a bug that `tests` catches.
-            let _ = match linked.and_then(|s| s.replaced.get(&m.id)) {
+            let _ = match linked.and_then(|s| s.replaced.get(&plugin.manifest().id)) {
                 Some(p) => register(&mut r, Arc::clone(p), PluginOrigin::User),
-                None => register(&mut r, plugin_of(m), PluginOrigin::Standard),
+                None => register(&mut r, plugin, PluginOrigin::Standard),
             };
         }
     }
