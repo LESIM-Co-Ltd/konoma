@@ -15,9 +15,12 @@ use std::time::Duration;
 mod fixture;
 use fixture::{Log, PresentationPlugin};
 
+#[path = "presentation_wake.rs"]
+mod wake;
+
 struct Events {
     keys: VecDeque<AppEvent>,
-    replies: mpsc::Receiver<()>,
+    replies: mpsc::Receiver<Box<dyn FnOnce() + Send>>,
     #[cfg(feature = "test-hooks")]
     last_build: usize,
 }
@@ -35,9 +38,11 @@ impl EventSource for Events {
             self.last_build = count;
         }
         if wait == Some(Duration::from_millis(16)) {
-            self.replies
+            let publish = self
+                .replies
                 .recv_timeout(Duration::from_secs(10))
                 .expect("owner reply fence");
+            publish();
             Next::Timeout
         } else {
             self.keys.pop_front().map(Next::Event).unwrap_or(Next::End)
@@ -61,14 +66,20 @@ fn setup_with(config: &str, initial: Log) -> (TmpDir, PreparedProjects, Events, 
         Arc::new(Services),
     )
     .unwrap_or_else(|e| panic!("{}", e.error));
-    let (ready, replies) = mpsc::channel();
+    let (ready, replies) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
     for runtime in prepared.runtimes.values_mut() {
         let (tx, rx) = mpsc::sync_channel(1);
         let owner = std::mem::replace(&mut runtime.rx, rx);
         let ready = ready.clone();
         std::thread::spawn(move || {
             while let Ok(reply) = owner.recv() {
-                if tx.send(reply).is_err() || ready.send(()).is_err() {
+                let tx = tx.clone();
+                // Keep each reply private until the frame fence publishes it. Sending a
+                // notification after publication races with the loop consuming that reply.
+                let publish = Box::new(move || {
+                    assert!(tx.try_send(reply).is_ok(), "owner reply mailbox is empty");
+                });
+                if ready.send(publish).is_err() {
                     break;
                 }
             }

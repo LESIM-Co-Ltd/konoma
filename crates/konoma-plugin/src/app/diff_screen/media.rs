@@ -56,8 +56,7 @@ impl DiffScreenState {
     }
 
     pub(super) fn media_active(&self) -> bool {
-        self.effective == DiffView::Rendered
-            && self.services.diff_target(&self.request.path, None) != DiffTarget::Markdown
+        self.effective == DiffView::Rendered && self.target() != DiffTarget::Markdown
     }
     fn media_outcome(&self) -> Option<&MediaDiffOutcome> {
         self.media.worker.outcome_for(&self.request.path)
@@ -77,6 +76,7 @@ impl DiffScreenState {
     fn dispatch_media(&mut self, want: MediaDiffWant, pics: &mut Option<&mut DocPics>) -> bool {
         let (path, page, raster_px) = want;
         let services = self.services.clone();
+        let source = self.file_previews.clone();
         let req = MediaDiffRequest {
             gen: 0,
             path,
@@ -84,7 +84,10 @@ impl DiffScreenState {
             page,
             raster_px,
             baseline: select_diff_baseline(MdDiffKind::Rendered, false, false, false, || None),
-            classify: Arc::new(move |path, bytes| services.diff_target(path, bytes)),
+            classify: Arc::new(move |path, bytes| match &source {
+                Some(source) => source.resolve(path, bytes).diff_target,
+                None => services.diff_target(path, bytes),
+            }),
             rasterize_svg,
             cancel: Arc::default(),
         };

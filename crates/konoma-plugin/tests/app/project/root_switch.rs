@@ -18,6 +18,9 @@ use ratatui::{backend::TestBackend, buffer::Buffer, layout::Rect, Terminal};
 
 const WAIT: Duration = Duration::from_secs(10);
 
+#[path = "root_switch_retirement.rs"]
+mod retirement;
+
 struct Gate {
     entered: mpsc::Sender<()>,
     release: mpsc::Receiver<()>,

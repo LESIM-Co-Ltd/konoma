@@ -124,6 +124,18 @@ pub struct ProjectRuntime<E: Send + 'static, I = ()> {
 }
 
 impl<E: Send + 'static, I> ProjectRuntime<E, I> {
+    /// Retire the control plane before deferring reclamation of the root's cached data.
+    /// This never waits for a busy session owner; its next reply observes disconnection.
+    #[cfg(feature = "app")]
+    pub(crate) fn disconnect(&mut self) {
+        let (results, rx) = mpsc::sync_channel(1);
+        drop(results);
+        self.rx = rx;
+        let (tx, jobs) = mpsc::sync_channel(1);
+        drop(jobs);
+        self.tx = tx;
+    }
+
     /// Start one serial session owner. Both channels retain their single waiting slot.
     /// `chip` is the localized declaration fallback, available before the first reply.
     /// `complete_effect` attaches the outcome to opaque host data, on the owner thread.

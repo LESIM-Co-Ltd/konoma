@@ -47,6 +47,7 @@ mod dialog_actions;
 mod diff_view;
 mod embed_plugin;
 mod file_actions;
+mod file_preview_resolution;
 mod follow;
 #[cfg(feature = "git")]
 mod follow_worker;
@@ -82,7 +83,8 @@ pub(crate) use plugin_input::{
 };
 mod office_doc;
 pub(crate) mod open_app;
-pub(crate) use office_doc::is_presentation_path;
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::file_preview::test_hooks::is_presentation_path;
 pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
 pub(crate) mod canvas_images;
@@ -798,6 +800,7 @@ impl SvgTrustExt for SvgTrust {
 
 /// The media payload loaded on a separate thread (sent back to the UI thread).
 pub enum MediaPayload {
+    FilePreview(Box<file_preview_resolution::FilePreviewReply>),
     /// A still image (single-frame GIF / video thumb / PDF page) → goes to image_src.
     Static(image::DynamicImage),
     /// All GIF frames (composited RGBA + delay) → goes to the GIF player (`App::gif`).
@@ -1467,6 +1470,10 @@ pub struct App {
     /// resolution (rules, content sniff, text probe) and reused until the file or the settings
     /// change (see `App::verb_plugin_id`).
     verb_plugin_memo: std::cell::RefCell<Option<open_app::VerbPluginMemo>>,
+    preview_resolution_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
+    preview_resolution_serial: std::cell::Cell<u64>,
+    diff_resolution_serial: u64,
+    pending_file_verbs: Vec<file_preview_resolution::PendingFileVerb>,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
@@ -1594,7 +1601,11 @@ pub struct App {
     /// kind_cache`, called from `App::invalidate_diff_caches` — which `App::open_git_diff_with` always
     /// calls after already updating `tab.preview_kind`, so a (re)target and an invalidation-only
     /// refresh both go through the one place.
-    diff_target_kind_cache: Option<(PathBuf, PreviewKind)>,
+    diff_target_kind_cache: Option<(
+        PathBuf,
+        konoma_plugin::host::file_preview::ResolvedFilePreview,
+        bool,
+    )>,
     /// The **repo workdir** at which `git_ignored` (heavy) was computed. If it is the same, root moves within the same repository
     /// do not rebuild it (avoids the 410ms recomputation when descending into a subdirectory with `l`).
     git_ignored_for: Option<PathBuf>,
@@ -2520,6 +2531,10 @@ impl App {
             md_scope_refusals: std::cell::RefCell::new(Vec::new()),
             read_scope_memo: std::cell::RefCell::new(None),
             verb_plugin_memo: std::cell::RefCell::new(None),
+            preview_resolution_tx: None,
+            preview_resolution_serial: std::cell::Cell::new(0),
+            diff_resolution_serial: 0,
+            pending_file_verbs: Vec::new(),
             draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
@@ -3626,7 +3641,9 @@ impl App {
         // `text::is_probably_text`) — a `File::open` on a FIFO with no writer on the other end
         // blocks forever (POSIX `open(2)`), and this all runs on the key-processing thread, so an
         // unguarded open here froze the whole UI (not even `q`/`Ctrl-C` got processed again).
-        let kind = if crate::preview::is_previewable(path) {
+        let kind = if self.preview_resolution_tx.is_some() {
+            PreviewKind::can_not_preview(path)
+        } else if crate::preview::is_previewable(path) {
             self.cfg.resolve_preview(path)
         } else {
             PreviewKind::can_not_preview(path)
@@ -3689,7 +3706,10 @@ impl App {
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
         self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
-                               // Reset the windowed preview's 2D caret/selection to the start.
+        if self.preview_resolution_tx.is_some() {
+            self.resolve_preview_on_worker(path);
+        }
+        // Reset the windowed preview's 2D caret/selection to the start.
         self.tab.preview_cursor_line = 0;
         self.tab.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
@@ -3899,6 +3919,11 @@ impl App {
             }
             open_app::VerbTarget::None => None,
         };
+        if let Some(path) = &target {
+            if self.defer_file_verb(konoma_plugin::Verb::Edit, path, self.preview_edit_line()) {
+                return;
+            }
+        }
         match target {
             Some(p) if self.try_open_in_office(&p) => {}
             Some(p) => {

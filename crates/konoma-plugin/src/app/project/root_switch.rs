@@ -22,6 +22,7 @@ impl ProjectLoopState {
         message: Option<crate::Tr>,
     ) {
         let registry = prepared.registry.clone();
+        let file_previews = prepared.file_previews.clone();
         let config = prepared.config.clone();
         let services = prepared.services.clone();
         let settings = prepared.settings.clone();
@@ -56,6 +57,7 @@ impl ProjectLoopState {
                 )
                 .map_err(|e| e.to_string())?;
                 prepared.settings = settings;
+                prepared.file_previews = file_previews;
                 let mut state = ProjectLoopState::new(&mut prepared, launch_enabled);
                 state.viewport = info.viewport;
                 let cx = ProjectLoopCx {
@@ -162,7 +164,12 @@ impl ProjectLoopState {
                 self.with_host(&old_info, |host, _| host.close_context(old_info.id));
                 // Closing uses the existing serial channel. A busy owner is released when its
                 // receiver disappears; no old mailbox is retained or polled after this swap.
-                let old_state = std::mem::replace(self, candidate.state);
+                let mut old_state = std::mem::replace(self, candidate.state);
+                // A background reaper can be arbitrarily delayed. Close the delivery boundary
+                // now, while the old root's data and sessions are reclaimed off the UI thread.
+                for runtime in old_state.runtimes.values_mut() {
+                    runtime.disconnect();
+                }
                 candidate.prepared.load_error = prepared.load_error.take();
                 let old_prepared = std::mem::replace(prepared, candidate.prepared);
                 konoma_base::discard::discard_in_background((old_state, old_prepared));

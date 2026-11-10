@@ -250,6 +250,8 @@ impl Default for SharedUi {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SharedExternal {
+    /// Whether a preview rule may run its command.
+    pub preview_commands: bool,
     /// Opening URLs/files with the OS handler.
     pub open_links: bool,
     /// `e` on an Office document opens it in a GUI app instead of handing the zip to the editor.
@@ -266,6 +268,7 @@ pub struct SharedExternal {
 impl Default for SharedExternal {
     fn default() -> Self {
         Self {
+            preview_commands: true,
             open_links: true,
             office_apps: true,
             remote_images: true,
@@ -322,6 +325,7 @@ impl Default for SharedJj {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct SharedConfig {
+    pub preview: PreviewConfig,
     pub ui: SharedUi,
     pub keys: KeysConfig,
     pub editor: EditorConfig,
@@ -331,6 +335,25 @@ pub struct SharedConfig {
     /// The `[plugins.<id>]` tables as written (the host reads `enabled`; the rest is the plugin's
     /// own settings, converted by `konoma_plugin::config`).
     pub plugins: std::collections::BTreeMap<String, toml::Table>,
+}
+
+/// User assignments precede default bindings declared by the registered plugins.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PreviewConfig {
+    pub rules: Vec<Rule>,
+}
+
+/// A preview assignment. Glob and MIME are alternatives; builtin precedes command.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Rule {
+    pub glob: Option<String>,
+    pub mime: Option<String>,
+    pub builtin: Option<String>,
+    pub command: Option<String>,
+    pub render_as: Option<String>,
+    pub detached: bool,
 }
 
 impl SharedConfig {

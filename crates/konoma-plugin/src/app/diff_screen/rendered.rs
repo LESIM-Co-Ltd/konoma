@@ -38,6 +38,50 @@ impl RenderedCache {
 }
 
 impl DiffScreenState {
+    /// Attach classification without enabling Preview execution (the file runner is separate).
+    pub fn with_file_previews(
+        mut self,
+        source: crate::host::file_preview::FilePreviewSource,
+    ) -> Self {
+        self.file_previews = Some(source);
+        self.resolve_preview();
+        self.choose_effective();
+        self
+    }
+
+    pub(super) fn resolve_preview(&mut self) {
+        self.resolved_preview = None;
+        let Some(source) = self.file_previews.clone() else {
+            return;
+        };
+        let services = self.services.clone();
+        let request = self.request.clone();
+        let (tx, rx) = mpsc::channel();
+        self.preview_reply = Some(rx);
+        let _ = std::thread::Builder::new()
+            .name("diff-preview-plan".into())
+            .spawn(move || {
+                let exists = request.path.is_file();
+                let baseline = (!exists)
+                    .then(|| services.base_contents(&request.info, &request.path))
+                    .flatten();
+                let resolved = source.resolve(&request.path, baseline.as_deref());
+                let _ = tx.send((resolved, exists));
+            });
+    }
+
+    pub(super) fn target(&self) -> konoma_host_core::project::DiffTarget {
+        if self.file_previews.is_some() {
+            self.resolved_preview
+                .as_ref()
+                .map_or(konoma_host_core::project::DiffTarget::Other, |(r, _)| {
+                    r.diff_target
+                })
+        } else {
+            self.services.diff_target(&self.request.path, None)
+        }
+    }
+
     pub fn return_info(&self) -> DiffScreenReturn {
         DiffScreenReturn {
             path: self.request.path.clone(),
@@ -54,8 +98,12 @@ impl DiffScreenState {
     }
 
     pub(super) fn representations(&self) -> Vec<DiffView> {
-        let target = self.services.diff_target(&self.request.path, None);
-        let mut reps = diff_representations(target, true, None);
+        let target = self.target();
+        let exists = self
+            .resolved_preview
+            .as_ref()
+            .is_none_or(|(_, exists)| *exists);
+        let mut reps = diff_representations(target, exists, None);
         reps.retain(|v| *v != DiffView::Preview);
         reps
     }

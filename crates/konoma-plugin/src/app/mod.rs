@@ -36,7 +36,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
+use crate::registry::{PluginOrigin, Registry};
 use crate::reopen::ContentTarget;
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Manifest, Settings};
@@ -285,27 +285,33 @@ fn register_all(
 /// read the way konoma reads them: the MIME type from the content
 /// ([`konoma_host_core::sniff`]) and the text judgment of `konoma-widgets`.
 fn pick_in(registry: &Registry, path: &Path) -> Result<(String, Option<String>), AppError> {
-    let sniff = || konoma_host_core::sniff::mime_of_path(path);
-    let is_text = || konoma_widgets::text::is_probably_text(path);
-    let facts = FileFacts {
-        path,
-        sniff_mime: &sniff,
-        is_text: &is_text,
-    };
-    match registry.resolve_file(&[], &facts) {
-        Resolution::Plugin { id, hint } => Ok((id, hint)),
-        Resolution::Text => Err(AppError::NotHandled {
+    use crate::host::file_preview::{preview_plan_of_path, FilePreviewPlan};
+    let (plan, selected_plugin) = preview_plan_of_path(registry, &[], true, path, None);
+    match plan {
+        FilePreviewPlan::Plugin { id, hint } => Ok((id, hint)),
+        FilePreviewPlan::Text => Err(AppError::NotHandled {
             path: path.to_path_buf(),
             why: "no plugin of this program takes it; it reads as text".to_string(),
         }),
-        Resolution::CanNotPreview { ext } => Err(AppError::NotHandled {
-            path: path.to_path_buf(),
-            why: if ext.is_empty() {
-                "no plugin of this program takes it".to_string()
-            } else {
-                format!("no plugin of this program takes `.{}`", clean(&ext))
-            },
-        }),
+        FilePreviewPlan::Unavailable | FilePreviewPlan::Command { .. } => {
+            // Stage 3 also opens a selected plugin without `shows`: its returned failure/message
+            // is part of the file program's contract. Text above remains NotHandled.
+            if let Some(id) = selected_plugin {
+                return Ok((id, None));
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
+            Err(AppError::NotHandled {
+                path: path.to_path_buf(),
+                why: if ext.is_empty() {
+                    "no plugin of this program takes it".to_string()
+                } else {
+                    format!("no plugin of this program takes `.{}`", clean(ext))
+                },
+            })
+        }
     }
 }
 

@@ -46,7 +46,14 @@ impl App {
     fn normalize_raster_px(&self, path: &Path, raster_px: (u32, u32)) -> (u32, u32) {
         let kind = match self.media_landed_outcome_for(path) {
             Some(MediaDiffOutcome::Ready { kind, .. }) => Some(*kind),
-            _ => classify_kind(&self.diff_target_kind(path)),
+            _ if self.preview_resolution_tx.is_none() => {
+                classify_kind(&self.diff_target_kind(path))
+            }
+            _ => self
+                .diff_target_kind_cache
+                .as_ref()
+                .filter(|(p, _, _)| p == path)
+                .and_then(|(_, resolved, _)| resolved.media_kind),
         };
         worker::normalize_raster_px(kind, raster_px)
     }
@@ -265,12 +272,15 @@ impl App {
     /// `Config::resolve_preview(path)`, memoized in `diff_target_kind_cache` — the single read side of
     /// that cache (`App::refresh_diff_target_kind_cache` is the single write side). A cache hit
     /// (`path` matches whatever the diff surface is currently targeting) is the hot, per-frame path,
-    /// costing nothing beyond a `PathBuf` comparison and a `Clone`; a miss falls back to a direct,
-    /// uncached resolve, so this is always *correct*, just not always free.
+    /// costing nothing beyond a path comparison and clone. The terminal host stays unavailable
+    /// until its worker replies; unattached ordinary-screen/headless preparation keeps its fallback.
     pub(super) fn diff_target_kind(&self, path: &Path) -> PreviewKind {
         match &self.diff_target_kind_cache {
-            Some((p, k)) if p.as_path() == path => k.clone(),
-            _ => self.cfg.resolve_preview(path),
+            Some((p, resolved, _)) if p.as_path() == path => {
+                crate::plugins::kind_of(resolved.plan.clone(), path)
+            }
+            _ if self.preview_resolution_tx.is_none() => self.cfg.resolve_preview(path),
+            _ => PreviewKind::can_not_preview(path),
         }
     }
 
@@ -280,10 +290,26 @@ impl App {
     /// covers both. Clears the cache outright when the diff surface isn't showing a `GitDiff` at all,
     /// so a stale entry can never outlive the target it was resolved for.
     pub(super) fn refresh_diff_target_kind_cache(&mut self) {
+        self.diff_resolution_serial = self.diff_resolution_serial.wrapping_add(1);
+        if self.preview_resolution_tx.is_some() {
+            self.diff_target_kind_cache = None;
+            self.verb_plugin_memo.borrow_mut().take();
+            if let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() {
+                self.resolve_diff_on_worker(path);
+            }
+            return;
+        }
         self.diff_target_kind_cache = match self.tab.preview_kind.clone() {
             Some(PreviewKind::GitDiff(path)) => {
-                let kind = self.cfg.resolve_preview(&path);
-                Some((path, kind))
+                let resolved = crate::plugins::resolve_file(
+                    &self.cfg.preview.rules,
+                    &self.cfg.plugin_disabled(),
+                    self.cfg.external.preview_commands,
+                    &path,
+                    None,
+                );
+                let exists = path.exists();
+                Some((path, resolved, exists))
             }
             Some(
                 PreviewKind::Plugin { .. }
@@ -301,7 +327,21 @@ impl App {
     /// two can never drift apart on which kinds get the side-by-side treatment. Goes through the same
     /// memoized `diff_target_kind` as every other diff-surface predicate in this module.
     pub(crate) fn diff_media_capable(&self, path: &Path) -> bool {
-        classify_kind(&self.diff_target_kind(path)).is_some()
+        // Follow asks about a candidate before opening a diff. Its synchronous boolean filter
+        // has no Pending result; preserve that controller's contract until navigation can await it.
+        let active_diff =
+            matches!(&self.tab.preview_kind, Some(PreviewKind::GitDiff(p)) if p == path);
+        if self.preview_resolution_tx.is_none() || !active_diff {
+            let kind = if active_diff {
+                self.diff_target_kind(path)
+            } else {
+                self.cfg.resolve_preview(path)
+            };
+            return classify_kind(&kind).is_some();
+        }
+        self.diff_target_kind_cache
+            .as_ref()
+            .is_some_and(|(p, resolved, _)| p == path && resolved.media_kind.is_some())
     }
 
     /// Whether `path`'s Source-representation diff, if the raw line diff comes back **empty**,

@@ -16,6 +16,8 @@
 
 pub mod acts;
 pub mod bind;
+#[cfg(feature = "project-host")]
+pub mod file_preview;
 pub mod launch;
 #[cfg(feature = "project-host")]
 pub mod project;

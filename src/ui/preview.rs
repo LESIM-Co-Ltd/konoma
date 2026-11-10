@@ -121,7 +121,11 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     // final kind-summary match below instead.
     // A spreadsheet parsing on the worker shows the same spinner (a *re*load keeps the previous
     // sheet on screen instead — `is_sheet_loading` is only true while nothing is showing yet).
-    if app.is_sheet_loading() || app.is_document_loading() || app.is_plugin_loading() {
+    if app.is_file_preview_resolving()
+        || app.is_sheet_loading()
+        || app.is_document_loading()
+        || app.is_plugin_loading()
+    {
         render_media_loading(frame, app, area);
         return;
     }

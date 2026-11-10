@@ -39,6 +39,7 @@ pub(super) fn prepare_projects_with_previews(
     services: Arc<dyn ProjectServices>,
 ) -> Result<PreparedProjects, PrepareFailure> {
     let (config, load_error) = loaded;
+    let has_previews = !previews.is_empty();
     // File previews take part in normal file resolution, unlike stage 3 bundled destinations.
     prepare(
         plugins.into_iter().chain(previews).collect(),
@@ -49,6 +50,13 @@ pub(super) fn prepare_projects_with_previews(
         ProjectDetection::default(),
     )
     .map(|mut prepared| {
+        if has_previews {
+            prepared.file_previews = Some(crate::host::file_preview::FilePreviewSource::new(
+                prepared.registry.clone(),
+                prepared.config.preview.rules.clone(),
+                prepared.config.external.preview_commands,
+            ));
+        }
         prepared.load_error = load_error.clone();
         prepared
     })
@@ -206,6 +214,7 @@ fn prepare_at(
         _ => None,
     };
     Ok(PreparedProjects {
+        file_previews: None,
         registry,
         open_dir: dir,
         detection,

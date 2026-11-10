@@ -14,24 +14,40 @@ use konoma_host_core::project::{self, DiffTarget, LandedMedia};
 
 /// Reduce the host's preview kinds to the shared diff decision's inputs. Keep every kind named
 /// so a new preview kind has to say what its diff offers.
+#[cfg(test)]
 pub(super) fn classify_diff_target(kind: &PreviewKind) -> DiffTarget {
-    match kind {
-        k if k.is_markdown() => DiffTarget::Markdown,
-        PreviewKind::Text(_) => DiffTarget::Text,
-        k if k.is_file_text() || k.is_mermaid_file() => DiffTarget::Text,
-        PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image") => {
-            DiffTarget::Text
-        }
-        k @ PreviewKind::Plugin { .. } => match super::media_diff::classify_kind(k) {
-            Some(MediaDiffKind::Image | MediaDiffKind::Pdf) => DiffTarget::Picture,
-            Some(MediaDiffKind::Svg) => DiffTarget::Svg,
-            None => DiffTarget::Other,
-        },
-        PreviewKind::Command { .. }
-        | PreviewKind::GitDiff(_)
-        | PreviewKind::MermaidFence(_)
-        | PreviewKind::CanNotPreview { .. } => DiffTarget::Other,
-    }
+    use konoma_plugin::host::file_preview::{
+        test_hooks::plan_diff_target, FilePreviewFacts, FilePreviewPlan,
+    };
+    let (plan, path) = match kind {
+        PreviewKind::Plugin { id, hint, path } => (
+            FilePreviewPlan::Plugin {
+                id: id.clone(),
+                hint: hint.clone(),
+            },
+            path.as_path(),
+        ),
+        PreviewKind::Text(path) => (FilePreviewPlan::Text, path.as_path()),
+        PreviewKind::Command {
+            path,
+            template,
+            render_as,
+            detached,
+        } => (
+            FilePreviewPlan::Command {
+                template: template.clone(),
+                output: render_as.clone(),
+                detached: *detached,
+            },
+            path.as_path(),
+        ),
+        _ => (FilePreviewPlan::Unavailable, Path::new("")),
+    };
+    plan_diff_target(
+        &crate::plugins::shared_registry(&[]),
+        &plan,
+        FilePreviewFacts { path, bytes: None },
+    )
 }
 
 impl App {
@@ -170,8 +186,21 @@ impl App {
     /// Classify the host's preview and, only for a deleted `Other` target, consult the media
     /// worker. The ordered presentations are decided by the shared project rules.
     pub(super) fn diff_representations(&self, path: &Path) -> Vec<DiffView> {
-        let target = classify_diff_target(&self.diff_target_kind(path));
-        let exists = path.exists();
+        let (target, exists) = match &self.diff_target_kind_cache {
+            Some((p, resolved, exists)) if p == path => (resolved.diff_target, *exists),
+            _ if self.preview_resolution_tx.is_none() => (
+                crate::plugins::resolve_file(
+                    &self.cfg.preview.rules,
+                    &self.cfg.plugin_disabled(),
+                    self.cfg.external.preview_commands,
+                    path,
+                    None,
+                )
+                .diff_target,
+                path.exists(),
+            ),
+            _ => (DiffTarget::Other, false),
+        };
         let landed = if target == DiffTarget::Other && !exists {
             self.media_landed_outcome_for(path)
                 .map(|outcome| match outcome {

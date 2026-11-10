@@ -35,12 +35,13 @@ impl ProjectNavigation {
                     path,
                     info: info.clone(),
                 };
-                match crate::app::diff_screen::DiffScreenState::open(
+                match crate::app::diff_screen::DiffScreenState::open_for_project(
                     request,
                     prepared.services.clone(),
                     &prepared.config,
                     prepared.settings.diff_layout,
                     None,
+                    prepared.file_previews.clone(),
                 ) {
                     Ok(mut diff) => {
                         diff.set_lang(prepared.keys.lang());

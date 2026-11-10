@@ -314,6 +314,9 @@ impl App {
     }
 
     fn apply_media_result(&mut self, result: MediaResult) -> bool {
+        if let Some(MediaPayload::FilePreview(reply)) = result.payload {
+            return self.apply_file_preview_reply(*reply);
+        }
         // The work group of a plugin whose job just answered (the Office plugins share one) is
         // free again, current result or not; what was asked for meanwhile starts now (and is
         // dropped if the preview moved on since).
@@ -416,6 +419,9 @@ impl App {
 
     pub(super) fn apply_payload(&mut self, payload: MediaPayload) {
         match payload {
+            MediaPayload::FilePreview(reply) => {
+                self.apply_file_preview_reply(*reply);
+            }
             MediaPayload::Static(img) => self.set_static_image(img),
             MediaPayload::ImageFailed(why) => self.set_image_failure(why),
             MediaPayload::Gif(frames) => self.set_gif_frames(frames),

@@ -78,6 +78,24 @@ impl LaunchState {
         path: PathBuf,
         line: Option<usize>,
     ) {
+        if let Some(source) = prepared.file_previews.clone() {
+            let (tx, rx) = mpsc::channel();
+            let _ = std::thread::Builder::new()
+                .name("project-preview-launch".into())
+                .spawn(move || {
+                    let target = path.is_file().then(|| {
+                        let resolved = source.resolve(&path, None);
+                        ProjectLaunchTarget {
+                            verbs: source.verbs(&resolved),
+                            path,
+                            line,
+                        }
+                    });
+                    let _ = tx.send(target);
+                });
+            self.queue.push_back(PendingLaunch::File(verb, rx));
+            return;
+        }
         self.queue.push_back(PendingLaunch::File(
             verb,
             prepared

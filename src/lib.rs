@@ -474,6 +474,7 @@ fn run_application(startup: host::Startup) -> Result<()> {
 
     let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
+    app.attach_preview_resolution_worker(media_tx.clone());
     app.attach_media_loader(media_tx);
     app.attach_kitty_loader(kitty_tx);
     app.attach_md_image_loader(md_img_tx);

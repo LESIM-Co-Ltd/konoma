@@ -400,20 +400,31 @@ pub fn classify_kind_with(
 }
 
 pub fn media_format(path: &Path, bytes: Option<&[u8]>) -> Option<MediaDiffKind> {
+    if let Some(kind) = media_format_from_extension(path) {
+        return kind;
+    }
+    media_format_from_content(path, bytes)
+}
+
+/// Outer None means the suffix cannot settle the format; Some(None) is a source diagram.
+pub(crate) fn media_format_from_extension(path: &Path) -> Option<Option<MediaDiffKind>> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     match ext.as_str() {
-        "svg" => return Some(MediaDiffKind::Svg),
-        "pdf" => return Some(MediaDiffKind::Pdf),
+        "svg" => Some(Some(MediaDiffKind::Svg)),
+        "pdf" => Some(Some(MediaDiffKind::Pdf)),
         // A diagram's source is text whatever it contains (a label may well say `<svg`): decided
         // by the name, before the content is looked at.
-        "mmd" | "mermaid" => return None,
-        e if image::ImageFormat::from_extension(e).is_some() => return Some(MediaDiffKind::Image),
-        _ => {}
+        "mmd" | "mermaid" => Some(None),
+        e if image::ImageFormat::from_extension(e).is_some() => Some(Some(MediaDiffKind::Image)),
+        _ => None,
     }
+}
+
+fn media_format_from_content(path: &Path, bytes: Option<&[u8]>) -> Option<MediaDiffKind> {
     let head: Vec<u8>;
     let bytes = match bytes {
         Some(b) => b,

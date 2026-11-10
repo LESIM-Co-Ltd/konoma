@@ -20,6 +20,8 @@ use crate::host::project::md_diff::{MdDiffResult, MdDiffWorker};
 use crate::view::DocOptions;
 mod chrome;
 mod media;
+#[cfg(test)]
+mod preview_tests;
 mod rendered;
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
@@ -103,6 +105,9 @@ pub struct DiffScreenReturn {
 }
 
 pub struct DiffScreenState {
+    file_previews: Option<crate::host::file_preview::FilePreviewSource>,
+    preview_reply: Option<mpsc::Receiver<(crate::host::file_preview::ResolvedFilePreview, bool)>>,
+    resolved_preview: Option<(crate::host::file_preview::ResolvedFilePreview, bool)>,
     pub(in crate::app) launch_enabled: bool,
     pub(super) closed: bool,
     pub request: FileDiffRequest,
@@ -142,10 +147,29 @@ impl DiffScreenState {
         layout: DiffLayout,
         choice: Option<DiffView>,
     ) -> Result<Self, Failure> {
+        Self::open_for_project(request, services, config, layout, choice, None)
+    }
+
+    pub(in crate::app) fn open_for_project(
+        request: FileDiffRequest,
+        services: Arc<dyn ProjectServices>,
+        config: &SharedConfig,
+        layout: DiffLayout,
+        choice: Option<DiffView>,
+        source: Option<crate::host::file_preview::FilePreviewSource>,
+    ) -> Result<Self, Failure> {
         let (tx, rx) = mpsc::channel();
         let mut worker = MdDiffWorker::default();
         worker.attach(tx);
-        Self::open_with_markdown_worker(request, services, config, layout, choice, worker, rx)
+        Self::open_with_workers(
+            request,
+            services,
+            config,
+            layout,
+            choice,
+            (worker, rx),
+            source,
+        )
     }
 
     /// Use an attached worker and its receiver, allowing a host's publication fence.
@@ -158,8 +182,31 @@ impl DiffScreenState {
         markdown: MdDiffWorker,
         markdown_rx: mpsc::Receiver<MdDiffResult>,
     ) -> Result<Self, Failure> {
+        Self::open_with_workers(
+            request,
+            services,
+            config,
+            layout,
+            choice,
+            (markdown, markdown_rx),
+            None,
+        )
+    }
+
+    fn open_with_workers(
+        request: FileDiffRequest,
+        services: Arc<dyn ProjectServices>,
+        config: &SharedConfig,
+        layout: DiffLayout,
+        choice: Option<DiffView>,
+        markdown: (MdDiffWorker, mpsc::Receiver<MdDiffResult>),
+        source: Option<crate::host::file_preview::FilePreviewSource>,
+    ) -> Result<Self, Failure> {
         let pending = services.clone().spawn_file_diff(request.clone())?;
         let mut state = Self {
+            file_previews: source,
+            preview_reply: None,
+            resolved_preview: None,
             launch_enabled: false,
             closed: false,
             request,
@@ -182,8 +229,8 @@ impl DiffScreenState {
             viewport: 0,
             rendered: None,
             pending_first_change: None,
-            markdown,
-            markdown_rx,
+            markdown: markdown.0,
+            markdown_rx: markdown.1,
             media: media::Media::new(&config.git.media_diff),
             options: DocOptions::from_settings(&crate::config::plugin_settings(
                 &config.plugins,
@@ -192,18 +239,32 @@ impl DiffScreenState {
             )),
             notice: None,
         };
+        state.resolve_preview();
         state.choose_effective();
         Ok(state)
     }
 
     /// Adopt only this receiver's reply. Replacing the receiver drops a stale refresh/open.
     pub fn poll(&mut self) -> Result<bool, Failure> {
+        let mut changed = false;
+        if let Some(rx) = &self.preview_reply {
+            match rx.try_recv() {
+                Ok(resolved) => {
+                    self.resolved_preview = Some(resolved);
+                    self.preview_reply = None;
+                    self.choose_effective();
+                    changed = true;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.preview_reply = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         let Some(rx) = &self.pending else {
-            return Ok(false);
+            return Ok(changed);
         };
         let reply = match rx.try_recv() {
             Ok(reply) => reply,
-            Err(mpsc::TryRecvError::Empty) => return Ok(false),
+            Err(mpsc::TryRecvError::Empty) => return Ok(changed),
             Err(mpsc::TryRecvError::Disconnected) => {
                 Err(Failure::external("file diff worker disconnected"))
             }
@@ -218,6 +279,7 @@ impl DiffScreenState {
             return None;
         }
         (self.pending.is_some()
+            || self.preview_reply.is_some()
             || self.markdown.pending_for(&self.request.path)
             || self.media.pending())
         .then_some(Duration::from_millis(16))
@@ -233,6 +295,8 @@ impl DiffScreenState {
         self.closed = true;
         self.data = None;
         self.pending = None;
+        self.preview_reply = None;
+        self.resolved_preview = None;
         self.markdown.invalidate();
         self.media.worker.invalidate();
         self.rendered = None;
@@ -240,6 +304,7 @@ impl DiffScreenState {
     }
 
     pub(super) fn reload(&mut self) -> Result<(), Failure> {
+        self.resolve_preview();
         self.markdown.invalidate();
         self.media.worker.invalidate();
         self.media.page = 1;

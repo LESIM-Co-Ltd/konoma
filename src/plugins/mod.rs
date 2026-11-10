@@ -16,9 +16,13 @@ pub(crate) mod external_testkit;
 mod listing;
 #[cfg(test)]
 mod notify_tests;
+#[cfg(test)]
+mod preview_io_tests;
 mod profile;
 #[cfg(test)]
 mod program_parity_tests;
+#[cfg(test)]
+mod project_preview_tests;
 pub(crate) mod projects;
 pub(crate) mod read_scope;
 mod resolve;
@@ -53,7 +57,7 @@ pub(crate) use listing::plugins_table;
 #[cfg(test)]
 pub(crate) use profile::record as record_for_test;
 pub(crate) use profile::{profile_of, register, shows_of, unavailable_of, Profile};
-pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
+pub(crate) use resolve::{kind_of, plugin_id_of, resolve_file, resolve_kind, user_rules};
 
 /// Host-internal pseudo plugins. They own no file binding: a `[[preview.rules]]` entry that asks
 /// for plain text, an external command, or an unknown renderer is aimed at one of them, so the

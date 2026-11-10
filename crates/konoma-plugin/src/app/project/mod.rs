@@ -68,9 +68,8 @@ pub trait ProjectServices: Send + Sync + 'static {
 
     /// Full file classification and verb lookup, called only by the launch worker.
     fn launch_verbs(&self, path: &Path, registry: &Registry) -> Vec<crate::VerbDecl> {
-        super::pick_in(registry, path)
-            .ok()
-            .and_then(|(id, _)| registry.manifest(&id).map(|m| m.verbs.clone()))
+        crate::host::file_preview::selected_plugin_of_path(registry, &[], path)
+            .and_then(|id| registry.manifest(&id).map(|m| m.verbs.clone()))
             .unwrap_or_default()
     }
     fn inspect(
@@ -120,6 +119,7 @@ pub trait ProjectServices: Send + Sync + 'static {
 /// Everything settled before terminal entry, retaining the shared detection and serial owners.
 /// Preparation does not take the terminal or start the input loop.
 pub struct PreparedProjects {
+    pub(in crate::app) file_previews: Option<crate::host::file_preview::FilePreviewSource>,
     pub registry: Arc<Registry>,
     pub open_dir: PathBuf,
     pub detection: ProjectDetection,

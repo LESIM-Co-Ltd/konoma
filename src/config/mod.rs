@@ -569,9 +569,7 @@ impl ThemeConfig {
     }
 }
 
-/// `[[preview.rules]]`: the user's assignments, tried first. The default assignments (markdown,
-/// mermaid, svg, image, csv, ...) are not listed here; they come from the standard plugins'
-/// declarations (`crate::plugins`), so the default is no rules at all.
+/// The host keeps its config schema here for the example-config field ownership checks.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PreviewConfig {
@@ -579,16 +577,28 @@ pub struct PreviewConfig {
 }
 
 /// A single preview rule. Matches by either glob or mime.
-/// Specify either builtin (a built-in renderer name) or command (an external command).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Rule {
     pub glob: Option<String>,
     pub mime: Option<String>,
-    pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "archive" | "spreadsheet" | "document" | "text"
-    pub command: Option<String>, // template: {path} {out}
-    pub render_as: Option<String>, // how to treat the command's output: "image" | "text"
-    pub detached: bool, // opens in a separate process so it doesn't block the TUI (video, etc.)
+    pub builtin: Option<String>,
+    pub command: Option<String>,
+    pub render_as: Option<String>,
+    pub detached: bool,
+}
+
+impl From<&Rule> for konoma_host_core::shared::Rule {
+    fn from(rule: &Rule) -> Self {
+        Self {
+            glob: rule.glob.clone(),
+            mime: rule.mime.clone(),
+            builtin: rule.builtin.clone(),
+            command: rule.command.clone(),
+            render_as: rule.render_as.clone(),
+            detached: rule.detached,
+        }
+    }
 }
 
 impl Default for UiConfig {
@@ -801,8 +811,6 @@ pub(crate) fn resolve_preview_kind(
     path: &Path,
     sniff: Option<&[u8]>,
 ) -> PreviewKind {
-    #[cfg(test)]
-    crate::test_support::note_resolve_preview_call();
     crate::plugins::resolve_kind(rules, disabled, preview_commands, path, sniff)
 }
 

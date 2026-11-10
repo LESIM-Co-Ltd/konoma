@@ -28,13 +28,15 @@ pub(crate) enum VerbTarget {
 /// The answer of the full plugin resolution for one file, with what it was decided from.
 #[derive(Debug)]
 pub(crate) struct VerbPluginMemo {
-    path: PathBuf,
-    stamp: Option<(std::time::SystemTime, u64)>,
-    settings: String,
-    id: Option<String>,
+    pub(super) path: PathBuf,
+    pub(super) stamp: Option<(std::time::SystemTime, u64)>,
+    pub(super) settings: String,
+    pub(super) id: Option<String>,
+    pub(super) request: Option<u64>,
 }
 
-/// (mtime, size) of `path`: a changed file gets a different stamp, so its answer is decided again.
+/// The unattached ordinary-screen/headless host retains its legacy (mtime, size) memo.
+/// The terminal host invalidates received decisions with filesystem/cache refreshes instead.
 fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
     let m = std::fs::metadata(path).ok()?;
     Some((m.modified().ok()?, m.len()))
@@ -45,19 +47,21 @@ impl App {
     /// content sniff, text probe) that `e`, `o` and the footer/help all read, so they cannot
     /// disagree.
     ///
-    /// The file being previewed is not read again: the plugin its preview resolved to is the
-    /// answer. Any other file is read only when its (mtime, size) or the settings differ from the
-    /// last answer, so the per-frame footer costs one `stat`. `plugin_id_of` passes the preview's
-    /// own gate (`is_previewable`) first, so a FIFO or device is never opened.
+    /// The preview's received plugin is reused. With the decision worker attached, other files
+    /// return only adopted values; a miss queues a worker and stays pending. Without that worker,
+    /// ordinary-screen preparation retains the legacy stamp memo and availability gate.
     pub(crate) fn verb_plugin_id(&self, path: &Path) -> Option<String> {
         if self.tab.mode == Mode::Preview && self.tab.preview_path.as_deref() == Some(path) {
             if let Some(PreviewKind::Plugin { id, .. }) = &self.tab.preview_kind {
                 return Some(id.clone());
             }
         }
-        let stamp = file_stamp(path);
         let disabled = self.cfg.plugin_disabled();
         let settings = format!("{:?}{:?}", self.cfg.preview.rules, disabled);
+        if self.preview_resolution_tx.is_some() {
+            return self.resolve_verb_plugin_on_worker(path, settings);
+        }
+        let stamp = file_stamp(path);
         if let Some(m) = self.verb_plugin_memo.borrow().as_ref() {
             if m.path == path && m.stamp == stamp && m.settings == settings {
                 return m.id.clone();
@@ -69,6 +73,7 @@ impl App {
             stamp,
             settings,
             id: id.clone(),
+            request: None,
         });
         id
     }
@@ -137,6 +142,13 @@ impl App {
                 return;
             }
         };
+        if self.defer_file_verb(konoma_plugin::Verb::Open, &path, None) {
+            return;
+        }
+        self.open_path_in_other_app(path);
+    }
+
+    pub(super) fn open_path_in_other_app(&mut self, path: PathBuf) {
         let verb = crate::plugins::open_verb_of(
             &self.cfg.plugin_disabled(),
             self.verb_plugin_id(&path).as_deref(),
