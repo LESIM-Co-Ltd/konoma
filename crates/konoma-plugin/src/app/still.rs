@@ -337,6 +337,17 @@ impl Still {
         self.pose.zoom
     }
 
+    #[cfg(test)]
+    pub(super) fn wait_decode_for_test(&mut self) {
+        let done = self
+            .done_rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("decode completed");
+        self.done_tx.send(done).expect("decode receiver lives");
+        self.poll_at(Instant::now());
+        assert_eq!(self.shape(), StillShape::Ready);
+    }
+
     /// The centre of the visible window, each axis in 0..=1.
     pub fn center(&self) -> (f64, f64) {
         self.pose.center

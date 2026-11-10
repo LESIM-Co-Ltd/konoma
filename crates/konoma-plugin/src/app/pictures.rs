@@ -332,6 +332,14 @@ impl Pictures {
         self.still.as_ref().map_or(1.0, Still::zoom)
     }
 
+    #[cfg(test)]
+    pub(super) fn wait_still_decode_for_test(&mut self) {
+        self.still
+            .as_mut()
+            .expect("submitted image")
+            .wait_decode_for_test();
+    }
+
     /// The centre of the visible window of the still picture.
     pub fn still_center(&self) -> (f64, f64) {
         self.still.as_ref().map_or((0.5, 0.5), Still::center)

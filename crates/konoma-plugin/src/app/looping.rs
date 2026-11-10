@@ -7,6 +7,10 @@ mod diff_app;
 #[path = "inline_overlay_loop_tests.rs"]
 mod inline_overlay_loop_tests;
 
+#[cfg(test)]
+#[path = "file_loop_tests.rs"]
+mod file_loop_tests;
+
 use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
@@ -1665,6 +1669,54 @@ struct State {
     act_queue: Vec<QueuedAct>,
 }
 
+/// Everything owned by one file loop, retained while its caller shows another screen.
+/// The original session and pictures remain owned by the caller.
+pub(in crate::app) struct FileLoopState {
+    st: State,
+    // Display options change the loop's keys without changing the caller's configuration.
+    own: AppKeys,
+    // A Reopen destination remains the active session for all subsequent entries.
+    swapped: Option<Box<dyn Session>>,
+    // A failed Reopen is remembered rather than retried at every key or resize.
+    reopen_failed: Option<crate::session::Failure>,
+    base: Frame<'static>,
+    view_due: Option<Instant>,
+    need_view: bool,
+    launch_tx: std::sync::mpsc::Sender<Result<crate::launch::Opener, String>>,
+    launch_rx: std::sync::mpsc::Receiver<Result<crate::launch::Opener, String>>,
+    launching: usize,
+}
+
+impl FileLoopState {
+    pub(in crate::app) fn new(cx: &AppCx, keys: &AppKeys) -> Self {
+        let (launch_tx, launch_rx) = std::sync::mpsc::channel();
+        Self {
+            st: State {
+                display: cx.display.clone(),
+                flash: crate::host::bind::key_notes_line(&cx.acts.notes, keys.lang()),
+                ..State::default()
+            },
+            own: keys.clone(),
+            swapped: None,
+            reopen_failed: None,
+            base: Frame::Lines(Vec::new()),
+            view_due: None,
+            need_view: true,
+            launch_tx,
+            launch_rx,
+            launching: 0,
+        }
+    }
+}
+
+/// Why the file screen gave control back to its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum FileLoopExit {
+    Back,
+    Quit,
+    End,
+}
+
 /// The title of the frame: the path in the `style` the `,` menu chose, or the title the host gave
 /// when it launched no path.
 fn frame_name_of(cx: &AppCx, style: konoma_host_core::view_options::PathStyle) -> String {
@@ -1729,41 +1781,48 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     keys_in: &AppKeys,
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
-    // The keys follow the options the `,` menu changes (whether the text wraps decides which
-    // sideways keys act), so the loop keeps its own copy.
-    let mut own = keys_in.clone();
     super::edit_line::clear();
-    let mut st = State {
-        display: cx.display.clone(),
-        // The mistakes in the user's `[keys.<id>]` are told at start, as konoma's footer does.
-        flash: crate::host::bind::key_notes_line(&cx.acts.notes, own.lang()),
-        ..State::default()
-    };
-    // The session a `Reopen` opened in place of `session` (the plugin that converted the file):
-    // from then on it is the one asked.
-    let mut swapped: Option<Box<dyn Session>> = None;
-    // A `Reopen` that failed: the converting session is still the one asked, and it would answer
-    // `Reopen` again at every key and resize; the failure is the answer from then on, so the
-    // destination is opened (and fails) once, as konoma's one load does.
-    let mut reopen_failed: Option<crate::session::Failure> = None;
+    let mut state = FileLoopState::new(cx, keys_in);
+    run_file_with(terminal, session, events, cx, &mut state, pictures.as_mut()).map(|_| ())
+}
+
+/// Run or resume the same file session, refreshing its view for the current terminal size.
+/// No terminal guard is entered and borrowed pictures and edit-line state are retained on exit.
+/// No placements are deleted on leave: the caller draws over their placeholder cells, and
+/// retaining the pictures keeps their caches, workers and image pose available on resume.
+pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    state: &mut FileLoopState,
+    mut pictures: Option<&mut Pictures>,
+) -> Result<FileLoopExit, AppError> {
+    let FileLoopState {
+        st,
+        own,
+        swapped,
+        reopen_failed,
+        base,
+        view_due,
+        need_view,
+        launch_tx,
+        launch_rx,
+        launching,
+    } = state;
+    // Refreshing on entry must not postpone a timer that was armed before leaving.
+    let mut resume_due = *view_due;
+    // A resume refreshes the view as a resize does, without asking for a new session.
+    *need_view = true;
     macro_rules! sess {
         () => {
-            match swapped.as_deref_mut() {
-                Some(s) => s,
+            match swapped.as_mut() {
+                Some(s) => &mut **s as &mut dyn Session,
                 None => &mut *session,
             }
         };
     }
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
-    // The notices of the GUI chains `e` and `o` walk on a worker; `launching` counts those out.
-    let (launch_tx, launch_rx) =
-        std::sync::mpsc::channel::<Result<crate::launch::Opener, String>>();
-    let mut launching = 0usize;
-    // The frame of the last view, and when that view is due again (a wake for the pictures
-    // draws this frame again).
-    let mut base = Frame::Lines(Vec::new());
-    let mut view_due: Option<Instant> = None;
-    let mut need_view = true;
     loop {
         let size = terminal.size().map_err(|e| terr(&e))?;
         let body_rows = size.height.saturating_sub(1);
@@ -1777,14 +1836,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             .as_ref()
             .is_some_and(|b| b.page == st.at_page)
         {
-            set_failed_paging(&mut st, usize::from(body_rows));
+            set_failed_paging(st, usize::from(body_rows));
         }
         if view_due.is_some_and(|d| Instant::now() >= d) {
-            need_view = true;
+            *need_view = true;
         }
         let mut view_wait = None;
         while let Ok(outcome) = launch_rx.try_recv() {
-            launching = launching.saturating_sub(1);
+            *launching = launching.saturating_sub(1);
             st.flash = Some(crate::host::launch::chain_notice(own.lang(), &outcome));
         }
         // The file is opened again with its plugin (an `Outcome::Reload`): the new session is the
@@ -1793,27 +1852,28 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         // file (`ReopenSource::with_file`) leaves a plain redraw.
         while std::mem::take(&mut st.reload) {
             if let Some(opened) = cx.reopen.as_ref().and_then(|r| r.reload(&cx.lang, cx.term)) {
-                reopen_failed = None;
+                resume_due = None;
+                *reopen_failed = None;
                 st.reopened_as = None;
                 match opened {
-                    Ok(fresh) => swapped = Some(fresh),
+                    Ok(fresh) => *swapped = Some(fresh),
                     // The reason is what the view shows, as a file that fails to open does.
-                    Err(f) => reopen_failed = Some(f),
+                    Err(f) => *reopen_failed = Some(f),
                 }
-                need_view = true;
+                *need_view = true;
                 // The keys and actions that waited for the new session go to it, in order.
-                if flush_jobs(sess!(), &mut st, cx) {
-                    need_view = true;
+                if flush_jobs(sess!(), st, cx) {
+                    *need_view = true;
                 }
             }
         }
-        if need_view {
+        if *need_view {
             let mut req = ViewReq::new(size.width, body_rows);
             if st.at_page > 0 {
                 req = req.page(st.at_page);
             }
             let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
-            let mut viewed = match &reopen_failed {
+            let mut viewed = match &*reopen_failed {
                 Some(f) => Err(f.clone()),
                 None => sess!().view(&req, &vcx),
             };
@@ -1823,6 +1883,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             // laid-out page and the pictures (a result the old document asked for lands on
             // nothing).
             if let Ok(View::Reopen(r)) = viewed {
+                resume_due = None;
                 let target = cx.reopen.as_ref().and_then(|s| s.target(&r.content_type));
                 viewed = match crate::reopen::reopen_document(
                     target.as_ref(),
@@ -1833,9 +1894,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     cx.term,
                 ) {
                     Ok(opened) => {
-                        swapped = Some(opened.session);
-                        st = state_after_reopen(
-                            st,
+                        *swapped = Some(opened.session);
+                        *st = state_after_reopen(
+                            std::mem::take(st),
                             target.as_ref().map(|t| {
                                 let m = t.plugin.manifest();
                                 ReopenedAs {
@@ -1853,7 +1914,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         );
                         st.page = usize::from(body_rows).max(1);
                         st.width = size.width;
-                        if let Some(p) = pictures.as_mut() {
+                        if let Some(p) = pictures.as_deref_mut() {
                             p.forget();
                             p.forget_still();
                             p.reset_document();
@@ -1861,7 +1922,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         Ok(View::Document(opened.document))
                     }
                     Err(f) => {
-                        reopen_failed = Some(f.clone());
+                        *reopen_failed = Some(f.clone());
                         Err(f)
                     }
                 };
@@ -1880,8 +1941,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 Err(f) => {
                     // What kind of paged page failed: what the plugin declares it shows, else
                     // what was on screen before (a first page that fails has nothing before it).
-                    let picture = failed_page_is_picture(cx, &st);
-                    note_failed_page(sess!(), cx, &mut st, picture);
+                    let picture = failed_page_is_picture(cx, st);
+                    note_failed_page(sess!(), cx, st, picture);
                     Err(Some(failure_frame(
                         image_failure_for(st.unavailable(cx), &f),
                         f.message.get(&cx.lang),
@@ -1889,22 +1950,25 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         cx,
                         own.lang(),
                         usize::from(body_rows),
-                        &mut st,
+                        st,
                     )))
                 }
             };
             let (mut frame, redraw_after) = match shown {
                 Ok(view) => frame_of(
                     view,
-                    &mut st,
+                    st,
                     usize::from(body_rows),
                     (&cx.lang, own.lang()),
                     &frame_name,
-                    pictures.as_mut(),
+                    pictures.as_deref_mut(),
                 ),
                 Err(Some(frame)) => (frame, None),
                 // The frame on screen stays.
-                Err(None) => (std::mem::replace(&mut base, Frame::Lines(Vec::new())), None),
+                Err(None) => (
+                    std::mem::replace(&mut *base, Frame::Lines(Vec::new())),
+                    None,
+                ),
             };
             // The typing: a canvas that asks for it after something the user did takes it back
             // after `Esc`; the show going (no canvas on screen) forgets the keys and the latch.
@@ -1918,7 +1982,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             if let Frame::Table(new) = &mut frame {
                 // A table read again (a resize, a page turn) keeps the cursor and the popup; a
                 // page turn has reset them before asking.
-                if let Frame::Table(old) = &mut base {
+                if let Frame::Table(old) = &mut *base {
                     new.state = old.state;
                     new.popup = old.popup.take();
                 }
@@ -1944,7 +2008,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 }
             }
             let turned = std::mem::take(&mut st.turned);
-            if let Some(p) = pictures.as_mut() {
+            if let Some(p) = pictures.as_deref_mut() {
                 match &frame {
                     Frame::Canvas(c) => {
                         p.submit(c);
@@ -1961,38 +2025,43 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 }
             }
             view_wait = redraw_after.map(|d| d.clamp(MIN_REDRAW, MAX_REDRAW));
-            view_due = view_wait.map(|d| Instant::now() + d);
-            base = frame;
+            let pending = resume_due.take();
+            *view_due = view_wait.map(|d| pending.unwrap_or_else(|| Instant::now() + d));
+            if pending.is_some() {
+                view_wait = None;
+            }
+            *base = frame;
         }
-        if let Some(p) = pictures.as_mut() {
+        if let Some(p) = pictures.as_deref_mut() {
             p.poll();
             // A picture's result changed what the page reserves: lay it out again before drawing.
             if matches!(base, Frame::Document(_)) && p.take_doc_relayout() {
-                need_view = true;
+                *need_view = true;
                 continue;
             }
         }
         // A picture whose decode failed is a page that failed to draw, as one whose `view`
         // failed: the same screen, footer and help (konoma's one `unavailable_body` serves both).
-        if let (Frame::Image(_), Some(why)) =
-            (&base, pictures.as_ref().and_then(Pictures::still_failure))
-        {
-            note_failed_page(sess!(), cx, &mut st, true);
-            base = failure_frame(
+        if let (Frame::Image(_), Some(why)) = (
+            &*base,
+            pictures.as_deref().and_then(Pictures::still_failure),
+        ) {
+            note_failed_page(sess!(), cx, st, true);
+            *base = failure_frame(
                 why,
                 "[can not preview]",
                 None,
                 cx,
                 own.lang(),
                 usize::from(body_rows),
-                &mut st,
+                st,
             );
         }
         // The sideways keys are named and act on the file's text (they move the caret) and on the
         // text of a failed page (the host names them there whether it wraps or not).
-        own.caret = windowed_text(&base) || failed_text(&base);
-        match &base {
-            Frame::Text(_) if windowed_text(&base) && st.file_text => {
+        own.caret = windowed_text(&*base) || failed_text(&*base);
+        match &*base {
+            Frame::Text(_) if windowed_text(&*base) && st.file_text => {
                 super::edit_line::publish_text(st.caret_line)
             }
             Frame::Document(d) => {
@@ -2005,9 +2074,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             Some(lc) => lc.facts(st.verbs(cx), &cx.path),
             None => super::LaunchFacts::default(),
         };
-        let keys = &own;
-        let mode = shown_mode(&base, &st);
-        let image_mode = image_mode(&base, pictures.as_ref(), &st);
+        let keys = &*own;
+        let mode = shown_mode(&*base, st);
+        let image_mode = image_mode(&*base, pictures.as_deref(), st);
         let paged = image_mode.is_some_and(|m| m.paged);
         // After a page that failed and shows the file as text, or in the picture's own frame
         // (the host draws that as a text too), the screen is a text (the host's): its footer and
@@ -2040,10 +2109,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         } else if canvas_keys {
             CoreContext::Canvas
         } else {
-            text_ctx(&base)
+            text_ctx(&*base)
         };
         // Whether the text is the file's, in the host's frame (the footer plan's selection keys).
-        let windowed = windowed_text(&base);
+        let windowed = windowed_text(&*base);
         // The actions of the plugin whose session this is (the destination's after a `Reopen`).
         let acts = st.acts(cx).clone();
         let en: Vec<String> = enabled_ids(&*sess!(), &acts);
@@ -2051,7 +2120,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         let capturing = typing::is_capturing(
             st.input_left,
             st.help.is_none(),
-            matches!(&base, Frame::Canvas(c) if c.text_input),
+            matches!(&*base, Frame::Canvas(c) if c.text_input),
         );
         let footer;
         let mut panel: Option<HelpPanel> = None;
@@ -2067,8 +2136,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         (keys.canvas_help_sections(), keys.canvas_help_title())
                     }
                     (None, _) => (
-                        keys.help_sections_in(text_ctx(&base), paged, text_scrolls),
-                        keys.help_title_in(text_ctx(&base)),
+                        keys.help_sections_in(text_ctx(&*base), paged, text_scrolls),
+                        keys.help_title_in(text_ctx(&*base)),
                     ),
                 };
                 // The plugin's own keys: one section under its name, right after the screen's
@@ -2081,7 +2150,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     &cx.lang,
                     &acts,
                     act_ctx,
-                    windowed_text(&base),
+                    windowed_text(&*base),
                     act_on,
                 );
                 keys.insert_actions_section(core_ctx, &items, &mut secs);
@@ -2106,12 +2175,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     scroll: top as u16,
                     title,
                 });
-                &mut base
+                &mut *base
             }
             None => {
                 footer = match mode {
                     Some(m) => {
-                        if let Frame::Table(t) = &mut base {
+                        if let Frame::Table(t) = &mut *base {
                             if let Some(p) = t.popup.as_mut() {
                                 p.footer = keys
                                     .popup_tokens()
@@ -2135,7 +2204,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             paged: false,
                             zoomed: false,
                         });
-                        let zoom = match (m.shape, pictures.as_ref()) {
+                        let zoom = match (m.shape, pictures.as_deref()) {
                             (StillShape::Ready, Some(p)) => {
                                 format!("  x{:.2}", p.still_zoom())
                             }
@@ -2153,7 +2222,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             String::new()
                         };
                         let busy = pictures
-                            .as_ref()
+                            .as_deref()
                             .and_then(Pictures::still_busy)
                             .map(|g| format!("{g} "))
                             .unwrap_or_default();
@@ -2180,7 +2249,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                 keys.document_footer_tokens(st.scrolls)
                             } else {
                                 keys.footer_hints_in(
-                                    text_ctx(&base),
+                                    text_ctx(&*base),
                                     st.scrolls || (failed_text_screen && text_scrolls),
                                     paged,
                                 )
@@ -2190,13 +2259,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             },
                         ),
                         &cx.title,
-                        &base,
+                        &*base,
                         st.scroll,
                         st.scrolls,
                         width,
                     ),
                 };
-                &mut base
+                &mut *base
             }
         };
         // What the last key did, or the menu waiting for its key, takes the footer over.
@@ -2224,7 +2293,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             frame,
             &footer,
             st.display.bg(),
-            pictures.as_mut(),
+            pictures.as_deref_mut(),
             panel,
         )?;
 
@@ -2237,11 +2306,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         // The canvas under the open help is still drawn (the host draws it too) but not animated:
         // nothing wakes the loop for it.
         let pic_wait = pictures
-            .as_ref()
+            .as_deref()
             .and_then(Pictures::wake_in)
             .filter(|_| st.help.is_none());
         // A chain on a worker is waited for in short steps: its notice is drawn when it lands.
-        let pic_wait = match (pic_wait, launching > 0) {
+        let pic_wait = match (pic_wait, *launching > 0) {
             (_, false) => pic_wait,
             (Some(p), true) => Some(p.min(LAUNCH_WAKE)),
             (None, true) => Some(LAUNCH_WAKE),
@@ -2253,22 +2322,22 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         };
         let wait = if picture_first { pic_wait } else { view_left };
         // A key and a resize ask for a new view; a timeout does unless the pictures woke the loop.
-        need_view = true;
+        *need_view = true;
         match events.next(wait) {
-            Next::End => return Ok(()),
-            Next::Timeout => need_view = !picture_first,
-            Next::Event(AppEvent::Resize) => need_view = true,
+            Next::End => return Ok(FileLoopExit::End),
+            Next::Timeout => *need_view = !picture_first,
+            Next::Event(AppEvent::Resize) => *need_view = true,
             Next::Event(AppEvent::Paste(text)) => {
                 // Only a canvas that takes the typing gets a paste; elsewhere it does nothing.
-                need_view = false;
+                *need_view = false;
                 if capturing {
                     st.flash = None;
                     let admitted = typing::admit_paste(&mut st.key_queue, text);
                     if let Some(n) = admitted.notice {
                         st.flash = Some(notice_text(n, keys.lang()));
                     }
-                    if admitted.queued && flush_jobs(sess!(), &mut st, cx) {
-                        need_view = true;
+                    if admitted.queued && flush_jobs(sess!(), st, cx) {
+                        *need_view = true;
                     }
                 }
             }
@@ -2280,13 +2349,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 if let Some(n) = admitted.notice {
                     st.flash = Some(notice_text(n, keys.lang()));
                 }
-                need_view = false;
-                if admitted.queued && flush_jobs(sess!(), &mut st, cx) {
-                    need_view = true;
+                *need_view = false;
+                if admitted.queued && flush_jobs(sess!(), st, cx) {
+                    *need_view = true;
                 }
                 // The footer changes when the typing is left.
                 if st.input_left {
-                    need_view = true;
+                    *need_view = true;
                 }
             }
             Next::Event(AppEvent::Key(key)) => {
@@ -2303,13 +2372,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         // as the `,` menu's do, the others as the key of the operation would
                         // (below); any other key only closes the menu.
                         in_menu = true;
-                        need_view = false;
+                        *need_view = false;
                         let items = keys.space_items(
                             ctx,
                             &cx.lang,
                             &acts,
                             act_ctx,
-                            windowed_text(&base),
+                            windowed_text(&*base),
                             act_on,
                         );
                         match key_press(&key)
@@ -2326,7 +2395,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     Some((ctx, menu)) => {
                         in_menu = true;
-                        need_view = false;
+                        *need_view = false;
                         item =
                             key_press(&key).and_then(|kp| keys.copy_menu_view(ctx, menu)?.find(kp));
                     }
@@ -2353,13 +2422,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             st.doc = None;
                             st.failed_body = None;
                             own.wrap = o.wrap;
-                            need_view = true;
+                            *need_view = true;
                         }
                         if effect.retitle {
-                            retitle(&mut base, &frame_name_of(cx, o.path_style));
+                            retitle(&mut *base, &frame_name_of(cx, o.path_style));
                         }
                     } else if let Some(action) = item {
-                        let table = match &base {
+                        let table = match &*base {
                             Frame::Table(t) => Some(&**t),
                             _ => None,
                         };
@@ -2374,7 +2443,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     continue;
                 }
-                let table_mode = table_mode(&base, st.pages);
+                let table_mode = table_mode(&*base, st.pages);
                 let popup_open = table_mode.is_some_and(|m| m.popup);
                 // After a failed page the message is on screen, but the table keys stay (the page
                 // keys turn on, as the host's do).
@@ -2415,11 +2484,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     _ if st.help.is_some() => keys.help_act(&key),
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
                     (false, Some(_)) if failed_text => keys
-                        .act_in(text_ctx(&base), &key)
+                        .act_in(text_ctx(&*base), &key)
                         .or_else(|| keys.image_act(&key).filter(|a| matches!(a, Act::Page(_)))),
                     (false, Some(_)) => keys.image_act(&key),
                     (false, None) if canvas_keys => keys.canvas_act(&key),
-                    (false, None) => keys.act_in(text_ctx(&base), &key),
+                    (false, None) => keys.act_in(text_ctx(&*base), &key),
                 };
                 // A key over a table never asks the session again, but a page turn: a
                 // spreadsheet is read again on every `view`. Nor does a key over a picture: the
@@ -2432,7 +2501,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     .is_some_and(|b| b.page == st.at_page)
                     && matches!(base, Frame::Lines(_) | Frame::Text(_));
                 if table_keys || image_keys || kept_failure {
-                    need_view = false;
+                    *need_view = false;
                 }
                 // The copy menu opens on the key bound to it, where a key acts (not in the help
                 // or the cell popup).
@@ -2444,7 +2513,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     && keys.opens_actions(core_ctx, &key)
                 {
                     st.menu = Some((core_ctx, CoreMenu::Actions));
-                    need_view = false;
+                    *need_view = false;
                 } else if act.is_none() && declared.is_none() && st.help.is_none() && !popup_open {
                     let ctx = if table_keys {
                         CoreContext::Table
@@ -2453,12 +2522,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     } else if canvas_keys {
                         CoreContext::Canvas
                     } else {
-                        text_ctx(&base)
+                        text_ctx(&*base)
                     };
                     if let Some(menu) = keys.copy_menu_of(ctx, &key) {
                         if keys.copy_menu_view(ctx, menu).is_some() {
                             st.menu = Some((ctx, menu));
-                            need_view = false;
+                            *need_view = false;
                         }
                     }
                 }
@@ -2470,7 +2539,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         hacts::ActGate::Off => {}
                         hacts::ActGate::ReadOnly => {
                             st.flash = Some(CoreMsg::PluginReadOnly.tr(keys.lang()).to_string());
-                            need_view = false;
+                            *need_view = false;
                         }
                         hacts::ActGate::On => {
                             st.user_act = true;
@@ -2480,7 +2549,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                 st.flash = Some(notice_text(n, keys.lang()));
                             }
                             // A view is asked for again only when the answer says so.
-                            need_view = admitted.queued && flush_jobs(sess!(), &mut st, cx);
+                            *need_view = admitted.queued && flush_jobs(sess!(), st, cx);
                         }
                     }
                 }
@@ -2490,11 +2559,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (Some(Act::Back), Some(_)) => st.help = None,
                     // The popup is closed first; the app is left from the table.
                     (Some(Act::Back), None) if popup_open => {
-                        if let Frame::Table(t) = &mut base {
+                        if let Frame::Table(t) = &mut *base {
                             t.popup = None;
                         }
                     }
-                    (Some(Act::Quit | Act::Back), _) => return Ok(()),
+                    (Some(Act::Back), _) => return Ok(FileLoopExit::Back),
+                    (Some(Act::Quit), _) => return Ok(FileLoopExit::Quit),
                     (Some(Act::Help), Some(_)) => st.help = None,
                     (Some(Act::Help), None) => st.help = Some(0),
                     (Some(Act::Move(m)), Some(top)) => {
@@ -2510,10 +2580,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             _ => top,
                         })
                     }
-                    (Some(Act::Move(m)), None) => match &mut base {
+                    (Some(Act::Move(m)), None) => match &mut *base {
                         Frame::Table(t) => table_move(t, m),
                         Frame::Image(_) => {
-                            if let Some(p) = pictures.as_mut() {
+                            if let Some(p) = pictures.as_deref_mut() {
                                 let (dx, dy) = match m {
                                     Motion::Left => (-1.0, 0.0),
                                     Motion::Right => (1.0, 0.0),
@@ -2524,11 +2594,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                 p.still_pan(dx, dy);
                             }
                         }
-                        _ if st.scrolls => scroll_by(m, &mut st),
+                        _ if st.scrolls => scroll_by(m, st),
                         _ => {}
                     },
                     (Some(Act::Cell), None) => {
-                        if let Frame::Table(t) = &mut base {
+                        if let Frame::Table(t) = &mut *base {
                             t.popup = match t.popup {
                                 Some(_) => None,
                                 None if t.grid.ncols() > 0 => Some(PopupState::default()),
@@ -2544,7 +2614,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         ) {
                             st.at_page = to as usize - 1;
                             // The new sheet starts at its top left with no popup.
-                            if let Frame::Table(t) = &mut base {
+                            if let Frame::Table(t) = &mut *base {
                                 t.state = Default::default();
                                 // Never reached while a popup is open (no `Page` comes then);
                                 // kept for when J/K are made to work inside the popup too.
@@ -2552,19 +2622,19 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             }
                             // A picture stays on screen until the new page's picture lands.
                             st.turned = on_image;
-                            if let (true, Some(p)) = (on_image, pictures.as_mut()) {
+                            if let (true, Some(p)) = (on_image, pictures.as_deref_mut()) {
                                 p.still_turn_page();
                             }
-                            need_view = true;
+                            *need_view = true;
                         }
                     }
                     (Some(Act::Zoom(d)), None) => {
-                        if let Some(p) = pictures.as_mut() {
+                        if let Some(p) = pictures.as_deref_mut() {
                             p.still_zoom_steps(d);
                         }
                     }
                     (Some(Act::ZoomReset), None) => {
-                        if let Some(p) = pictures.as_mut() {
+                        if let Some(p) = pictures.as_deref_mut() {
                             p.still_zoom_reset();
                         }
                     }
@@ -2584,7 +2654,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     &cx.path,
                                     super::edit_line::edit_line(),
                                     own.lang(),
-                                    &launch_tx,
+                                    launch_tx,
                                     &mut redraw,
                                 )
                             } else {
@@ -2593,13 +2663,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     &verbs,
                                     &cx.path,
                                     own.lang(),
-                                    &launch_tx,
+                                    launch_tx,
                                     &mut redraw,
                                 )
                             };
                             if lc.worker && done.notice.is_none() && !done.handed && !done.reload {
                                 // A chain was handed to a worker (or nothing was started).
-                                launching += 1;
+                                *launching += 1;
                             }
                             if done.notice.is_some() {
                                 st.flash = done.notice;
@@ -2610,12 +2680,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             if done.handed {
                                 // The terminal was another program's meanwhile: the pictures
                                 // placed on it are drawn again.
-                                if let Some(p) = pictures.as_mut() {
+                                if let Some(p) = pictures.as_deref_mut() {
                                     p.forget();
                                     p.forget_still();
                                     p.reset_document();
                                 }
-                                need_view = true;
+                                *need_view = true;
                             }
                         }
                     }
@@ -2623,9 +2693,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (Some(Act::Edit | Act::Open), Some(_)) => {}
                     (None, _) => {}
                 }
-                if kept_failure && !need_view {
+                if kept_failure && !*need_view {
                     let name = frame_name_of(cx, st.display.path_style);
-                    base = failed_window(&mut st, usize::from(body_rows), &name, own.lang());
+                    *base = failed_window(st, usize::from(body_rows), &name, own.lang());
                 }
             }
         }
