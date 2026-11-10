@@ -21331,6 +21331,8 @@ mod project_host;
 mod project_launch_bridge;
 #[path = "e2e_tests/project_screens.rs"]
 mod project_screens;
+#[cfg(feature = "git")]
+mod selected_backend;
 mod space_menu_parity;
 mod table_parity;
 mod text_parity;

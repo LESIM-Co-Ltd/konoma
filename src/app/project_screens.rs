@@ -1021,10 +1021,36 @@ impl App {
                     outcome,
                     save_return,
                 } => {
+                    let read_context = self
+                        .tab
+                        .project_navigation
+                        .as_ref()
+                        .map(|nav| {
+                            use crate::vcs::Preference;
+                            konoma_plugin::host::project::DiffReadContext::new(
+                                match nav.project.plugin.as_str() {
+                                    "git" => Preference::Git,
+                                    "jj" => Preference::Jj,
+                                    _ => Preference::Auto,
+                                },
+                            )
+                        })
+                        .unwrap_or_default();
                     if save_return {
                         self.tab.project_return = self.tab.project_navigation.take();
                     }
-                    let result = self.apply_plugin_navigation(outcome);
+                    let result = if let konoma_plugin::Outcome::OpenDiff { path } = outcome {
+                        self.open_git_diff_with(
+                            &path,
+                            super::git_view::DiffOpen {
+                                read_context,
+                                ..Default::default()
+                            },
+                        );
+                        Ok(())
+                    } else {
+                        self.apply_plugin_navigation(outcome)
+                    };
                     crate::resolve_key_result(self, result.map(|()| false));
                 }
                 ProjectCommand::EnsureView => self.ensure_project_view(),

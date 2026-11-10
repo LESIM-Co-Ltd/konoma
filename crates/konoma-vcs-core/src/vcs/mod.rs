@@ -575,6 +575,19 @@ pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
     backend_for(root).base_contents(root, file)
 }
 
+/// Read a selected backend's committed baseline without installing a preference.
+/// `Auto` preserves [`base_contents`]'s detection rule; unavailable backends return `None`.
+pub fn base_contents_with(kind: Preference, root: &Path, file: &Path) -> Option<Vec<u8>> {
+    match kind {
+        Preference::Auto => base_contents(root, file),
+        Preference::Git => Git.base_contents(root, file),
+        #[cfg(feature = "git")]
+        Preference::Jj => Jj.base_contents(root, file),
+        #[cfg(not(feature = "git"))]
+        Preference::Jj => None,
+    }
+}
+
 /// See [`Vcs::log`].
 pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
     backend_for(root).log(root, max)
@@ -624,6 +637,51 @@ pub fn changed_files(root: &Path) -> Vec<ChangeEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_baseline_outside_a_repository_preserves_empty_answers() {
+        let dir = konoma_test_support::unique_tmp("explicit_baseline_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("untracked.md");
+        std::fs::write(&file, "untracked\n").unwrap();
+        for kind in [Preference::Auto, Preference::Git, Preference::Jj] {
+            assert_eq!(base_contents_with(kind, &dir, &file), None, "{kind:?}");
+        }
+        assert_eq!(
+            base_contents_with(Preference::Auto, &dir, &file),
+            base_contents(&dir, &file)
+        );
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn explicit_git_baseline_reads_head_when_index_and_worktree_differ() {
+        let dir = konoma_test_support::unique_tmp("explicit_git_baseline");
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::testing::init_git_repo(&dir);
+        let root = dir.canonicalize().unwrap();
+        let file = root.join("a.md");
+        let repo = git2::Repository::open(&root).unwrap();
+        std::fs::write(&file, "# committed\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("a.md")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "seed", &tree, &[])
+            .unwrap();
+        std::fs::write(&file, "# index\n").unwrap();
+        index.add_path(Path::new("a.md")).unwrap();
+        index.write().unwrap();
+        std::fs::write(&file, "# working\n").unwrap();
+        assert_eq!(
+            base_contents_with(Preference::Git, &root, &file).unwrap(),
+            b"# committed\n"
+        );
+        assert_eq!(
+            base_contents_with(Preference::Auto, &root, &file),
+            base_contents(&root, &file)
+        );
+    }
 
     #[cfg(feature = "git")]
     #[test]

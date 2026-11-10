@@ -87,6 +87,7 @@ pub struct MdDiffResult {
 /// Every new want starts a computation. Generations reject superseded results in either order.
 #[derive(Default)]
 pub struct MdDiffWorker {
+    read_context: super::DiffReadContext,
     gen: u64,
     pending: Option<(PathBuf, MdDiffKind)>,
     landed: Option<(PathBuf, MdDiffKind, u64, MdDiffOutcome)>,
@@ -97,9 +98,19 @@ pub struct MdDiffWorker {
 type MdCompute = dyn Fn(&MdDiffRequest) -> MdDiffOutcome + Send + Sync;
 
 impl MdDiffWorker {
+    /// Set the choice copied into each dispatched computation, including synchronous fallback.
+    pub fn with_read_context(mut self, context: super::DiffReadContext) -> Self {
+        self.read_context = context;
+        self
+    }
+
     pub fn compute_md_diff(req: &MdDiffRequest) -> MdDiffOutcome {
+        Self::compute_with_context(req, super::DiffReadContext::default())
+    }
+
+    fn compute_with_context(req: &MdDiffRequest, context: super::DiffReadContext) -> MdDiffOutcome {
         let old_bytes: Option<Vec<u8>> = match &req.baseline {
-            DiffBaseline::Vcs => konoma_vcs_core::vcs::base_contents(&req.root, &req.path),
+            DiffBaseline::Vcs => context.base_contents(&req.root, &req.path),
             DiffBaseline::FollowSnapshot(bytes) => Some(bytes.clone()),
             DiffBaseline::FollowHead { sha } => Some(
                 konoma_vcs_core::vcs::contents_at(&req.root, sha, &req.path).unwrap_or_default(),
@@ -250,10 +261,11 @@ impl MdDiffWorker {
 
     fn spawn_or_sync(&self, req: MdDiffRequest) -> Option<MdDiffResult> {
         let compute = self.compute.clone();
+        let context = self.read_context;
         let run = move || {
             let outcome = match compute {
                 Some(compute) => compute(&req),
-                None => Self::compute_md_diff(&req),
+                None => Self::compute_with_context(&req, context),
             };
             MdDiffResult {
                 gen: req.gen,

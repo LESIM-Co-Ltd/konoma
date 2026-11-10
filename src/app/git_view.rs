@@ -14,6 +14,7 @@ mod diff_source_test_adapter;
 /// representation's own `R` back to `Source`) each override just the fields they need.
 #[derive(Default)]
 pub(super) struct DiffOpen {
+    pub read_context: konoma_plugin::host::project::DiffReadContext,
     /// `true` for a follow-originated diff — `n`/`N` then cycles only the follow session's own
     /// changed-file list, and the `Rendered` presentation's baseline is the follow-session snapshot
     /// rather than the backend's committed blob (`App::diff_baseline`, `md_diff.rs`). Defaults to
@@ -683,6 +684,7 @@ impl App {
     /// not the double-validation bug, since it never re-entered `Rendered`). All three now build a
     /// `DiffOpen` up front and call this once.
     pub(super) fn open_git_diff_with(&mut self, path: &Path, open: DiffOpen) {
+        self.tab.diff_read_context = open.read_context;
         self.tab.preview_path = Some(path.to_path_buf());
         self.set_preview_kind(Some(PreviewKind::GitDiff(path.to_path_buf())));
         // The diff preview draws itself (it doesn't use window/image/md). Reset the related state.

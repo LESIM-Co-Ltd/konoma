@@ -421,9 +421,11 @@ impl App {
     /// already-open diff).
     #[cfg(feature = "git")]
     pub(super) fn enter_diff_preview_representation(&mut self, path: &Path) {
+        let read_context = self.tab.diff_read_context;
         let came_from_git_view = self.tab.came_from_git_view;
         let diff_follow_scope = self.diff_follow_scope;
         self.enter_preview(path);
+        self.tab.diff_read_context = read_context;
         self.tab.came_from_git_view = came_from_git_view;
         self.diff_follow_scope = diff_follow_scope;
         self.tab.preview_from_diff = true;
@@ -447,6 +449,7 @@ impl App {
         self.open_git_diff_with(
             &path,
             super::git_view::DiffOpen {
+                read_context: self.tab.diff_read_context,
                 follow_scope: self.diff_follow_scope,
                 view: Some(DiffView::Source),
                 came_from_git_view: Some(self.tab.came_from_git_view),

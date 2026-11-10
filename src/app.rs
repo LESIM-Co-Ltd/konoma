@@ -2061,6 +2061,8 @@ pub(crate) struct PerTab {
     pub(crate) root: PathBuf,
     pub(crate) projects: crate::plugins::projects::ProjectDetection,
     pub(crate) project_navigation: Option<project_screens::ProjectNavigation>,
+    /// Selected project backend for the current diff and its ordinary Preview presentation.
+    diff_read_context: konoma_plugin::host::project::DiffReadContext,
     pub(crate) project_return: Option<project_screens::ProjectNavigation>,
     project_enter_pending: bool,
     project_effects: Vec<project_screens::ProjectEffect>,
@@ -2296,6 +2298,7 @@ impl Default for PerTab {
             open_dir: PathBuf::new(),
             projects: crate::plugins::projects::ProjectDetection::default(),
             project_navigation: None,
+            diff_read_context: Default::default(),
             project_return: None,
             project_enter_pending: false,
             project_effects: Vec::new(),
@@ -3603,11 +3606,20 @@ impl App {
                 return lines;
             }
         }
-        let _ = follow;
+        use crate::vcs::{Preference, Vcs};
+        if !follow {
+            match self.tab.diff_read_context.backend {
+                Preference::Git => return crate::vcs::Git.file_diff(&self.tab.root, path),
+                #[cfg(feature = "git")]
+                Preference::Jj => return crate::vcs::Jj.file_diff(&self.tab.root, path),
+                _ => {}
+            }
+        }
         crate::vcs::file_diff(&self.tab.root, path)
     }
 
     fn enter_preview(&mut self, path: &Path) {
+        self.tab.diff_read_context = Default::default();
         // Is this re-entering the same file (returning via `q` from a full-screen fence)? If so,
         // keep the inline-image cache warm: discarding it would restart every fence from Loading
         // = the one render pass with the collapsed layout would clamp the restored scroll/focus,

@@ -203,6 +203,7 @@ impl DiffScreenState {
         source: Option<crate::host::file_preview::FilePreviewSource>,
     ) -> Result<Self, Failure> {
         let pending = services.clone().spawn_file_diff(request.clone())?;
+        let read_context = request.info.backend.diff_read_context();
         let mut state = Self {
             file_previews: source,
             preview_reply: None,
@@ -229,7 +230,7 @@ impl DiffScreenState {
             viewport: 0,
             rendered: None,
             pending_first_change: None,
-            markdown: markdown.0,
+            markdown: markdown.0.with_read_context(read_context),
             markdown_rx: markdown.1,
             media: media::Media::new(&config.git.media_diff),
             options: DocOptions::from_settings(&crate::config::plugin_settings(

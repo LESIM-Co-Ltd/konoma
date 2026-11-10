@@ -74,6 +74,8 @@ impl DiffScreenState {
     }
 
     fn dispatch_media(&mut self, want: MediaDiffWant, pics: &mut Option<&mut DocPics>) -> bool {
+        self.media.worker = std::mem::take(&mut self.media.worker)
+            .with_read_context(self.request.info.backend.diff_read_context());
         let (path, page, raster_px) = want;
         let services = self.services.clone();
         let source = self.file_previews.clone();

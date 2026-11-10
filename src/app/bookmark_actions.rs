@@ -1048,6 +1048,7 @@ impl App {
         self.open_git_diff_with(
             &target,
             DiffOpen {
+                read_context: self.tab.diff_read_context,
                 follow_scope: self.diff_follow_scope,
                 view: Some(self.tab.diff_view_choice),
                 came_from_git_view: Some(self.tab.came_from_git_view),

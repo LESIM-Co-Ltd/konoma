@@ -64,6 +64,8 @@ impl App {
     }
 
     fn spawn_or_sync_md_diff(&mut self, req: MdDiffRequest) {
+        self.md_diff =
+            std::mem::take(&mut self.md_diff).with_read_context(self.tab.diff_read_context);
         if let Some(result) = self.md_diff.kick(req) {
             self.apply_md_diff(result);
         }

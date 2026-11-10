@@ -495,9 +495,8 @@ fn skip_doctype(body: &str) -> Option<&str> {
     None
 }
 
-/// Which base to read the old side from, and what it actually resolved to. Whether git or jj answers
-/// is decided the same way every other backend-facing question in the app is (`konoma_vcs_core::vcs::detect`),
-/// not carried on the request — a pure function of `root`, costing nothing extra to call here.
+/// Which base to read the old side from, and what it actually resolved to. Without a context,
+/// Git/Jj selection keeps the host's ordinary detection rule.
 ///
 /// Unlike `App::compute_md_diff`'s baseline handling, a [`DiffBaseline::Empty`] falls back to the
 /// committed baseline (`base_contents`) here rather than becoming "no old side": a media diff has no
@@ -519,13 +518,30 @@ pub fn resolve_old_bytes(
     root: &Path,
     path: &Path,
 ) -> (Option<Vec<u8>>, MediaBase) {
+    resolve_old_bytes_with_context(baseline, root, path, super::DiffReadContext::default())
+}
+
+fn resolve_old_bytes_with_context(
+    baseline: &DiffBaseline,
+    root: &Path,
+    path: &Path,
+    context: super::DiffReadContext,
+) -> (Option<Vec<u8>>, MediaBase) {
     let vcs_base = if is_jj(root) {
         MediaBase::JjParent
     } else {
         MediaBase::Head
     };
     match baseline {
-        DiffBaseline::Vcs => (konoma_vcs_core::vcs::base_contents(root, path), vcs_base),
+        DiffBaseline::Vcs => {
+            use konoma_vcs_core::vcs::Preference;
+            let base = match context.backend {
+                Preference::Auto => vcs_base,
+                Preference::Git => MediaBase::Head,
+                Preference::Jj => MediaBase::JjParent,
+            };
+            (context.base_contents(root, path), base)
+        }
         DiffBaseline::FollowSnapshot(bytes) => (Some(bytes.clone()), MediaBase::FollowStart),
         DiffBaseline::FollowHead { sha } => {
             match konoma_vcs_core::vcs::contents_at(root, sha, path) {
@@ -556,13 +572,18 @@ struct MediaDiffByteResolution {
 /// of picture this is: both sides' bytes, sizes, existence, and the cap check. Pure extraction of
 /// that half of the original function — same order of operations, same I/O, nothing moved earlier or
 /// later.
-fn resolve_media_diff_bytes(req: &MediaDiffRequest, cap: u64) -> MediaDiffByteResolution {
+fn resolve_media_diff_bytes(
+    req: &MediaDiffRequest,
+    cap: u64,
+    context: super::DiffReadContext,
+) -> MediaDiffByteResolution {
     // The old side has no size-only API to check first — `resolve_old_bytes` always hands back
     // the full blob or nothing, so its length is only known *after* reading it. The new side is a
     // plain file on disk, so `fs::metadata` gets its size for free: a file already over `cap` is
     // never read into memory at all (skipping a multi-hundred-MB read that would be thrown away
     // immediately).
-    let (old_bytes, base) = resolve_old_bytes(&req.baseline, &req.root, &req.path);
+    let (old_bytes, base) =
+        resolve_old_bytes_with_context(&req.baseline, &req.root, &req.path, context);
     let old_len = old_bytes.as_ref().map(|b| b.len() as u64);
     let old_over_cap = old_len.is_some_and(|n| n > cap);
 
@@ -873,6 +894,7 @@ fn decode_pdf_side(
 /// logical pending key, but the physical slot stays occupied until its own result arrives.
 #[derive(Default)]
 pub struct MediaDiffWorker {
+    read_context: super::DiffReadContext,
     gen: u64,
     pending: Option<MediaDiffWant>,
     busy: bool,
@@ -886,6 +908,12 @@ pub struct MediaDiffWorker {
 type MediaCompute = dyn Fn(&MediaDiffRequest) -> MediaDiffComputed + Send + Sync;
 
 impl MediaDiffWorker {
+    /// Set the choice copied into each dispatched computation, including synchronous fallback.
+    pub fn with_read_context(mut self, context: super::DiffReadContext) -> Self {
+        self.read_context = context;
+        self
+    }
+
     pub fn with_compute(compute: Arc<MediaCompute>) -> Self {
         Self {
             compute: Some(compute),
@@ -951,6 +979,7 @@ impl MediaDiffWorker {
 
     fn spawn_or_sync(&self, req: MediaDiffRequest) -> Option<MediaDiffResult> {
         let compute = self.compute.clone();
+        let context = self.read_context;
         let fallback = MediaDiffResult {
             gen: req.gen,
             path: req.path.clone(),
@@ -961,7 +990,11 @@ impl MediaDiffWorker {
         let run = move || {
             let computed = match compute {
                 Some(compute) => compute(&req),
-                None => Self::compute_media_diff(&req),
+                None => Self::compute_with_context(
+                    &req,
+                    konoma_media_core::pdf::PAGE_COUNT_MAX_BYTES,
+                    context,
+                ),
             };
             MediaDiffResult {
                 gen: req.gen,
@@ -1010,7 +1043,15 @@ impl MediaDiffWorker {
         Self::compute_media_diff_with_cap(req, konoma_media_core::pdf::PAGE_COUNT_MAX_BYTES)
     }
     pub fn compute_media_diff_with_cap(req: &MediaDiffRequest, cap: u64) -> MediaDiffComputed {
-        classify_and_decode_media_diff(req, resolve_media_diff_bytes(req, cap))
+        Self::compute_with_context(req, cap, super::DiffReadContext::default())
+    }
+
+    fn compute_with_context(
+        req: &MediaDiffRequest,
+        cap: u64,
+        context: super::DiffReadContext,
+    ) -> MediaDiffComputed {
+        classify_and_decode_media_diff(req, resolve_media_diff_bytes(req, cap, context))
     }
 
     #[cfg(any(test, feature = "test-hooks"))]

@@ -97,3 +97,26 @@ pub mod preview_gutter;
 pub mod rendered_diff;
 
 pub mod media_diff;
+
+/// Backend choice carried by a diff computation. An unspecified context keeps host detection.
+/// `Preference` represents Git and Jj even when the core's Git/Jj integration is compiled out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffReadContext {
+    pub backend: konoma_vcs_core::vcs::Preference,
+}
+
+impl DiffReadContext {
+    pub fn new(backend: konoma_vcs_core::vcs::Preference) -> Self {
+        Self { backend }
+    }
+
+    fn base_contents(self, root: &std::path::Path, file: &std::path::Path) -> Option<Vec<u8>> {
+        konoma_vcs_core::vcs::base_contents_with(self.backend, root, file)
+    }
+}
+
+impl Default for DiffReadContext {
+    fn default() -> Self {
+        Self::new(konoma_vcs_core::vcs::Preference::Auto)
+    }
+}

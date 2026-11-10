@@ -39,6 +39,16 @@ pub enum ProjectBackend {
     Jj,
 }
 
+impl ProjectBackend {
+    pub(in crate::app) fn diff_read_context(self) -> crate::host::project::DiffReadContext {
+        use konoma_vcs_core::vcs::Preference;
+        crate::host::project::DiffReadContext::new(match self {
+            Self::Git => Preference::Git,
+            Self::Jj => Preference::Jj,
+        })
+    }
+}
+
 /// A backend checked before terminal entry. Empty diffs and changed-file sets are valid answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectServiceInfo {

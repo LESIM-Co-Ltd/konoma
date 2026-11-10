@@ -87,6 +87,8 @@ impl App {
     }
 
     fn spawn_or_sync_media_diff(&mut self, req: MediaDiffRequest) {
+        self.media_diff =
+            std::mem::take(&mut self.media_diff).with_read_context(self.tab.diff_read_context);
         if let Some(result) = self.media_diff.dispatch(req) {
             self.apply_media_diff(result);
         }

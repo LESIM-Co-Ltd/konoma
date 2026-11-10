@@ -15,6 +15,183 @@ fn directory() -> TmpDir {
     dir.into_canonical().unwrap()
 }
 
+#[cfg(feature = "git")]
+#[test]
+fn standalone_selected_backend_reaches_diff_workers() {
+    use konoma_plugin::app::diff_screen::{DiffScreenState, FileDiffRequest};
+    use konoma_plugin::app::project::ProjectServiceInfo;
+    use konoma_plugin::host::project::md_diff::{MdDiffOutcome, MdDiffWorker};
+    use konoma_plugin::host::project::media_diff::{
+        MediaBase, MediaDiffComputed, MediaDiffSideDecoded, MediaDiffWorker,
+    };
+    use konoma_vcs_core::git2;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    if !konoma_vcs_core::vcs::jj::available() {
+        return;
+    }
+    const CHILD: &str = "KONOMA_STANDALONE_BACKEND_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let home = directory();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "standalone_tests::standalone_selected_backend_reaches_diff_workers",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", home.as_path())
+            .env("XDG_CONFIG_HOME", home.as_path())
+            .env("JJ_CONFIG", "")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+        return;
+    }
+    let dir = directory();
+    let repo = git2::Repository::init(&dir).unwrap();
+    let md = dir.join("a.md");
+    let svg = dir.join("b.svg");
+    const GIT_SVG: &str =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><!-- HEAD --></svg>";
+    const JJ_SVG: &str =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><!-- parent --></svg>";
+    let commit = |text: &str, picture: &str| {
+        std::fs::write(&md, text).unwrap();
+        std::fs::write(&svg, picture).unwrap();
+        let mut index = repo.index().unwrap();
+        for path in ["a.md", "b.svg"] {
+            index.add_path(std::path::Path::new(path)).unwrap();
+        }
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig =
+            git2::Signature::new("fixture", "fixture@example.invalid", &git2::Time::new(0, 0))
+                .unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "fixture",
+            &tree,
+            &parent.iter().collect::<Vec<_>>(),
+        )
+        .unwrap();
+    };
+    commit("# jj parent\n", JJ_SVG);
+    let output = std::process::Command::new("jj")
+        .current_dir(&dir)
+        .args(["git", "init", "--colocate", "."])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "jj init: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    commit("# git head\n", GIT_SVG);
+    std::fs::write(&md, "# working\n").unwrap();
+    std::fs::write(
+        &svg,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"/>",
+    )
+    .unwrap();
+    let config = Default::default();
+    let layout = ProjectSettings::from_config(&config).diff_layout;
+    let wait = Duration::from_secs(30);
+    let mut checked = 0;
+    for (backend, text, picture, base) in [
+        (
+            ProjectBackend::Git,
+            "# git head\n",
+            GIT_SVG,
+            MediaBase::Head,
+        ),
+        (
+            ProjectBackend::Jj,
+            "# jj parent\n",
+            JJ_SVG,
+            MediaBase::JjParent,
+        ),
+    ] {
+        let info = ProjectServiceInfo {
+            workdir: dir.to_path_buf(),
+            backend,
+        };
+        let raw = VcsServices.file_diff(&info, &md);
+        assert!(
+            raw.iter().any(|l| l.text == text.trim_end()),
+            "selected standalone raw baseline: {raw:?}"
+        );
+        let request = |path| FileDiffRequest {
+            root: dir.to_path_buf(),
+            path,
+            info: info.clone(),
+        };
+        let (tx, results) = mpsc::channel();
+        let (_unused_tx, unused_rx) = mpsc::channel();
+        let mut markdown = MdDiffWorker::default();
+        markdown.attach(tx);
+        let _screen = DiffScreenState::open_with_markdown_worker(
+            request(md.clone()),
+            Arc::new(VcsServices),
+            &config,
+            layout,
+            None,
+            markdown,
+            unused_rx,
+        )
+        .unwrap();
+        let result = results.recv_timeout(wait).unwrap();
+        let MdDiffOutcome::Ready { old_pre, .. } = result.outcome else {
+            panic!("expected standalone Markdown")
+        };
+        assert_eq!(old_pre, text, "selected standalone Rendered baseline");
+
+        let (tx, results) = mpsc::channel();
+        let (_unused_tx, unused_rx) = mpsc::channel();
+        let mut media = MediaDiffWorker::default();
+        media.attach(tx);
+        let mut screen = DiffScreenState::open(
+            request(svg.clone()),
+            Arc::new(VcsServices),
+            &config,
+            layout,
+            None,
+        )
+        .unwrap()
+        .with_media_worker(media, unused_rx);
+        screen.prepare_frame(Default::default(), None);
+        let result = results.recv_timeout(wait).unwrap();
+        let MediaDiffComputed::Ready {
+            base: actual_base,
+            old: MediaDiffSideDecoded::Picture(old),
+            ..
+        } = result.computed
+        else {
+            panic!("expected standalone media")
+        };
+        assert_eq!(actual_base, base);
+        assert_eq!(
+            old.svg.as_deref().unwrap().as_slice(),
+            picture.as_bytes(),
+            "selected standalone media bytes"
+        );
+        checked += 3;
+    }
+    assert!(checked >= 6, "both standalone backends must run");
+}
+
 fn project(dir: &std::path::Path, plugin: &dyn Plugin) -> MatchedProject {
     let declaration = plugin.manifest().project.unwrap();
     MatchedProject {
