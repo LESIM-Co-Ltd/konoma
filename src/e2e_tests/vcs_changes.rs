@@ -11,6 +11,26 @@ mod writes;
 #[path = "vcs_branches.rs"]
 mod branches;
 
+pub(super) fn seed_write_repository(root: &std::path::Path, changed: bool) {
+    writes::seed(root, changed);
+}
+
+pub(super) fn branch_write_fixture() -> crate::test_support::TmpDir {
+    branches::fixture("vcs_app_branch_writes")
+}
+
+pub(super) fn write_git_output(root: &std::path::Path, args: &[&str]) -> String {
+    writes::git_output(root, args)
+}
+
+pub(super) fn write_jj_state(root: &std::path::Path) -> Vec<String> {
+    writes::jj_state(root)
+}
+
+pub(super) fn seed_jj_write_repository(root: &std::path::Path, colocated: bool) {
+    writes::seed_jj(root, colocated);
+}
+
 pub(super) fn add_jj_bookmarks(dir: &std::path::Path) {
     branches::add_jj_bookmarks(dir);
 }

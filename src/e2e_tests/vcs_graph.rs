@@ -962,6 +962,13 @@ fn e2e_vcs_graph_jj_repository_tests_guard_optional_binary() {
     // Whitespace, comments, strings and local variable names do not delimit a function.
     assert!(
         jj_test_is_guarded(
+            include_str!("vcs_app_write_cases.rs"),
+            "confirmation_retry_and_read_only_match_host"
+        ),
+        "the standalone write confirmation test must guard jj cases when jj is absent"
+    );
+    assert!(
+        jj_test_is_guarded(
             include_str!("vcs_app_parity.rs"),
             "jj_graph_and_bookmarks_offer_only_real_actions"
         ),
@@ -1075,7 +1082,7 @@ fn jj_test_is_guarded(source: &str, name: &str) -> bool {
     let setup = body.windows(2).position(|t| {
         matches!(
             t[0].as_str(),
-            "jj" | "jj_graph_fixture" | "graph_jj_fixture"
+            "jj" | "jj_graph_fixture" | "graph_jj_fixture" | "jj_write_cases"
         ) && t[1] == "("
     });
     matches!((guarded, setup), (Some(guard), Some(setup)) if guard < setup)

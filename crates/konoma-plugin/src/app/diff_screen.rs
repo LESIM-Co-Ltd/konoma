@@ -915,8 +915,8 @@ impl DiffScreenState {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 match self.request.info.backend {
-                    super::project::ProjectBackend::Git => " GIT ",
-                    super::project::ProjectBackend::Jj => " JJ ",
+                    super::project::ProjectBackend::Git => self.word(" GIT ", " Git "),
+                    super::project::ProjectBackend::Jj => self.word(" JJ ", " jj "),
                 },
                 Style::new()
                     .fg(Color::Black)

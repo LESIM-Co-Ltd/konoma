@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 /// Owned, read-only facts at a fence. No host surface or action types cross this seam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectStateSnapshot {
+    pub chip: Option<crate::project::Chip>,
     pub graph: Option<super::ProjectGraphSnapshot>,
     pub backend: Option<String>,
     pub stack: Vec<String>,
@@ -33,6 +34,7 @@ pub struct ProjectStateSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectPromptSnapshot {
+    pub kind: String,
     pub action: String,
     pub stage: usize,
     pub buffer: String,
@@ -86,6 +88,7 @@ pub fn observe_project_state_for_test<I: PromptInvocation>(
     }
     state.prompt = dialog.map(|dialog| match dialog {
         ProjectDialog::Projects { projects, selected } => ProjectPromptSnapshot {
+            kind: "projects".into(),
             action: "projects".into(),
             stage: 0,
             buffer: String::new(),
@@ -104,6 +107,12 @@ pub fn observe_project_state_for_test<I: PromptInvocation>(
             cursor,
             selected,
         } => ProjectPromptSnapshot {
+            kind: match &prompts[*stage] {
+                ProjectPrompt::Confirmation(_) => "confirm",
+                ProjectPrompt::Text(_) => "input",
+                ProjectPrompt::Choice(_) => "choice",
+            }
+            .into(),
             action: invocation.prompt_invocation().action.action.clone(),
             stage: *stage,
             buffer: buffer.clone(),

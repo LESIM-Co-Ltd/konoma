@@ -33,13 +33,19 @@ impl ProjectLoopState {
                 konoma_host_core::keymap::CoreMenu::Actions => "actions",
                 _ => "other",
             });
-            *slot.lock().unwrap() = Some(super::super::observe_project_state_for_test(
+            let mut state = super::super::observe_project_state_for_test(
                 self.screen.as_ref(),
                 content.as_deref(),
                 self.dialog.as_ref(),
                 menu,
                 prepared.notice.clone(),
-            ));
+            );
+            state.chip = self
+                .screen
+                .as_ref()
+                .and_then(|nav| self.runtimes.get(&nav.project))
+                .and_then(|runtime| runtime.chip.clone());
+            *slot.lock().unwrap() = Some(state);
         }
     }
 

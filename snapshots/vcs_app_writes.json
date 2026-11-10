@@ -1,0 +1,46 @@
+{
+  "en": {
+    "readonly_empty_changes": {
+      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help",
+      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help"
+    },
+    "branches": {
+      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:checkout  y:copy  Space:Actions  c:new  d:delete",
+      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:checkout  y:copy  Space:Actions  c:new  d:delete"
+    },
+    "readonly_changes": {
+      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab  Space:Actions",
+      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:diff  Space:Actions"
+    },
+    "readonly_branches": {
+      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  y:copy",
+      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  y:copy"
+    },
+    "readonly_jj_changes": {
+      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab  Space:Actions",
+      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:diff  Space:Actions"
+    }
+  },
+  "ja": {
+    "readonly_empty_changes": {
+      "host": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ",
+      "app": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ"
+    },
+    "branches": {
+      "host": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:切替  y:コピー  Space:操作  c:新規  d:削除",
+      "app": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:切替  y:コピー  Space:操作  c:新規  d:削除"
+    },
+    "readonly_changes": {
+      "host": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ  Space:操作",
+      "app": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:差分  Space:操作"
+    },
+    "readonly_branches": {
+      "host": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  y:コピー",
+      "app": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  y:コピー"
+    },
+    "readonly_jj_changes": {
+      "host": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ  Space:操作",
+      "app": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:差分  Space:操作"
+    }
+  }
+}

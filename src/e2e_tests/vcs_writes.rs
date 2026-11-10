@@ -8,7 +8,7 @@ use crate::plugins::test_projects::{ObservedVcs, VcsCalls};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-fn git_output(root: &Path, args: &[&str]) -> String {
+pub(super) fn git_output(root: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .current_dir(root)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -28,7 +28,7 @@ fn git_output(root: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-fn seed(root: &Path, changed: bool) {
+pub(super) fn seed(root: &Path, changed: bool) {
     std::fs::create_dir_all(root).unwrap();
     git_output(
         root,
@@ -88,30 +88,7 @@ impl WritePair {
         let old_root = dir.join("old/repo");
         let new_root = dir.join("new/repo");
         for root in [&old_root, &new_root] {
-            if colocated {
-                seed(root, false);
-            } else {
-                std::fs::create_dir_all(root).unwrap();
-            }
-            assert!(crate::test_support::run_jj(
-                root,
-                &[
-                    "git",
-                    "init",
-                    if colocated {
-                        "--colocate"
-                    } else {
-                        "--no-colocate"
-                    },
-                    "."
-                ]
-            ));
-            std::fs::write(root.join("a-modified"), "base\n").unwrap();
-            assert!(crate::test_support::run_jj(
-                root,
-                &["commit", "-m", "jj seed"]
-            ));
-            std::fs::write(root.join("a-modified"), "changed\n").unwrap();
+            seed_jj(root, colocated);
         }
         Some(Self::open(
             dir, old_root, new_root, "jj", name, lang, "relative", read_only, confirm,
@@ -339,6 +316,33 @@ impl WritePair {
         assert_eq!(prompt.label.get(self.new.app.plugin_lang()), title);
         assert_eq!(buffer, text);
     }
+}
+
+pub(super) fn seed_jj(root: &Path, colocated: bool) {
+    if colocated {
+        seed(root, false);
+    } else {
+        std::fs::create_dir_all(root).unwrap();
+    }
+    assert!(crate::test_support::run_jj(
+        root,
+        &[
+            "git",
+            "init",
+            if colocated {
+                "--colocate"
+            } else {
+                "--no-colocate"
+            },
+            "."
+        ]
+    ));
+    std::fs::write(root.join("a-modified"), "base\n").unwrap();
+    assert!(crate::test_support::run_jj(
+        root,
+        &["commit", "-m", "jj seed"]
+    ));
+    std::fs::write(root.join("a-modified"), "changed\n").unwrap();
 }
 
 #[test]
@@ -755,7 +759,7 @@ fn jj_output(root: &Path, args: &[&str]) -> String {
         .replace(root.to_str().unwrap(), "<repo>")
 }
 
-fn jj_state(root: &Path) -> Vec<String> {
+pub(super) fn jj_state(root: &Path) -> Vec<String> {
     vec![
         jj_output(root, &["file", "show", "-r", "@", "a-modified"]),
         jj_output(

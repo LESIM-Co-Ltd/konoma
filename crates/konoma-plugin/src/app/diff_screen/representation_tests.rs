@@ -4,6 +4,87 @@ use crate::registry::Registry;
 use konoma_host_core::project::DiffTarget;
 
 #[test]
+fn diff_header_backend_chip_matches_host_language_and_style() {
+    use crate::app::project::ProjectBackend;
+    use ratatui::{
+        layout::Alignment,
+        style::{Color, Style, Stylize},
+        text::{Line, Span},
+        widgets::{Paragraph, Widget},
+    };
+    for (backend, lang, chip, bg, diff, path) in [
+        (
+            ProjectBackend::Git,
+            Lang::En,
+            " GIT ",
+            Color::Yellow,
+            " DIFF ",
+            "  path:rel",
+        ),
+        (
+            ProjectBackend::Git,
+            Lang::Jp,
+            " Git ",
+            Color::Yellow,
+            " 差分 ",
+            "  パス:相対",
+        ),
+        (
+            ProjectBackend::Jj,
+            Lang::En,
+            " JJ ",
+            Color::Magenta,
+            " DIFF ",
+            "  path:rel",
+        ),
+        (
+            ProjectBackend::Jj,
+            Lang::Jp,
+            " jj ",
+            Color::Magenta,
+            " 差分 ",
+            "  パス:相対",
+        ),
+    ] {
+        let config = SharedConfig::parse("[ui]\npath_style='relative'\n").unwrap();
+        let mut state = DiffScreenState::open_for_project(
+            FileDiffRequest {
+                path: "/fixture/file".into(),
+                root: "/fixture".into(),
+                info: ProjectServiceInfo {
+                    workdir: "/fixture".into(),
+                    backend,
+                },
+            },
+            Arc::new(super::preview_tests::Services(std::thread::current().id())),
+            &config,
+            DiffLayout::Unified,
+            None,
+            Some(FilePreviewSource::new(
+                Arc::new(Registry::new()),
+                vec![],
+                false,
+            )),
+        )
+        .unwrap();
+        state.set_lang(lang);
+        let area = Rect::new(0, 0, 90, 1);
+        let mut actual = Buffer::empty(area);
+        state.draw_header(&mut actual, area);
+        let mut expected = Buffer::empty(area);
+        Paragraph::new(Line::from(vec![
+            Span::styled(chip, Style::new().fg(Color::Black).bg(bg).bold()),
+            Span::raw(" "),
+            Span::styled(diff, Style::new().fg(Color::White).bg(Color::Blue).bold()),
+            Span::raw(path).dim(),
+        ]))
+        .alignment(Alignment::Right)
+        .render(area, &mut expected);
+        assert_eq!(actual, expected, "exact top row: {backend:?} {lang:?}");
+    }
+}
+
+#[test]
 fn preview_hints_exist_exactly_when_keys_act() {
     for (target, count) in [
         (DiffTarget::Other, 1),

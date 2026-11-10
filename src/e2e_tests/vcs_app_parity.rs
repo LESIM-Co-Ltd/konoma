@@ -28,6 +28,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+include!("vcs_app_write_cases.rs");
+
 thread_local! {
     static TALLY: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
@@ -83,6 +85,8 @@ enum Step {
     Key(KeyEvent),
     Resize(u16, u16),
     BeforeKey(BeforeKey, KeyEvent),
+    Write(KeyEvent, &'static str),
+    Policy(String),
 }
 fn key(code: KeyCode) -> Step {
     Step::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -114,6 +118,8 @@ fn isolated(name: &str) -> bool {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("JJ_CONFIG", "")
+        .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+0000")
+        .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+0000")
         .output()
         .unwrap();
     assert!(
@@ -160,13 +166,21 @@ fn host_state(host: &Sim) -> ProjectStateSnapshot {
         crate::keymap::LeaderId::Actions => "actions",
         _ => panic!("unexpected menu {menu:?}"),
     });
-    observe_project_state_for_test(
+    let mut state = observe_project_state_for_test(
         host.app.tab.project_navigation.as_deref(),
         content.as_deref(),
         host.app.project_dialog.as_ref(),
         menu,
         host.app.flash.clone(),
-    )
+    );
+    state.chip = host
+        .app
+        .tab
+        .project_navigation
+        .as_ref()
+        .and_then(|nav| host.app.project_runtimes.get(&nav.project))
+        .and_then(|runtime| runtime.chip.clone());
+    state
 }
 
 fn expected_footer(
@@ -351,8 +365,22 @@ fn run(
     text: &str,
     steps: Vec<Step>,
     failure: bool,
+    check: impl FnMut(usize, &ProjectStateSnapshot, &Sim, &[String]),
+) {
+    run_roots((root, root), id, text, steps, failure, check);
+}
+
+fn run_roots(
+    (root, app_root): (&Path, &Path),
+    id: &str,
+    text: &str,
+    steps: Vec<Step>,
+    failure: bool,
     mut check: impl FnMut(usize, &ProjectStateSnapshot, &Sim, &[String]),
 ) {
+    use crate::plugins::test_projects::{ObservedVcs, VcsCalls};
+    let host_calls = Arc::new(Mutex::new(VcsCalls::default()));
+    let app_calls = Arc::new(Mutex::new(VcsCalls::default()));
     let mut cfg: Config = toml::from_str(text).unwrap();
     let plugin = || -> Arc<dyn Plugin> {
         match id {
@@ -361,7 +389,17 @@ fn run(
             _ => unreachable!(),
         }
     };
-    let (host_plugin, host_graph) = probe_graph_plugin_for_test(plugin());
+    let write_actions: Vec<_> = plugin()
+        .manifest()
+        .actions
+        .into_iter()
+        .filter(|a| a.writes)
+        .map(|a| a.id)
+        .collect();
+    let (host_plugin, host_graph) = probe_graph_plugin_for_test(Arc::new(ObservedVcs {
+        plugin: plugin(),
+        calls: host_calls.clone(),
+    }));
     static PROBE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let marker = crate::plugins::test_plugins::register(
         &format!(
@@ -379,6 +417,12 @@ fn run(
     let settings = cfg.plugins.remove(&previous).unwrap();
     cfg.plugins.insert(marker, settings);
     let lang = cfg.ui.lang.clone();
+    let read_only = cfg
+        .plugins
+        .get(id)
+        .and_then(|p| p.get("read_only"))
+        .and_then(toml::Value::as_bool)
+        == Some(true);
     let mut host = Sim::with_config_sized(root, cfg, 90, 14);
     host.app.tab.projects.wait_for_result();
     host.app.poll_projects();
@@ -387,7 +431,10 @@ fn run(
     assert!(host.app.project_active(), "host must open the real project");
     let mut plugins: Vec<Arc<dyn Plugin>> =
         konoma_vcs::program().into_iter().map(Arc::from).collect();
-    let (app_plugin, app_graph) = probe_graph_plugin_for_test(plugin());
+    let (app_plugin, app_graph) = probe_graph_plugin_for_test(Arc::new(ObservedVcs {
+        plugin: plugin(),
+        calls: app_calls.clone(),
+    }));
     *plugins
         .iter_mut()
         .find(|plugin| plugin.manifest().id == id)
@@ -395,7 +442,7 @@ fn run(
     plugins.extend(konoma_file_plugins::plugins());
     let mut app = prepare_projects(
         plugins,
-        root,
+        app_root,
         TermCaps::new(),
         (SharedConfig::parse(text).unwrap(), None),
         Arc::new(konoma_vcs::standalone::VcsServices),
@@ -424,24 +471,63 @@ fn run(
     let backend = Arc::new(Mutex::new(TestBackend::new(90, 14)));
     let mut terminal = Terminal::new(SharedBackend(backend.clone())).unwrap();
     let fixture = read_snapshot_for_test("vcs_app_chrome");
-    let graph_fixture = read_snapshot_for_test("vcs_app_graph");
+    let mut graph_fixture = read_snapshot_for_test("vcs_app_graph");
+    if root != app_root {
+        // These are the same §4-1:220 / §7-5:967 root-footer exceptions as U8b/U8c.
+        let write_fixture = read_snapshot_for_test("vcs_app_writes");
+        for lang in ["en", "ja"] {
+            for screen in ["branches", "changes", "empty_changes", "jj_changes"] {
+                let kind = if read_only {
+                    format!("readonly_{screen}")
+                } else {
+                    screen.into()
+                };
+                if !write_fixture[lang][&kind].is_null() {
+                    graph_fixture[lang][screen] = write_fixture[lang][&kind].clone();
+                }
+            }
+        }
+    }
     let mut host_writes = Vec::new();
     let count = steps.len();
     let mut steps = steps.into_iter();
     let mut step = 0;
+    let mut expected_acts = Vec::<String>::new();
+    let mut refresh_before = None;
     let cx = ProjectLoopCx {
         home: std::env::var_os("HOME").map(Into::into),
         launch: None,
     };
-    run_project_fenced_state_for_test(
+    // Public prepared state can be reconfigured only between runs. Ordinary scenarios still
+    // use one uninterrupted run; the submit-boundary case retains its real dialog and owners.
+    loop {
+        let mut policy_change = None;
+        run_project_fenced_state_for_test(
         &mut terminal,
         &mut app,
         &cx,
         None,
         |idle, frame, mut state| {
             assert!(idle.is_idle());
-            let host_frame = host.project_frame();
+            let mut host_frame = host.project_frame();
+            let mut frame = frame;
             let mut host_snapshot = host_state(&host);
+            if root != app_root {
+                normalize_write_state(&mut host_snapshot, root);
+                normalize_write_state(&mut state, app_root);
+                normalize_write_frame(&mut host_frame, root);
+                normalize_write_frame(&mut frame, app_root);
+                assert_write_repositories(root, app_root, id, step);
+                let writes = |calls: &Arc<Mutex<VcsCalls>>| calls.lock().unwrap().acts.iter().filter(|a| write_actions.contains(a)).cloned().collect::<Vec<_>>();
+                compare_dispatched_writes(&writes(&host_calls), &writes(&app_calls), &expected_acts)
+                    .unwrap_or_else(|e| panic!("step {step}: {e}"));
+                if let Some(((host_views, host_chips), (app_views, app_chips))) = refresh_before.take() {
+                    let host = host_calls.lock().unwrap();
+                    let app = app_calls.lock().unwrap();
+                    assert_eq!(host.views - host_views, app.views - app_views, "step {step}: screen refresh count after write");
+                    assert_eq!(host.chips - host_chips, app.chips - app_chips, "step {step}: chip refresh count after write");
+                }
+            }
             let picker_cursor = |snapshot: &ProjectStateSnapshot| {
                 (snapshot.stack.last().map(String::as_str) == Some("graph_picker"))
                     .then_some(snapshot.cursor)
@@ -463,6 +549,15 @@ fn run(
                     "a non-selectable row was selected"
                 );
             }
+            if root != app_root && cells(&host_frame, 0) != cells(&frame, 0) {
+                for (side, frame) in [("host", &host_frame), ("app", &frame)] {
+                    eprintln!("{side} complete frame ({}x{}):", frame.area.width, frame.area.height);
+                    for y in 0..frame.area.height {
+                        let row: String = (0..frame.area.width).map(|x| frame[(x, y)].symbol()).collect();
+                        eprintln!("{y:02}: {row}");
+                    }
+                }
+            }
             frames(&host_frame, &frame, &state, &lang, &fixture, &graph_fixture, host.app.show_help);
             check(step, &state, &host, &host_writes);
             let Some(next) = steps.next() else {
@@ -472,7 +567,18 @@ fn run(
             let next = match next {
                 Step::BeforeKey(before, key) => {
                     before(root);
+                    if root != app_root { before(app_root); }
                     Step::Key(key)
+                }
+                Step::Write(key, action) => {
+                    let counts = |calls: &Arc<Mutex<VcsCalls>>| { let calls = calls.lock().unwrap(); (calls.views, calls.chips) };
+                    refresh_before = Some((counts(&host_calls), counts(&app_calls)));
+                    expected_acts.push(action.into());
+                    Step::Key(key)
+                }
+                Step::Policy(text) => {
+                    policy_change = Some(text);
+                    return Next::End;
                 }
                 other => other,
             };
@@ -499,12 +605,22 @@ fn run(
                     clear_test_clipboard();
                     AppEvent::Key(key_from_crossterm(&key).unwrap())
                 }
-                Step::BeforeKey(..) => unreachable!(),
+                Step::BeforeKey(..) | Step::Write(..) | Step::Policy(..) => unreachable!(),
             };
             Next::Event(event)
         },
     )
     .unwrap();
+        let Some(text) = policy_change else { break };
+        let shared = SharedConfig::parse(&text).unwrap();
+        let config: Config = toml::from_str(&text).unwrap();
+        for (id, settings) in config.plugins {
+            host.app.cfg.plugins.insert(id, settings);
+        }
+        for (id, settings) in shared.plugins {
+            app.config.plugins.insert(id, settings);
+        }
+    }
     assert_eq!(step, count, "every input must reach its fence");
     TALLY.with(|t| {
         let (runs, fences) = t.get();
