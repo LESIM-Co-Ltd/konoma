@@ -204,6 +204,9 @@ pub struct SharedUi {
     pub svg_max_px: u32,
     /// Wrapping in text previews and documents (konoma's `ui.wrap`): `false` scrolls sideways.
     pub wrap: bool,
+    /// Git change markers in the left margin of file previews (konoma's `ui.git_gutter`;
+    /// default `true`).
+    pub git_gutter: bool,
     /// How a path is written in a title: "relative" | "home" | "full" (konoma's `ui.path_style`).
     pub path_style: String,
     /// Icon glyphs in a document (konoma's `ui.icons`).
@@ -237,6 +240,7 @@ impl Default for SharedUi {
             diff_view: "rendered".into(),
             svg_max_px: DEFAULT_SVG_MAX_PX,
             wrap: true,
+            git_gutter: true,
             path_style: "relative".into(),
             icons: true,
             tab_width: 4,

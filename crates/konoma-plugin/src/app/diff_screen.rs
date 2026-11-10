@@ -288,6 +288,15 @@ impl DiffScreenState {
         .then_some(Duration::from_millis(16))
     }
 
+    pub(in crate::app) fn take_preview_lines(
+        &mut self,
+    ) -> (Option<FileDiffReply>, Option<Vec<DiffLine>>) {
+        (
+            self.pending.take(),
+            self.data.as_ref().map(|d| d.lines.clone()),
+        )
+    }
+
     pub(super) fn set_lang(&mut self, lang: Lang) {
         self.lang = lang;
         self.app_keys = self.app_keys.clone().with_lang(lang);

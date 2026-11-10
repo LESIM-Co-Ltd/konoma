@@ -1,16 +1,16 @@
 //! Drawing a frame with ratatui.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     static LAST_FRAME: std::cell::RefCell<Option<ratatui::buffer::Buffer>> = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 pub(in crate::app) fn record_test_frame(buffer: &ratatui::buffer::Buffer) {
     LAST_FRAME.with(|frame| *frame.borrow_mut() = Some(buffer.clone()));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 pub(in crate::app) fn test_frame() -> ratatui::buffer::Buffer {
     LAST_FRAME.with(|frame| frame.borrow().as_ref().expect("a frame was drawn").clone())
 }

@@ -7,12 +7,221 @@ use crate::app::diff_screen::DiffScreenReturn;
 use crate::app::looping::FileLoopState;
 use crate::app::{AppActs, AppCx, AppError, Opened, ReopenSource};
 use crate::host::file_preview::{FilePreviewPlan, FilePreviewSource};
+use crate::host::project::md_diff::{
+    DiffBaseline, MdDiffKind, MdDiffOutcome, MdDiffRequest, MdDiffResult, MdDiffWorker,
+};
+use crate::host::project::preview_gutter::{
+    first_change_position, line_gutter_marks, FirstChangePosition, GutterMark,
+};
 use crate::{Input, Manifest, OpenCx, Session, View, ViewCx, ViewKind, ViewReq};
+use std::collections::HashMap;
+use std::time::Duration;
+
+#[cfg(test)]
+#[path = "preview_worker_tests.rs"]
+mod worker_tests;
 
 pub(super) struct FilePreviewState {
     pub(super) opened: Opened,
     pub(super) runner: FileLoopState,
     pub(super) source: DiffScreenReturn,
+    pub(super) gutter: PreviewGutter,
+}
+
+/// One Preview owns its replies, deadline, layout input and path-scoped reservation.
+/// Raw text reuses the opening diff's worker instead of selecting its baseline again.
+pub(in crate::app) struct PreviewGutter {
+    path: PathBuf,
+    root: PathBuf,
+    enabled: bool,
+    eligible: bool,
+    pub(in crate::app) settings: crate::Settings,
+    reservation: Option<PathBuf>,
+    markdown: MdDiffWorker,
+    markdown_rx: Receiver<MdDiffResult>,
+    raw: Option<crate::app::diff_screen::FileDiffReply>,
+    lines: Option<HashMap<u32, GutterMark>>,
+    outcome: Option<MdDiffOutcome>,
+    options: Option<crate::view::DocOptions>,
+    pub(in crate::app) yield_on_timeout: bool,
+    pub(in crate::app) owner_wake: Option<Duration>,
+}
+
+impl PreviewGutter {
+    fn new(
+        path: PathBuf,
+        root: PathBuf,
+        enabled: bool,
+        context: crate::host::project::DiffReadContext,
+    ) -> Self {
+        let (tx, markdown_rx) = mpsc::channel();
+        let mut markdown = MdDiffWorker::default().with_read_context(context);
+        markdown.attach(tx);
+        Self {
+            reservation: Some(path.clone()),
+            path,
+            root,
+            enabled,
+            eligible: true,
+            settings: crate::Settings::new(),
+            markdown,
+            markdown_rx,
+            raw: None,
+            lines: None,
+            outcome: None,
+            options: None,
+            yield_on_timeout: false,
+            owner_wake: None,
+        }
+    }
+
+    pub(in crate::app) fn wake_in(&self) -> Option<Duration> {
+        [
+            (self.raw.is_some() || self.markdown.pending_for(&self.path))
+                .then_some(Duration::from_millis(16)),
+            self.owner_wake,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    fn adopt(&mut self, result: MdDiffResult) -> bool {
+        if result.path != self.path
+            || result.kind != MdDiffKind::Gutter
+            || !self.markdown.apply(result)
+        {
+            return false;
+        }
+        self.outcome = self.markdown.landed_for(&self.path, MdDiffKind::Gutter);
+        true
+    }
+
+    pub(in crate::app) fn poll(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(result) = self.markdown_rx.try_recv() {
+            changed |= self.adopt(result);
+        }
+        if let Some(rx) = &self.raw {
+            match rx.try_recv() {
+                Ok(reply) => {
+                    self.lines = Some(
+                        reply.map_or_else(|_| HashMap::new(), |d| line_gutter_marks(&d.lines)),
+                    );
+                    self.raw = None;
+                    changed = true;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.lines = Some(HashMap::new());
+                    self.raw = None;
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        changed
+    }
+
+    pub(in crate::app) fn prepare(&mut self, view: &View) {
+        if !self.eligible {
+            return;
+        }
+        match view {
+            View::Document(dv)
+                if matches!(&dv.origin, crate::input::Origin::File(p) if p == &self.path)
+                    && !self.path.extension().is_some_and(|e| {
+                        e.eq_ignore_ascii_case("mmd") || e.eq_ignore_ascii_case("mermaid")
+                    }) =>
+            {
+                self.raw = None;
+                if !self.enabled {
+                    // The host has no Markdown marks or first-change row with the gutter off.
+                    self.reservation = None;
+                    return;
+                }
+                if self.options.as_ref().is_some_and(|o| o != &dv.options) {
+                    self.markdown.invalidate();
+                    self.outcome = None;
+                }
+                self.options = Some(dv.options.clone());
+                if self.markdown.needs(&self.path, MdDiffKind::Gutter) {
+                    // Always attach a reply channel: no baseline I/O on the UI thread.
+                    let result = self.markdown.kick(MdDiffRequest {
+                        gen: 0,
+                        path: self.path.clone(),
+                        root: self.root.clone(),
+                        kind: MdDiffKind::Gutter,
+                        baseline: DiffBaseline::Vcs,
+                        md_frontmatter: dv.options.front_matter,
+                        md_footnotes: dv.options.footnotes,
+                        md_inline_html: dv.options.inline_html,
+                    });
+                    debug_assert!(result.is_none());
+                }
+            }
+            View::Text(t)
+                if t.file_lines
+                    && match &t.source {
+                        crate::view::TextSource::File(path) => path == &self.path,
+                        _ => true,
+                    } => {}
+            _ => self.cancel(),
+        }
+    }
+
+    pub(in crate::app) fn cancel(&mut self) {
+        self.eligible = false;
+        self.reservation = None;
+        self.raw = None;
+        self.lines = None;
+        self.outcome = None;
+        self.markdown.invalidate();
+    }
+
+    pub(in crate::app) fn document_gutter(
+        &self,
+    ) -> Option<crate::host::project::preview_gutter::FilePreviewGutter<'_>> {
+        self.enabled
+            .then(|| {
+                crate::host::project::preview_gutter::FilePreviewGutter::from_outcome(
+                    self.outcome.as_ref(),
+                )
+            })
+            .flatten()
+    }
+
+    pub(in crate::app) fn line_marks(&self) -> Option<&HashMap<u32, GutterMark>> {
+        self.enabled.then_some(self.lines.as_ref()).flatten()
+    }
+
+    pub(in crate::app) fn take_position(
+        &mut self,
+        document_row: Option<usize>,
+        document: bool,
+    ) -> Option<FirstChangePosition> {
+        let ready = if document {
+            self.outcome.is_some()
+        } else {
+            self.lines.is_some()
+        };
+        if !ready {
+            return None;
+        }
+        let path = self.reservation.take()?;
+        if path != self.path {
+            return None;
+        }
+        let first = if document {
+            document_row
+        } else {
+            self.lines
+                .as_ref()?
+                .keys()
+                .min()
+                .map(|n| (*n as usize).saturating_sub(1))
+        };
+        first.map(first_change_position)
+    }
 }
 
 pub(super) struct PendingPreview {
@@ -61,12 +270,29 @@ impl PendingPreview {
         opened: Opened,
         prepared: &PreparedProjects,
         cx: &ProjectLoopCx,
+        diff: &mut crate::app::diff_screen::DiffScreenState,
     ) -> FilePreviewState {
         let context = context(&opened, prepared, cx);
+        let mut gutter = PreviewGutter::new(
+            opened.path.clone(),
+            diff.request.root.clone(),
+            prepared.config.ui.git_gutter,
+            diff.request.info.backend.diff_read_context(),
+        );
+        gutter.settings = crate::config::plugin_settings(
+            &prepared.config.plugins,
+            &prepared.config.ui.moved(),
+            &opened.plugin_id,
+        );
+        gutter.yield_on_timeout = true;
+        let (raw, lines) = diff.take_preview_lines();
+        gutter.raw = raw;
+        gutter.lines = lines.map(|lines| line_gutter_marks(&lines));
         FilePreviewState {
             runner: FileLoopState::new(&context, &prepared.keys),
             opened,
             source: self.source,
+            gutter,
         }
     }
 }
@@ -75,6 +301,110 @@ impl FilePreviewState {
     pub(super) fn context(&self, prepared: &PreparedProjects, cx: &ProjectLoopCx) -> AppCx {
         context(&self.opened, prepared, cx)
     }
+}
+
+/// Enter a project Preview after publication, retaining the real project return and config.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn run_project_preview_with_landed_gutter_for_test<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    prepared: &mut PreparedProjects,
+    source: FilePreviewSource,
+    path: PathBuf,
+    outcome: Option<MdDiffOutcome>,
+) -> Result<ratatui::buffer::Buffer, AppError> {
+    use crate::app::diff_screen::{DiffScreenState, FileDiffRequest};
+    prepared.file_previews = Some(source);
+    let info = prepared.service_info.values().next().unwrap().clone();
+    let mut diff = DiffScreenState::open(
+        FileDiffRequest {
+            path: path.clone(),
+            root: prepared.open_dir.clone(),
+            info,
+        },
+        prepared.services.clone(),
+        &prepared.config,
+        prepared.settings.diff_layout,
+        Some(konoma_host_core::project::DiffView::Preview),
+    )
+    .map_err(|e| AppError::Open(e.message.get(prepared.lang).into()))?;
+    // The fixture service publishes raw content before returning its receiver.
+    diff.poll()
+        .map_err(|e| AppError::Open(e.message.get(prepared.lang).into()))?;
+    let pending = PendingPreview::start(prepared, diff.return_info()).unwrap();
+    let opened = pending
+        .reply
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|e| AppError::Open(e.to_string()))??;
+    let cx = ProjectLoopCx::default();
+    let mut preview = pending.finish(opened, prepared, &cx, &mut diff);
+    if let Some(outcome) = outcome {
+        preview.gutter.adopt(MdDiffResult {
+            gen: 0,
+            path,
+            kind: MdDiffKind::Gutter,
+            outcome,
+        });
+    }
+    prepared.diff_return = prepared.screen.take();
+    prepared.diff = Some(diff);
+    prepared.file_preview = Some(preview);
+    super::run_project_with(
+        terminal,
+        prepared,
+        &mut Vec::<crate::app::AppEvent>::new().into_iter(),
+        &cx,
+        None,
+    )?;
+    Ok(crate::app::draw::test_frame())
+}
+
+/// Seed a published reply, then exercise the actual standalone opener and file runner.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn run_preview_with_landed_gutter_for_test<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    source: FilePreviewSource,
+    path: PathBuf,
+    root: PathBuf,
+    config: &konoma_host_core::shared::SharedConfig,
+    outcome: Option<MdDiffOutcome>,
+    lines: Vec<konoma_vcs_core::git::DiffLine>,
+    events: Vec<crate::app::AppEvent>,
+) -> Result<ratatui::buffer::Buffer, AppError> {
+    let term = crate::TermCaps::new();
+    let mut opened = open(source, path.clone(), config, term, "en")?;
+    let cx = AppCx {
+        title: opened.title.clone(),
+        path: path.clone(),
+        plugin_id: opened.plugin_id.clone(),
+        shows: opened.shows.clone(),
+        open_dir: Some(root.clone()),
+        display: crate::app::Display::of(config),
+        ..Default::default()
+    };
+    let keys = crate::app::AppKeys::defaults();
+    let mut runner = FileLoopState::new(&cx, &keys);
+    let mut gutter =
+        PreviewGutter::new(path.clone(), root, config.ui.git_gutter, Default::default());
+    gutter.settings =
+        crate::config::plugin_settings(&config.plugins, &config.ui.moved(), &opened.plugin_id);
+    gutter.lines = Some(line_gutter_marks(&lines));
+    if let Some(outcome) = outcome {
+        *gutter.markdown.landed_for_test() = Some((path, MdDiffKind::Gutter, 0, outcome.clone()));
+        gutter.outcome = Some(outcome);
+    }
+    crate::app::looping::run_file_with_preview(
+        terminal,
+        &mut *opened.session,
+        &mut events.into_iter(),
+        &cx,
+        &mut runner,
+        None,
+        Some(&mut gutter),
+    )
+    .map(|_| crate::app::draw::test_frame())
 }
 
 fn context(opened: &Opened, prepared: &PreparedProjects, cx: &ProjectLoopCx) -> AppCx {

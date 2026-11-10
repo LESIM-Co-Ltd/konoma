@@ -421,15 +421,17 @@ impl App {
         let Some(first) = marks.keys().min().copied() else {
             return;
         };
-        let line0 = (first as usize).saturating_sub(1); // marks are 1-based
-        let top = line0.saturating_sub(3); // keep a few context lines above
+        let position = konoma_plugin::host::project::preview_gutter::first_change_position(
+            (first as usize).saturating_sub(1),
+        );
+        let top = position.top;
         let Some(win) = self.preview_win.as_mut() else {
             return;
         };
         if let Ok((off, _)) = win.advance(0, top) {
             self.tab.preview_byte_top = off;
             self.tab.preview_top_line = top;
-            self.tab.preview_cursor_line = line0;
+            self.tab.preview_cursor_line = position.caret;
         }
     }
 }

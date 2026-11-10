@@ -110,6 +110,19 @@ pub(in crate::app) fn lay_out_with_gutter(
     display: &Display,
     gutter: Option<FilePreviewGutter<'_>>,
 ) -> Laid {
+    lay_out_preview(dv, width, rows, lang, pics, display, gutter).0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lay_out_preview(
+    dv: &DocumentView,
+    width: u16,
+    rows: u16,
+    lang: Lang,
+    pics: Option<&mut DocPics>,
+    display: &Display,
+    gutter: Option<FilePreviewGutter<'_>>,
+) -> (Laid, Option<usize>) {
     let gutter = file_gutter(dv, gutter);
     let active = gutter.is_some_and(FilePreviewGutter::has_changes);
     let render_width = if active {
@@ -166,18 +179,24 @@ pub(in crate::app) fn lay_out_with_gutter(
     };
     let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0) + usize::from(active);
     let marks = gutter.map_or_else(Vec::new, |g| g.project(&r.extras.block_rows));
+    let first_change = marks
+        .first()
+        .map(|(range, _)| row_prefix.get(range.start).copied().unwrap_or(range.start));
     let lines = with_preview_gutter(lines, 0, &marks);
     if active {
         for image in &mut r.images {
             image.col += 1;
         }
     }
-    Laid {
-        lines,
-        row_prefix,
-        images: std::mem::take(&mut r.images),
-        max_line_cols,
-    }
+    (
+        Laid {
+            lines,
+            row_prefix,
+            images: std::mem::take(&mut r.images),
+            max_line_cols,
+        },
+        first_change,
+    )
 }
 
 fn file_gutter<'a>(
@@ -274,9 +293,13 @@ pub struct DocCache {
     epoch: u64,
     laid: Arc<Laid>,
     gutter_ops: Option<Vec<konoma_widgets::markdown::BlockOp>>,
+    first_change: Option<usize>,
 }
 
 impl DocCache {
+    pub(in crate::app) fn first_change(&self) -> Option<usize> {
+        self.first_change
+    }
     /// The layout of `dv` at `width`, from the cache when nothing changed.
     pub fn get(
         slot: &mut Option<DocCache>,
@@ -318,10 +341,11 @@ impl DocCache {
                 return Arc::clone(&c.laid);
             }
         }
-        let laid = Arc::new(match gutter {
-            Some(g) => lay_out_with_gutter(dv, width, rows, lang, pics, display, Some(g)),
-            None => lay_out(dv, width, rows, lang, pics, display),
-        });
+        let (laid, first_change) = match gutter {
+            Some(gutter) => lay_out_preview(dv, width, rows, lang, pics, display, Some(gutter)),
+            None => (lay_out(dv, width, rows, lang, pics, display), None),
+        };
+        let laid = Arc::new(laid);
         *slot = Some(DocCache {
             markdown: dv.markdown.clone(),
             options: dv.options.clone(),
@@ -333,6 +357,7 @@ impl DocCache {
             epoch,
             laid: Arc::clone(&laid),
             gutter_ops: gutter_ops.map(<[_]>::to_vec),
+            first_change,
         });
         laid
     }

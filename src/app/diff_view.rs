@@ -289,7 +289,7 @@ impl App {
     /// same "keep a little context above" convention `follow_scroll_to_first_change`'s own windowed-
     /// preview branch already uses for the byte-offset case.
     pub(crate) fn scroll_preview_to_row_with_context(&mut self, row: usize) {
-        let top = row.saturating_sub(3);
+        let top = konoma_plugin::host::project::preview_gutter::first_change_position(row).top;
         self.tab.preview_scroll = top.min(u16::MAX as usize) as u16;
     }
 

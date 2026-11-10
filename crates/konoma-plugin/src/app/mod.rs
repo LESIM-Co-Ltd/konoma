@@ -55,6 +55,12 @@ pub use looping::{
     run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
 };
 pub use pictures::{delete_placed_pictures, InProcessSvg, Pictures};
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use project::preview::run_preview_with_landed_gutter_for_test;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use project::preview::run_project_preview_with_landed_gutter_for_test;
 pub use still::{failure_line, StillShape};
 pub use term::{install_panic_hook_with, key_from_crossterm};
 

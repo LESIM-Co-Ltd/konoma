@@ -1682,6 +1682,7 @@ pub(in crate::app) struct FileLoopState {
     base: Frame<'static>,
     view_due: Option<Instant>,
     need_view: bool,
+    refresh_on_resume: bool,
     launch_tx: std::sync::mpsc::Sender<Result<crate::launch::Opener, String>>,
     launch_rx: std::sync::mpsc::Receiver<Result<crate::launch::Opener, String>>,
     launching: usize,
@@ -1702,6 +1703,7 @@ impl FileLoopState {
             base: Frame::Lines(Vec::new()),
             view_due: None,
             need_view: true,
+            refresh_on_resume: true,
             launch_tx,
             launch_rx,
             launching: 0,
@@ -1715,6 +1717,7 @@ pub(in crate::app) enum FileLoopExit {
     Back,
     Quit,
     End,
+    Yield,
 }
 
 /// The title of the frame: the path in the `style` the `,` menu chose, or the title the host gave
@@ -1796,7 +1799,19 @@ pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
     events: &mut E,
     cx: &AppCx,
     state: &mut FileLoopState,
+    pictures: Option<&mut Pictures>,
+) -> Result<FileLoopExit, AppError> {
+    run_file_with_preview(terminal, session, events, cx, state, pictures, None)
+}
+
+pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    state: &mut FileLoopState,
     mut pictures: Option<&mut Pictures>,
+    mut preview: Option<&mut super::project::preview::PreviewGutter>,
 ) -> Result<FileLoopExit, AppError> {
     let FileLoopState {
         st,
@@ -1806,14 +1821,17 @@ pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
         base,
         view_due,
         need_view,
+        refresh_on_resume,
         launch_tx,
         launch_rx,
         launching,
     } = state;
     // Refreshing on entry must not postpone a timer that was armed before leaving.
-    let mut resume_due = *view_due;
+    let mut resume_due = if *refresh_on_resume { *view_due } else { None };
     // A resume refreshes the view as a resize does, without asking for a new session.
-    *need_view = true;
+    if std::mem::replace(refresh_on_resume, true) {
+        *need_view = true;
+    }
     macro_rules! sess {
         () => {
             match swapped.as_mut() {
@@ -1824,6 +1842,9 @@ pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
     }
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
     loop {
+        if preview.as_deref_mut().is_some_and(|p| p.poll()) {
+            *need_view = true;
+        }
         let size = terminal.size().map_err(|e| terr(&e))?;
         let body_rows = size.height.saturating_sub(1);
         st.page = usize::from(body_rows).max(1);
@@ -1872,7 +1893,9 @@ pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
             if st.at_page > 0 {
                 req = req.page(st.at_page);
             }
-            let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
+            let settings = preview.as_deref().map(|p| p.settings.clone());
+            let vcx = ViewCx::new(settings.as_ref().unwrap_or(Settings::empty()), &cx.lang)
+                .with_term(cx.term);
             let mut viewed = match &*reopen_failed {
                 Some(f) => Err(f.clone()),
                 None => sess!().view(&req, &vcx),
@@ -1885,6 +1908,13 @@ pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
             if let Ok(View::Reopen(r)) = viewed {
                 resume_due = None;
                 let target = cx.reopen.as_ref().and_then(|s| s.target(&r.content_type));
+                if let Some(preview) = preview.as_deref_mut() {
+                    preview.cancel();
+                    preview.settings = target
+                        .as_ref()
+                        .map(|t| t.settings.clone())
+                        .unwrap_or_default();
+                }
                 viewed = match crate::reopen::reopen_document(
                     target.as_ref(),
                     REOPEN_ACCEPTS,
@@ -1955,14 +1985,30 @@ pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
                 }
             };
             let (mut frame, redraw_after) = match shown {
-                Ok(view) => frame_of(
-                    view,
-                    st,
-                    usize::from(body_rows),
-                    (&cx.lang, own.lang()),
-                    &frame_name,
-                    pictures.as_deref_mut(),
-                ),
+                Ok(view) => {
+                    if let Some(preview) = preview.as_deref_mut() {
+                        preview.prepare(&view);
+                    }
+                    match preview.as_deref_mut() {
+                        Some(preview) => frame_of_preview(
+                            view,
+                            st,
+                            usize::from(body_rows),
+                            (&cx.lang, own.lang()),
+                            &frame_name,
+                            pictures.as_deref_mut(),
+                            Some(preview),
+                        ),
+                        None => frame_of(
+                            view,
+                            st,
+                            usize::from(body_rows),
+                            (&cx.lang, own.lang()),
+                            &frame_name,
+                            pictures.as_deref_mut(),
+                        ),
+                    }
+                }
                 Err(Some(frame)) => (frame, None),
                 // The frame on screen stays.
                 Err(None) => (
@@ -2315,17 +2361,27 @@ pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
             (Some(p), true) => Some(p.min(LAUNCH_WAKE)),
             (None, true) => Some(LAUNCH_WAKE),
         };
-        let picture_first = match (view_left, pic_wait) {
-            (Some(v), Some(p)) => p < v,
-            (None, Some(_)) => true,
-            _ => false,
+        let preview_wait = preview.as_deref().and_then(|p| p.wake_in());
+        let wait = [view_left, pic_wait, preview_wait]
+            .into_iter()
+            .flatten()
+            .min();
+        let view_first = match (view_left, wait) {
+            (Some(view), Some(wait)) => view <= wait,
+            (None, Some(_)) => false,
+            _ => true,
         };
-        let wait = if picture_first { pic_wait } else { view_left };
         // A key and a resize ask for a new view; a timeout does unless the pictures woke the loop.
         *need_view = true;
         match events.next(wait) {
             Next::End => return Ok(FileLoopExit::End),
-            Next::Timeout => *need_view = !picture_first,
+            Next::Timeout => {
+                *need_view = view_first;
+                if preview.as_deref().is_some_and(|p| p.yield_on_timeout) {
+                    *refresh_on_resume = false;
+                    return Ok(FileLoopExit::Yield);
+                }
+            }
             Next::Event(AppEvent::Resize) => *need_view = true,
             Next::Event(AppEvent::Paste(text)) => {
                 // Only a canvas that takes the typing gets a paste; elsewhere it does nothing.
@@ -2967,7 +3023,7 @@ fn draw_frame<B: Backend>(
                         h.title.clone(),
                     );
                 }
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-hooks"))]
                 draw::record_test_frame(f.buffer_mut());
             })
             .map_err(|e| terr(&e))?;
@@ -3060,6 +3116,18 @@ fn frame_of(
     name: &str,
     pictures: Option<&mut Pictures>,
 ) -> (Frame<'static>, Option<Duration>) {
+    frame_of_preview(view, st, rows, (lang_code, lang), name, pictures, None)
+}
+
+fn frame_of_preview(
+    view: View,
+    st: &mut State,
+    rows: usize,
+    (lang_code, lang): (&str, Lang),
+    name: &str,
+    pictures: Option<&mut Pictures>,
+    mut preview: Option<&mut super::project::preview::PreviewGutter>,
+) -> (Frame<'static>, Option<Duration>) {
     use crate::view::TextSource;
     st.scrolls = false;
     st.caret_on = false;
@@ -3098,12 +3166,22 @@ fn frame_of(
             st.text_rows = rows;
             st.page = rows.saturating_sub(1).max(1);
             st.half = Some((rows / 2).max(1));
-            let framed = |st: &mut State, lines: Vec<Line>, extent| {
-                text_frame(st, lines, Some((name, lang, Some(extent))), true)
-            };
             // Text a plugin made has a line in the file only if the plugin says so (the host's
             // `text_plugin_lines_are_file_lines`): that decides whether `e` opens at the caret.
             st.file_text = t.file_lines;
+            if t.file_lines {
+                if let Some(position) = preview
+                    .as_deref_mut()
+                    .and_then(|p| p.take_position(None, false))
+                {
+                    st.scroll = position.top;
+                    st.caret_line = position.caret;
+                }
+            }
+            let marks = preview.as_deref().and_then(|p| p.line_marks());
+            let framed = |st: &mut State, lines: Vec<Line>, extent| {
+                text_frame_with_gutter(st, lines, Some((name, lang, Some(extent))), true, marks)
+            };
             let frame = match t.source {
                 TextSource::Owned(s) => {
                     let lens: Vec<u64> = s.split_inclusive('\n').map(|l| l.len() as u64).collect();
@@ -3177,15 +3255,28 @@ fn frame_of(
             let inner_w = st.width.saturating_sub(2);
             let inner_h = rows.saturating_sub(2);
             let mut doc_pics = pictures.map(Pictures::doc_pics);
-            let laid = super::document::DocCache::get(
-                &mut st.doc,
-                &dv,
-                inner_w,
-                u16::try_from(rows).unwrap_or(u16::MAX),
-                lang,
-                doc_pics.as_deref_mut(),
-                &st.display,
-            );
+            let laid = if let Some(preview) = preview.as_deref() {
+                super::document::DocCache::get_with_gutter(
+                    &mut st.doc,
+                    &dv,
+                    inner_w,
+                    u16::try_from(rows).unwrap_or(u16::MAX),
+                    lang,
+                    doc_pics.as_deref_mut(),
+                    &st.display,
+                    preview.document_gutter(),
+                )
+            } else {
+                super::document::DocCache::get(
+                    &mut st.doc,
+                    &dv,
+                    inner_w,
+                    u16::try_from(rows).unwrap_or(u16::MAX),
+                    lang,
+                    doc_pics.as_deref_mut(),
+                    &st.display,
+                )
+            };
             // A converted document cut at a budget, or a slide that had to leave something out,
             // says so in the title; a Markdown file cut at the display limit says so in its
             // text (see `document::lay_out`).
@@ -3195,6 +3286,13 @@ fn frame_of(
             };
             let cut = matches!(dv.origin, crate::input::Origin::Converted { .. })
                 && (dv.truncated || doc_pics.as_deref().is_some_and(|d| d.render_truncated()));
+            let first_change = st
+                .doc
+                .as_ref()
+                .and_then(super::document::DocCache::first_change);
+            if let Some(position) = preview.and_then(|p| p.take_position(first_change, true)) {
+                st.scroll = position.top;
+            }
             clamp(st, laid.rows(), inner_h);
             // The host's vertical scroll is a `u16`: a document taller than that scrolls no further.
             st.scroll = st.scroll.min(super::document::MAX_DOC_SCROLL);
@@ -3411,6 +3509,18 @@ fn text_frame(
     framed: Option<(&str, Lang, Option<konoma_widgets::scroll::ScrollExtent>)>,
     caret: bool,
 ) -> Frame<'static> {
+    text_frame_with_gutter(st, lines, framed, caret, None)
+}
+
+fn text_frame_with_gutter(
+    st: &mut State,
+    lines: Vec<Line>,
+    framed: Option<(&str, Lang, Option<konoma_widgets::scroll::ScrollExtent>)>,
+    caret: bool,
+    marks: Option<
+        &std::collections::HashMap<u32, crate::host::project::preview_gutter::GutterMark>,
+    >,
+) -> Frame<'static> {
     // The tabs become the host's mark and tab stops (the one function it uses, with the same
     // `[ui] tab_width`), before the width of the widest line is measured.
     let lines = konoma_widgets::text::expand_tabs(
@@ -3438,7 +3548,7 @@ fn text_frame(
     } else {
         lines
     };
-    let lines = super::document::lay_out_lines(lines, st.scroll, None);
+    let lines = super::document::lay_out_lines(lines, st.scroll, marks);
     let max_cols = lines
         .iter()
         .map(|l| {

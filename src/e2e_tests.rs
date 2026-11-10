@@ -21334,6 +21334,10 @@ mod project_screens;
 #[cfg(feature = "git")]
 mod selected_backend;
 mod space_menu_parity;
+#[cfg(feature = "git")]
+mod standalone_preview_gutter;
+#[cfg(feature = "git")]
+mod standalone_preview_gutter_config;
 mod table_parity;
 mod text_parity;
 #[cfg(feature = "git")]

@@ -844,6 +844,8 @@ use konoma_host_core::shared::format_load_error as format_config_load_error;
 
 #[cfg(test)]
 mod parity_tests;
+#[cfg(test)]
+mod shared_ui_gutter_tests;
 
 #[cfg(test)]
 mod tests {

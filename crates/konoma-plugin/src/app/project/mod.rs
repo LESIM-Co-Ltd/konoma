@@ -3,7 +3,7 @@
 mod launch;
 mod looping;
 mod prepare;
-mod preview;
+pub(in crate::app) mod preview;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

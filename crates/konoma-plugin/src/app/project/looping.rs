@@ -355,23 +355,50 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         if let Some(p) = pictures.as_mut() {
                             p.begin_file(&opened.plugin_id, &opened.path);
                         }
-                        state.file_preview = Some(pending.finish(opened, prepared, cx));
+                        state.file_preview = Some(pending.finish(
+                            opened,
+                            prepared,
+                            cx,
+                            state.diff.as_mut().unwrap(),
+                        ));
                     }
                     Err(error) => prepared.notice = Some(error.to_string()),
                 }
                 redraw = true;
             }
             if let Some(preview) = &mut state.file_preview {
+                preview.gutter.owner_wake = (state
+                    .runtimes
+                    .values()
+                    .any(|r| r.busy || r.pending.is_some())
+                    || prepared.detection.pending())
+                .then_some(Duration::from_millis(16));
                 let context = preview.context(prepared, cx);
-                let exit = crate::app::looping::run_file_with(
+                let exit = crate::app::looping::run_file_with_preview(
                     terminal,
                     &mut *preview.opened.session,
                     events,
                     &context,
                     &mut preview.runner,
                     pictures.as_mut(),
+                    Some(&mut preview.gutter),
                 )?;
                 match exit {
+                    crate::app::looping::FileLoopExit::Yield => {
+                        let retained: Vec<_> = state.runtimes.keys().cloned().collect();
+                        let update = state.with_host(&info, |host, context| {
+                            host.poll(
+                                std::slice::from_mut(context),
+                                std::slice::from_ref(&info),
+                                &retained,
+                            )
+                        });
+                        if state.apply(prepared, &info, update) {
+                            break;
+                        }
+                        state.ensure(&info);
+                        continue;
+                    }
                     crate::app::looping::FileLoopExit::Back => {
                         debug_assert_eq!(
                             preview.source.path,
@@ -523,6 +550,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 continue;
             }
             let diff_wake = state.diff.as_ref().and_then(|d| d.wake_in());
+            let preview_wake = state.file_preview.as_ref().and_then(|p| p.gutter.wake_in());
             let picture_wake = pictures.as_ref().and_then(Pictures::wake_in);
             let owner_wake = (pending
                 || prepared.detection.pending()
@@ -534,10 +562,16 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 .detection
                 .watching()
                 .then_some(Duration::from_millis(100));
-            let wake_in = [diff_wake, picture_wake, owner_wake, watch_wake]
-                .into_iter()
-                .flatten()
-                .min();
+            let wake_in = [
+                diff_wake,
+                preview_wake,
+                picture_wake,
+                owner_wake,
+                watch_wake,
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             match events.next(wake_in) {
                 Next::End => break,
                 Next::Event(AppEvent::Key(key)) => {

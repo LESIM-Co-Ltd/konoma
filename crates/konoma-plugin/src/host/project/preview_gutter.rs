@@ -6,6 +6,22 @@ use konoma_widgets::markdown::{self, BlockOp, PreviewMark};
 use ratatui::text::{Line, Span};
 use std::ops::Range;
 
+/// Initial position around a change, in zero-based file lines or display rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstChangePosition {
+    pub top: usize,
+    pub caret: usize,
+}
+
+/// Keep three lines of context above the first change. Marks and baseline selection belong
+/// to the caller; use a rendered display row for a decorated document.
+pub fn first_change_position(first: usize) -> FirstChangePosition {
+    FirstChangePosition {
+        top: first.saturating_sub(3),
+        caret: first,
+    }
+}
+
 /// Editor-style git change status of one line in the previewed (working-tree) file, for the left gutter.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GutterMark {
