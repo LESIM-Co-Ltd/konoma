@@ -77,6 +77,12 @@ fn source_diff_keys_match_frozen_host_output() {
     }
     let marker = test_plugins::register("source_diff_bridge", Arc::new(fixture::SourceProject));
     let mut cfg = test_plugins::marker_config(&marker);
+    for id in ["git", "jj"] {
+        cfg.plugins
+            .entry(id.into())
+            .or_default()
+            .insert("enabled".into(), toml::Value::Boolean(false));
+    }
     cfg.ui.lang = "en".into();
     cfg.ui.diff_view = "source".into();
     cfg.ui.tabbar = "hidden".into();

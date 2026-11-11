@@ -2654,6 +2654,12 @@ fn navigate(name: &str, outcome: impl FnOnce(&std::path::Path) -> Outcome) -> Fi
         }),
     );
     let mut cfg = test_plugins::marker_config(&marker);
+    for id in ["git", "jj"] {
+        cfg.plugins
+            .entry(id.into())
+            .or_default()
+            .insert("enabled".into(), toml::Value::Boolean(false));
+    }
     cfg.ui.lang = "en".into();
     cfg.external.git = diff;
     f.sim = Sim::with_config_sized(&root, cfg, 160, 24);

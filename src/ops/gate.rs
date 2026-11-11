@@ -354,10 +354,37 @@ fn gate_open_external(app: &App) -> Gate {
     }
 }
 
-/// `o`: the hub opens only in a repository the backend can show (mirrors `App::open_git_view`).
+/// `p` offers only enabled projects; pending discovery can queue entry without blocking.
 fn gate_open_git_view(app: &App) -> Gate {
-    if !app.tab.projects.projects.is_empty() || app.tab.projects.pending() {
+    if app
+        .tab
+        .projects
+        .projects
+        .iter()
+        .any(|p| !p.declaration.screens.is_empty() && app.project_is_enabled(&p.plugin))
+    {
         return Gate::On;
+    }
+    let (pending, independent) = if app.tab.projects.pending() {
+        crate::plugins::with_registry(&app.cfg.plugin_disabled(), |registry| {
+            registry
+                .ids()
+                .into_iter()
+                .filter(|id| registry.is_enabled(id))
+                .filter_map(|id| registry.manifest(id)?.project.as_ref())
+                .filter(|p| !p.screens.is_empty())
+                .fold((false, false), |(_, independent), project| {
+                    (true, independent || !project.version_control)
+                })
+        })
+    } else {
+        (false, false)
+    };
+    if independent {
+        return Gate::On;
+    }
+    if !cfg!(feature = "git") {
+        return Gate::Off(Some(Msg::NotAGitRepo));
     }
     let backend_is_git = app.git_vcs == crate::vcs::VcsKind::Git;
     if backend_is_git && !app.cfg.external.git {
@@ -371,5 +398,9 @@ fn gate_open_git_view(app: &App) -> Gate {
     if app.git_state_known() && app.git_branch().is_none() {
         return Gate::Off(Some(Msg::NotAGitRepo));
     }
-    Gate::On
+    if pending {
+        Gate::On
+    } else {
+        Gate::Off(Some(Msg::NotAGitRepo))
+    }
 }

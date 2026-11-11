@@ -29,7 +29,7 @@ fn e2e_enter_on_a_jj_bookmark_list_is_refused_like_every_other_write() {
         !crate::vcs::caps(&s.app.tab.root).write,
         "sanity: this fixture must resolve to the read-only jj backend"
     );
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b');
     assert!(
         s.app.is_git_branches(),
@@ -67,7 +67,7 @@ fn e2e_enter_on_a_git_branch_list_still_checks_out() {
     seed_repo(&dir);
     let root = canon(&dir);
     let mut s = Sim::new(&root).with_async_git_ops();
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b');
     assert!(s.app.is_git_branches());
     // Move onto `feature-x`, the branch that is not checked out (the list starts on the current one).
@@ -273,7 +273,7 @@ fn e2e_dump_footer_and_help_when_asked() {
         s.key('d');
         shot("diff", &mut s);
         s.key('q');
-        s.key('p');
+        s.open_legacy_hub();
         shot("git hub", &mut s);
         s.key('l');
         shot("git log", &mut s);

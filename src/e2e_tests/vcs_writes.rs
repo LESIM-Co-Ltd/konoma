@@ -115,7 +115,7 @@ impl WritePair {
         };
         // Each registry cache entry must own this fixture's observer, including loop iterations.
         let registration = format!("{name}-{}", dir.file_name().unwrap().to_string_lossy());
-        let token = test_plugins::register(
+        let token = test_plugins::register_replacement(
             &registration,
             Arc::new(ObservedVcs {
                 plugin,
@@ -123,6 +123,11 @@ impl WritePair {
             }),
         );
         let mut cfg = test_plugins::marker_config(&token);
+        let other = if id == "git" { "jj" } else { "git" };
+        cfg.plugins
+            .entry(other.into())
+            .or_default()
+            .insert("enabled".into(), toml::Value::Boolean(false));
         cfg.ui.lang = lang.into();
         cfg.ui.path_style = style.into();
         cfg.ui.statusbar = "split".into();

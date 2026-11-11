@@ -951,7 +951,13 @@ impl App {
             action.act(),
         ))
     }
-    /// `p` already belongs to OpenGitView. The legacy hub remains the fallback.
+    pub(crate) fn project_is_enabled(&self, plugin: &str) -> bool {
+        crate::plugins::with_registry(&self.cfg.plugin_disabled(), |registry| {
+            registry.is_enabled(plugin)
+        }) && (plugin != "git" || self.cfg.external.git)
+    }
+
+    /// `p` enters an enabled project, or queues entry until discovery answers.
     pub(crate) fn enter_project(&mut self) -> bool {
         self.ensure_project_detection();
         if self.tab.projects.pending() {
@@ -963,7 +969,7 @@ impl App {
             .projects
             .projects
             .iter()
-            .filter(|p| !p.declaration.screens.is_empty())
+            .filter(|p| !p.declaration.screens.is_empty() && self.project_is_enabled(&p.plugin))
             .map(ProjectKey::from)
             .collect();
         let update = prompt::choose_projects(&mut self.project_dialog, projects);
@@ -973,6 +979,9 @@ impl App {
     }
 
     pub(super) fn open_project(&mut self, key: ProjectKey) {
+        if !self.project_is_enabled(&key.plugin) {
+            return;
+        }
         if let Some(project) = self
             .tab
             .projects
@@ -992,6 +1001,9 @@ impl App {
     }
 
     fn show_project_screen(&mut self, key: ProjectKey, screen: ScreenKey) {
+        if !self.project_is_enabled(&key.plugin) {
+            return;
+        }
         self.tab.project_navigation = Some(ProjectNavigation {
             state: ProjectHost::<ProjectInvocation>::start_screen(key, screen),
             origin_mode: self.tab.mode,
@@ -1403,7 +1415,7 @@ impl App {
                     if self.tab.project_enter_pending && !self.tab.projects.pending() {
                         self.tab.project_enter_pending = false;
                         if !self.enter_project() {
-                            self.open_git_view();
+                            self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
                         }
                         changed = true;
                     }
@@ -1651,6 +1663,15 @@ impl App {
     }
 
     pub(crate) fn return_to_project(&mut self) -> bool {
+        if self
+            .tab
+            .project_return
+            .as_ref()
+            .is_some_and(|nav| !self.project_is_enabled(&nav.project.plugin))
+        {
+            self.tab.project_return = None;
+            return false;
+        }
         if !ProjectHost::<ProjectInvocation>::restore_return(
             &mut self.tab.project_navigation,
             &mut self.tab.project_return,

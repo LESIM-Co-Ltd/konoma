@@ -206,7 +206,7 @@ mod git {
         hub_screen_keys(&mut cfg);
         let mut s = Sim::with_config(&canon(&dir), cfg);
         let ctx = |b, sc| Some(Context::Screen(b, sc));
-        s.key('p');
+        s.open_legacy_hub();
         assert_eq!(s.app.key_context(), ctx(Backend::Git, Screen::Changes));
         // The same screen opened for jj is another context.
         s.app.git_vcs = crate::vcs::VcsKind::Jj;
@@ -251,7 +251,7 @@ mod git {
             let dir = sandbox("key_context_backend_binding");
             seed_repo(&dir);
             let mut s = Sim::with_config(&canon(&dir), cfg);
-            s.key('p');
+            s.open_legacy_hub();
             if jj {
                 s.app.git_vcs = crate::vcs::VcsKind::Jj;
             }

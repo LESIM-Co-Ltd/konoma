@@ -560,6 +560,13 @@ impl Sim {
         self.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
 
+    /// Keep the legacy hub's tests on that implementation until their assertions migrate.
+    #[cfg(feature = "git")]
+    fn open_legacy_hub(&mut self) {
+        self.app.open_git_view();
+        self.draw();
+    }
+
     /// Type a sequence of plain character keys.
     fn keys(&mut self, s: &str) {
         for c in s.chars() {
@@ -1885,7 +1892,7 @@ fn e2e_git_hub_stage_and_diff() {
     let dir = sandbox("git_hub");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.see("a.rs");
     s.see("new.txt");
     // stage → the display changes (a staged mark). unstage reverts it.
@@ -2615,7 +2622,7 @@ fn e2e_diff_view_preview_representation_q_returns_to_hub() {
     let dir = sandbox("diff_view_preview_q_hub");
     seed_repo_markdown(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.see("doc.md");
     s.enter(); // opens the diff of whichever entry the hub's cursor is on
     assert!(s.app.is_git_diff_preview());
@@ -4853,7 +4860,7 @@ fn e2e_git_hub_to_log_shows_commit_subject() {
     let dir = sandbox("git_log_view");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     assert!(s.app.is_git_view(), "o で変更ハブが開く");
     s.key('l'); // in the hub, l = log
     assert!(s.app.is_git_log(), "l で log ビューへ");
@@ -4870,7 +4877,7 @@ fn e2e_git_graph_shows_commit_nodes() {
     let dir = sandbox("git_graph_view");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g'); // in the hub, g = graph
     assert!(s.app.is_git_graph(), "g でグラフへ");
     s.see("Git graph"); // render_graph's literal title
@@ -4886,7 +4893,7 @@ fn e2e_git_graph_set_and_clear_base() {
     let dir = sandbox("git_graph_base");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g');
     s.dont_see("⌖ base:"); // default config has graph_base_branches=[] → no base initially
     s.key('G'); // to the bottom row = the oldest commit line (avoids s being unusable on the working-tree row at the top)
@@ -4903,7 +4910,7 @@ fn e2e_git_branches_view_lists_branches() {
     let dir = sandbox("git_branches_view");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b'); // in the hub, b = branches
     assert!(s.app.is_git_branches(), "b でブランチ一覧へ");
     s.see("Git branches"); // render_branches's literal title
@@ -4940,7 +4947,7 @@ fn e2e_git_worktrees_view_lists_and_enter_switches_root() {
     let linked = linked.canonicalize().unwrap();
 
     let mut s = Sim::new(&root);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('w'); // in the hub, w = worktrees
     assert!(s.app.is_git_worktrees(), "w でワークツリー一覧へ");
     // The outer mode chip must promote to GIT here, same as the hub/log/graph/branches/detail
@@ -4992,7 +4999,7 @@ fn e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched() {
     let linked = linked.canonicalize().unwrap();
 
     let mut s = Sim::new(&root);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('w');
     s.key('j'); // move onto the linked worktree
     s.ctrl('t');
@@ -5042,7 +5049,7 @@ fn e2e_git_worktree_create_switches_into_it() {
     let _ = std::fs::remove_dir_all(&expected);
 
     let mut s = Sim::new(&root);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('w');
     assert!(s.app.is_git_worktrees());
     s.key('c');
@@ -5074,7 +5081,7 @@ fn e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub() {
     seed_repo(&dir);
     let root = canon(&dir);
     let mut s = Sim::new(&root);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('w');
     assert!(s.app.is_git_worktrees());
     s.enter(); // cursor starts on the current (main) worktree
@@ -5138,7 +5145,7 @@ fn e2e_git_worktrees_refuses_bare_and_prunable_targets() {
     std::fs::remove_dir_all(&gone).unwrap(); // now prunable (checkout gone, entry still listed)
 
     let mut s = Sim::new(&wt);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('w');
     assert!(s.app.is_git_worktrees());
     s.see("bare");
@@ -5225,7 +5232,7 @@ fn e2e_git_worktree_show_changes_opens_detail_with_title_and_returns_to_list() {
     let mut cfg = Config::default();
     cfg.ui.graph_base_branches = vec![base.clone()];
     let mut s = Sim::with_config(&root, cfg);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('w');
     assert!(s.app.is_git_worktrees());
 
@@ -5275,7 +5282,7 @@ fn e2e_git_worktree_show_changes_works_on_the_currently_active_worktree() {
     let root = canon(&dir);
     let mut s = Sim::new(&root); // default config: graph_base_branches = [] → falls back to the
                                  // main worktree's own branch, which is exactly the one it's on
-    s.key('p');
+    s.open_legacy_hub();
     s.key('w');
     assert_eq!(
         s.app.git_worktree_sel(),
@@ -5336,7 +5343,7 @@ fn e2e_git_worktree_show_changes_refuses_bare_worktree() {
     let wt = wt.canonicalize().unwrap();
 
     let mut s = Sim::new(&wt);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('w');
     let view = s.app.git_worktree_view();
     let cur = s.app.git_worktree_sel();
@@ -5364,7 +5371,7 @@ fn e2e_git_commit_detail_shows_full_message() {
     let dir = sandbox("git_commit_detail");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('l');
     s.enter(); // detail of the selected commit (init)
     assert!(s.app.is_git_detail(), "Enter で詳細へ");
@@ -5381,7 +5388,7 @@ fn e2e_git_graph_branch_picker_toggles() {
     let dir = sandbox("git_graph_picker");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g');
     s.key('b'); // in the graph, b = the branch-display panel
     assert!(s.app.is_git_graph_picker(), "b でパネルが開く");
@@ -5532,7 +5539,7 @@ fn e2e_jj_write_actions_are_gated_by_the_read_only_backend() {
     }
 
     // --- The changes hub: stage / unstage / stage_all / unstage_all / discard / commit ---
-    s.key('p');
+    s.open_legacy_hub();
     assert!(s.app.is_git_view(), "p must still open the (read-only) hub");
     // (`s` is the sync in a jj hub, not a write: it asks first, see the sync test.)
     for key in ['u', 'S', 'U', 'x', 'c'] {
@@ -5641,7 +5648,7 @@ fn e2e_jj_write_gate_holds_in_a_colocated_repository_pinned_to_jj() {
         "sanity: [external] vcs = \"jj\" must resolve this colocated repo to the read-only jj backend"
     );
 
-    s.key('p');
+    s.open_legacy_hub();
     assert!(s.app.is_git_view(), "p must still open the (read-only) hub");
     // (`s` is the sync in a jj hub, not a write: it asks first, see the sync test.)
     for key in ['u', 'S', 'U', 'x', 'c'] {
@@ -5697,7 +5704,7 @@ fn e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing() {
     // `jj_sync` has no key in a git hub by default (`s` stages there); a user who binds one still
     // gets the refusal.
     let mut s = Sim::with_keys(&canon(&dir), &[("git.changes", &[("R", "jj_sync")])]);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('R');
     assert!(
         s.app.flash.as_deref().is_some_and(|f| f.contains(
@@ -5726,7 +5733,7 @@ fn e2e_jj_sync_full_round_trip_confirms_and_reports_completion() {
         return;
     };
     let mut s = Sim::new(&canon(&dir)); // confirm_jj_sync defaults on
-    s.key('p');
+    s.open_legacy_hub();
     s.key('s'); // in a jj hub `s` syncs where git stages
     assert!(s.app.is_dialog(), "s must ask before letting jj snapshot");
     s.key('y');
@@ -5751,7 +5758,7 @@ fn e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list() {
         return;
     };
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     assert!(s.app.is_git_view());
     s.key('w');
     assert!(
@@ -5780,7 +5787,7 @@ fn e2e_git_graph_toggle_all_differs_between_git_and_jj() {
     let git_dir = sandbox("graph_toggle_git");
     seed_repo(&git_dir);
     let mut sg = Sim::with_hub_screen_keys(&canon(&git_dir));
-    sg.key('p');
+    sg.open_legacy_hub();
     sg.key('g');
     assert!(sg.app.is_git_graph(), "g must open the graph");
     sg.key('a');
@@ -5801,7 +5808,7 @@ fn e2e_git_graph_toggle_all_differs_between_git_and_jj() {
         return;
     };
     let mut sj = Sim::with_hub_screen_keys(&canon(&jj_dir));
-    sj.key('p');
+    sj.open_legacy_hub();
     sj.key('g');
     assert!(sj.app.is_git_graph(), "g must open the graph");
     sj.key('a');
@@ -6445,7 +6452,7 @@ fn e2e_git_commit_copy_values() {
     let dir = sandbox("git_commit_copy");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p'); // changes hub
+    s.open_legacy_hub(); // changes hub
     s.key('l'); // → log (synchronous load)
     s.see("init");
     assert_eq!(s.app.surface(), crate::keymap::Surface::GitLog);
@@ -10130,7 +10137,7 @@ fn e2e_git_stage_then_commit_appears_in_log() {
     let dir = sandbox("git_commit_flow");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     assert!(s.app.is_git_view());
     assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
     s.key('s');
@@ -10187,7 +10194,7 @@ fn e2e_git_stage_and_commit_through_the_background_runner() {
     let dir = sandbox("git_async_commit");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir)).with_async_git_ops();
-    s.key('p');
+    s.open_legacy_hub();
     assert!(s.app.is_git_view());
     assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
 
@@ -10250,7 +10257,7 @@ fn e2e_ui_keeps_responding_while_a_git_commit_is_blocked() {
     crate::git::stage_all(&root).unwrap();
     let before = crate::git::log(&root, 200).len();
     let mut s = Sim::new(&root).with_async_git_ops();
-    s.key('p');
+    s.open_legacy_hub();
     s.key('c');
     s.keys("BLOCKEDCOMMIT");
     s.enter(); // dispatches the commit; the hook is parked
@@ -10317,7 +10324,7 @@ fn e2e_quit_during_a_git_write_asks_for_confirmation() {
     cfg.ui.confirm_quit = false;
     crate::git::stage_all(&root).unwrap();
     let mut s = Sim::with_config(&root, cfg).with_async_git_ops();
-    s.key('p');
+    s.open_legacy_hub();
     s.key('c');
     s.keys("WILLQUIT");
     s.enter();
@@ -10344,7 +10351,7 @@ fn e2e_git_stage_unstage_roundtrip() {
     let dir = sandbox("git_stage_unstage");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
     s.key('s');
     assert_eq!(staged_of(&s.app, "a.rs"), Some(true));
@@ -10358,7 +10365,7 @@ fn e2e_git_stage_all_then_unstage_all() {
     let dir = sandbox("git_stage_all");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     assert!(!s.app.git_view_entries().is_empty());
     assert!(s.app.git_view_entries().iter().any(|e| !e.staged));
     s.key('S');
@@ -10533,7 +10540,7 @@ fn e2e_git_worktree_diff_toggle_layout_and_back() {
     let dir = sandbox("git_worktree_detail");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('d');
     assert!(s.app.is_git_detail());
     s.see("Uncommitted changes");
@@ -10552,7 +10559,7 @@ fn e2e_git_log_navigate_open_detail_and_back() {
     let dir = sandbox("git_log_nav");
     seed_repo_history(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('l');
     assert!(s.app.is_git_log());
     s.see("gammacommit");
@@ -10588,7 +10595,7 @@ fn e2e_git_graph_navigates_commit_rows() {
     let dir = sandbox("git_graph_nav");
     seed_repo_history(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g');
     assert!(s.app.is_git_graph());
     s.see("●");
@@ -10623,7 +10630,7 @@ fn e2e_git_graph_set_base_keeps_selection_then_clear() {
     let dir = sandbox("git_graph_base2");
     seed_repo_history(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g');
     s.dont_see("⌖ base:");
     assert!(s.app.git_graph_base_label().is_none());
@@ -10653,7 +10660,7 @@ fn e2e_git_graph_picker_current_only_then_all() {
     let dir = sandbox("git_graph_picker2");
     seed_repo_history(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g');
     s.key('b');
     assert!(s.app.is_git_graph_picker());
@@ -10679,7 +10686,7 @@ fn e2e_git_branches_filter_narrows_and_clears() {
     let dir = sandbox("git_branches_filter");
     seed_repo_history(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b');
     assert!(s.app.is_git_branches());
     assert_eq!(s.app.git_branch_view().len(), 2);
@@ -10701,7 +10708,7 @@ fn e2e_git_branch_create_switches_to_it() {
     let dir = sandbox("git_branch_create");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b');
     s.key('c');
     assert!(s.app.is_dialog());
@@ -10720,7 +10727,7 @@ fn e2e_git_branch_delete_removes_feature_branch() {
     let dir = sandbox("git_branch_delete");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b');
     s.key('g');
     assert_eq!(
@@ -10746,7 +10753,7 @@ fn e2e_git_copy_leader_all_subkeys_consume_from_log() {
     let dir = sandbox("git_copy_subkeys");
     seed_repo(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('l');
     assert_eq!(s.app.surface(), crate::keymap::Surface::GitLog);
     s.see("init");
@@ -10776,7 +10783,7 @@ fn e2e_git_copy_leader_opens_in_graph_and_detail() {
     let dir = sandbox("git_copy_surfaces");
     seed_repo_history(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g');
     s.key('g');
     assert_eq!(s.app.surface(), crate::keymap::Surface::GitGraph);
@@ -12971,7 +12978,7 @@ fn e2e_ui_graph_max_branches_caps_legend_entries() {
     cfg.ui.graph_max_branches = 2;
     hub_screen_keys(&mut cfg);
     let mut s = Sim::with_config(&dir, cfg);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g');
     s.see("hidden)");
 
@@ -12979,7 +12986,7 @@ fn e2e_ui_graph_max_branches_caps_legend_entries() {
     cfg2.ui.graph_max_branches = 0; // 0 = unlimited
     hub_screen_keys(&mut cfg2);
     let mut s2 = Sim::with_config(&dir, cfg2);
-    s2.key('p');
+    s2.open_legacy_hub();
     s2.key('g');
     s2.dont_see("hidden)");
     std::fs::remove_dir_all(&dir).ok();
@@ -12994,7 +13001,7 @@ fn e2e_ui_graph_base_branches_config_auto_selects_base() {
     let base = crate::git::branch(&root).expect("has a branch after seed_repo's commit");
 
     let mut s_default = Sim::with_hub_screen_keys(&root); // default graph_base_branches=[]: no auto base
-    s_default.key('p');
+    s_default.open_legacy_hub();
     s_default.key('g');
     s_default.dont_see("⌖ base:");
 
@@ -13002,7 +13009,7 @@ fn e2e_ui_graph_base_branches_config_auto_selects_base() {
     cfg.ui.graph_base_branches = vec![base];
     hub_screen_keys(&mut cfg);
     let mut s_cfg = Sim::with_config(&root, cfg);
-    s_cfg.key('p');
+    s_cfg.open_legacy_hub();
     s_cfg.key('g');
     s_cfg.see("⌖ base:"); // auto-pinned without pressing `s`
 }
@@ -13029,7 +13036,7 @@ fn e2e_ui_commit_meta_align_right_vs_inline_moves_author_column() {
     let dir = canon(&dir);
 
     let mut s_right = Sim::with_hub_screen_keys(&dir); // default "right": a padded column near the right edge
-    s_right.key('p');
+    s_right.open_legacy_hub();
     s_right.key('l');
     let (_, col_right) = s_right
         .find_text("AuthorZZZ")
@@ -13039,7 +13046,7 @@ fn e2e_ui_commit_meta_align_right_vs_inline_moves_author_column() {
     cfg.ui.commit_meta_align = "inline".into();
     hub_screen_keys(&mut cfg);
     let mut s_inline = Sim::with_config(&dir, cfg); // right after the (short) subject
-    s_inline.key('p');
+    s_inline.open_legacy_hub();
     s_inline.key('l');
     let (_, col_inline) = s_inline
         .find_text("AuthorZZZ")
@@ -21441,6 +21448,7 @@ mod space_menu_parity;
 mod standalone_preview_gutter;
 #[cfg(feature = "git")]
 mod standalone_preview_gutter_config;
+mod standard_vcs;
 mod table_parity;
 mod text_parity;
 #[cfg(feature = "git")]

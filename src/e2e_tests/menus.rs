@@ -337,7 +337,7 @@ fn e2e_y_opens_a_different_menu_in_each_context() {
     s.enter();
     open(&mut s, LeaderId::TableCopy);
     s.key('q');
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b');
     assert!(s.app.is_git_branches());
     open(&mut s, LeaderId::BranchCopy);
@@ -609,7 +609,7 @@ fn e2e_space_menu_follows_the_footer_order_and_labels_in_git() {
     s.key('d');
     checked.push(check_space_menu_like_the_footer(&s)); // diff
     s.key('q');
-    s.key('p');
+    s.open_legacy_hub();
     checked.push(check_space_menu_like_the_footer(&s)); // changes
     for _ in 0..4 {
         s.tab();

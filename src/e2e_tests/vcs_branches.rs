@@ -408,7 +408,8 @@ fn e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration()
     }
 
     let dir = fixture("vcs_branch_help_marks_filter");
-    let token = test_plugins::register("vcs_branch_help_marks_filter", Arc::new(MarkedChanges));
+    let token =
+        test_plugins::register_replacement("vcs_branch_help_marks_filter", Arc::new(MarkedChanges));
     for lang in ["en", "ja"] {
         let mut cfg = test_plugins::marker_config(&token);
         cfg.ui.lang = lang.into();

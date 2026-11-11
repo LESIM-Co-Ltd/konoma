@@ -162,7 +162,8 @@ fn config(id: &str, lang: &str, scheme: &str, path: &str, align: &str, extra: &s
         "jj" => Arc::new(konoma_vcs::Jj),
         _ => unreachable!(),
     };
-    let marker = crate::plugins::test_plugins::register(&format!("vcs_app_{id}"), plugin);
+    let marker =
+        crate::plugins::test_plugins::register_replacement(&format!("vcs_app_{id}"), plugin);
     let other = if id == "git" { "jj" } else { "git" };
     format!("[ui]\nlang='{lang}'\nkeys='{scheme}'\ntabbar='hidden'\nstatusbar='split'\ndiff_view='source'\npath_style='{path}'\ncommit_meta_align='{align}'\n[git]\ndiff='unified'\n[project]\nvcs='{id}'\n[plugins.{marker:?}]\nenabled=false\n[plugins.{other}]\nenabled=false\n{extra}")
 }
@@ -675,7 +676,7 @@ fn run_roots_with(
         calls: host_calls.clone(),
     }));
     static PROBE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let marker = crate::plugins::test_plugins::register(
+    let marker = crate::plugins::test_plugins::register_replacement(
         &format!(
             "vcs_app_probe_{}",
             PROBE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

@@ -67,6 +67,12 @@ mod tests {
 
     #[test]
     fn project_detection_uses_static_registration_and_respects_disabled_plugins() {
+        // This fixture offers only its own project, using the user's disable mechanism.
+        let declarations = |ids: &[String]| {
+            let mut disabled = vec!["git".into(), "jj".into()];
+            disabled.extend_from_slice(ids);
+            super::declarations(&disabled)
+        };
         let decl = declaration("static-project", "project.marker", MarkerKind::Any);
         let marker = test_plugins::register(
             "project_detection_static",

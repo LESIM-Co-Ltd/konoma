@@ -720,6 +720,10 @@ fn the_standard_declarations_register_and_keep_the_expected_order() {
             "code",
             "video",
             "pdf",
+            #[cfg(feature = "git")]
+            "git",
+            #[cfg(feature = "git")]
+            "jj",
             "text",
             "command",
             "can-not-preview",
@@ -808,6 +812,11 @@ fn verbs_follow_the_decided_chains() {
     for m in standard_manifests() {
         let verb = |v: Verb| m.verbs.iter().find(|d| d.verb == v);
         match m.id.as_str() {
+            "git" | "jj" => {
+                assert!(verb(Verb::Edit).is_none());
+                assert!(verb(Verb::Open).is_none());
+                assert!(m.verbs.is_empty(), "{}", m.id);
+            }
             // Embedded only: no file to edit or open.
             "math" => assert!(m.verbs.is_empty()),
             "spreadsheet" | "document" | "presentation" => {

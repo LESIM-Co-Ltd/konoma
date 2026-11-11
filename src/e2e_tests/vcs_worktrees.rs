@@ -465,7 +465,7 @@ fn e2e_vcs_worktree_switch_vanished_after_plugin_check_keeps_screen_and_root() {
             remove_switch_target: true,
             ..Default::default()
         }));
-        let token = test_plugins::register(
+        let token = test_plugins::register_replacement(
             &format!("vcs_switch_vanished_{lang}"),
             Arc::new(ObservedVcs {
                 plugin: Arc::new(konoma_vcs::Git),

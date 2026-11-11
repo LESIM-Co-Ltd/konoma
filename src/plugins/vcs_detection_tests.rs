@@ -27,10 +27,105 @@ fn vcs_declarations() -> Vec<ProjectDeclaration> {
 }
 
 #[test]
-fn vcs_projects_are_not_registered_as_standard_plugins_yet() {
+fn vcs_projects_are_registered_as_standard_plugins_when_the_backend_is_available() {
     let registry = crate::plugins::build_registry(&[]);
-    assert!(registry.manifest("git").is_none());
-    assert!(registry.manifest("jj").is_none());
+    for id in ["git", "jj"] {
+        assert_eq!(
+            registry.manifest(id).is_some(),
+            cfg!(feature = "git"),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn standard_vcs_registration_respects_disabled_replacements_and_backend_gates() {
+    use crate::plugins::{build_registry_with, statics::StaticSet};
+    use konoma_plugin::registry::PluginOrigin;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let manifest: toml::Table = include_str!("../../Cargo.toml").parse().unwrap();
+    let normal = &manifest["dependencies"]["konoma-vcs"];
+    assert_eq!(normal["default-features"].as_bool(), Some(false));
+    assert!(
+        normal.get("features").is_none_or(|features| !features
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f.as_str() == Some("app"))),
+        "konoma's normal dependency must not enable app"
+    );
+    assert!(manifest["dev-dependencies"]["konoma-vcs"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f.as_str() == Some("app")));
+    let features = manifest["features"].as_table().unwrap();
+    let mut pending = vec!["default"];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(feature) = pending.pop() {
+        assert!(
+            !matches!(feature, "konoma-vcs/app" | "konoma-vcs/default"),
+            "normal feature graph must not enable the standalone app"
+        );
+        if visited.insert(feature) {
+            if let Some(children) = features.get(feature) {
+                pending.extend(
+                    children
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_str().unwrap()),
+                );
+            }
+        }
+    }
+
+    let plain = build_registry_with(&[], None);
+    let linked = StaticSet {
+        standard: false,
+        added: Vec::new(),
+        replaced: BTreeMap::new(),
+    };
+    let without = build_registry_with(&[], Some(&linked));
+    for id in ["git", "jj"] {
+        assert!(
+            without.manifest(id).is_none(),
+            "standard=false must drop {id}"
+        );
+        assert_eq!(
+            plain.origin(id),
+            cfg!(feature = "git").then_some(PluginOrigin::Standard),
+            "{id}"
+        );
+        assert_eq!(
+            super::declarations(&[]).iter().any(|d| d.plugin == id),
+            cfg!(feature = "git")
+        );
+        assert!(!crate::plugins::build_registry(&[id.into()]).is_enabled(id));
+    }
+    let replaced = StaticSet {
+        standard: true,
+        added: Vec::new(),
+        replaced: BTreeMap::from([
+            ("git".into(), Arc::new(konoma_vcs::Git) as Arc<dyn Plugin>),
+            ("jj".into(), Arc::new(konoma_vcs::Jj) as Arc<dyn Plugin>),
+        ]),
+    };
+    let registry = build_registry_with(&[], Some(&replaced));
+    for id in ["git", "jj"] {
+        assert_eq!(
+            registry.origin(id),
+            cfg!(feature = "git").then_some(PluginOrigin::User),
+            "replacement {id}"
+        );
+        assert_eq!(
+            registry.ids().iter().position(|p| *p == id),
+            plain.ids().iter().position(|p| *p == id)
+        );
+        assert!(!build_registry_with(&[id.into()], Some(&replaced)).is_enabled(id));
+    }
 }
 
 #[test]
@@ -121,8 +216,10 @@ fn vcs_project_watch_targets_follow_a_linked_worktrees_gitdir_file() {
     let metadata = old
         .git_dir_watch()
         .expect("legacy host watches external gitdir");
-    let marker =
-        crate::plugins::test_plugins::register("vcs_watch_linked", Arc::new(konoma_vcs::Git));
+    let marker = crate::plugins::test_plugins::register_replacement(
+        "vcs_watch_linked",
+        Arc::new(konoma_vcs::Git),
+    );
     let mut host = crate::app::App::new(
         root.clone(),
         crate::plugins::test_plugins::marker_config(&marker),

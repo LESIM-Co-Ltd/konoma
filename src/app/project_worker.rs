@@ -69,6 +69,9 @@ impl super::App {
         &mut self,
         project: crate::plugins::projects::MatchedProject,
     ) {
+        if !self.project_is_enabled(&project.plugin) {
+            return;
+        }
         let key = ProjectKey::from(&project);
         if self.project_runtimes.contains_key(&key) {
             return;

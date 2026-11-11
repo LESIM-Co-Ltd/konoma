@@ -8,6 +8,10 @@ use serde::Deserialize;
 
 use crate::preview::PreviewKind;
 
+mod project_settings;
+#[cfg(test)]
+mod project_settings_tests;
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -32,6 +36,9 @@ pub struct Config {
     /// (`plugin_disabled`), so a configuration with other external plugins never shares a registry.
     #[serde(skip)]
     pub external_plugins: Option<String>,
+    /// Project settings read through the shared old-name readers when loading a file.
+    #[serde(skip)]
+    pub(crate) moved_project_settings: std::collections::BTreeMap<String, konoma_plugin::Settings>,
 }
 
 /// Project selection (`[project]`). An absent key defers to the legacy name, then `auto`.
@@ -684,6 +691,9 @@ impl Config {
         };
         match toml::from_str::<Config>(&text) {
             Ok(mut cfg) => {
+                if let Ok(root) = text.parse::<toml::Table>() {
+                    cfg.moved_project_settings = project_settings::read(&root).0;
+                }
                 cfg.renamed_settings = Config::old_setting_names(&text, &cfg);
                 (cfg, None)
             }
@@ -712,6 +722,7 @@ impl Config {
         if table.get("external").and_then(|v| v.get("vcs")).is_some() {
             renamed.push(("[external] vcs".into(), "[project] vcs".into()));
         }
+        renamed.extend(project_settings::read(&table).1);
         renamed
     }
 

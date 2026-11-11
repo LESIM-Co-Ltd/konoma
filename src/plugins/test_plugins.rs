@@ -6,7 +6,7 @@
 //! enabled = false` of its config (`marker_config`): the registry for that list then holds the
 //! plugin, as a user plugin (it wins over the standard ones), and no other test sees it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -39,6 +39,45 @@ pub(crate) fn register(name: &str, plugin: Arc<dyn Plugin>) -> String {
         .unwrap_or_else(|e| e.into_inner())
         .insert(marker.clone(), plugin);
     marker
+}
+
+fn replacements() -> &'static Mutex<BTreeSet<String>> {
+    static REPLACEMENTS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    REPLACEMENTS.get_or_init(Mutex::default)
+}
+
+/// Name a fixture's replacement in the linked set, retaining the usual per-config cache key.
+#[cfg(feature = "git")]
+pub(crate) fn register_replacement(name: &str, plugin: Arc<dyn Plugin>) -> String {
+    let marker = register(name, plugin);
+    replacements().lock().unwrap().insert(marker.clone());
+    marker
+}
+
+pub(crate) fn is_replacement(marker: &str) -> bool {
+    replacements().lock().unwrap().contains(marker)
+}
+
+/// Feed replacements to the same StaticSet path HostBuilder uses; never replace registry entries.
+pub(crate) fn linked_set(disabled: &[String]) -> Option<super::statics::StaticSet> {
+    let plugins: Vec<_> = disabled
+        .iter()
+        .filter(|id| is_replacement(id))
+        .filter_map(|id| lookup(id))
+        .collect();
+    if plugins.is_empty() {
+        return None;
+    }
+    let current = super::statics::current();
+    let mut linked = super::statics::StaticSet {
+        standard: current.is_none_or(|s| s.standard),
+        added: current.map(|s| s.added.clone()).unwrap_or_default(),
+        replaced: current.map(|s| s.replaced.clone()).unwrap_or_default(),
+    };
+    for plugin in plugins {
+        linked.replaced.insert(plugin.manifest().id, plugin);
+    }
+    Some(linked)
 }
 
 /// A config in which the registry holds the plugin registered as `marker`.

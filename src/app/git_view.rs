@@ -7,6 +7,20 @@ use super::*;
 #[path = "diff_source_test_adapter.rs"]
 mod diff_source_test_adapter;
 
+#[cfg(test)]
+thread_local! {
+    static LEGACY_HUB_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl App {
+    pub(crate) fn count_legacy_hub_opens<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        let before = LEGACY_HUB_OPENS.with(|calls| calls.get());
+        let result = f();
+        (result, LEGACY_HUB_OPENS.with(|calls| calls.get() - before))
+    }
+}
+
 /// How a diff is being opened — the input `App::open_git_diff_with` needs *before* it decides
 /// `diff_follow_scope`/`came_from_git_view`/the presentation and validates that presentation
 /// exactly once. `Default` is the ordinary "fresh open, from a tree/hub selection" shape that plain
@@ -74,10 +88,17 @@ impl App {
     /// backend first (`crate::vcs::detect`) and only gating on the git-specific reasons when it is
     /// actually git keeps the hub's answer consistent with what the tree already showed.
     pub fn open_git_view(&mut self) {
+        #[cfg(test)]
+        LEGACY_HUB_OPENS.with(|calls| calls.set(calls.get() + 1));
         // `detect` always returns `VcsKind::Git` in a `--no-default-features` build (jj support is
         // compiled out with the rest of `git`), so this flag is unconditionally true there and the
         // two gates below behave exactly as before — the no-git build's behavior is unchanged.
         let backend_is_git = crate::vcs::detect(&self.tab.root) == crate::vcs::VcsKind::Git;
+        let plugin = if backend_is_git { "git" } else { "jj" };
+        if self.cfg.plugin_disabled().iter().any(|id| id == plugin) {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NotAGitRepo).into());
+            return;
+        }
         if backend_is_git && !self.cfg.external.git {
             // Explicitly disabled by config (the feature itself is on, and it could still be a repo): notify distinctly from "not a repo".
             self.flash =

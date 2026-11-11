@@ -53,8 +53,13 @@ pub(super) fn plugin_config(id: &str, name: &str, lang: &str) -> Config {
         "jj" => Arc::new(konoma_vcs::Jj),
         _ => panic!("unknown VCS"),
     };
-    let token = test_plugins::register(name, plugin);
+    let token = test_plugins::register_replacement(name, plugin);
     let mut cfg = test_plugins::marker_config(&token);
+    let other = if id == "git" { "jj" } else { "git" };
+    cfg.plugins
+        .entry(other.into())
+        .or_default()
+        .insert("enabled".into(), toml::Value::Boolean(false));
     cfg.ui.lang = lang.into();
     cfg.ui.statusbar = "split".into();
     cfg.ui.tabbar = "hidden".into();

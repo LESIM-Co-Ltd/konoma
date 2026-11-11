@@ -96,9 +96,22 @@ fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
     Manifest::new(id, env!("CARGO_PKG_VERSION")).name(name)
 }
 
-/// The declarations of the shared standard file plugins, in registration order.
+/// Plugins this host can run, with projects after the shared file plugins.
+fn standard_plugins() -> Vec<Arc<dyn Plugin>> {
+    #[allow(unused_mut)]
+    let mut plugins = konoma_file_plugins::plugins();
+    // Both readers need vcs-core's git feature; jj's CLI backend is gated by it too.
+    #[cfg(feature = "git")]
+    plugins.extend([
+        Arc::new(konoma_vcs::Git) as Arc<dyn Plugin>,
+        Arc::new(konoma_vcs::Jj),
+    ]);
+    plugins
+}
+
+/// The standard declarations this build can run, in registration order.
 pub(crate) fn standard_manifests() -> Vec<Manifest> {
-    konoma_file_plugins::plugins()
+    standard_plugins()
         .into_iter()
         .map(|plugin| plugin.manifest())
         .collect()
@@ -134,7 +147,7 @@ fn internal_manifests() -> Vec<Manifest> {
 
 /// The implementation behind a shared file manifest or a host-internal pseudo plugin.
 fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
-    konoma_file_plugins::plugins()
+    standard_plugins()
         .into_iter()
         .find(|plugin| plugin.manifest().id == m.id)
         .unwrap_or_else(|| match m.id.as_str() {
@@ -145,6 +158,10 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
 
 /// A registry of the standard plugins, with `disabled` ids switched off.
 pub(crate) fn build_registry(disabled: &[String]) -> Registry {
+    #[cfg(test)]
+    if let Some(linked) = test_plugins::linked_set(disabled) {
+        return build_registry_with(disabled, Some(&linked));
+    }
     build_registry_with(disabled, statics::current())
 }
 
@@ -155,7 +172,7 @@ fn build_registry_with(disabled: &[String], linked: Option<&statics::StaticSet>)
     // What the program that started konoma linked in (`konoma::Host`): a replaced standard plugin
     // keeps its place in the order; the added ones follow the standard ones.
     if linked.is_none_or(|s| s.standard) {
-        for plugin in konoma_file_plugins::plugins() {
+        for plugin in standard_plugins() {
             // The declarations are static; a refusal would be a bug that `tests` catches.
             let _ = match linked.and_then(|s| s.replaced.get(&plugin.manifest().id)) {
                 Some(p) => register(&mut r, Arc::clone(p), PluginOrigin::User),
@@ -185,6 +202,9 @@ fn build_registry_with(disabled: &[String], linked: Option<&statics::StaticSet>)
         // `test_plugins`.
         #[cfg(test)]
         if let Some(plugin) = test_plugins::lookup(id) {
+            if test_plugins::is_replacement(id) {
+                continue;
+            }
             let _ = register(&mut r, plugin, PluginOrigin::User);
             continue;
         }
@@ -302,7 +322,13 @@ pub(crate) fn moved_settings(ui: &toml::Table, plugins: &PluginTables) -> Vec<(S
 /// `[ui]` items it replaces (S2-12). Decided by `konoma_plugin::config::plugin_settings`, the one
 /// function the standalone app calls too; this is only konoma's config handed to it.
 pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Settings {
-    konoma_plugin::config::plugin_settings(&cfg.plugins, &cfg.ui.moved(), id)
+    let mut settings = konoma_plugin::config::plugin_settings(&cfg.plugins, &cfg.ui.moved(), id);
+    if let Some(project) = cfg.moved_project_settings.get(id) {
+        for (key, value) in project.iter() {
+            settings.set(key, value.clone());
+        }
+    }
+    settings
 }
 
 /// `[plugins.<id>] <key>` when it is a string, otherwise the old `[ui]` value `old`. The same rule

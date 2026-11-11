@@ -1914,7 +1914,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::OpenExternal => app.open_in_other_app(),
         Action::OpenGitView => {
             if !app.enter_project() {
-                app.open_git_view();
+                app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::NotAGitRepo).into());
             }
         }
         Action::Refresh => {

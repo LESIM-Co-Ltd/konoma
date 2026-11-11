@@ -1181,7 +1181,7 @@ fn e2e_vcs_graph_tab_close_discards_only_closed_tabs_cached_views() {
         use crate::plugins::test_projects::{ObservedVcs, VcsCalls};
         use std::sync::{Arc, Mutex};
         let calls = Arc::new(Mutex::new(VcsCalls::default()));
-        let token = crate::plugins::test_plugins::register(
+        let token = crate::plugins::test_plugins::register_replacement(
             &format!("vcs_graph_close_{inactive}"),
             Arc::new(ObservedVcs {
                 plugin: Arc::new(konoma_vcs::Git),

@@ -135,7 +135,7 @@ mod git {
         let dir = sandbox("dk_hub_keys");
         seed_repo(&dir);
         let mut s = Sim::new(&canon(&dir));
-        s.key('p');
+        s.open_legacy_hub();
         assert!(s.app.is_git_view());
         assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
         s.key('s');
@@ -192,7 +192,7 @@ mod git {
         let dir = sandbox("dk_hub_g_l");
         seed_repo(&dir);
         let mut s = Sim::new(&canon(&dir));
-        s.key('p');
+        s.open_legacy_hub();
         s.key('G');
         let last = s.app.git_view_selected();
         s.key('g');
@@ -230,7 +230,7 @@ mod git {
         let dir = sandbox("dk_branch_keys");
         seed_repo(&dir);
         let mut s = Sim::new(&canon(&dir));
-        s.key('p');
+        s.open_legacy_hub();
         s.key('b');
         assert!(s.app.is_git_branches());
         let name = s.app.git_branch_view()[s.app.git_branch_sel()].name.clone();
@@ -266,7 +266,7 @@ mod git {
         let dir = sandbox("dk_worktree_keys");
         seed_repo(&dir);
         let mut s = Sim::new(&canon(&dir));
-        s.key('p');
+        s.open_legacy_hub();
         s.key('w');
         assert!(s.app.is_git_worktrees());
         s.key('n');
@@ -284,7 +284,7 @@ mod git {
         let dir = sandbox("dk_graph_zero");
         seed_repo(&dir);
         let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-        s.key('p');
+        s.open_legacy_hub();
         s.key('g');
         s.key('G');
         s.key('s');
@@ -302,7 +302,7 @@ mod git {
         let dir = sandbox("dk_graph_panel");
         seed_repo_history(&dir);
         let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-        s.key('p');
+        s.open_legacy_hub();
         s.key('g');
         s.key('b');
         assert!(s.app.is_git_graph_picker());

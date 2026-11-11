@@ -448,7 +448,7 @@ fn e2e_p_and_bang_work_from_the_tree_and_every_preview() {
         assert!(action_enabled(&s.app, ctx, Action::OpenGitView), "{name}");
         assert!(action_enabled(&s.app, ctx, Action::GitLaunchTool), "{name}");
         let mode = s.app.tab.mode;
-        s.key('p');
+        s.open_legacy_hub();
         assert!(s.app.is_git_view(), "{name}: p opens the project's screen");
         s.key('q');
         assert!(!s.app.is_git_view(), "{name}");
@@ -549,7 +549,7 @@ fn e2e_tab_walks_the_git_screens_both_ways() {
     let dir = sandbox("nk_tab_cycle");
     seed_repo_history(&dir);
     let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 140, 50);
-    s.key('p');
+    s.open_legacy_hub();
     assert_eq!(shows(&s), "changes");
     assert!(has_token(
         &s,
@@ -598,7 +598,7 @@ fn e2e_tab_skips_the_worktrees_in_a_jj_repository() {
         return;
     };
     let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 140, 50);
-    s.key('p');
+    s.open_legacy_hub();
     assert_eq!(shows(&s), "changes");
     let mut seen = Vec::new();
     for _ in 0..4 {
@@ -628,7 +628,7 @@ fn e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row() {
     let dir = sandbox("nk_filter_changes");
     seed_repo(&dir);
     let mut s = Sim::with_config(&canon(&dir), cfg_en());
-    s.key('p');
+    s.open_legacy_hub();
     s.see("a.rs");
     s.see("new.txt");
     s.key('/');
@@ -671,7 +671,7 @@ fn e2e_slash_filter_moves_over_the_shown_rows_only() {
     seed_repo(&dir);
     std::fs::write(dir.join("c.rs"), "fn c() {}\n").unwrap();
     let mut s = Sim::with_config(&canon(&dir), cfg_en());
-    s.key('p');
+    s.open_legacy_hub();
     s.key('/');
     s.keys(".rs");
     s.enter();
@@ -708,7 +708,7 @@ fn e2e_slash_filters_the_log_by_the_text_shown() {
     let dir = sandbox("nk_filter_log");
     seed_repo_history(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('l');
     assert!(s.app.is_git_log());
     s.see("alphacommit");
@@ -748,7 +748,7 @@ fn e2e_slash_filters_the_graph_and_hides_the_connectors() {
     let dir = sandbox("nk_filter_graph");
     seed_repo_history(&dir);
     let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
+    s.open_legacy_hub();
     s.key('g');
     assert!(s.app.is_git_graph());
     s.key('/');
@@ -772,7 +772,7 @@ fn e2e_branch_and_worktree_filters_are_the_same_component() {
     let dir = sandbox("nk_filter_branch");
     seed_repo_history(&dir);
     let mut s = Sim::with_config(&canon(&dir), cfg_en());
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b');
     s.key('/');
     s.keys("feat");
@@ -1083,7 +1083,7 @@ fn e2e_r_reads_the_lists_again() {
         assert!(out.status.success(), "git {args:?}: {out:?}");
     };
     let mut s = Sim::with_hub_screen_keys(&root);
-    s.key('p');
+    s.open_legacy_hub();
     s.key('l');
     assert_eq!(s.app.git_log_entries()[0].summary, "gammacommit");
     git(&["commit", "-q", "--allow-empty", "-m", "deltacommit"]);
@@ -1117,7 +1117,7 @@ fn e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list() {
     let root = canon(&dir);
     let mut s = Sim::with_config(&root, cfg_en());
     let log = record(&mut s);
-    s.key('p');
+    s.open_legacy_hub();
     let sel = s.app.git_view_selected().unwrap();
     assert!(action_enabled(
         &s.app,
@@ -1151,7 +1151,7 @@ fn e2e_a_deleted_row_offers_neither_e_nor_o() {
     std::fs::remove_file(dir.join("b.rs")).unwrap();
     let mut s = Sim::with_config(&canon(&dir), cfg_en());
     let log = record(&mut s);
-    s.key('p');
+    s.open_legacy_hub();
     while s
         .app
         .git_view_selected()

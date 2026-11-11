@@ -132,7 +132,7 @@ fn e2e_git_read_only_stops_checkout_enter_before_starting_a_job() {
         toml::Table::from_iter([("read_only".into(), true.into())]),
     );
     let mut s = Sim::with_config(&canon(&dir), cfg).with_async_git_ops();
-    s.key('p');
+    s.open_legacy_hub();
     s.key('b');
     assert!(s.app.is_git_branches());
     let want = s

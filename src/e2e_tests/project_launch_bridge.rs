@@ -140,6 +140,12 @@ fn project_launch_targets_lines_and_cwds_match_the_host_path() {
     let marker =
         crate::plugins::test_plugins::register("project-launch-bridge", Arc::new(LaunchProject));
     let mut cfg = crate::plugins::test_plugins::marker_config(&marker);
+    for id in ["git", "jj"] {
+        cfg.plugins
+            .entry(id.into())
+            .or_default()
+            .insert("enabled".into(), toml::Value::Boolean(false));
+    }
     cfg.ui.lang = "en".into();
     cfg.ui.diff_view = "source".into();
     cfg.git.diff = "unified".into();

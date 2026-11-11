@@ -598,7 +598,7 @@ fn cancel_matches_legacy(name: &str, key: KeyCode, lang: Lang) {
     }
     .into();
     let mut old = Sim::with_config_sized(&root, cfg, 160, 24);
-    old.key('p');
+    old.open_legacy_hub();
     assert!(old.app.is_git_view());
     let selected = old
         .app
