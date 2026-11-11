@@ -818,7 +818,7 @@ mod tests {
     ///
     /// mtime note: unlike `crate::vcs::jj`'s own `scratch_repo` fixture, this needs no sleep before
     /// the seed commit — `a.txt` is edited strictly *after* `jj commit` returns, and jj's
-    /// `newer_than` check (`mtime_secs >= snapshot_epoch`, both second-granularity) is inclusive of a
+    /// `newer_than` check (the later of ctime and mtime `>= snapshot_epoch`, both second-granularity) is inclusive of a
     /// same-second write, so the edit is deterministically visible as a change regardless of how
     /// close the two land on the wall clock. `scratch_repo`'s sleep exists to protect *unedited*
     /// files from the opposite false positive — this test has none (only `a.txt` is ever touched
