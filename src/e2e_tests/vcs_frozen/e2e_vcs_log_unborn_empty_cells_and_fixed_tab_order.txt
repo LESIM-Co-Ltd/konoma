@@ -1,0 +1,25 @@
+# frozen vcs frames: e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order
+case lang=en
+region x=0..78 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no commits)                                                                |
+row 2 S|a14b64|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+case lang=ja
+region x=0..78 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (コ ミ ッ ト な し )                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b62|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|

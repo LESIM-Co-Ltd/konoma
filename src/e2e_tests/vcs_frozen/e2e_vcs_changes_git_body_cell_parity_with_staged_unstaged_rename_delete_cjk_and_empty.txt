@@ -1,0 +1,1581 @@
+# frozen vcs frames: e2e_vcs_changes_git_body_cell_parity_with_staged_unstaged_rename_delete_cjk_and_empty
+case changed=true lang=en size=140x20 down-0
+region x=0..138 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a17c117|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|c2d2c134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|c2e2c134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|c2f2c134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|c2g2c134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|c2h2c134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|c2d2c134|
+row 9 T|                                                                                                                                          |
+row 9 S|c138|
+row 10 T|                                                                                                                                          |
+row 10 S|c138|
+row 11 T|                                                                                                                                          |
+row 11 S|c138|
+row 12 T|                                                                                                                                          |
+row 12 S|c138|
+row 13 T|                                                                                                                                          |
+row 13 S|c138|
+row 14 T|                                                                                                                                          |
+row 14 S|c138|
+row 15 T|                                                                                                                                          |
+row 15 S|c138|
+row 16 T|                                                                                                                                          |
+row 16 S|c138|
+row 17 T|                                                                                                                                          |
+row 17 S|c138|
+case changed=true lang=en size=140x20 down-1
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Yellow	Reset	REVERSED
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|c2d2c19a115|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2e2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2f2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2g2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2h2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 down-2
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Red	Reset	REVERSED
+style e	Cyan	Reset	NONE
+style f	LightGreen	Reset	NONE
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|c2d2c18a116|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2e2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2f2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 down-3
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Cyan	Reset	REVERSED
+style f	LightGreen	Reset	NONE
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|d2e2d18a116|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2f2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 down-4
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	LightGreen	Reset	REVERSED
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|e2f2e20a114|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 down-5
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	LightGreen	Reset	NONE
+style f	Reset	Reset	REVERSED
+style g	Green	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2e2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|f2g2f16a118|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 down-6
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	LightGreen	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	REVERSED
+style h	Yellow	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2e2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2f2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|g2h2g6a1g1a1g1a1g4a119|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 up-5
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	LightGreen	Reset	NONE
+style f	Reset	Reset	REVERSED
+style g	Green	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2e2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|f2g2f16a118|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 up-4
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	LightGreen	Reset	REVERSED
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|e2f2e20a114|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 up-3
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Cyan	Reset	REVERSED
+style f	LightGreen	Reset	NONE
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|d2e2d18a116|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2f2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 up-2
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Red	Reset	REVERSED
+style e	Cyan	Reset	NONE
+style f	LightGreen	Reset	NONE
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|c2d2c18a116|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2e2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2f2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 up-1
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Yellow	Reset	REVERSED
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|c2d2c19a115|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2e2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2f2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2g2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2h2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=en size=140x20 up-0
+region x=0..138 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a17c117|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|c2d2c134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|c2e2c134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|c2f2c134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|c2g2c134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|c2h2c134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|c2d2c134|
+row 9 T|                                                                                                                                          |
+row 9 S|c138|
+row 10 T|                                                                                                                                          |
+row 10 S|c138|
+row 11 T|                                                                                                                                          |
+row 11 S|c138|
+row 12 T|                                                                                                                                          |
+row 12 S|c138|
+row 13 T|                                                                                                                                          |
+row 13 S|c138|
+row 14 T|                                                                                                                                          |
+row 14 S|c138|
+row 15 T|                                                                                                                                          |
+row 15 S|c138|
+row 16 T|                                                                                                                                          |
+row 16 S|c138|
+row 17 T|                                                                                                                                          |
+row 17 S|c138|
+case changed=true lang=en size=34x8 down-0
+region x=0..32 y=2..6
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a17c11|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|c2d2c28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|c2e2c28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|c2f2c28|
+case changed=true lang=en size=34x8 down-1
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Yellow	Reset	REVERSED
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|c2d2c19a9|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|a2e2a28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|a2f2a28|
+case changed=true lang=en size=34x8 down-2
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Red	Reset	REVERSED
+style e	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|a2b2a28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|c2d2c18a10|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|a2e2a28|
+case changed=true lang=en size=34x8 down-3
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Cyan	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|a2b2a28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|a2c2a28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|d2e2d18a10|
+case changed=true lang=en size=34x8 down-4
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	LightGreen	Reset	REVERSED
+row 2 T|  M repo/b-unstaged.txt         |
+row 2 S|a2b2a28|
+row 3 T|  D repo/c-deleted.txt          |
+row 3 S|a2c2a28|
+row 4 T|● R repo/d-renamed.txt          |
+row 4 S|a2d2a28|
+row 5 T|  U repo/e-untracked.txt        |
+row 5 S|e2f2e20a8|
+case changed=true lang=en size=34x8 down-5
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Red	Reset	NONE
+style c	Cyan	Reset	NONE
+style d	LightGreen	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	Green	Reset	REVERSED
+row 2 T|  D repo/c-deleted.txt          |
+row 2 S|a2b2a28|
+row 3 T|● R repo/d-renamed.txt          |
+row 3 S|a2c2a28|
+row 4 T|  U repo/e-untracked.txt        |
+row 4 S|a2d2a28|
+row 5 T|● A repo/f-added.txt            |
+row 5 S|e2f2e16a12|
+case changed=true lang=en size=34x8 down-6
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Cyan	Reset	NONE
+style c	LightGreen	Reset	NONE
+style d	Green	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	Yellow	Reset	REVERSED
+row 2 T|● R repo/d-renamed.txt          |
+row 2 S|a2b2a28|
+row 3 T|  U repo/e-untracked.txt        |
+row 3 S|a2c2a28|
+row 4 T|● A repo/f-added.txt            |
+row 4 S|a2d2a28|
+row 5 T|  M repo/日 本 語 .txt             |
+row 5 S|e2f2e6a1e1a1e1a1e4a13|
+case changed=true lang=en size=34x8 up-5
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Red	Reset	NONE
+style c	Cyan	Reset	NONE
+style d	LightGreen	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	Green	Reset	REVERSED
+row 2 T|  D repo/c-deleted.txt          |
+row 2 S|a2b2a28|
+row 3 T|● R repo/d-renamed.txt          |
+row 3 S|a2c2a28|
+row 4 T|  U repo/e-untracked.txt        |
+row 4 S|a2d2a28|
+row 5 T|● A repo/f-added.txt            |
+row 5 S|e2f2e16a12|
+case changed=true lang=en size=34x8 up-4
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	LightGreen	Reset	REVERSED
+row 2 T|  M repo/b-unstaged.txt         |
+row 2 S|a2b2a28|
+row 3 T|  D repo/c-deleted.txt          |
+row 3 S|a2c2a28|
+row 4 T|● R repo/d-renamed.txt          |
+row 4 S|a2d2a28|
+row 5 T|  U repo/e-untracked.txt        |
+row 5 S|e2f2e20a8|
+case changed=true lang=en size=34x8 up-3
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Cyan	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|a2b2a28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|a2c2a28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|d2e2d18a10|
+case changed=true lang=en size=34x8 up-2
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Red	Reset	REVERSED
+style e	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|a2b2a28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|c2d2c18a10|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|a2e2a28|
+case changed=true lang=en size=34x8 up-1
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Yellow	Reset	REVERSED
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|c2d2c19a9|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|a2e2a28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|a2f2a28|
+case changed=true lang=en size=34x8 up-0
+region x=0..32 y=2..6
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a17c11|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|c2d2c28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|c2e2c28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|c2f2c28|
+case changed=true lang=ja size=140x20 down-0
+region x=0..138 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a17c117|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|c2d2c134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|c2e2c134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|c2f2c134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|c2g2c134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|c2h2c134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|c2d2c134|
+row 9 T|                                                                                                                                          |
+row 9 S|c138|
+row 10 T|                                                                                                                                          |
+row 10 S|c138|
+row 11 T|                                                                                                                                          |
+row 11 S|c138|
+row 12 T|                                                                                                                                          |
+row 12 S|c138|
+row 13 T|                                                                                                                                          |
+row 13 S|c138|
+row 14 T|                                                                                                                                          |
+row 14 S|c138|
+row 15 T|                                                                                                                                          |
+row 15 S|c138|
+row 16 T|                                                                                                                                          |
+row 16 S|c138|
+row 17 T|                                                                                                                                          |
+row 17 S|c138|
+case changed=true lang=ja size=140x20 down-1
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Yellow	Reset	REVERSED
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|c2d2c19a115|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2e2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2f2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2g2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2h2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 down-2
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Red	Reset	REVERSED
+style e	Cyan	Reset	NONE
+style f	LightGreen	Reset	NONE
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|c2d2c18a116|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2e2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2f2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 down-3
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Cyan	Reset	REVERSED
+style f	LightGreen	Reset	NONE
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|d2e2d18a116|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2f2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 down-4
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	LightGreen	Reset	REVERSED
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|e2f2e20a114|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 down-5
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	LightGreen	Reset	NONE
+style f	Reset	Reset	REVERSED
+style g	Green	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2e2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|f2g2f16a118|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 down-6
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	LightGreen	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	REVERSED
+style h	Yellow	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2e2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2f2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|g2h2g6a1g1a1g1a1g4a119|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 up-5
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	LightGreen	Reset	NONE
+style f	Reset	Reset	REVERSED
+style g	Green	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2e2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|f2g2f16a118|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 up-4
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	LightGreen	Reset	REVERSED
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2d2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|e2f2e20a114|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 up-3
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Cyan	Reset	REVERSED
+style f	LightGreen	Reset	NONE
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2c2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|d2e2d18a116|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2f2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 up-2
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Red	Reset	REVERSED
+style e	Cyan	Reset	NONE
+style f	LightGreen	Reset	NONE
+style g	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|a2b2a134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|c2d2c18a116|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2e2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2f2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2g2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 up-1
+region x=0..138 y=2..18
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Yellow	Reset	REVERSED
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a134|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|c2d2c19a115|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|a2e2a134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|a2f2a134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|a2g2a134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|a2h2a134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|a2b2a134|
+row 9 T|                                                                                                                                          |
+row 9 S|a138|
+row 10 T|                                                                                                                                          |
+row 10 S|a138|
+row 11 T|                                                                                                                                          |
+row 11 S|a138|
+row 12 T|                                                                                                                                          |
+row 12 S|a138|
+row 13 T|                                                                                                                                          |
+row 13 S|a138|
+row 14 T|                                                                                                                                          |
+row 14 S|a138|
+row 15 T|                                                                                                                                          |
+row 15 S|a138|
+row 16 T|                                                                                                                                          |
+row 16 S|a138|
+row 17 T|                                                                                                                                          |
+row 17 S|a138|
+case changed=true lang=ja size=140x20 up-0
+region x=0..138 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a17c117|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                   |
+row 3 S|c2d2c134|
+row 4 T|  D repo/c-deleted.txt                                                                                                                    |
+row 4 S|c2e2c134|
+row 5 T|● R repo/d-renamed.txt                                                                                                                    |
+row 5 S|c2f2c134|
+row 6 T|  U repo/e-untracked.txt                                                                                                                  |
+row 6 S|c2g2c134|
+row 7 T|● A repo/f-added.txt                                                                                                                      |
+row 7 S|c2h2c134|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 8 S|c2d2c134|
+row 9 T|                                                                                                                                          |
+row 9 S|c138|
+row 10 T|                                                                                                                                          |
+row 10 S|c138|
+row 11 T|                                                                                                                                          |
+row 11 S|c138|
+row 12 T|                                                                                                                                          |
+row 12 S|c138|
+row 13 T|                                                                                                                                          |
+row 13 S|c138|
+row 14 T|                                                                                                                                          |
+row 14 S|c138|
+row 15 T|                                                                                                                                          |
+row 15 S|c138|
+row 16 T|                                                                                                                                          |
+row 16 S|c138|
+row 17 T|                                                                                                                                          |
+row 17 S|c138|
+case changed=true lang=ja size=34x8 down-0
+region x=0..32 y=2..6
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a17c11|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|c2d2c28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|c2e2c28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|c2f2c28|
+case changed=true lang=ja size=34x8 down-1
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Yellow	Reset	REVERSED
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|c2d2c19a9|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|a2e2a28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|a2f2a28|
+case changed=true lang=ja size=34x8 down-2
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Red	Reset	REVERSED
+style e	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|a2b2a28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|c2d2c18a10|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|a2e2a28|
+case changed=true lang=ja size=34x8 down-3
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Cyan	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|a2b2a28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|a2c2a28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|d2e2d18a10|
+case changed=true lang=ja size=34x8 down-4
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	LightGreen	Reset	REVERSED
+row 2 T|  M repo/b-unstaged.txt         |
+row 2 S|a2b2a28|
+row 3 T|  D repo/c-deleted.txt          |
+row 3 S|a2c2a28|
+row 4 T|● R repo/d-renamed.txt          |
+row 4 S|a2d2a28|
+row 5 T|  U repo/e-untracked.txt        |
+row 5 S|e2f2e20a8|
+case changed=true lang=ja size=34x8 down-5
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Red	Reset	NONE
+style c	Cyan	Reset	NONE
+style d	LightGreen	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	Green	Reset	REVERSED
+row 2 T|  D repo/c-deleted.txt          |
+row 2 S|a2b2a28|
+row 3 T|● R repo/d-renamed.txt          |
+row 3 S|a2c2a28|
+row 4 T|  U repo/e-untracked.txt        |
+row 4 S|a2d2a28|
+row 5 T|● A repo/f-added.txt            |
+row 5 S|e2f2e16a12|
+case changed=true lang=ja size=34x8 down-6
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Cyan	Reset	NONE
+style c	LightGreen	Reset	NONE
+style d	Green	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	Yellow	Reset	REVERSED
+row 2 T|● R repo/d-renamed.txt          |
+row 2 S|a2b2a28|
+row 3 T|  U repo/e-untracked.txt        |
+row 3 S|a2c2a28|
+row 4 T|● A repo/f-added.txt            |
+row 4 S|a2d2a28|
+row 5 T|  M repo/日 本 語 .txt             |
+row 5 S|e2f2e6a1e1a1e1a1e4a13|
+case changed=true lang=ja size=34x8 up-5
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Red	Reset	NONE
+style c	Cyan	Reset	NONE
+style d	LightGreen	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	Green	Reset	REVERSED
+row 2 T|  D repo/c-deleted.txt          |
+row 2 S|a2b2a28|
+row 3 T|● R repo/d-renamed.txt          |
+row 3 S|a2c2a28|
+row 4 T|  U repo/e-untracked.txt        |
+row 4 S|a2d2a28|
+row 5 T|● A repo/f-added.txt            |
+row 5 S|e2f2e16a12|
+case changed=true lang=ja size=34x8 up-4
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Cyan	Reset	NONE
+style e	Reset	Reset	REVERSED
+style f	LightGreen	Reset	REVERSED
+row 2 T|  M repo/b-unstaged.txt         |
+row 2 S|a2b2a28|
+row 3 T|  D repo/c-deleted.txt          |
+row 3 S|a2c2a28|
+row 4 T|● R repo/d-renamed.txt          |
+row 4 S|a2d2a28|
+row 5 T|  U repo/e-untracked.txt        |
+row 5 S|e2f2e20a8|
+case changed=true lang=ja size=34x8 up-3
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Red	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Cyan	Reset	REVERSED
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|a2b2a28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|a2c2a28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|d2e2d18a10|
+case changed=true lang=ja size=34x8 up-2
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Red	Reset	REVERSED
+style e	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|a2b2a28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|c2d2c18a10|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|a2e2a28|
+case changed=true lang=ja size=34x8 up-1
+region x=0..32 y=2..6
+style a	Reset	Reset	NONE
+style b	Yellow	Reset	NONE
+style c	Reset	Reset	REVERSED
+style d	Yellow	Reset	REVERSED
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a28|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|c2d2c19a9|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|a2e2a28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|a2f2a28|
+case changed=true lang=ja size=34x8 up-0
+region x=0..32 y=2..6
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+row 2 T|● M repo/a-staged.txt           |
+row 2 S|a2b2a17c11|
+row 3 T|  M repo/b-unstaged.txt         |
+row 3 S|c2d2c28|
+row 4 T|  D repo/c-deleted.txt          |
+row 4 S|c2e2c28|
+row 5 T|● R repo/d-renamed.txt          |
+row 5 S|c2f2c28|
+case changed=false lang=en size=140x20 down-0
+region x=0..138 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no changes)                                                                                                                            |
+row 2 S|a14b124|
+row 3 T|                                                                                                                                          |
+row 3 S|b138|
+row 4 T|                                                                                                                                          |
+row 4 S|b138|
+row 5 T|                                                                                                                                          |
+row 5 S|b138|
+row 6 T|                                                                                                                                          |
+row 6 S|b138|
+row 7 T|                                                                                                                                          |
+row 7 S|b138|
+row 8 T|                                                                                                                                          |
+row 8 S|b138|
+row 9 T|                                                                                                                                          |
+row 9 S|b138|
+row 10 T|                                                                                                                                          |
+row 10 S|b138|
+row 11 T|                                                                                                                                          |
+row 11 S|b138|
+row 12 T|                                                                                                                                          |
+row 12 S|b138|
+row 13 T|                                                                                                                                          |
+row 13 S|b138|
+row 14 T|                                                                                                                                          |
+row 14 S|b138|
+row 15 T|                                                                                                                                          |
+row 15 S|b138|
+row 16 T|                                                                                                                                          |
+row 16 S|b138|
+row 17 T|                                                                                                                                          |
+row 17 S|b138|
+case changed=false lang=en size=34x8 down-0
+region x=0..32 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no changes)                  |
+row 2 S|a14b18|
+row 3 T|                                |
+row 3 S|b32|
+row 4 T|                                |
+row 4 S|b32|
+row 5 T|                                |
+row 5 S|b32|
+case changed=false lang=ja size=140x20 down-0
+region x=0..138 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (変 更 な し )                                                                                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b126|
+row 3 T|                                                                                                                                          |
+row 3 S|b138|
+row 4 T|                                                                                                                                          |
+row 4 S|b138|
+row 5 T|                                                                                                                                          |
+row 5 S|b138|
+row 6 T|                                                                                                                                          |
+row 6 S|b138|
+row 7 T|                                                                                                                                          |
+row 7 S|b138|
+row 8 T|                                                                                                                                          |
+row 8 S|b138|
+row 9 T|                                                                                                                                          |
+row 9 S|b138|
+row 10 T|                                                                                                                                          |
+row 10 S|b138|
+row 11 T|                                                                                                                                          |
+row 11 S|b138|
+row 12 T|                                                                                                                                          |
+row 12 S|b138|
+row 13 T|                                                                                                                                          |
+row 13 S|b138|
+row 14 T|                                                                                                                                          |
+row 14 S|b138|
+row 15 T|                                                                                                                                          |
+row 15 S|b138|
+row 16 T|                                                                                                                                          |
+row 16 S|b138|
+row 17 T|                                                                                                                                          |
+row 17 S|b138|
+case changed=false lang=ja size=34x8 down-0
+region x=0..32 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (変 更 な し )                    |
+row 2 S|a4b1a1b1a1b1a1b1a1b20|
+row 3 T|                                |
+row 3 S|b32|
+row 4 T|                                |
+row 4 S|b32|
+row 5 T|                                |
+row 5 S|b32|

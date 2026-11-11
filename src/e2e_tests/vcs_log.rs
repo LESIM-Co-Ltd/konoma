@@ -1052,8 +1052,24 @@ fn e2e_vcs_log_limit_matches_hub_at_200_and_omits_201st() {
     same(&mut old, &mut new, 100, 8);
 }
 
+thread_local! {
+    /// The frozen frames show jj change ids; while this is `Some(n)`, every `jj()` call seeds jj's
+    /// id generator with `n` and counts up, so a fixture built twice has the same ids.
+    static JJ_ID_SEED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn seed_jj_ids(start: Option<u64>) {
+    JJ_ID_SEED.with(|s| s.set(start));
+}
+
 pub(super) fn jj(root: &std::path::Path, args: &[&str]) {
-    let output = std::process::Command::new("jj")
+    let seed = JJ_ID_SEED.with(|s| {
+        let current = s.get();
+        s.set(current.map(|n| n + 1));
+        current
+    });
+    let mut command = std::process::Command::new("jj");
+    command
         .current_dir(root)
         .env("HOME", root)
         .env("JJ_USER", "作者 Author")
@@ -1063,10 +1079,11 @@ pub(super) fn jj(root: &std::path::Path, args: &[&str]) {
             "debug.commit-timestamp=\"2020-01-01T00:20:00Z\"",
             "--config",
             "debug.operation-timestamp=\"2020-01-01T00:20:00Z\"",
-        ])
-        .args(args)
-        .output()
-        .unwrap();
+        ]);
+    if let Some(seed) = seed {
+        command.args(["--config", &format!("debug.randomness-seed={seed}")]);
+    }
+    let output = command.args(args).output().unwrap();
     assert!(
         output.status.success(),
         "jj {args:?}: {}",

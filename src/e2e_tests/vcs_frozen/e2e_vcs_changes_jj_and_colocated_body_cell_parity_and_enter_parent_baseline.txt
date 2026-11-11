@@ -1,0 +1,153 @@
+# frozen vcs frames: e2e_vcs_changes_jj_and_colocated_body_cell_parity_and_enter_parent_baseline
+case colocated=false changed=false
+region x=0..138 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no changes)                                                                                                                            |
+row 2 S|a14b124|
+row 3 T|                                                                                                                                          |
+row 3 S|b138|
+row 4 T|                                                                                                                                          |
+row 4 S|b138|
+row 5 T|                                                                                                                                          |
+row 5 S|b138|
+row 6 T|                                                                                                                                          |
+row 6 S|b138|
+row 7 T|                                                                                                                                          |
+row 7 S|b138|
+row 8 T|                                                                                                                                          |
+row 8 S|b138|
+row 9 T|                                                                                                                                          |
+row 9 S|b138|
+row 10 T|                                                                                                                                          |
+row 10 S|b138|
+row 11 T|                                                                                                                                          |
+row 11 S|b138|
+row 12 T|                                                                                                                                          |
+row 12 S|b138|
+row 13 T|                                                                                                                                          |
+row 13 S|b138|
+row 14 T|                                                                                                                                          |
+row 14 S|b138|
+row 15 T|                                                                                                                                          |
+row 15 S|b138|
+row 16 T|                                                                                                                                          |
+row 16 S|b138|
+row 17 T|                                                                                                                                          |
+row 17 S|b138|
+case colocated=false changed=true
+region x=0..138 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Red	Reset	NONE
+style e	Green	Reset	NONE
+style f	Yellow	Reset	NONE
+row 2 T|  M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a17c117|
+row 3 T|  D repo/c-deleted.txt                                                                                                                    |
+row 3 S|c2d2c134|
+row 4 T|  D repo/d-old.txt                                                                                                                        |
+row 4 S|c2d2c134|
+row 5 T|  A repo/d-renamed.txt                                                                                                                    |
+row 5 S|c2e2c134|
+row 6 T|  A repo/e-untracked.txt                                                                                                                  |
+row 6 S|c2e2c134|
+row 7 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 7 S|c2f2c134|
+row 8 T|                                                                                                                                          |
+row 8 S|c138|
+row 9 T|                                                                                                                                          |
+row 9 S|c138|
+row 10 T|                                                                                                                                          |
+row 10 S|c138|
+row 11 T|                                                                                                                                          |
+row 11 S|c138|
+row 12 T|                                                                                                                                          |
+row 12 S|c138|
+row 13 T|                                                                                                                                          |
+row 13 S|c138|
+row 14 T|                                                                                                                                          |
+row 14 S|c138|
+row 15 T|                                                                                                                                          |
+row 15 S|c138|
+row 16 T|                                                                                                                                          |
+row 16 S|c138|
+row 17 T|                                                                                                                                          |
+row 17 S|c138|
+case colocated=true changed=false
+region x=0..138 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no changes)                                                                                                                            |
+row 2 S|a14b124|
+row 3 T|                                                                                                                                          |
+row 3 S|b138|
+row 4 T|                                                                                                                                          |
+row 4 S|b138|
+row 5 T|                                                                                                                                          |
+row 5 S|b138|
+row 6 T|                                                                                                                                          |
+row 6 S|b138|
+row 7 T|                                                                                                                                          |
+row 7 S|b138|
+row 8 T|                                                                                                                                          |
+row 8 S|b138|
+row 9 T|                                                                                                                                          |
+row 9 S|b138|
+row 10 T|                                                                                                                                          |
+row 10 S|b138|
+row 11 T|                                                                                                                                          |
+row 11 S|b138|
+row 12 T|                                                                                                                                          |
+row 12 S|b138|
+row 13 T|                                                                                                                                          |
+row 13 S|b138|
+row 14 T|                                                                                                                                          |
+row 14 S|b138|
+row 15 T|                                                                                                                                          |
+row 15 S|b138|
+row 16 T|                                                                                                                                          |
+row 16 S|b138|
+row 17 T|                                                                                                                                          |
+row 17 S|b138|
+case colocated=true changed=true
+region x=0..138 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Red	Reset	NONE
+style e	Green	Reset	NONE
+style f	Yellow	Reset	NONE
+row 2 T|  M repo/a-staged.txt                                                                                                                     |
+row 2 S|a2b2a17c117|
+row 3 T|  D repo/c-deleted.txt                                                                                                                    |
+row 3 S|c2d2c134|
+row 4 T|  D repo/d-old.txt                                                                                                                        |
+row 4 S|c2d2c134|
+row 5 T|  A repo/d-renamed.txt                                                                                                                    |
+row 5 S|c2e2c134|
+row 6 T|  A repo/e-untracked.txt                                                                                                                  |
+row 6 S|c2e2c134|
+row 7 T|  M repo/日 本 語 .txt                                                                                                                       |
+row 7 S|c2f2c134|
+row 8 T|                                                                                                                                          |
+row 8 S|c138|
+row 9 T|                                                                                                                                          |
+row 9 S|c138|
+row 10 T|                                                                                                                                          |
+row 10 S|c138|
+row 11 T|                                                                                                                                          |
+row 11 S|c138|
+row 12 T|                                                                                                                                          |
+row 12 S|c138|
+row 13 T|                                                                                                                                          |
+row 13 S|c138|
+row 14 T|                                                                                                                                          |
+row 14 S|c138|
+row 15 T|                                                                                                                                          |
+row 15 S|c138|
+row 16 T|                                                                                                                                          |
+row 16 S|c138|
+row 17 T|                                                                                                                                          |
+row 17 S|c138|

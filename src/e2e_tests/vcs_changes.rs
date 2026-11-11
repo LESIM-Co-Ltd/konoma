@@ -19,6 +19,10 @@ pub(super) fn branch_write_fixture() -> crate::test_support::TmpDir {
     branches::fixture("vcs_app_branch_writes")
 }
 
+pub(super) fn branches_fixture(name: &str) -> crate::test_support::TmpDir {
+    branches::fixture(name)
+}
+
 pub(super) fn write_git_output(root: &std::path::Path, args: &[&str]) -> String {
     writes::git_output(root, args)
 }
@@ -174,8 +178,16 @@ fn e2e_vcs_changes_linked_worktree_external_index_event_refreshes_the_session() 
 }
 
 pub(super) fn git_repo(name: &str, changed: bool) -> crate::test_support::TmpDir {
-    use crate::test_support::{init_git_repo, run_git};
     let dir = sandbox(name);
+    git_repo_at(&dir, changed);
+    dir.into_canonical().unwrap()
+}
+
+/// The fixture of [`git_repo`] built in an existing empty directory (the frozen frames need a
+/// repository whose directory name does not carry the pid).
+pub(super) fn git_repo_at(dir: &std::path::Path, changed: bool) {
+    use crate::test_support::{init_git_repo, run_git};
+    let dir = dir.to_path_buf();
     init_git_repo(&dir);
     for file in [
         "a-staged.txt",
@@ -200,7 +212,6 @@ pub(super) fn git_repo(name: &str, changed: bool) -> crate::test_support::TmpDir
         run_git(&dir, &["add", "f-added.txt"]);
         std::fs::write(dir.join("日本語.txt"), "変更\n").unwrap();
     }
-    dir.into_canonical().unwrap()
 }
 
 pub(super) fn compare_body(old: &mut Sim, new: &mut Sim, width: u16, height: u16) -> Vec<String> {
