@@ -21456,4 +21456,9 @@ mod vcs_app_parity;
 #[cfg(feature = "git")]
 mod vcs_changes;
 #[cfg(feature = "git")]
+mod vcs_host_only;
+#[cfg(feature = "git")]
 mod vcs_log;
+mod vcs_port_map;
+#[cfg(feature = "git")]
+mod vcs_project_port;

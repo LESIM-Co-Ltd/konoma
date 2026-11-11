@@ -35,6 +35,7 @@ include!("vcs_app_root_jobs.rs");
 include!("vcs_app_diff_cases.rs");
 include!("vcs_app_media_cases.rs");
 include!("vcs_app_idle_workers.rs");
+include!("vcs_app_port_cases.rs");
 
 thread_local! {
     static TALLY: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
@@ -214,9 +215,21 @@ fn expected_footer(
     side: &str,
     width: u16,
 ) -> Buffer {
-    let text = fixture[lang][kind][side][width.to_string()]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing explicit footer: {lang}/{kind}/{side}/{width}"));
+    let fitted;
+    let text = if let Some(text) = fixture[lang][kind][side][width.to_string()].as_str() {
+        text
+    } else {
+        // The explicit 180-column recipes contain all tokens for these B screens.
+        let recipe = fixture[lang][kind][side]["180"]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing explicit footer: {lang}/{kind}/{side}/{width}"));
+        assert!(!recipe.ends_with('…'), "the footer recipe must be complete");
+        fitted = konoma_widgets::help_panel::fit_tokens(
+            &recipe.split("  ").map(str::to_owned).collect::<Vec<_>>(),
+            width,
+        );
+        &fitted
+    };
     let style = |name: &str| {
         Style::default()
             .fg(fixture[name]["fg"].as_str().unwrap().parse().unwrap())
@@ -403,7 +416,9 @@ fn frames(
             }
         }
         let fixture = &graph_chrome;
-        if fixture[lang][&kind]["host"][footer_width.to_string()].is_null() {
+        if fixture[lang][&kind]["host"][footer_width.to_string()].is_null()
+            && fixture[lang][&kind]["host"]["180"].is_null()
+        {
             let plain = |frame: &Buffer| -> String {
                 (0..frame.area.width)
                     .map(|x| frame[(x, y)].symbol())
@@ -545,7 +560,7 @@ fn frames(
             );
         }
     }
-    compare_frames(&expected, app).unwrap_or_else(|e| {
+    compare_ported_frame(&expected, app).unwrap_or_else(|e| {
         dump_parity_frame("host whole frame", host);
         dump_parity_frame("app whole frame", app);
         panic!("whole frame: {e}")
@@ -620,6 +635,7 @@ fn run_roots(
 
 #[derive(Default)]
 struct RunOptions {
+    port_branches: bool,
     idle_workers: Option<IdleWorkers>,
     colocated: bool,
     plugin: Option<Arc<dyn Plugin>>,
@@ -798,6 +814,24 @@ fn run_roots_with(
     let mut terminal = Terminal::new(SharedBackend(backend.clone())).unwrap();
     let fixture = read_snapshot_for_test("vcs_app_chrome");
     let mut graph_fixture = read_snapshot_for_test("vcs_app_graph");
+    for lang in ["en", "ja"] {
+        for prefix in ["", "jj_"] {
+            for side in ["host", "app"] {
+                let source = format!("{prefix}graph_commit");
+                let target = format!("{prefix}graph_empty");
+                let detail = if lang == "en" {
+                    "  ↵/l/→:detail"
+                } else {
+                    "  ↵/l/→:詳細"
+                };
+                graph_fixture[lang][&target][side] = graph_fixture[lang][&source][side]
+                    .as_str()
+                    .unwrap()
+                    .replace(detail, "")
+                    .into();
+            }
+        }
+    }
     if options.contract {
         let contract = read_snapshot_for_test("vcs_app_diff");
         for lang in ["en", "ja"] {
@@ -809,7 +843,7 @@ fn run_roots_with(
     let worktree_fixture = options
         .worktrees
         .then(|| read_snapshot_for_test("vcs_app_worktrees"));
-    if root != app_root {
+    if root != app_root || options.port_branches {
         // These are the same §4-1:220 / §7-5:967 root-footer exceptions as U8b/U8c.
         let write_fixture = read_snapshot_for_test("vcs_app_writes");
         for lang in ["en", "ja"] {
@@ -1853,6 +1887,9 @@ fn copies(meta: &konoma_vcs_core::git::CommitMeta) -> Vec<String> {
 }
 fn copy_case(root: &Path, id: &str, lang: &str) {
     let expected = copies(&metadata(root, id, 1));
+    if id == "git" && expected[3].starts_with("Subject 日本語") {
+        assert!(expected[3].contains('\n') && expected[3].contains("日本語"));
+    }
     let expected: Vec<_> = expected.iter().chain(&expected).cloned().collect();
     let fixture = read_snapshot_for_test("vcs_app_chrome");
     let mut steps = vec![key(KeyCode::Tab), ch('j')];
@@ -1866,17 +1903,36 @@ fn copy_case(root: &Path, id: &str, lang: &str) {
     }
     let end = steps.len();
     let text = config(id, lang, "vim", "relative", "right", "");
-    run(root, id, &text, steps, false, |step, _, _, writes| {
-        assert!(writes.len() <= expected.len());
-        assert_eq!(
-            writes,
-            &expected[..writes.len()],
-            "all six copy values must describe the selected/displayed commit"
-        );
-        if step == end {
-            assert_eq!(writes.len(), 12, "all six menu items on log and detail");
-        }
-    });
+    run(
+        root,
+        id,
+        &text,
+        steps,
+        false,
+        |step, state, host, writes| {
+            if [3, 5, 7, 9, 11, 13, 16, 18, 20, 22, 24, 26].contains(&step) {
+                assert_eq!(state.menu.as_deref(), Some("copy"));
+            }
+            assert!(writes.len() <= expected.len());
+            assert_eq!(
+                writes,
+                &expected[..writes.len()],
+                "all six copy values must describe the selected/displayed commit"
+            );
+            if [4, 6, 8, 10, 12, 14, 17, 19, 21, 23, 25, 27].contains(&step) {
+                assert_eq!(
+                    state.notice,
+                    Some(konoma_host_core::copy::copied_preview_notice(
+                        host.app.lang,
+                        writes.last().unwrap()
+                    ))
+                );
+            }
+            if step == end {
+                assert_eq!(writes.len(), 12, "all six menu items on log and detail");
+            }
+        },
+    );
     let steps = vec![
         key(KeyCode::Tab),
         ch('y'),
@@ -1885,12 +1941,19 @@ fn copy_case(root: &Path, id: &str, lang: &str) {
         ch('y'),
         ch('m'),
     ];
-    run(root, id, &text, steps, true, |step, state, _, writes| {
+    run(root, id, &text, steps, true, |step, state, host, writes| {
         assert!(
             writes.is_empty(),
             "failed clipboard writes must not reach either sink"
         );
         if [3, 6].contains(&step) {
+            assert_eq!(
+                state.notice,
+                Some(konoma_host_core::copy::copy_failed_notice(
+                    host.app.lang,
+                    &"test clipboard failure"
+                ))
+            );
             assert!(state
                 .notice
                 .as_deref()
