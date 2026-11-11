@@ -17,6 +17,7 @@ exclude = [
     "/git-demo",
     "/git-sandbox",
     "/scripts",
+    "/src/e2e_tests/vcs_frozen/",
     "/.claude",
     "/.mcp.json",
     "/CLAUDE.md",

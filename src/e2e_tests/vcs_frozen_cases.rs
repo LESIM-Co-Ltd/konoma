@@ -493,6 +493,18 @@ stale_tests! {
     e2e_vcs_frozen_stale_log_unborn => "e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order",
     e2e_vcs_frozen_stale_log_limit => "e2e_vcs_log_limit_matches_hub_at_200_and_omits_201st",
     e2e_vcs_frozen_stale_log_jj => "e2e_vcs_log_jj_and_both_colocated_backends_match_the_selected_legacy_backend",
+    e2e_vcs_frozen_stale_graph_picker_opens => "e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells",
+    e2e_vcs_frozen_stale_graph_picker_toggles => "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
+    e2e_vcs_frozen_stale_graph_picker_no_filter => "e2e_vcs_graph_picker_has_no_filter",
+    e2e_vcs_frozen_stale_graph_picker_apply => "e2e_vcs_graph_picker_apply_rebuilds_and_reorder_derives_base",
+    e2e_vcs_frozen_stale_graph_picker_cancel => "e2e_vcs_graph_picker_cancel_discards_tentative_and_retains_order",
+    e2e_vcs_frozen_stale_graph_picker_tab_change => "e2e_vcs_graph_picker_tab_change_closes_panel_and_discards_tentative_like_legacy",
+    e2e_vcs_frozen_stale_graph_picker_jj_source => "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints",
+    e2e_vcs_frozen_stale_graph_cells => "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+    e2e_vcs_frozen_stale_graph_base_reload_detail => "e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub",
+    e2e_vcs_frozen_stale_graph_jj_cells => "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+    e2e_vcs_frozen_stale_worktrees_cells => "e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages",
+    e2e_vcs_frozen_stale_worktrees_diff => "e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy",
 }
 
 #[test]
@@ -553,4 +565,64 @@ fn e2e_vcs_frozen_replay_log_limit() {
 #[test]
 fn e2e_vcs_frozen_replay_log_jj() {
     replay("e2e_vcs_log_jj_and_both_colocated_backends_match_the_selected_legacy_backend");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_picker_opens() {
+    replay("e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_picker_toggles() {
+    replay("e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_picker_no_filter() {
+    replay("e2e_vcs_graph_picker_has_no_filter");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_picker_apply() {
+    replay("e2e_vcs_graph_picker_apply_rebuilds_and_reorder_derives_base");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_picker_cancel() {
+    replay("e2e_vcs_graph_picker_cancel_discards_tentative_and_retains_order");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_picker_tab_change() {
+    replay("e2e_vcs_graph_picker_tab_change_closes_panel_and_discards_tentative_like_legacy");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_picker_jj_source() {
+    replay("e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_cells() {
+    replay("e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_base_reload_detail() {
+    replay("e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_graph_jj_cells() {
+    replay("e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_worktrees_cells() {
+    replay("e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_worktrees_diff() {
+    replay("e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy");
 }

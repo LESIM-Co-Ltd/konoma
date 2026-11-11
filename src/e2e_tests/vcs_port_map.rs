@@ -1318,6 +1318,134 @@ const GROUPS: &[Group] = &[
         &["en", "ja"],
         "vcs_port_log_and_changes_help_filter_marks_and_footer_priority",
     ),
+    // Frozen old-hub frames: each row says that the old test's compared body cells are held as a
+    // fixture (`src/e2e_tests/vcs_frozen`) and replayed through the project path by the named test.
+    (
+        "e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub",
+        &["frozen:cells"],
+        &["relative"],
+        "e2e_vcs_frozen_replay_changes_paths",
+    ),
+    (
+        "e2e_vcs_changes_git_body_cell_parity_with_staged_unstaged_rename_delete_cjk_and_empty",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_changes_git",
+    ),
+    (
+        "e2e_vcs_changes_jj_and_colocated_body_cell_parity_and_enter_parent_baseline",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_changes_jj",
+    ),
+    (
+        "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_branches_jj",
+    ),
+    (
+        "e2e_vcs_detail_cells_motions_layout_empty_and_less_match_legacy",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_log_detail_cells",
+    ),
+    (
+        "e2e_vcs_detail_missing_commit_empty_without_header_matches_legacy_and_r_reloads",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_log_detail_missing",
+    ),
+    (
+        "e2e_vcs_log_git_cells_alignments_boundaries_cjk_ellipsis_and_scrolling",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_log_git_cells",
+    ),
+    (
+        "e2e_vcs_log_filter_uses_legacy_text_and_cursor_for_every_query",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_log_filter",
+    ),
+    (
+        "e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_log_unborn",
+    ),
+    (
+        "e2e_vcs_log_limit_matches_hub_at_200_and_omits_201st",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_log_limit",
+    ),
+    (
+        "e2e_vcs_log_jj_and_both_colocated_backends_match_the_selected_legacy_backend",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_log_jj",
+    ),
+    (
+        "e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_picker_opens",
+    ),
+    (
+        "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_picker_toggles",
+    ),
+    (
+        "e2e_vcs_graph_picker_has_no_filter",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_picker_no_filter",
+    ),
+    (
+        "e2e_vcs_graph_picker_apply_rebuilds_and_reorder_derives_base",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_picker_apply",
+    ),
+    (
+        "e2e_vcs_graph_picker_cancel_discards_tentative_and_retains_order",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_picker_cancel",
+    ),
+    (
+        "e2e_vcs_graph_picker_tab_change_closes_panel_and_discards_tentative_like_legacy",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_picker_tab_change",
+    ),
+    (
+        "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_picker_jj_source",
+    ),
+    (
+        "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_cells",
+    ),
+    (
+        "e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_base_reload_detail",
+    ),
+    (
+        "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_graph_jj_cells",
+    ),
 ];
 
 // Kept independently from GROUPS so deleting a table entry cannot silently shrink the scope.
@@ -1457,7 +1585,7 @@ fn every_ported_assertion_names_an_existing_new_test() {
     );
     assert_eq!(
         table.len(),
-        1593 + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
+        1593 + 21 + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
         "a ported assertion/case row was removed"
     );
     for p in PENDING_BEHAVIORS {

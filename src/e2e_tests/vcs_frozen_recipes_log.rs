@@ -7,9 +7,9 @@ use super::super::Ctx;
 use konoma_vcs_core::git2;
 
 /// Pins the backend preference for the current thread until dropped.
-struct Pin;
+pub(super) struct Pin;
 impl Pin {
-    fn new(id: &str) -> Self {
+    pub(super) fn new(id: &str) -> Self {
         crate::vcs::set_preference_for_test(Some(if id == "git" {
             crate::vcs::Preference::Git
         } else {

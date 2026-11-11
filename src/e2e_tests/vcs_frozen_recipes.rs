@@ -6,8 +6,12 @@ use super::super::vcs_changes::{branches_fixture, git_repo_at, plugin_config};
 use super::super::*;
 use super::{stable_root, Ctx, Recipe};
 
+#[path = "vcs_frozen_recipes_graph.rs"]
+mod graph;
 #[path = "vcs_frozen_recipes_log.rs"]
 mod log;
+#[path = "vcs_frozen_recipes_worktrees.rs"]
+mod worktrees;
 
 pub(super) const RECIPES: &[Recipe] = &[
     Recipe {
@@ -93,6 +97,88 @@ pub(super) const RECIPES: &[Recipe] = &[
         min_cases: 2,
         run: branches_jj,
     },
+    Recipe {
+        name: "e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells",
+        jj: false,
+        // icons x (open + reopened after a new branch)
+        min_cases: 2 * 2,
+        run: graph::picker_opens,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
+        jj: false,
+        // languages x icons x (11 keys + 6 motions)
+        min_cases: 2 * 2 * (11 + 6),
+        run: graph::picker_toggles,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_picker_has_no_filter",
+        jj: false,
+        min_cases: 2,
+        run: graph::picker_no_filter,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_picker_apply_rebuilds_and_reorder_derives_base",
+        jj: false,
+        // apply keys x reorder x (applied + reopened)
+        min_cases: 2 * 2 * 2,
+        run: graph::picker_apply,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_picker_cancel_discards_tentative_and_retains_order",
+        jj: false,
+        // cancel keys x (discarded + order retained)
+        min_cases: 3 * 2,
+        run: graph::picker_cancel,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_picker_tab_change_closes_panel_and_discards_tentative_like_legacy",
+        jj: false,
+        min_cases: 2,
+        run: graph::picker_tab_change,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints",
+        jj: true,
+        // colocated x languages x (picker + slash + applied)
+        min_cases: 2 * 2 * 3,
+        run: graph::picker_jj_source,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+        jj: false,
+        // languages x widths x 4 configs x (open + 2 moves + 4 queries), then widths x heights x (open + G + g)
+        min_cases: 2 * 2 * 4 * (1 + 2 + 4) + 2 * 4 * (1 + 2),
+        run: graph::cells,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub",
+        jj: false,
+        // languages x (s + worktree pass: 2 keys x (detail + back) + commit pass: 3 base frames + 2 keys x 2)
+        min_cases: 2 * (1 + 2 * 2 + 3 + 2 * 2),
+        run: graph::base_reload_detail,
+    },
+    Recipe {
+        name: "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+        jj: true,
+        // languages x (open + 2 `a` presses)
+        min_cases: 2 * (1 + 2),
+        run: graph::jj_cells,
+    },
+    Recipe {
+        name: "e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages",
+        jj: false,
+        // roots x languages x widths x (open + move + 3 queries)
+        min_cases: 2 * 2 * 2 * (1 + 1 + 3),
+        run: worktrees::cells,
+    },
+    Recipe {
+        name: "e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy",
+        jj: false,
+        // languages x widths x paths x (title + diff + 3 keys + back)
+        min_cases: 2 * 2 * 2 * (1 + 1 + 3 + 1),
+        run: worktrees::diff,
+    },
 ];
 
 fn changes_paths(c: &mut Ctx) {
@@ -102,8 +188,10 @@ fn changes_paths(c: &mut Ctx) {
     std::fs::create_dir_all(&nested).unwrap();
     for (tree, root) in [("repo", dir.as_path()), ("nested", nested.as_path())] {
         // `home` and `full` draw the absolute scratch path, which differs per machine and user, so
-        // they cannot be frozen cell for cell; only the old test still compares them.
-        for style in ["relative"] {
+        // they cannot be frozen cell for cell; the old test still compares them, and the Buffer
+        // literals of `vcs_project_port.rs` (loop over `relative`, `home` and `full`) cover them.
+        let style = "relative";
+        {
             let mut cfg = plugin_config("git", "vcs_paths_nested", "en");
             cfg.ui.path_style = style.into();
             cfg.plugins
@@ -187,6 +275,12 @@ fn changes_jj(c: &mut Ctx) {
                 std::fs::rename(dir.join("d-old.txt"), dir.join("d-renamed.txt")).unwrap();
                 std::fs::write(dir.join("e-untracked.txt"), "new\n").unwrap();
                 std::fs::write(dir.join("日本語.txt"), "変更\n").unwrap();
+                // A renamed file keeps its old mtime, and konoma's jj read treats a file whose mtime
+                // (whole seconds) is older than the last snapshot as already seen. Whether the
+                // rename above is "newer" therefore depends on which second the fixture was built
+                // in. An explicit snapshot makes jj itself report every change, so the frame does
+                // not depend on the clock.
+                assert!(run_jj(&dir, &["status"]));
             }
             crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::Jj));
             let cfg = plugin_config("jj", "vcs_changes_jj_parity", "en");

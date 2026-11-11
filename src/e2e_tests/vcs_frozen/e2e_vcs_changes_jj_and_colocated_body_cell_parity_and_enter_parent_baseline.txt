@@ -41,20 +41,21 @@ style a	Reset	Reset	REVERSED
 style b	Yellow	Reset	REVERSED
 style c	Reset	Reset	NONE
 style d	Red	Reset	NONE
-style e	Green	Reset	NONE
-style f	Yellow	Reset	NONE
+style e	Cyan	Reset	NONE
+style f	Green	Reset	NONE
+style g	Yellow	Reset	NONE
 row 2 T|  M repo/a-staged.txt                                                                                                                     |
 row 2 S|a2b2a17c117|
 row 3 T|  D repo/c-deleted.txt                                                                                                                    |
 row 3 S|c2d2c134|
 row 4 T|  D repo/d-old.txt                                                                                                                        |
 row 4 S|c2d2c134|
-row 5 T|  A repo/d-renamed.txt                                                                                                                    |
+row 5 T|  R repo/d-renamed.txt                                                                                                                    |
 row 5 S|c2e2c134|
 row 6 T|  A repo/e-untracked.txt                                                                                                                  |
-row 6 S|c2e2c134|
+row 6 S|c2f2c134|
 row 7 T|  M repo/日 本 語 .txt                                                                                                                       |
-row 7 S|c2f2c134|
+row 7 S|c2g2c134|
 row 8 T|                                                                                                                                          |
 row 8 S|c138|
 row 9 T|                                                                                                                                          |
@@ -117,20 +118,21 @@ style a	Reset	Reset	REVERSED
 style b	Yellow	Reset	REVERSED
 style c	Reset	Reset	NONE
 style d	Red	Reset	NONE
-style e	Green	Reset	NONE
-style f	Yellow	Reset	NONE
+style e	Cyan	Reset	NONE
+style f	Green	Reset	NONE
+style g	Yellow	Reset	NONE
 row 2 T|  M repo/a-staged.txt                                                                                                                     |
 row 2 S|a2b2a17c117|
 row 3 T|  D repo/c-deleted.txt                                                                                                                    |
 row 3 S|c2d2c134|
 row 4 T|  D repo/d-old.txt                                                                                                                        |
 row 4 S|c2d2c134|
-row 5 T|  A repo/d-renamed.txt                                                                                                                    |
+row 5 T|  R repo/d-renamed.txt                                                                                                                    |
 row 5 S|c2e2c134|
 row 6 T|  A repo/e-untracked.txt                                                                                                                  |
-row 6 S|c2e2c134|
+row 6 S|c2f2c134|
 row 7 T|  M repo/日 本 語 .txt                                                                                                                       |
-row 7 S|c2f2c134|
+row 7 S|c2g2c134|
 row 8 T|                                                                                                                                          |
 row 8 S|c138|
 row 9 T|                                                                                                                                          |

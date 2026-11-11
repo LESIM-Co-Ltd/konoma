@@ -35,6 +35,9 @@ pub(super) fn commit_worktree(root: &std::path::Path) {
 pub(super) fn graph_picker_fixture() -> TmpDir {
     graph::picker_fixture()
 }
+pub(super) fn graph_fixture() -> TmpDir {
+    graph::fixture()
+}
 pub(super) fn graph_jj_fixture() -> TmpDir {
     graph::jj_graph_fixture()
 }
