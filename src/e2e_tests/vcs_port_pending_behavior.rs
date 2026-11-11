@@ -53,9 +53,11 @@ const PENDING_BEHAVIORS: &[PendingBehavior] = &[
     PendingBehavior { old: "jj_graph_footer_shows_jj_hint_not_git_base_pin_hint", assertion: "footer:git:literal", marker: "PENDING_DECISION:project-footer-contract", literal: "j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back", old_frame: PENDING_FRAME_17, new_frame: PENDING_FRAME_18 },
     PendingBehavior { old: "jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops", assertion: "footer:jj:literal", marker: "PENDING_DECISION:project-footer-contract", literal: "j/k:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back", old_frame: PENDING_FRAME_19, new_frame: PENDING_FRAME_20 },
     PendingBehavior { old: "jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops", assertion: "footer:git:literal", marker: "PENDING_DECISION:project-footer-contract", literal: "j/k:nav  l/Enter:checkout  c:new  d:delete  /:search  Tab/⇧Tab:screens  h/q/Esc:back", old_frame: PENDING_FRAME_21, new_frame: PENDING_FRAME_22 },
-    PendingBehavior { old: "jj_chip_shows_in_git_view_for_jj_not_for_git", assertion: "chip:jj:en-ja", marker: "PENDING_DECISION:project-mode-chip", literal: "display_chip.trim() == tr(lang, Msg::StJj); langs En,Jp", old_frame: PENDING_FRAME_11, new_frame: PENDING_FRAME_12 },
+    PendingBehavior { old: "jj_chip_shows_in_git_view_for_jj_not_for_git", assertion: "chip:jj:en", marker: "PENDING_DECISION:project-mode-chip", literal: "display_chip.trim() == tr(En, Msg::StJj)", old_frame: PENDING_FRAME_11, new_frame: PENDING_FRAME_12 },
+    PendingBehavior { old: "jj_chip_shows_in_git_view_for_jj_not_for_git", assertion: "chip:jj:ja", marker: "PENDING_DECISION:project-mode-chip", literal: "display_chip.trim() == tr(Jp, Msg::StJj)", old_frame: PENDING_FRAME_23, new_frame: PENDING_FRAME_24 },
     PendingBehavior { old: "jj_chip_shows_in_git_view_for_jj_not_for_git", assertion: "chip:git:en", marker: "PENDING_DECISION:project-mode-chip", literal: "display_chip.trim() == tr(En, StGit) && != tr(En, StJj)", old_frame: PENDING_FRAME_13, new_frame: PENDING_FRAME_14 },
-    PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:jj:en-ja", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(lang, Msg::StBookmark); langs En,Jp", old_frame: PENDING_FRAME_19, new_frame: PENDING_FRAME_20 },
+    PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:jj:en", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(En, Msg::StBookmark)", old_frame: PENDING_FRAME_19, new_frame: PENDING_FRAME_20 },
+    PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:jj:ja", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(Jp, Msg::StBookmark)", old_frame: PENDING_FRAME_25, new_frame: PENDING_FRAME_26 },
     PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:git:en", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(En, Msg::StBranch)", old_frame: PENDING_FRAME_21, new_frame: PENDING_FRAME_22 },
 ];
 #[cfg(feature = "git")]
@@ -92,9 +94,11 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
         ("jj_graph_footer_shows_jj_hint_not_git_base_pin_hint","footer:git:literal","PENDING_DECISION:project-footer-contract","j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back"),
         ("jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops","footer:jj:literal","PENDING_DECISION:project-footer-contract","j/k:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back"),
         ("jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops","footer:git:literal","PENDING_DECISION:project-footer-contract","j/k:nav  l/Enter:checkout  c:new  d:delete  /:search  Tab/⇧Tab:screens  h/q/Esc:back"),
-        ("jj_chip_shows_in_git_view_for_jj_not_for_git","chip:jj:en-ja","PENDING_DECISION:project-mode-chip","display_chip.trim() == tr(lang, Msg::StJj); langs En,Jp"),
+        ("jj_chip_shows_in_git_view_for_jj_not_for_git","chip:jj:en","PENDING_DECISION:project-mode-chip","display_chip.trim() == tr(En, Msg::StJj)"),
+        ("jj_chip_shows_in_git_view_for_jj_not_for_git","chip:jj:ja","PENDING_DECISION:project-mode-chip","display_chip.trim() == tr(Jp, Msg::StJj)"),
         ("jj_chip_shows_in_git_view_for_jj_not_for_git","chip:git:en","PENDING_DECISION:project-mode-chip","display_chip.trim() == tr(En, StGit) && != tr(En, StJj)"),
-        ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:jj:en-ja","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(lang, Msg::StBookmark); langs En,Jp"),
+        ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:jj:en","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(En, Msg::StBookmark)"),
+        ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:jj:ja","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(Jp, Msg::StBookmark)"),
         ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:git:en","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(En, Msg::StBranch)"),
     ];
     let actual = PENDING_BEHAVIORS
@@ -134,3 +138,101 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
         "every unresolved behavior remains in the ledger"
     );
 }
+
+// Diagnostic frames for the ja chip rows (old hub vs the p path, Lang::Jp).
+const PENDING_FRAME_23: &str = r#"                                                                                                                             jj   変 更    sort: name ↑  パ ス :相 対
+┌ jj @ ovxlwwlv 次8の0日 本 語v Summary  (1) ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  A vcs_log_jj_73108_0/changed.txt                                                                                                                            │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+l/Enter:差 分:  d:全 差:分   b:ブ:ッ ク マ ー:ク   s:同 期:  !:ツ ー ル   /:検:索   Tab/⇧Tab:画e面編  h/q:閉Gじtる"#;
+const PENDING_FRAME_24: &str = r#"                                                                                                                                        プsロrジ:ェnクmト    パ ス :相 対
+ p:変s更l  ロjグ_  グ0ラ_フ   b:ブxッwクlマ ー ク
+  A vcs_log_jj_73108_0/changed.txt
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Tab/Shift-Tab:画 面   j/k:移 動:  /:絞 り 込:み   q:戻:る   ?:ヘ ルpプc  ↵/l/→:差:分   Ctrl-t:別 タ ブ   Space:操 作   s:同 期"#;
+const PENDING_FRAME_25: &str = r#"                                                                                                                     jj   ブ ッjク マ ー ク    sort: name ↑  パ ス :相 対
+┌ jj bookmarks  (1)0───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  main                                                                                                                                                        │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+│                                                                                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+j/k:移e動:  /:検 索:  Tab/⇧Tab:画ッ面ク  h/q/Esc:戻同る期:               :              e 編       G t"#;
+const PENDING_FRAME_26: &str = r#"                                                                                                                                        プsロrジ:ェnクmト    パ ス :相 対
+ p:変s更l  ロjグ_  グ0ラ_フ   b:ブxッwクlマ ー ク
+  main ) 次
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Tab/Shift-Tab:画:面   j/k:移 動:  /:絞 り 込:み:  q:戻:る   ?:ヘ ル プb  y:コ ピ ー     : コ"#;

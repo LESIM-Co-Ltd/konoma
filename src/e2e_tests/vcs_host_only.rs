@@ -44,8 +44,12 @@ pub(super) fn isolate_test(module: &str, name: &str) -> bool {
 }
 
 fn open(root: &std::path::Path, id: &str, cap: usize, priority: bool) -> Sim {
+    open_lang(root, id, cap, priority, "en")
+}
+
+fn open_lang(root: &std::path::Path, id: &str, cap: usize, priority: bool, lang: &str) -> Sim {
     let mut cfg = Config::default();
-    cfg.ui.lang = "en".into();
+    cfg.ui.lang = lang.into();
     cfg.ui.tabbar = "hidden".into();
     cfg.ui.statusbar = "split".into();
     cfg.plugins
@@ -431,25 +435,35 @@ fn vcs_host_jj_all_range_is_per_tab() {
         return;
     }
     let root = super::vcs_log::graph_jj_fixture();
-    let mut sim = open(&root, "jj", 12, false);
-    graph(&mut sim);
-    let range = list(&sim);
-    keys(&mut sim, "a");
-    let all = list(&sim);
-    assert!(all.rows.len() > range.rows.len());
-    sim.app.tab_new().unwrap();
-    enter(&mut sim);
-    graph(&mut sim);
-    assert_eq!(list(&sim), range);
-    sim.app.tab_goto(0);
-    drain(&mut sim);
-    assert_eq!(list(&sim), all);
-    keys(&mut sim, "a");
-    assert_eq!(list(&sim), range);
-    for code in ['s', 'x'] {
-        sim.key(code);
+    // The old test looped both languages; the per-tab range must not depend on the language.
+    for lang in ["en", "ja"] {
+        let mut sim = open_lang(&root, "jj", 12, false, lang);
+        graph(&mut sim);
+        let range = list(&sim);
+        keys(&mut sim, "a");
+        let all = list(&sim);
+        assert!(
+            all.rows.len() > range.rows.len(),
+            "{lang}: a widens the range"
+        );
+        sim.app.tab_new().unwrap();
+        enter(&mut sim);
+        graph(&mut sim);
+        assert_eq!(
+            list(&sim),
+            range,
+            "{lang}: a new tab starts at the default range"
+        );
+        sim.app.tab_goto(0);
         drain(&mut sim);
-        assert_eq!(list(&sim), range);
+        assert_eq!(list(&sim), all, "{lang}: tab 0 keeps its widened range");
+        keys(&mut sim, "a");
+        assert_eq!(list(&sim), range, "{lang}: a again narrows tab 0");
+        for code in ['s', 'x'] {
+            sim.key(code);
+            drain(&mut sim);
+            assert_eq!(list(&sim), range, "{lang}: jj has no base key {code}");
+        }
     }
 }
 

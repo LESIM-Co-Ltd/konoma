@@ -169,7 +169,7 @@ fn config(id: &str, lang: &str, scheme: &str, path: &str, align: &str, extra: &s
     format!("[ui]\nlang='{lang}'\nkeys='{scheme}'\ntabbar='hidden'\nstatusbar='split'\ndiff_view='source'\npath_style='{path}'\ncommit_meta_align='{align}'\n[git]\ndiff='unified'\n[project]\nvcs='{id}'\n[plugins.{marker:?}]\nenabled=false\n[plugins.{other}]\nenabled=false\n{extra}")
 }
 
-fn host_state(host: &Sim) -> ProjectStateSnapshot {
+pub(super) fn host_state(host: &Sim) -> ProjectStateSnapshot {
     let nav = host
         .app
         .tab

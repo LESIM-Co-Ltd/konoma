@@ -24,8 +24,14 @@ fn vcs_port_git_a_is_inert_and_jj_a_keeps_literal_notices() {
         let before = sim.project_frame();
         let list = real_list(&sim);
         let selected = sim.app.project_act_context().selected;
+        let nav_before = super::vcs_app_parity::host_state(&sim);
         keys(&mut sim, "a");
         assert_eq!(sim.app.flash, None, "Git a must be silent");
+        assert_eq!(
+            super::vcs_app_parity::host_state(&sim),
+            nav_before,
+            "Git a leaves the whole host navigation state (frame key, cursor, dialog, menu, chip, target) unchanged"
+        );
         assert_eq!(sim.project_frame(), before, "Git a cells unchanged");
         assert_eq!(real_list(&sim), list, "Git a list state unchanged");
         assert_eq!(sim.app.project_act_context().selected, selected);
@@ -46,6 +52,17 @@ fn vcs_port_git_a_is_inert_and_jj_a_keeps_literal_notices() {
         assert!(
             menu.items.iter().all(|i| !i.label.contains("revision")),
             "Git Space has no graph_all"
+        );
+        // Action membership, not wording: no item runs the toggle action, built-in or plugin.
+        // (Menu letters are assigned by the menu, so the item key is not the action's key.)
+        assert!(
+            menu.items.iter().all(|i| match i.action {
+                crate::keymap::Action::GitGraphToggleAll => false,
+                crate::keymap::Action::Plugin(p) => p.act() != "graph_all",
+                _ => true,
+            }),
+            "Git Space actions must not contain the graph toggle: {:?}",
+            menu.items.iter().map(|i| i.action).collect::<Vec<_>>()
         );
 
         let mut sim = open(&jj, config("jj", lang), (180, 22));
@@ -755,6 +772,26 @@ fn vcs_port_renderer_normal_rows_markers_and_base_selection() {
         assert!(title.contains("base: trunk"));
         assert_eq!(title.matches("base:").count(), 1);
         assert_eq!(title.matches('⌖').count(), usize::from(icons));
+        // The old test counted over the whole drawn frame, not only the title: the base glyph
+        // appears exactly once (icons on, none otherwise), "base:" exactly once, and the base
+        // branch name is on screen.
+        // The `s` notice ("base: trunk") is a transient status flash that the old hub's frame
+        // never carried; clear it so the count covers the drawn graph screen itself.
+        assert_eq!(sim.app.flash.as_deref(), Some("base: trunk"));
+        sim.app.flash = None;
+        sim.draw();
+        let frame = sim.screen();
+        assert_eq!(
+            frame.matches('⌖').count(),
+            usize::from(icons),
+            "whole-frame base glyph count (icons={icons}): {frame}"
+        );
+        assert_eq!(
+            frame.matches("base:").count(),
+            1,
+            "whole-frame base: count (icons={icons}): {frame}"
+        );
+        assert!(frame.contains("trunk"), "base branch name on screen");
         let list = real_list(&sim);
         let chips = &list.bottom.as_ref().unwrap().chips;
         assert!(chips.iter().any(|l| l.plain().contains(if icons {
@@ -1001,6 +1038,27 @@ fn vcs_port_backend_display_words_copy_labels_and_project_origin() {
                 for word in ["sync", "bookmarks"] {
                     assert!(!footer.contains(word));
                 }
+            }
+            if id == "git" {
+                // Paired Git help: the write keys are documented (the "worktree" word is the
+                // PENDING_DECISION:project-help-wording row) and no jj section or heading
+                // appears, in either language.
+                if lang == "en" {
+                    for word in ["stage", "unstage", "commit"] {
+                        assert!(help.contains(word), "Git help lacks {word:?}: {help}");
+                    }
+                }
+                for m in [Msg::JjChangesLabel, Msg::JjSyncRow, Msg::JjCloseView] {
+                    assert!(
+                        !help.contains(tr(sim.app.lang, m)),
+                        "Git help shows a jj row {:?}: {help}",
+                        tr(sim.app.lang, m)
+                    );
+                }
+                assert!(
+                    !help.to_lowercase().contains("jj"),
+                    "Git help must not mention jj: {help}"
+                );
             }
             screen(&mut sim, "graph");
             graph_help_literals(&sim, id == "jj");

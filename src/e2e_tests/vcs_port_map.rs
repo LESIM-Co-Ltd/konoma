@@ -44,6 +44,8 @@ const GROUPS: &[Group] = &[
             "git:a:no-footer",
             "git:a:no-help",
             "git:a:no-space",
+            "git:a:host-navigation-state-unchanged",
+            "git:a:space-actions-lack-graph-toggle",
             "jj:a:all-notice",
             "jj:a:default-notice",
             "jj:a:expanded",
@@ -135,6 +137,15 @@ const GROUPS: &[Group] = &[
         "vcs_port_renderer_normal_rows_markers_and_base_selection",
     ),
     (
+        "graph_title_gates_base_marker_without_duplicating_base_word",
+        &[
+            "base:whole-frame-word-count-one",
+            "base:whole-frame-glyph-count",
+        ],
+        &["icons-on", "icons-off"],
+        "vcs_port_renderer_normal_rows_markers_and_base_selection",
+    ),
+    (
         "graph_legend_head_and_base_markers_are_spaced_and_gated_by_icons",
         &[
             "legend:head-marker-spaced",
@@ -164,6 +175,18 @@ const GROUPS: &[Group] = &[
             "help:jj:no-commit",
             "help:jj:no-worktree",
         ],
+        &["en", "ja"],
+        "vcs_port_backend_display_words_copy_labels_and_project_origin",
+    ),
+    (
+        "changes_hub_help_shows_jj_section_and_hides_git_write_keys",
+        &["help:git:stage", "help:git:unstage", "help:git:commit"],
+        &["en"],
+        "vcs_port_backend_display_words_copy_labels_and_project_origin",
+    ),
+    (
+        "changes_hub_help_shows_jj_section_and_hides_git_write_keys",
+        &["help:git:no-jj-heading"],
         &["en", "ja"],
         "vcs_port_backend_display_words_copy_labels_and_project_origin",
     ),
@@ -389,6 +412,26 @@ const GROUPS: &[Group] = &[
         ],
         &["en", "ja"],
         "vcs_port_git_a_is_inert_and_jj_a_keeps_literal_notices",
+    ),
+    (
+        "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+        &[
+            "cells:initial",
+            "cells:after-all",
+            "cells:after-default",
+            "hints:footer-help-match",
+        ],
+        &["en", "ja"],
+        "jj_graph_and_bookmarks_offer_only_real_actions",
+    ),
+    (
+        "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+        &[
+            "range:per-tab-new-tab-default",
+            "range:per-tab-tab0-keeps-expanded",
+        ],
+        &["en", "ja"],
+        "vcs_host_jj_all_range_is_per_tab",
     ),
     (
         "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints",
@@ -716,6 +759,7 @@ const GROUPS: &[Group] = &[
         "e2e_vcs_graph_jj_repository_tests_guard_optional_binary",
         &[
             "jj:all-new-cases-guarded-before-setup",
+            "jj:changes-matrix-guarded-before-setup",
             "parser:whitespace-comments-literals",
             "parser:late-guard-rejected",
             "parser:positive-guard-rejected",
@@ -1413,7 +1457,7 @@ fn every_ported_assertion_names_an_existing_new_test() {
     );
     assert_eq!(
         table.len(),
-        1567 + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
+        1593 + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
         "a ported assertion/case row was removed"
     );
     for p in PENDING_BEHAVIORS {
@@ -1583,6 +1627,8 @@ fn vcs_port_all_real_jj_cases_are_guarded_before_setup() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/e2e_tests");
     let setups = [
         "jj",
+        "run_jj",
+        "jj_scratch_bare",
         "jj_graph_fixture",
         "graph_jj_fixture",
         "jj_repo",
@@ -1618,6 +1664,7 @@ fn vcs_port_all_real_jj_cases_are_guarded_before_setup() {
             vec![
                 "vcs_port_jj_and_colocated_log_cells_metadata_and_picker_source",
                 "vcs_port_jj_bookmark_cells_copy_and_full_tab_cycle",
+                "vcs_port_jj_changes_fixture_matrix_cells_and_parent_baseline",
             ],
         ),
         (
