@@ -2354,6 +2354,25 @@ fn jj_graph_and_bookmarks_offer_only_real_actions() {
                             state.graph.as_ref().unwrap().base.is_none(),
                             "jj has no graph base"
                         );
+                        // Explicit cells of the drawn graph screen (host and standalone share the
+                        // plugin, so comparing them alone cannot see a wrong title or range).
+                        let frame = host.screen();
+                        assert!(
+                            frame.contains("jj graph"),
+                            "step {step}: jj graph title on screen: {frame}"
+                        );
+                        if case == 0 && step >= 3 {
+                            // The fixture's default range starts at the pinned trunk; "c1" is older.
+                            assert_eq!(
+                                frame.contains("c1"),
+                                step == 4,
+                                "step {step}: only the all-revisions range shows older commits: {frame}"
+                            );
+                            assert!(
+                                frame.contains("Next"),
+                                "step {step}: the working-copy description is on screen: {frame}"
+                            );
+                        }
                         if step == 3 {
                             range = Some(state.rows.clone());
                         }

@@ -27,12 +27,15 @@ fn vcs_port_git_a_is_inert_and_jj_a_keeps_literal_notices() {
         let nav_before = super::vcs_app_parity::host_state(&sim);
         keys(&mut sim, "a");
         assert_eq!(sim.app.flash, None, "Git a must be silent");
+        // Draw first: the host refreshes a view's stored rows while drawing, so the snapshot
+        // taken after the draw also covers a change to the list itself.
+        let after = sim.project_frame();
         assert_eq!(
             super::vcs_app_parity::host_state(&sim),
             nav_before,
-            "Git a leaves the whole host navigation state (frame key, cursor, dialog, menu, chip, target) unchanged"
+            "Git a leaves the whole host navigation state (frame key, cursor, dialog, menu, chip, target, rows) unchanged"
         );
-        assert_eq!(sim.project_frame(), before, "Git a cells unchanged");
+        assert_eq!(after, before, "Git a cells unchanged");
         assert_eq!(real_list(&sim), list, "Git a list state unchanged");
         assert_eq!(sim.app.project_act_context().selected, selected);
         assert!(crate::ops::footer::tokens(&sim.app, Context::Canvas)
@@ -1046,6 +1049,22 @@ fn vcs_port_backend_display_words_copy_labels_and_project_origin() {
                 if lang == "en" {
                     for word in ["stage", "unstage", "commit"] {
                         assert!(help.contains(word), "Git help lacks {word:?}: {help}");
+                    }
+                    // "stage" is a substring of "unstage" and "staged", so the word check alone
+                    // cannot tell which row is missing: each row's own description is required.
+                    let rows: Vec<(String, String)> = crate::ops::help::sections(&sim.app)
+                        .iter()
+                        .flat_map(|s| s.rows.clone())
+                        .collect();
+                    for (key, desc) in [
+                        ("s", "stage / stage all"),
+                        ("u", "unstage / unstage all"),
+                        ("c", "commit (staged)"),
+                    ] {
+                        assert!(
+                            rows.iter().any(|(k, d)| k.split(" / ").any(|x| x == key) && d == desc),
+                            "Git help lacks the {key:?} row {desc:?}: {rows:?}"
+                        );
                     }
                 }
                 for m in [Msg::JjChangesLabel, Msg::JjSyncRow, Msg::JjCloseView] {
