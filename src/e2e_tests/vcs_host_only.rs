@@ -39,6 +39,7 @@ pub(super) fn isolate_test(module: &str, name: &str) -> bool {
     assert!(stdout
         .lines()
         .any(|s| s.starts_with("test result: ok. 1 passed;")));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
     true
 }
 
@@ -101,6 +102,55 @@ fn keys(sim: &mut Sim, sequence: &str) {
     for key in sequence.chars() {
         sim.key(key);
         drain(sim);
+    }
+}
+
+#[test]
+fn vcs_host_nonrepository_diff_navigation_options_and_origin() {
+    if isolated("vcs_host_nonrepository_diff_navigation_options_and_origin") {
+        return;
+    }
+    let root = sandbox("vcs_host_nonrepository_diff");
+    std::fs::write(root.join("file.txt"), "plain\n").unwrap();
+    for scheme in ["vim", "less"] {
+        for back in [KeyCode::Char('q'), KeyCode::Esc] {
+            let mut cfg = Config::default();
+            cfg.ui.lang = "en".into();
+            cfg.ui.keys = scheme.into();
+            let mut sim = Sim::with_config(&canon(&root), cfg);
+            // No repository means there is no project p entry; exercise the host's file-diff seam.
+            sim.app.open_git_diff(&canon(&root).join("file.txt"));
+            assert_eq!(sim.app.key_context(), Some(crate::keymap::Context::Diff));
+            sim.app.tab.preview_viewport = 20;
+            let half = if scheme == "vim" {
+                KeyModifiers::CONTROL
+            } else {
+                KeyModifiers::NONE
+            };
+            for (code, modifiers, scroll, horizontal) in [
+                (KeyCode::Char('j'), KeyModifiers::NONE, 1, 0),
+                (KeyCode::Char('k'), KeyModifiers::NONE, 0, 0),
+                (KeyCode::PageDown, KeyModifiers::NONE, 19, 0),
+                (KeyCode::PageUp, KeyModifiers::NONE, 0, 0),
+                (KeyCode::Char('d'), half, 10, 0),
+                (KeyCode::Char('u'), half, 0, 0),
+                (KeyCode::Char('l'), KeyModifiers::NONE, 0, 4),
+                (KeyCode::Char('h'), KeyModifiers::NONE, 0, 0),
+                (KeyCode::End, KeyModifiers::NONE, u16::MAX, 0),
+                (KeyCode::Home, KeyModifiers::NONE, 0, 0),
+                (KeyCode::Char('$'), KeyModifiers::NONE, 0, u16::MAX),
+                (KeyCode::Char('0'), KeyModifiers::NONE, 0, 0),
+            ] {
+                handle_key(&mut sim.app, KeyEvent::new(code, modifiers)).unwrap();
+                assert_eq!(sim.app.tab.preview_scroll, scroll, "{scheme}/{code:?}");
+                assert_eq!(sim.app.tab.preview_hscroll, horizontal, "{scheme}/{code:?}");
+            }
+            let path = sim.app.path_style;
+            sim.keys(",p");
+            assert_ne!(sim.app.path_style, path);
+            sim.press(back, KeyModifiers::NONE);
+            assert_eq!(sim.app.key_context(), Some(crate::keymap::Context::Tree));
+        }
     }
 }
 
@@ -273,7 +323,12 @@ fn vcs_host_close_notifies_and_discards_only_the_closed_tab() {
 
 fn return_to_origin(root: &std::path::Path, id: &str) {
     for preview in [false, true] {
-        for code in [KeyCode::Char('h'), KeyCode::Left] {
+        for code in [
+            KeyCode::Char('h'),
+            KeyCode::Left,
+            KeyCode::Char('q'),
+            KeyCode::Esc,
+        ] {
             let mut sim = open(root, id, 12, false);
             keys(&mut sim, "q");
             if preview {

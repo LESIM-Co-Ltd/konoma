@@ -37,6 +37,136 @@ fn port_list(host: &Sim) -> konoma_plugin::view::ListView {
 }
 
 #[test]
+fn vcs_port_unborn_log_cells() {
+    if isolated("vcs_port_unborn_log_cells") {
+        return;
+    }
+    let root = at_home(repo(0));
+    for lang in ["en", "ja"] {
+        let steps = vec![Step::Resize(80, 8), key(KeyCode::Tab)];
+        run(
+            &root,
+            "git",
+            &port_config("git", lang, "right"),
+            steps,
+            false,
+            |step, state, host, _| {
+                if step >= 2 {
+                    assert_eq!(
+                        state.stack.last().map(String::as_str),
+                        Some(["log", "graph", "branches", "worktrees", "changes"][step - 2])
+                    );
+                }
+                if step == 2 {
+                    assert!(state.selected.is_none());
+                    let list = port_list(host);
+                    assert_eq!(list.rows.len(), 1);
+                    assert!(!list.rows[0].selectable);
+                    assert_eq!(
+                        list.rows[0].cells[0].plain(),
+                        if lang == "en" {
+                            "  (no commits)"
+                        } else {
+                            "  (コミットなし)"
+                        }
+                    );
+                }
+            },
+        );
+    }
+    report_cases();
+}
+
+#[test]
+fn vcs_port_jj_changes_fixture_matrix_cells_and_parent_baseline() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    if isolated("vcs_port_jj_changes_fixture_matrix_cells_and_parent_baseline") {
+        return;
+    }
+    use crate::test_support::{jj_scratch_bare, run_jj};
+    for colocated in [false, true] {
+        for changed in [false, true] {
+            let root = if colocated {
+                let root = git_repo("vcs_finish_colocated", false);
+                assert!(run_jj(&root, &["git", "init", "--colocate", "."]));
+                root
+            } else {
+                let root = jj_scratch_bare("vcs_finish_jj").expect("available jj fixture");
+                for file in [
+                    "a-staged.txt",
+                    "b-unstaged.txt",
+                    "c-deleted.txt",
+                    "d-old.txt",
+                    "日本語.txt",
+                ] {
+                    std::fs::write(root.join(file), "base\n").unwrap();
+                }
+                assert!(run_jj(&root, &["commit", "-m", "seed"]));
+                root.into_canonical().unwrap()
+            };
+            if changed {
+                std::fs::write(root.join("a-staged.txt"), "worktree\n").unwrap();
+                std::fs::remove_file(root.join("c-deleted.txt")).unwrap();
+                std::fs::rename(root.join("d-old.txt"), root.join("d-renamed.txt")).unwrap();
+                std::fs::write(root.join("e-untracked.txt"), "new\n").unwrap();
+                std::fs::write(root.join("日本語.txt"), "変更\n").unwrap();
+            }
+            let root = at_home(root);
+            let files = backend("jj").changed_files(&root);
+            let expected = backend("jj").file_diff(&root, &root.join("a-staged.txt"));
+            if changed {
+                assert!(expected.iter().any(|l| l.text.contains("base")));
+            }
+            let mut steps = vec![Step::Resize(140, 20)];
+            if changed {
+                steps.push(key(KeyCode::Enter));
+            }
+            run(
+                &root,
+                "jj",
+                &port_config("jj", "en", "right"),
+                steps,
+                false,
+                |step, state, host, _| {
+                    if step == 1 {
+                        assert_eq!(
+                            state.rows.iter().filter(|(_, on)| *on).count(),
+                            files.len(),
+                            "jj changed row count {colocated}/{changed}"
+                        );
+                    }
+                    if step == 2 && changed {
+                        assert!(host.app.is_git_diff_preview());
+                        assert_eq!(host.app.tab.preview_path, Some(root.join("a-staged.txt")));
+                        let actual = &state
+                            .diff
+                            .as_ref()
+                            .expect("file diff snapshot")
+                            .source_lines;
+                        assert_eq!(
+                            *actual,
+                            expected
+                                .iter()
+                                .map(|l| (
+                                    format!("{:?}", l.kind),
+                                    l.old_no,
+                                    l.new_no,
+                                    l.text.clone()
+                                ))
+                                .collect::<Vec<_>>(),
+                            "jj parent baseline {colocated}"
+                        );
+                    }
+                },
+            );
+        }
+    }
+    report_cases();
+}
+
+#[test]
 fn vcs_port_changes_every_selection_empty_and_nested_paths() {
     if isolated("vcs_port_changes_every_selection_empty_and_nested_paths") {
         return;

@@ -425,6 +425,168 @@ fn real_graph_style_repository() -> crate::test_support::TmpDir {
 }
 
 #[test]
+fn vcs_port_real_graph_palette_checks_each_conversion_arm() {
+    if isolated("vcs_port_real_graph_palette_checks_each_conversion_arm") {
+        return;
+    }
+    use konoma_plugin::style::Color as S;
+    use konoma_vcs_core::style::VcsColor as C;
+    let root = super::vcs_log::repo(1);
+    let repo = konoma_vcs_core::git2::Repository::open(&root).unwrap();
+    let parent = repo.head().unwrap().peel_to_commit().unwrap();
+    let tree = parent.tree().unwrap();
+    for lane in 0..14 {
+        let signature = konoma_vcs_core::git2::Signature::new(
+            "Fixture",
+            "fixture@example.invalid",
+            &konoma_vcs_core::git2::Time::new(1_577_836_860 + lane * 60, 0),
+        )
+        .unwrap();
+        repo.commit(
+            Some(&format!("refs/heads/lane-{lane:02}")),
+            &signature,
+            &signature,
+            &format!("lane {lane}"),
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    }
+    repo.set_head("refs/heads/lane-13").unwrap();
+    let map = |c| match c {
+        C::Reset => S::Reset,
+        C::Red => S::Red,
+        C::Green => S::Green,
+        C::Yellow => S::Yellow,
+        C::Blue => S::Blue,
+        C::Magenta => S::Magenta,
+        C::Cyan => S::Cyan,
+        C::White => S::White,
+        C::LightRed => S::LightRed,
+        C::LightGreen => S::LightGreen,
+        C::LightYellow => S::LightYellow,
+    };
+    let mut cfg = config("git", "en");
+    cfg.plugins
+        .entry("git".into())
+        .or_default()
+        .insert("graph_max_branches".into(), toml::Value::Integer(0));
+    let mut sim = open(&root, cfg, (180, 60));
+    screen(&mut sim, "graph");
+    let expected = crate::git::graph_with_base(
+        &root,
+        None,
+        &konoma_vcs_core::git::WorktreeLabels::default(),
+        None,
+    );
+    let list = real_list(&sim);
+    assert_eq!(list.rows.len(), expected.len());
+    let mut seen = std::collections::HashSet::new();
+    for (row, core) in list.rows.iter().zip(&expected) {
+        for (actual, (text, style)) in row.cells[0].spans.iter().zip(&core.graph) {
+            assert_eq!(&actual.text, text, "palette graph glyph");
+            assert_eq!(
+                actual.style.fg,
+                style.fg.map(map),
+                "palette graph conversion {}",
+                core.subject
+            );
+            assert_eq!(
+                actual
+                    .style
+                    .add
+                    .contains(konoma_plugin::style::Modifier::BOLD),
+                style.bold
+            );
+            if let Some(fg) = actual.style.fg {
+                seen.insert(format!("{fg:?}"));
+            }
+        }
+    }
+    for color in [
+        "White",
+        "Cyan",
+        "Green",
+        "Magenta",
+        "Blue",
+        "LightRed",
+        "LightYellow",
+        "Reset",
+    ] {
+        assert!(
+            seen.contains(color),
+            "independent fixture must exercise {color}"
+        );
+    }
+}
+
+#[test]
+fn vcs_port_right_metadata_literal_padding_ellipsis_and_narrow_fallback() {
+    if isolated("vcs_port_right_metadata_literal_padding_ellipsis_and_narrow_fallback") {
+        return;
+    }
+    use konoma_plugin::{Failure, Input, Manifest, OpenCx, Plugin, Session, View, ViewCx, ViewReq};
+    #[derive(Clone, Copy)]
+    struct Fixture(&'static str, &'static str);
+    impl Plugin for Fixture {
+        fn manifest(&self) -> Manifest {
+            konoma_vcs::Git.manifest()
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(*self))
+        }
+    }
+    impl Session for Fixture {
+        fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+            let (left, right) = (self.0, self.1);
+            Ok(View::List(konoma_plugin::view::ListView {
+                rows: vec![konoma_plugin::view::ListRow::new(
+                    "file",
+                    vec![konoma_plugin::style::Line::raw(left)],
+                )
+                .selectable(false)
+                .right(konoma_plugin::style::Line::raw(right))],
+                ..Default::default()
+            }))
+        }
+    }
+    let root = super::vcs_log::repo(0);
+    for width in [20u16, 12, 5] {
+        let (left, right) = if width == 20 {
+            ("abc", "date")
+        } else if width == 12 {
+            ("abcdefghijklmnopqrstuvwxyz", "date")
+        } else {
+            ("abcdef", "longmeta")
+        };
+        let token = crate::plugins::test_plugins::register_replacement(
+            &format!("vcs_right_literal_{width}"),
+            std::sync::Arc::new(Fixture(left, right)),
+        );
+        let mut cfg = config("git", "en");
+        cfg.plugins
+            .extend(crate::plugins::test_plugins::marker_config(&token).plugins);
+        let mut sim = open(&root, cfg, (width + 2, 8));
+        let frame = sim.project_frame();
+        let text = (0..width)
+            .map(|x| frame[(x, 2)].symbol())
+            .collect::<String>();
+        if width == 20 {
+            assert!(text.starts_with("abc"));
+            assert!(text.ends_with("date"));
+            assert_eq!(unicode_width::UnicodeWidthStr::width(text.as_str()), 20);
+        } else if width == 12 {
+            assert!(text.contains('…'));
+            assert!(text.ends_with("date"));
+            assert!(unicode_width::UnicodeWidthStr::width(text.as_str()) <= 12);
+        } else {
+            assert!(!text.contains("longmeta"));
+            assert!(unicode_width::UnicodeWidthStr::width(text.as_str()) <= 5);
+        }
+    }
+}
+
+#[test]
 fn vcs_port_real_graph_conversion_legend_and_legacy_cells() {
     if isolated("vcs_port_real_graph_conversion_legend_and_legacy_cells") {
         return;

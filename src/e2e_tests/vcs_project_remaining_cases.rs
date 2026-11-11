@@ -415,10 +415,12 @@ fn vcs_port_original_git_and_jj_cycles_and_contexts() {
             .into_iter()
             .flat_map(|s| s.rows)
             .collect::<Vec<_>>();
-        assert!(
-            rows.iter().any(|(keys, _)| keys.contains("Tab")),
-            "cycle help must be offered"
-        );
+        let row = rows
+            .iter()
+            .find(|(keys, _)| keys.contains("Tab"))
+            .expect("cycle help row");
+        let _ = row;
+        super::vcs_port_map::pending_behavior("tab-help", "Tab / ⇧Tab; cycle changes/log/graph/branches/worktrees; cycle changes/log/graph/bookmarks");
         screen(&mut sim, "log");
         press(&mut sim, KeyCode::Enter);
         assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");

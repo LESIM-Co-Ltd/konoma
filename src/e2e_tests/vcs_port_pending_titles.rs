@@ -350,8 +350,12 @@ const PENDING_TITLES: &[(&str, &str, &str)] = &[
         "title:jj-bookmarks-label",
         "PENDING_DECISION:title-label",
     ),
+    (
+        "jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker",
+        "title:jj:not-git-branches",
+        "PENDING_DECISION:title-label",
+    ),
 ];
-
 #[test]
 fn pending_title_decisions_are_listed() {
     let expected = [
@@ -705,6 +709,11 @@ fn pending_title_decisions_are_listed() {
             "title:jj-bookmarks-label",
             "PENDING_DECISION:title-label",
         ),
+        (
+            "jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker",
+            "title:jj:not-git-branches",
+            "PENDING_DECISION:title-label",
+        ),
     ];
     assert_eq!(
         PENDING_TITLES, expected,
@@ -712,11 +721,16 @@ fn pending_title_decisions_are_listed() {
     );
     let actual: BTreeSet<_> = port_map()
         .into_iter()
-        .filter(|(_, _, new)| new.starts_with("PENDING_DECISION:"))
+        .filter(|(_, _, n)| {
+            matches!(
+                *n,
+                "PENDING_DECISION:title-count" | "PENDING_DECISION:title-label"
+            )
+        })
         .collect();
     let expected: BTreeSet<_> = expected
         .into_iter()
-        .map(|(old, id, marker)| (old, id.to_owned(), marker))
+        .map(|(o, a, n)| (o, a.to_owned(), n))
         .collect();
     assert_eq!(
         actual, expected,
