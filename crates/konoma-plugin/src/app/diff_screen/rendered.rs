@@ -55,6 +55,7 @@ impl DiffScreenState {
             return;
         };
         let services = self.services.clone();
+        let project_owned = self.project_owned;
         let request = self.request.clone();
         let (tx, rx) = mpsc::channel();
         self.preview_reply = Some(rx);
@@ -62,7 +63,9 @@ impl DiffScreenState {
             .name("diff-preview-plan".into())
             .spawn(move || {
                 let exists = request.path.is_file();
-                let baseline = (!exists)
+                // The project host classifies the live path; baseline sniffing belongs to
+                // the media worker after an unavailable path has selected its diff.
+                let baseline = (!exists && !project_owned)
                     .then(|| services.base_contents(&request.info, &request.path))
                     .flatten();
                 let resolved = source.resolve(&request.path, baseline.as_deref());

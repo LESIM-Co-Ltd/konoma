@@ -1,5 +1,6 @@
 //! Read-only inspection for integration tests, including the app-only feature matrix.
 use super::{DiffPresentation, DiffScreenState};
+use crate::host::project::md_diff::{MdDiffKind, MdDiffOutcome};
 
 /// Import explicitly in tests; presentation itself is internal to the app.
 pub trait DiffScreenTestHooks {
@@ -13,6 +14,57 @@ impl DiffScreenTestHooks for DiffScreenState {
 }
 
 impl DiffScreenState {
+    pub(in crate::app) fn menu_for_test(&self) -> Option<String> {
+        self.menu.then(|| "options".into())
+    }
+    pub(in crate::app) fn snapshot_for_test(
+        &self,
+        return_to: Vec<String>,
+        width: u16,
+    ) -> crate::app::project::ProjectDiffSnapshot {
+        crate::app::project::ProjectDiffSnapshot {
+            help: None,
+            path: self.request.path.clone(),
+            baseline: match self.request.info.backend {
+                crate::app::project::ProjectBackend::Git => "HEAD",
+                crate::app::project::ProjectBackend::Jj => "@-",
+            }
+            .into(),
+            choice: self.choice,
+            effective: self.effective,
+            next_representation: crate::host::project::diff_keys::next_diff_view(
+                self.effective,
+                &self.representations(),
+            ),
+            layout: format!("{:?}", super::source_diff_layout(self.layout)),
+            resolved_split: self.layout.is_split(width.saturating_sub(2)),
+            split_drawn: (self.effective == super::DiffView::Source).then_some(self.split_drawn),
+            wrap: self.display.wrap,
+            scroll: usize::from(self.scroll),
+            hscroll: self.hscroll,
+            first_change: self.blocks().rows.first().copied(),
+            editor_line: self.edit_line(),
+            return_to,
+            baseline_text: if self.effective == super::DiffView::Rendered {
+                match self
+                    .markdown
+                    .landed_for(&self.request.path, MdDiffKind::Rendered)
+                {
+                    Some(MdDiffOutcome::Ready { old_pre, .. }) => Some(old_pre),
+                    _ => None,
+                }
+            } else {
+                None
+            },
+            preview_context: None,
+            source_lines: self.data.as_ref().map_or_else(Vec::new, |data| {
+                data.lines
+                    .iter()
+                    .map(|l| (format!("{:?}", l.kind), l.old_no, l.new_no, l.text.clone()))
+                    .collect()
+            }),
+        }
+    }
     pub(in crate::app) fn settle_representations_for_test(&mut self) {
         self.settle_representations_with_pictures_for_test(None);
     }
@@ -21,6 +73,7 @@ impl DiffScreenState {
         &mut self,
         pictures: Option<&mut crate::app::DocPics>,
     ) {
+        self.settle_discard_for_test();
         if let Some(rx) = self.preview_reply.take() {
             self.resolved_preview = Some(
                 rx.recv_timeout(std::time::Duration::from_secs(30))

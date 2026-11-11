@@ -27,6 +27,19 @@ pub fn main() -> std::process::ExitCode {
 }
 
 impl ProjectServices for VcsServices {
+    fn project_diff_chrome(&self) -> bool {
+        true
+    }
+    fn discard_enabled(&self) -> bool {
+        cfg!(feature = "git")
+    }
+    fn discard_file(&self, info: &ProjectServiceInfo, path: &Path) -> Result<(), Failure> {
+        if info.backend != ProjectBackend::Git {
+            return Err(Failure::unsupported("read-only backend"));
+        }
+        konoma_vcs_core::git::discard(&info.workdir, path)
+            .map_err(|e| Failure::external(e.to_string()))
+    }
     fn worktree_origin(&self, root: &Path) -> Option<String> {
         konoma_vcs_core::vcs::worktree_origin(root)
     }

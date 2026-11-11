@@ -2,10 +2,8 @@
 use super::*;
 use crate::host::project::draw::{draw_project_dialog, project_dialog_footer};
 use konoma_host_core::keymap::CoreMenu;
-use ratatui::layout::Alignment;
 use ratatui::style::{Color, Style, Stylize};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::text::Span;
 
 impl ProjectLoopState {
     pub(super) fn presentation_key(
@@ -145,11 +143,8 @@ impl ProjectLoopState {
             _ => t("rel", "相対"),
         };
         header.push(Span::raw(format!("  {}{path}", t("path:", "パス:"))).dim());
-        if area.height > 0 {
-            Paragraph::new(Line::from(header))
-                .alignment(Alignment::Right)
-                .render(Rect::new(area.x, area.y, area.width, 1), buf);
-        }
+        let combined = prepared.services.project_diff_chrome() && prepared.display.combined_status;
+        let footer_width = crate::app::draw::status_footer_width(area.width, combined, &header);
         let dialog = self.dialog_presentation(prepared);
         let spans = if let Some(note) = &prepared.notice {
             footer_line::flash_spans(note)
@@ -172,14 +167,14 @@ impl ProjectLoopState {
                     .iter()
                     .map(|i| (konoma_host_core::help::help_key(i.key), i.label.clone()))
                     .collect::<Vec<_>>(),
-                area.width,
+                footer_width,
             )
         } else if let Some(dialog) = &dialog {
-            project_dialog_footer(dialog, area.width)
+            project_dialog_footer(dialog, footer_width)
         } else if self.help.is_some() {
             vec![Span::raw(help_panel::fit_tokens(
                 &prepared.keys.help_footer_tokens(),
-                area.width,
+                footer_width,
             ))
             .bold()]
         } else if let Some(frame) = self
@@ -206,14 +201,11 @@ impl ProjectLoopState {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default(),
-                area.width,
+                footer_width,
             ))
             .dim()]
         };
-        if area.height > 0 {
-            Paragraph::new(Line::from(spans))
-                .render(Rect::new(area.x, area.bottom() - 1, area.width, 1), buf);
-        }
+        crate::app::draw::draw_project_status(buf, area, combined, header, &spans);
         if let Some(dialog) = dialog {
             draw_project_dialog(buf, area, &dialog);
         }

@@ -27,24 +27,45 @@ impl ProjectLoopState {
         info: &ProjectContextInfo<StandaloneSurface>,
     ) {
         if let Some(slot) = &prepared.test_observed {
-            let content = self.content(info);
+            let nav = self.screen.as_ref().or(self.diff_return.as_ref());
+            let content = self.content(info).or_else(|| {
+                nav.and_then(|n| self.runtimes.get(&n.project)?.views.get(&n.frame()?.key))
+                    .cloned()
+            });
             let menu = self.menu.map(|m| match m {
                 konoma_host_core::keymap::CoreMenu::Copy => "copy",
                 konoma_host_core::keymap::CoreMenu::Actions => "actions",
                 _ => "other",
             });
             let mut state = super::super::observe_project_state_for_test(
-                self.screen.as_ref(),
+                nav,
                 content.as_deref(),
                 self.dialog.as_ref(),
                 menu,
                 prepared.notice.clone(),
             );
-            state.root = Some(
-                self.screen
-                    .as_ref()
-                    .map_or_else(|| prepared.open_dir.clone(), |nav| nav.project.root.clone()),
-            );
+            state.return_to_preview = self.preview_project;
+            state.diff = self
+                .diff
+                .as_ref()
+                .filter(|d| !d.closed && !self.preview_project)
+                .map(|d| {
+                    d.snapshot_for_test(
+                        self.diff_return.as_ref().map_or_else(Vec::new, |n| {
+                            n.stack.iter().map(|f| f.key.screen.clone()).collect()
+                        }),
+                        info.viewport.cols.saturating_add(2),
+                    )
+                });
+            if let Some(diff) = self
+                .diff
+                .as_ref()
+                .filter(|d| !d.closed && !self.preview_project)
+            {
+                state.menu = diff.menu_for_test();
+            }
+            state.root =
+                Some(nav.map_or_else(|| prepared.open_dir.clone(), |nav| nav.project.root.clone()));
             state.open_dir = Some(prepared.open_dir.clone());
             state.target = self.screen.as_ref().and_then(|nav| {
                 nav.selected_target(
@@ -53,9 +74,7 @@ impl ProjectLoopState {
                     prepared.settings.diff_layout,
                 )
             });
-            state.chip = self
-                .screen
-                .as_ref()
+            state.chip = nav
                 .and_then(|nav| self.runtimes.get(&nav.project))
                 .and_then(|runtime| runtime.chip.clone());
             *slot.lock().unwrap() = Some(state);
@@ -96,7 +115,8 @@ impl ProjectLoopState {
             watch: prepared.detection.watch_settled_for_test(),
             representations: self.file_preview.is_some()
                 || self.diff.as_ref().is_none_or(|d| d.wake_in().is_none()),
-            preview: self.preview_open.is_none() && self.file_preview.is_none(),
+            preview: self.preview_open.is_none()
+                && (self.file_preview.is_none() || self.preview_project),
             pictures: pictures.is_none_or(|p| p.settled_for_test()),
             navigation: self.root_switch.is_none() && !self.launch.pending(),
             state_generation: frame.state,

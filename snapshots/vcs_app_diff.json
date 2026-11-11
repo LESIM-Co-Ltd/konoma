@@ -1,0 +1,57 @@
+{
+  "en": {
+    "preview_text": {
+      "host": "j/k:scroll  /:search  n/N:change  v/V:select  Y:@ref  F:FOLLOW  R:back to diff  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  g/G:ends  h/l:hscroll  0/$:line ends  [/]:tab  ,:view  C-f/C-b/PgDn/PgUp:page",
+      "app": "j/k:scroll  n/N:change  R:back to diff  q:back  ?:help  e:edit  o:open in app  g/G:ends  h/l:hscroll  0/$:line ends  ,:view  C-f/C-b/PgDn/PgUp:page"
+    },
+    "preview_project": {
+      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab  Space:Actions",
+      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Space:Actions"
+    },
+    "preview_image": {
+      "host": "+/-:zoom  =:fit  h/j/k/l:pan  R:back to diff  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  [/]:tab  ,:view",
+      "app": "+/-:zoom  =:fit  h/j/k/l:pan  R:back to diff  q:back  ?:help  e:edit  o:open in app  ,:view"
+    },
+    "preview_document": {
+      "host": "j/k:scroll  Tab:focus  O:outline  R:back to diff  /:search  n/N:change  F:FOLLOW  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  g/G:ends  [/]:tab  ,:view  C-f/C-b/PgDn/PgUp:page",
+      "app": "j/k:scroll  R:back to diff  n/N:change  q:back  ?:help  e:edit  o:open in app  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page"
+    },
+    "changes_remap": {
+      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/Z/→:diff  Ctrl-t:new tab  Space:Actions",
+      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/Z/→:diff  Space:Actions"
+    },
+    "contract": {
+      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:push  Space:Actions  D:diff",
+      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:push  Space:Actions  D:diff"
+    }
+  },
+  "ja": {
+    "preview_text": {
+      "host": "j/k:スクロール  /:検索  n/N:変更箇所  v/V:選択  Y:@参照  F:追尾  R:diff に戻る  C-n/C-p:次/前ファイル  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  g/G:先頭/末尾  h/l:横移動  0/$:行頭/末  [/]:タブ  ,:表示  C-f/C-b/PgDn/PgUp:ページ",
+      "app": "j/k:スクロール  n/N:変更箇所  R:diff に戻る  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  g/G:先頭/末尾  h/l:横移動  0/$:行頭/末  ,:表示  C-f/C-b/PgDn/PgUp:ページ"
+    },
+    "preview_project": {
+      "host": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ  Space:操作",
+      "app": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Space:操作"
+    },
+    "preview_image": {
+      "host": "+/-:ズーム  =:フィット  h/j/k/l:パン  R:diff に戻る  C-n/C-p:次/前ファイル  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  [/]:タブ  ,:表示",
+      "app": "+/-:ズーム  =:フィット  h/j/k/l:パン  R:diff に戻る  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  ,:表示"
+    },
+    "preview_document": {
+      "host": "j/k:スクロール  Tab:フォーカス  O:アウトライン  R:diff に戻る  /:検索  n/N:変更箇所  F:追尾  C-n/C-p:次/前ファイル  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  g/G:先頭/末尾  [/]:タブ  ,:表示  C-f/C-b/PgDn/PgUp:ページ",
+      "app": "j/k:スクロール  R:diff に戻る  n/N:変更箇所  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  g/G:先頭/末尾  ,:表示  C-f/C-b/PgDn/PgUp:ページ"
+    },
+    "changes_remap": {
+      "host": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/Z/→:差分  Ctrl-t:別タブ  Space:操作",
+      "app": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/Z/→:差分  Space:操作"
+    },
+    "contract": {
+      "host": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:重ねる  Space:操作  D:差分",
+      "app": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:重ねる  Space:操作  D:差分"
+    }
+  },
+  "markdown_head_baseline": "# Title\n\nOriginal paragraph.\n\n## Section\n\nUnchanged paragraph.\n",
+  "git_staged_baseline": "base\n",
+  "jj_parent_baseline": "base\n"
+}

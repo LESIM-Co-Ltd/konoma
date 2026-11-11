@@ -90,6 +90,7 @@ pub(super) struct FilePreviewState {
 /// One Preview owns its replies, deadline, layout input and path-scoped reservation.
 /// Raw text reuses the opening diff's worker instead of selecting its baseline again.
 pub(in crate::app) struct PreviewGutter {
+    pub(in crate::app) project_owned: bool,
     path: PathBuf,
     root: PathBuf,
     enabled: bool,
@@ -108,9 +109,23 @@ pub(in crate::app) struct PreviewGutter {
     pub(in crate::app) idle: Option<super::ProjectIdleSnapshot>,
     #[cfg(any(test, feature = "test-hooks"))]
     pub(in crate::app) detection: Option<crate::host::project::ProjectDetection>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) observed:
+        Option<std::sync::Arc<std::sync::Mutex<Option<super::ProjectStateSnapshot>>>>,
 }
 
 impl PreviewGutter {
+    pub(super) fn retain_position(&mut self) {
+        self.reservation = None;
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn baseline_text_for_test(&self) -> Option<String> {
+        match &self.outcome {
+            Some(MdDiffOutcome::Ready { old_pre, .. }) => Some(old_pre.clone()),
+            _ => None,
+        }
+    }
+
     fn new(
         path: PathBuf,
         root: PathBuf,
@@ -121,6 +136,7 @@ impl PreviewGutter {
         let mut markdown = MdDiffWorker::default().with_read_context(context);
         markdown.attach(tx);
         Self {
+            project_owned: false,
             reservation: Some(path.clone()),
             path,
             root,
@@ -139,6 +155,8 @@ impl PreviewGutter {
             idle: None,
             #[cfg(any(test, feature = "test-hooks"))]
             detection: None,
+            #[cfg(any(test, feature = "test-hooks"))]
+            observed: None,
         }
     }
 
@@ -387,6 +405,11 @@ impl PendingPreview {
             &opened.plugin_id,
         );
         gutter.yield_on_timeout = true;
+        gutter.project_owned = diff.project_owned;
+        #[cfg(any(test, feature = "test-hooks"))]
+        {
+            gutter.observed = prepared.test_observed.clone();
+        }
         let (raw, lines) = diff.take_preview_lines();
         gutter.raw = raw;
         gutter.lines = lines.map(|lines| line_gutter_marks(&lines));

@@ -164,7 +164,7 @@ impl ProjectLoopState {
         };
         let t = |en, ja| if prepared.lang == "ja" { ja } else { en };
         let msg = |m: CoreMsg| m.tr(prepared.keys.lang());
-        let back = if nav.stack.len() > 1 {
+        let back = if nav.stack.len() > 1 || self.preview_project {
             t("back", "戻る")
         } else {
             t("quit", "終了")
@@ -191,7 +191,7 @@ impl ProjectLoopState {
             // this compatibility restriction when unconditional wording breaks the existing
             // project_open_aliases_and_root_pushed_wording_match_actions expectation.
             // Non-VCS pushed screens therefore retain "back" / "戻る", unlike the host below.
-            pop: if declaration.version_control && facts.pushed {
+            pop: if declaration.version_control && (facts.pushed || self.preview_project) {
                 t(
                     "Pop this screen or return to the previous view",
                     "画面を一つ戻るか元の表示に戻る",

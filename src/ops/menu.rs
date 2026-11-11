@@ -142,6 +142,25 @@ fn fixed_menu_in(
     _view: View,
     diff: Option<&DiffPresentation>,
 ) -> Option<Menu> {
+    fixed_menu_with_preview(app, ctx, id, _view, diff, true)
+}
+
+#[cfg(all(test, feature = "git"))]
+pub(crate) fn preview_options_legacy_for_test(app: &App, ctx: Context) -> Option<Menu> {
+    if ctx == Context::Diff {
+        return menu_with_diff(app, LeaderId::Options, View::Open, &app.diff_presentation());
+    }
+    fixed_menu_with_preview(app, ctx, LeaderId::Options, View::Open, None, false)
+}
+
+fn fixed_menu_with_preview(
+    app: &App,
+    ctx: Context,
+    id: LeaderId,
+    _view: View,
+    diff: Option<&DiffPresentation>,
+    shared_preview: bool,
+) -> Option<Menu> {
     if let Some(p) = diff.filter(|_| id == LeaderId::Options) {
         let declaration = diff_options_declaration(app, p)?;
         let menu = app.keymaps.menu(ctx, id)?;
@@ -183,6 +202,51 @@ fn fixed_menu_in(
         });
     }
     let m = app.keymaps.menu(ctx, id)?;
+    if shared_preview && id == LeaderId::Options {
+        if let Some(values) = crate::ops::preview_plan::front_values(app, ctx) {
+            let priority = footer::priority(app, ctx);
+            let declaration: Vec<_> = m
+                .items
+                .iter()
+                .map(|item| menu_core::Item {
+                    key: item.key,
+                    action: item.action,
+                    label: fixed_label(app, ctx, item.action, item.label, &priority),
+                })
+                .collect();
+            let items = values
+                .options_menu(
+                    &declaration,
+                    |action| {
+                        action
+                            .core()
+                            .map(konoma_host_core::preview_plan::PreviewOp::Core)
+                            .or_else(|| {
+                                values
+                                    .bindings
+                                    .iter()
+                                    .find(|b| {
+                                        crate::ops::preview_plan::action_of(b.op) == Some(action)
+                                    })
+                                    .map(|b| b.op)
+                            })
+                    },
+                    |action| action_enabled(app, ctx, action),
+                )
+                .into_iter()
+                .map(|item| MenuItem {
+                    key: item.key,
+                    action: item.action,
+                    label: item.label,
+                })
+                .collect();
+            return Some(Menu {
+                id,
+                title: tr(app.lang, m.title).into(),
+                items,
+            });
+        }
+    }
     // `,` offers what acts here; the copy and file menus list all their items (the code-block
     // copy only while a code block is focused: the menu, the footer and the help alike).
     let gated = |a: Action| match id {

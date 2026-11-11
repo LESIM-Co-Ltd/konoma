@@ -35,13 +35,14 @@ impl ProjectNavigation {
                     path,
                     info: info.clone(),
                 };
-                match crate::app::diff_screen::DiffScreenState::open_for_project(
+                match crate::app::diff_screen::DiffScreenState::open_for_project_mode(
                     request,
                     prepared.services.clone(),
                     &prepared.config,
                     prepared.settings.diff_layout,
                     None,
                     prepared.file_previews.clone(),
+                    prepared.services.project_diff_chrome(),
                 ) {
                     Ok(mut diff) => {
                         diff.set_lang(prepared.keys.lang());
@@ -138,6 +139,11 @@ impl ProjectLoopState {
         }
         if update.dispatch == ProjectDispatch::LeaveProject {
             if !self.with_host(info, |host, context| host.pop_screen(context)) {
+                if self.preview_project {
+                    self.preview_project = false;
+                    self.screen = None;
+                    return false;
+                }
                 return true;
             }
             self.ensure(info);

@@ -84,6 +84,7 @@ struct ProjectLoopState {
     launch: super::launch::LaunchState,
     diff: Option<crate::app::diff_screen::DiffScreenState>,
     diff_return: Option<ProjectScreenState<StandaloneInvocation>>,
+    preview_project: bool,
     runtimes: HashMap<ProjectKey, Runtime>,
     screen: Option<ProjectScreenState<StandaloneInvocation>>,
     dialog: Option<ProjectDialog<StandaloneInvocation>>,
@@ -106,6 +107,7 @@ impl ProjectLoopState {
             launch: super::launch::LaunchState::default(),
             diff: prepared.diff.take(),
             diff_return: prepared.diff_return.take(),
+            preview_project: prepared.preview_project,
             runtimes: std::mem::take(&mut prepared.runtimes),
             screen: prepared.screen.take(),
             dialog: prepared.dialog.take(),
@@ -291,8 +293,12 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             let size = terminal
                 .size()
                 .map_err(|e| AppError::Terminal(e.to_string()))?;
-            // Match the host's split status rows; tabs and source-screen context stay there.
-            let area = Rect::new(0, 1, size.width, size.height.saturating_sub(2));
+            let combined =
+                prepared.services.project_diff_chrome() && prepared.display.combined_status;
+            let area = crate::app::draw::project_preview_body(
+                Rect::new(0, 0, size.width, size.height),
+                combined,
+            );
             let body = project_body_area(area);
             let previous = state.viewport;
             state.viewport = ProjectViewport {
@@ -305,6 +311,32 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 host.resize(context, previous, info.viewport)
             });
             redraw |= state.poll_detection(prepared, &info);
+            redraw |= state
+                .launch
+                .poll(terminal, prepared, cx, pictures.as_mut())?;
+            if state.launch.take_refresh() {
+                if let Some(project) = state
+                    .screen
+                    .as_ref()
+                    .or(state.diff_return.as_ref())
+                    .map(|nav| nav.project.clone())
+                {
+                    state.with_host(&info, |host, _| {
+                        host.invalidate(&project, ProjectInvalidation::Detection)
+                    });
+                }
+                if let Some(diff) = state.diff.as_mut().filter(|diff| !diff.closed) {
+                    if let Err(error) = diff.reload() {
+                        prepared
+                            .notice
+                            .get_or_insert_with(|| error.message.get(prepared.lang).into());
+                    }
+                    if state.file_preview.is_some() {
+                        state.preview_open =
+                            super::preview::PendingPreview::start(prepared, diff.return_info());
+                    }
+                }
+            }
             #[cfg(any(test, feature = "test-hooks"))]
             if events.project_fenced() && state.file_preview.is_some() {
                 // A Preview yields to its owner without tearing down its file runner.
@@ -356,6 +388,29 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     }
                 }
             }
+            if state.diff.as_mut().is_some_and(|d| d.take_discarded()) {
+                let diff = state.diff.as_mut().unwrap();
+                let label = prepared
+                    .display
+                    .path_style
+                    .format(&prepared.open_dir, &diff.request.path);
+                prepared.notice = Some(format!(
+                    "{}: {label}",
+                    if prepared.lang == "ja" {
+                        "破棄しました"
+                    } else {
+                        "Discarded"
+                    }
+                ));
+                diff.close();
+                state.screen = state.diff_return.take();
+                if let Some(project) = state.screen.as_ref().map(|n| n.project.clone()) {
+                    state.with_host(&info, |host, _| {
+                        host.invalidate(&project, ProjectInvalidation::Detection)
+                    });
+                }
+                redraw = true;
+            }
             if state.preview_open.as_ref().is_some_and(|pending| {
                 state
                     .diff
@@ -379,6 +434,12 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     }
                 }
             }
+            #[cfg(any(test, feature = "test-hooks"))]
+            if events.project_fenced() && !prepared.test_observe_pending {
+                if let Some(pending) = state.preview_open.as_mut() {
+                    pending.fence_for_test();
+                }
+            }
             if let Some(result) = state.preview_open.as_ref().and_then(|p| p.poll()) {
                 let pending = state.preview_open.take().unwrap();
                 match result {
@@ -387,12 +448,14 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         if let Some(p) = pictures.as_mut() {
                             p.begin_file(&opened.plugin_id, &opened.path);
                         }
-                        state.file_preview = Some(pending.finish(
-                            opened,
-                            prepared,
-                            cx,
-                            state.diff.as_mut().unwrap(),
-                        ));
+                        let mut refreshed =
+                            pending.finish(opened, prepared, cx, state.diff.as_mut().unwrap());
+                        if let Some(old) = state.file_preview.take() {
+                            refreshed.runner = old.runner;
+                            refreshed.runner.invalidate();
+                            refreshed.gutter.retain_position();
+                        }
+                        state.file_preview = Some(refreshed);
                     }
                     Err(error) => prepared.notice = Some(error.to_string()),
                 }
@@ -402,16 +465,26 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             let preview_snapshot = events
                 .project_fenced()
                 .then(|| state.idle_snapshot(prepared, &info, pictures.as_ref(), &fence));
-            if let Some(preview) = &mut state.file_preview {
+            #[cfg(any(test, feature = "test-hooks"))]
+            if events.project_fenced() && state.file_preview.is_some() {
+                state.publish_state_for_test(prepared, &info);
+            }
+            if let Some(preview) = state
+                .file_preview
+                .as_mut()
+                .filter(|_| !state.preview_project)
+            {
                 #[cfg(any(test, feature = "test-hooks"))]
                 if events.project_fenced() {
                     preview.gutter.detection = Some(prepared.detection.clone());
                     preview.gutter.idle = preview_snapshot;
                 }
-                preview.gutter.owner_wake = (state
-                    .runtimes
-                    .values()
-                    .any(|r| r.busy || r.pending.is_some())
+                preview.gutter.owner_wake = (state.preview_open.is_some()
+                    || state.launch.pending()
+                    || state
+                        .runtimes
+                        .values()
+                        .any(|r| r.busy || r.pending.is_some())
                     || prepared.detection.pending())
                 .then_some(Duration::from_millis(16));
                 let context = preview.context(prepared, cx);
@@ -428,7 +501,42 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 if let Some(snapshot) = &preview.gutter.idle {
                     fence.adopt(snapshot);
                 }
+                if preview.gutter.project_owned && exit != crate::app::looping::FileLoopExit::Yield
+                {
+                    let display = preview.runner.display().clone();
+                    prepared.adopt_display(display.clone());
+                    if let Some(diff) = state.diff.as_mut() {
+                        diff.adopt_display(display);
+                    }
+                }
                 match exit {
+                    crate::app::looping::FileLoopExit::Project => {
+                        let project = state.diff_return.as_ref().unwrap().project.clone();
+                        if let Some(first) =
+                            state.with_host(&info, |host, _| host.first_screen(&project, info.id))
+                        {
+                            state.screen = Some(ProjectHost::start_screen(project, first));
+                            state.preview_project = true;
+                            state.ensure(&info);
+                        }
+                    }
+                    crate::app::looping::FileLoopExit::Tool => {
+                        let service = state.diff.as_ref().unwrap().request.info.clone();
+                        state.launch.tool(prepared, &service);
+                    }
+                    crate::app::looping::FileLoopExit::Refresh => {
+                        let project = state.diff_return.as_ref().unwrap().project.clone();
+                        state.with_host(&info, |host, _| {
+                            host.invalidate(&project, ProjectInvalidation::Detection)
+                        });
+                        if let Err(error) = state.diff.as_mut().unwrap().reload() {
+                            prepared.notice = Some(error.message.get(prepared.lang).into());
+                        }
+                        state.preview_open = super::preview::PendingPreview::start(
+                            prepared,
+                            state.diff.as_ref().unwrap().return_info(),
+                        );
+                    }
                     crate::app::looping::FileLoopExit::ReturnToSource => {
                         state.file_preview = None;
                         if let Some(p) = pictures.as_mut() {
@@ -474,12 +582,19 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     crate::app::looping::FileLoopExit::Quit
                     | crate::app::looping::FileLoopExit::End => break,
                 }
+                // Preview may have resized the terminal. Recompute the owner's rectangles
+                // and viewport before its first returning frame.
+                continue;
             }
             if let Some(p) = pictures.as_mut() {
                 p.poll();
                 redraw |= p.take_doc_relayout() | p.take_doc_redraw();
             }
-            if let Some(diff) = state.diff.as_mut().filter(|d| !d.closed) {
+            if let Some(diff) = state
+                .diff
+                .as_mut()
+                .filter(|d| !d.closed && !state.preview_project)
+            {
                 diff.launch_enabled = state.launch_enabled;
                 if let Some(p) = pictures.as_mut() {
                     p.doc_pics().set_path(&diff.request.path);
@@ -507,28 +622,6 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             if quit {
                 break;
             }
-            redraw |= state
-                .launch
-                .poll(terminal, prepared, cx, pictures.as_mut())?;
-            if state.launch.take_refresh() {
-                if let Some(project) = state
-                    .screen
-                    .as_ref()
-                    .or(state.diff_return.as_ref())
-                    .map(|nav| nav.project.clone())
-                {
-                    state.with_host(&info, |host, _| {
-                        host.invalidate(&project, ProjectInvalidation::Detection)
-                    });
-                }
-                if let Some(diff) = state.diff.as_mut().filter(|diff| !diff.closed) {
-                    if let Err(error) = diff.reload() {
-                        prepared
-                            .notice
-                            .get_or_insert_with(|| error.message.get(prepared.lang).into());
-                    }
-                }
-            }
             state.ensure(&info);
             #[cfg(any(test, feature = "test-hooks"))]
             if events.project_fenced() && redraw {
@@ -543,14 +636,19 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                 .buffer_mut()
                                 .set_style(whole, ratatui::style::Style::new().bg(bg));
                         }
-                        if state.diff_return.is_some() {
+                        if state.diff_return.is_some() && !state.preview_project {
                             let diff = state.diff.as_mut().unwrap();
-                            let footer = diff.footer(prepared.notice.as_deref(), whole.width);
+                            let footer_width = crate::app::draw::status_footer_width(
+                                whole.width,
+                                combined,
+                                &diff.context_spans(),
+                            );
+                            let footer = diff.footer(prepared.notice.as_deref(), footer_width);
                             let mut borrowed = crate::app::draw::Frame::Diff(diff);
                             crate::app::draw::draw_in(
                                 frame,
                                 &mut borrowed,
-                                &footer,
+                                &[],
                                 prepared.display.bg(),
                                 area,
                             );
@@ -561,16 +659,21 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                     area,
                                 );
                             }
-                            state
-                                .diff
-                                .as_ref()
-                                .unwrap()
-                                .draw_header(frame.buffer_mut(), whole);
+                            state.diff.as_ref().unwrap().draw_chrome(
+                                frame.buffer_mut(),
+                                whole,
+                                &footer,
+                            );
                             state
                                 .diff
                                 .as_ref()
                                 .unwrap()
                                 .draw_help(frame.buffer_mut(), whole);
+                            state
+                                .diff
+                                .as_ref()
+                                .unwrap()
+                                .draw_discard(frame.buffer_mut(), whole);
                         } else {
                             if let Some(p) = pictures.as_mut() {
                                 p.draw(frame.buffer_mut(), area, false);
@@ -666,6 +769,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         if state.key(prepared, &info, key) {
                             break;
                         }
+                        if let Some(diff) = state.diff.as_ref().filter(|diff| diff.project_owned) {
+                            prepared.adopt_display(diff.display().clone());
+                        }
                         if was_diff && state.diff_return.is_none() {
                             state.preview_open = None;
                             if let Some(p) = pictures.as_mut() {
@@ -691,6 +797,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
     prepared.preview_open = state.preview_open;
     prepared.diff = state.diff;
     prepared.diff_return = state.diff_return;
+    prepared.preview_project = state.preview_project;
     prepared.screen = state.screen;
     prepared.dialog = state.dialog;
     prepared.root_switch = state.root_switch;

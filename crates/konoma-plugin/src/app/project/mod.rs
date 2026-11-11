@@ -35,8 +35,9 @@ mod representation_test_hooks;
 #[doc(hidden)]
 pub use idle_test_hooks::{
     observe_project_state_for_test, read_snapshot_for_test, run_project_fenced_for_test,
-    run_project_fenced_state_for_test, run_project_observed_for_test, ProjectIdleSnapshot,
-    ProjectPromptSnapshot, ProjectStateSnapshot, TestProjectClipboard,
+    run_project_fenced_state_for_test, run_project_observed_for_test, ProjectDiffSnapshot,
+    ProjectHelpSnapshot, ProjectIdleSnapshot, ProjectPromptSnapshot, ProjectStateSnapshot,
+    TestProjectClipboard,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
@@ -98,6 +99,18 @@ pub struct ProjectServiceInfo {
 /// belong on workers. These return raw data only: shared Markdown/media workers choose baselines
 /// and prepare their own content. Classification and verbs remain registry/host decisions.
 pub trait ProjectServices: Send + Sync + 'static {
+    /// Opt in to the VCS program's project-diff chrome. Other embedders retain
+    /// the ordinary file runner's layout and controls.
+    fn project_diff_chrome(&self) -> bool {
+        false
+    }
+    /// A service capability, queried without I/O. Execution belongs to a worker.
+    fn discard_enabled(&self) -> bool {
+        false
+    }
+    fn discard_file(&self, _: &ProjectServiceInfo, _: &Path) -> Result<(), Failure> {
+        Err(Failure::unsupported("discard is unavailable"))
+    }
     /// Read the linked worktree's origin during preparation, before entering the UI loop.
     fn worktree_origin(&self, _: &Path) -> Option<String> {
         None
@@ -212,9 +225,24 @@ pub struct PreparedProjects {
     /// File diff ownership survives a caller's injected event source ending.
     pub diff: Option<super::diff_screen::DiffScreenState>,
     pub diff_return: Option<ProjectScreenState<StandaloneInvocation>>,
+    preview_project: bool,
     root_switch: Option<looping::root_switch::PendingRootSwitch>,
     #[cfg(feature = "test-hooks")]
     root_switch_fence: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl PreparedProjects {
+    pub(super) fn adopt_display(&mut self, display: super::Display) {
+        self.config.ui.wrap = display.wrap;
+        self.config.ui.path_style = match display.path_style {
+            konoma_host_core::view_options::PathStyle::Relative => "relative",
+            konoma_host_core::view_options::PathStyle::Home => "home",
+            konoma_host_core::view_options::PathStyle::Full => "full",
+        }
+        .into();
+        self.keys = self.keys.clone().with_wrap(display.wrap);
+        self.display = display;
+    }
 }
 
 #[cfg(feature = "test-hooks")]

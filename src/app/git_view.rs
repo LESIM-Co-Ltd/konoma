@@ -444,7 +444,10 @@ impl App {
                 None => {
                     let mut ok = true;
                     // Navigation: only the tab that asked gets pulled out of the diff preview.
-                    if is_origin_tab && self.is_git_diff_preview() {
+                    if is_origin_tab
+                        && self.is_git_diff_preview()
+                        && !self.return_to_project_after_discard()
+                    {
                         self.tab.came_from_git_view = false;
                         self.back_to_tree();
                         self.open_git_view();

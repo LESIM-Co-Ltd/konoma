@@ -9,6 +9,14 @@ use konoma_host_core::project::DiffTarget;
 use konoma_vcs_core::git::ChangeEntry;
 use std::path::Path;
 
+#[test]
+fn project_diff_preserves_statusbar_configuration() {
+    for statusbar in ["split", "top", "bottom"] {
+        let config = SharedConfig::parse(&format!("[ui]\nstatusbar='{statusbar}'\n")).unwrap();
+        assert_eq!(config.ui.statusbar, statusbar);
+    }
+}
+
 struct Document;
 impl Plugin for Document {
     fn manifest(&self) -> Manifest {

@@ -729,5 +729,12 @@ pub fn render(app: &App, ctx: Context, plan: &[Foot]) -> Vec<String> {
 
 /// The footer tokens of `ctx`.
 pub fn tokens(app: &App, ctx: Context) -> Vec<String> {
+    if let Some(values) = crate::ops::preview_plan::front_values(app, ctx) {
+        return values
+            .footer(&crate::ops::core_help::HostLookup { app, ctx }, app.lang)
+            .into_iter()
+            .map(|t| t.text)
+            .collect();
+    }
     render(app, ctx, &plan(app, ctx))
 }

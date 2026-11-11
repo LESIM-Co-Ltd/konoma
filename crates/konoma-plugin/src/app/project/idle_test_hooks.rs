@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 /// Owned, read-only facts at a fence. No host surface or action types cross this seam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectStateSnapshot {
+    pub return_to_preview: bool,
+    pub diff: Option<ProjectDiffSnapshot>,
     pub root: Option<std::path::PathBuf>,
     pub open_dir: Option<std::path::PathBuf>,
     pub target: Option<std::path::PathBuf>,
@@ -34,6 +36,46 @@ pub struct ProjectStateSnapshot {
     pub prompt: Option<ProjectPromptSnapshot>,
     pub menu: Option<String>,
     pub notice: Option<String>,
+}
+
+/// Read-only facts of one diff owner. Preview updates its live pose at its own frame fence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectDiffSnapshot {
+    pub help: Option<ProjectHelpSnapshot>,
+    pub path: std::path::PathBuf,
+    pub baseline: String,
+    pub choice: konoma_host_core::project::DiffView,
+    pub effective: konoma_host_core::project::DiffView,
+    pub next_representation: Option<konoma_host_core::project::DiffView>,
+    pub layout: String,
+    pub resolved_split: bool,
+    pub split_drawn: Option<bool>,
+    pub wrap: bool,
+    pub scroll: usize,
+    pub hscroll: u16,
+    pub first_change: Option<usize>,
+    pub editor_line: Option<usize>,
+    pub return_to: Vec<String>,
+    pub source_lines: Vec<(String, Option<u32>, Option<u32>, String)>,
+    pub baseline_text: Option<String>,
+    pub preview_context: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectHelpSnapshot {
+    pub sections: Vec<(String, Vec<(String, String)>)>,
+    pub scroll: usize,
+    pub title: String,
+}
+impl ProjectDiffSnapshot {
+    /// Old-side bytes of the displayed hunks; short baseline fixtures fit entirely in them.
+    pub fn old_bytes(&self) -> Vec<u8> {
+        self.source_lines
+            .iter()
+            .filter(|(_, old, _, _)| old.is_some())
+            .flat_map(|(_, _, _, text)| text.bytes().chain(std::iter::once(b'\n')))
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,10 +222,11 @@ pub fn run_project_fenced_state_for_test<B: Backend>(
     let slot = Arc::new(Mutex::new(None));
     prepared.test_observed = Some(slot.clone());
     let result = run_project_fenced_for_test(terminal, prepared, cx, pictures, |idle, frame| {
+        // A Preview can emit several file fences while its project owner remains suspended.
         let state = slot
             .lock()
             .unwrap()
-            .take()
+            .clone()
             .expect("state published at the idle fence");
         observe(idle, frame, state)
     });

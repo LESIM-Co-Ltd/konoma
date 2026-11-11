@@ -49,7 +49,13 @@ impl DiffScreenState {
             .keys_of(HelpOp::Menu(CoreMenu::Options))
             .first()
             .map(|key| DiffHelpMenu {
-                title: CoreMsg::HintOptions.tr(self.lang).into(),
+                title: (if self.project_owned {
+                    CoreMsg::WkOptionsTitle
+                } else {
+                    CoreMsg::HintOptions
+                })
+                .tr(self.lang)
+                .into(),
                 prefix: help_key(*key),
                 items: menus,
             })
@@ -68,9 +74,21 @@ impl DiffScreenState {
         if let Some(note) = notice {
             return footer_line::flash_spans(note);
         }
+        if self.discard.confirming() {
+            return vec![ratatui::text::Span::raw(self.word(
+                "y:Trash  !:delete permanently  n/Esc:cancel",
+                "y:ゴミ箱  !:完全削除  n/Esc:取消",
+            ))
+            .bold()];
+        }
         if self.menu {
             return footer_line::which_key_spans(
-                CoreMsg::HintOptions.tr(self.lang),
+                (if self.project_owned {
+                    CoreMsg::WkOptionsTitle
+                } else {
+                    CoreMsg::HintOptions
+                })
+                .tr(self.lang),
                 &self
                     .options_menu()
                     .iter()

@@ -86,6 +86,9 @@ fn git_index_bytes(root: &Path, path: &str) -> Option<Vec<u8>> {
 }
 
 fn normalize_write_state(state: &mut ProjectStateSnapshot, root: &Path) {
+    if let Some(diff) = &mut state.diff {
+        if let Ok(path) = diff.path.strip_prefix(root) { diff.path = Path::new("<repo>").join(path); }
+    }
     for path in [&mut state.root, &mut state.open_dir, &mut state.target].into_iter().flatten() {
         if let Ok(relative) = path.strip_prefix(root) {
             *path = Path::new("<repo>").join(relative);

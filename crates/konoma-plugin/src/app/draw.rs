@@ -309,6 +309,123 @@ pub fn body_of(area: Rect) -> Rect {
     Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1))
 }
 
+/// The project-owned Preview reserves the same two status rows as its source diff.
+pub(in crate::app) fn project_preview_body(area: Rect, combined: bool) -> Rect {
+    Rect::new(
+        area.x,
+        area.y.saturating_add(u16::from(!combined)),
+        area.width,
+        area.height.saturating_sub(if combined { 1 } else { 2 }),
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::app) struct ProjectPreviewChrome {
+    pub lang: Lang,
+    pub style: konoma_host_core::view_options::PathStyle,
+    pub combined: bool,
+    pub context: konoma_host_core::keymap::CoreContext,
+    pub help: bool,
+    pub image_zoom: Option<f64>,
+}
+
+pub(in crate::app) fn preview_context(
+    chrome: ProjectPreviewChrome,
+) -> Vec<ratatui::text::Span<'static>> {
+    use konoma_host_core::view_options::PathStyle;
+    use ratatui::{
+        style::{Color, Stylize},
+        text::Span,
+    };
+    let word = |en, ja| if chrome.lang == Lang::Jp { ja } else { en };
+    let path = match chrome.style {
+        PathStyle::Relative => word("rel", "相対"),
+        PathStyle::Full => word("abs", "絶対"),
+        _ => "~",
+    };
+    let (name, fg, bg) = match chrome.context {
+        konoma_host_core::keymap::CoreContext::Image => {
+            (word("IMAGE", "画像"), Color::Black, Color::LightBlue)
+        }
+        konoma_host_core::keymap::CoreContext::Table => {
+            (word("TABLE", "テーブル"), Color::White, Color::Cyan)
+        }
+        _ => (word("PREVIEW", "プレビュー"), Color::White, Color::Blue),
+    };
+    let mut spans = vec![Span::styled(
+        format!(" {name} "),
+        RStyle::new().fg(fg).bg(bg).bold(),
+    )];
+    if chrome.help {
+        spans.extend([
+            Span::raw(" "),
+            Span::styled(
+                format!(" {} ", word("HELP", "ヘルプ")),
+                RStyle::new().fg(Color::White).bg(Color::DarkGray).bold(),
+            ),
+        ]);
+    }
+    if let Some(zoom) = chrome.image_zoom {
+        spans.push(Span::raw(format!("  x{zoom:.2}")).bold());
+    }
+    spans.push(Span::raw(format!("  {}{path}", word("path:", "パス:"))).dim());
+    spans
+}
+
+pub(in crate::app) fn status_footer_width(
+    width: u16,
+    combined: bool,
+    context: &[ratatui::text::Span<'_>],
+) -> u16 {
+    if combined {
+        width.saturating_sub(
+            context
+                .iter()
+                .map(|s| s.width() as u16)
+                .sum::<u16>()
+                .saturating_add(2),
+        )
+    } else {
+        width
+    }
+}
+
+pub(in crate::app) fn draw_project_status(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    combined: bool,
+    mut context: Vec<ratatui::text::Span<'static>>,
+    footer: &[ratatui::text::Span<'static>],
+) {
+    use ratatui::text::{Line, Span};
+    if area.height == 0 {
+        return;
+    }
+    if combined {
+        context.push(Span::raw("  "));
+        context.extend_from_slice(footer);
+        Paragraph::new(Line::from(context))
+            .render(Rect::new(area.x, area.bottom() - 1, area.width, 1), buf);
+    } else {
+        draw_project_header(buf, area, context);
+        Paragraph::new(Line::from(footer.to_vec()))
+            .render(Rect::new(area.x, area.bottom() - 1, area.width, 1), buf);
+    }
+}
+
+pub(in crate::app) fn draw_project_header(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    context: Vec<ratatui::text::Span<'static>>,
+) {
+    use ratatui::{layout::Alignment, text::Line};
+    if area.height > 0 {
+        Paragraph::new(Line::from(context))
+            .alignment(Alignment::Right)
+            .render(Rect::new(area.x, area.y, area.width, 1), buf);
+    }
+}
+
 /// `bg` is `[ui.theme] bg`: painted under everything first, as the host does (a span without a
 /// background keeps it; `None` leaves the terminal's own).
 pub fn draw(

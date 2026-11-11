@@ -30,6 +30,7 @@ pub mod effects;
 pub mod input;
 pub mod launch;
 pub mod presentation;
+pub mod preview_presentation;
 pub mod prompt;
 pub mod runtime;
 pub mod state;

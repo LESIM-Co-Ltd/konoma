@@ -245,6 +245,7 @@ fn prepare_at(
         notice: None,
         diff: None,
         diff_return: None,
+        preview_project: false,
         root_switch: None,
         #[cfg(feature = "test-hooks")]
         root_switch_fence: None,

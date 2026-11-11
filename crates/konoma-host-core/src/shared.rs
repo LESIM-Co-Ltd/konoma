@@ -199,6 +199,8 @@ pub struct SharedUi {
     pub keys: String,
     /// File-diff representation as written; resolved by `DiffView::parse` at use.
     pub diff_view: String,
+    /// Status rows: only "bottom" combines them; other values use the host's split layout.
+    pub statusbar: String,
     /// The longest side, in pixels, an SVG picture is drawn at (konoma's `ui.svg_max_px`; its
     /// default is `konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX`, pinned by a test there).
     pub svg_max_px: u32,
@@ -238,6 +240,7 @@ impl Default for SharedUi {
             lang: "auto".into(),
             keys: "vim".into(),
             diff_view: "rendered".into(),
+            statusbar: "split".into(),
             svg_max_px: DEFAULT_SVG_MAX_PX,
             wrap: true,
             git_gutter: true,

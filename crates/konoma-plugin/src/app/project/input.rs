@@ -177,7 +177,7 @@ impl ProjectLoopState {
         {
             return true;
         }
-        if self.diff_return.is_some() {
+        if self.diff_return.is_some() && !self.preview_project {
             use crate::app::diff_screen::DiffScreenAction;
             let diff = self.diff.as_mut().unwrap();
             let action = diff.handle_key(KeyPress::norm(&key));

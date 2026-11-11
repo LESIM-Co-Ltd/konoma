@@ -32,6 +32,7 @@ include!("vcs_app_write_cases.rs");
 include!("vcs_app_worktree_cases.rs");
 include!("vcs_app_launch_targets.rs");
 include!("vcs_app_root_jobs.rs");
+include!("vcs_app_diff_cases.rs");
 
 thread_local! {
     static TALLY: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
@@ -163,27 +164,39 @@ fn config(id: &str, lang: &str, scheme: &str, path: &str, align: &str, extra: &s
 }
 
 fn host_state(host: &Sim) -> ProjectStateSnapshot {
-    let content = host.app.project_content();
+    let nav = host
+        .app
+        .tab
+        .project_navigation
+        .as_ref()
+        .or(host.app.tab.project_return.as_ref());
+    let content = nav
+        .and_then(|n| {
+            host.app
+                .project_runtimes
+                .get(&n.project)?
+                .views
+                .get(&n.frame()?.key)
+        })
+        .cloned();
     let menu = host.app.pending_leader.map(|menu| match menu {
         crate::keymap::LeaderId::Copy => "copy",
         crate::keymap::LeaderId::Actions => "actions",
+        crate::keymap::LeaderId::Options => "options",
         _ => panic!("unexpected menu {menu:?}"),
     });
     let mut state = observe_project_state_for_test(
-        host.app.tab.project_navigation.as_deref(),
+        nav.map(|n| &**n),
         content.as_deref(),
         host.app.project_dialog.as_ref(),
         menu,
         host.app.flash.clone(),
     );
     state.root = Some(host.app.tab.root.clone());
+    state.return_to_preview = host.app.project_returns_to_preview_for_test();
     state.open_dir = Some(host.app.tab.open_dir.clone());
     state.target = host.app.project_row_target();
-    state.chip = host
-        .app
-        .tab
-        .project_navigation
-        .as_ref()
+    state.chip = nav
         .and_then(|nav| host.app.project_runtimes.get(&nav.project))
         .and_then(|runtime| runtime.chip.clone());
     state
@@ -227,21 +240,23 @@ fn cells(frame: &Buffer, y: u16) -> Buffer {
 fn frames(
     host: &Buffer,
     app: &Buffer,
-    state: &ProjectStateSnapshot,
+    states: (&ProjectStateSnapshot, &ProjectStateSnapshot),
     lang: &str,
     fixture: &serde_json::Value,
     graph_fixture: &serde_json::Value,
     help_open: bool,
 ) {
+    let (state, host_state) = states;
     assert_eq!(host.area, app.area);
     let normal_root = state.stack.len() == 1
+        && state.diff.is_none()
         && !state.filtering
         && state.menu.is_none()
         && state.prompt.is_none()
         && state.notice.is_none();
     let normal_root = normal_root && !help_open;
     let mut expected = host.clone();
-    if help_open && state.stack.len() == 1 {
+    if help_open && state.stack.len() == 1 && state.diff.is_none() {
         // §4-1:220 and §7-5:967 apply to the root return key's help row as well as its footer.
         // Check each description's complete cells before substituting only this documented row.
         let screen = state.stack.last().unwrap();
@@ -283,6 +298,8 @@ fn frames(
         }
     }
     if normal_root {
+        let footer_start = graph_fixture["_footer_start"].as_u64().unwrap_or(0) as u16;
+        let footer_width = host.area.width.saturating_sub(footer_start);
         // FEATURE-PLUGIN-ARCHITECTURE.md §4-1:220: "ツリー・タブ・ブックマーク・フォローは無い。`q` で終了。"
         // §10-3:1266: "`Ctrl-t`（新しいタブ）" is absent; §7-5:967:
         // "root の画面の `q` は終了、重ねた画面の `q` は戻る。"
@@ -293,7 +310,9 @@ fn frames(
         } else {
             screen
         };
-        let kind = if screen == "graph" {
+        let kind = if state.return_to_preview {
+            "preview_project".into()
+        } else if screen == "graph" {
             format!(
                 "{}graph_{}",
                 if state.backend.as_deref() == Some("jj") {
@@ -315,9 +334,25 @@ fn frames(
         };
         let y = host.area.bottom() - 1;
         let mut graph_chrome = fixture.clone();
+        if state.return_to_preview {
+            // Design :1266: Ctrl-t belongs only to the host; p/q retain the Preview origin.
+            let diff = read_snapshot_for_test("vcs_app_diff");
+            for side in ["host", "app"] {
+                graph_chrome[lang][&kind][side][footer_width.to_string()] =
+                    serde_json::Value::String(konoma_widgets::help_panel::fit_tokens(
+                        &diff[lang][&kind][side]
+                            .as_str()
+                            .unwrap()
+                            .split("  ")
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>(),
+                        footer_width,
+                    ));
+            }
+        }
         if let Some(row) = graph_fixture[lang][&kind].as_object() {
             for (side, tokens) in row {
-                graph_chrome[lang][&kind][side][host.area.width.to_string()] =
+                graph_chrome[lang][&kind][side][footer_width.to_string()] =
                     serde_json::Value::String(konoma_widgets::help_panel::fit_tokens(
                         &tokens
                             .as_str()
@@ -325,12 +360,12 @@ fn frames(
                             .split("  ")
                             .map(str::to_owned)
                             .collect::<Vec<_>>(),
-                        host.area.width,
+                        footer_width,
                     ));
             }
         }
         let fixture = &graph_chrome;
-        if fixture[lang][&kind]["host"][host.area.width.to_string()].is_null() {
+        if fixture[lang][&kind]["host"][footer_width.to_string()].is_null() {
             let plain = |frame: &Buffer| -> String {
                 (0..frame.area.width)
                     .map(|x| frame[(x, y)].symbol())
@@ -344,20 +379,102 @@ fn frames(
             );
         }
         for (side, frame) in [("host", host), ("app", app)] {
+            let mut actual = Buffer::empty(Rect::new(0, 0, footer_width, 1));
+            for x in 0..footer_width {
+                actual[(x, 0)] = frame[(footer_start + x, y)].clone();
+            }
             compare_frames(
-                &expected_footer(fixture, lang, &kind, side, host.area.width),
-                &cells(frame, y),
+                &expected_footer(fixture, lang, &kind, side, footer_width),
+                &actual,
             )
             .unwrap_or_else(|e| panic!("explicit {side} footer {kind}: {e}"));
         }
-        for x in 0..host.area.width {
+        for x in footer_start..host.area.width {
             expected[(x, y)] = app[(x, y)].clone();
         }
     }
-    compare_frames(&expected, app).unwrap_or_else(|e| panic!("whole frame: {e}"));
+    if state.diff.as_ref().is_some_and(|d| {
+        matches!(
+            d.preview_context.as_deref(),
+            Some("Document" | "Image" | "Text")
+        )
+    }) && !help_open
+        && state.menu.is_none()
+        && state.notice.is_none()
+    {
+        // fix-2 explicitly supplies absent capabilities in the standalone. Every cell of
+        // either capability-dependent footer is checked before comparing the remaining frame.
+        let diff = read_snapshot_for_test("vcs_app_diff");
+        // Design :476: text/code search, range selection and Y are host-only;
+        // design :1266: tabs, follow and file jump are absent from the standalone.
+        let kind = if state.diff.as_ref().unwrap().preview_context.as_deref() == Some("Text") {
+            "preview_text"
+        } else if state.diff.as_ref().unwrap().preview_context.as_deref() == Some("Image") {
+            "preview_image"
+        } else {
+            "preview_document"
+        };
+        let start = graph_fixture["_footer_start"].as_u64().unwrap_or(0) as u16;
+        let width = host.area.width.saturating_sub(start);
+        let mut chrome = fixture.clone();
+        for (side, frame) in [("host", host), ("app", app)] {
+            let tokens = diff[lang][kind][side].as_str().unwrap();
+            chrome[lang]["preview"][side][width.to_string()] =
+                serde_json::Value::String(konoma_widgets::help_panel::fit_tokens(
+                    &tokens.split("  ").map(str::to_string).collect::<Vec<_>>(),
+                    width,
+                ));
+            let mut actual = Buffer::empty(Rect::new(0, 0, width, 1));
+            for x in 0..width {
+                actual[(x, 0)] = frame[(start + x, frame.area.bottom() - 1)].clone();
+            }
+            compare_frames(
+                &expected_footer(&chrome, lang, "preview", side, width),
+                &actual,
+            )
+            .unwrap_or_else(|e| panic!("explicit {side} project Preview capabilities footer: {e}"));
+        }
+        for x in start..host.area.width {
+            expected[(x, host.area.bottom() - 1)] = app[(x, app.area.bottom() - 1)].clone();
+        }
+    }
+    if let Some(app_help) = state.diff.as_ref().and_then(|d| d.help.as_ref()) {
+        let host_help = host_state
+            .diff
+            .as_ref()
+            .and_then(|d| d.help.as_ref())
+            .expect("host Preview help");
+        compare_preview_help(
+            &mut expected,
+            host,
+            app,
+            host_help,
+            app_help,
+            lang,
+            state.diff.as_ref().unwrap().preview_context.as_deref() == Some("Document"),
+        );
+    }
+    compare_frames(&expected, app).unwrap_or_else(|e| {
+        dump_parity_frame("host whole frame", host);
+        dump_parity_frame("app whole frame", app);
+        panic!("whole frame: {e}")
+    });
 }
 
 fn compare_states(host: &ProjectStateSnapshot, app: &ProjectStateSnapshot) -> Result<(), String> {
+    let has_help = |s: &ProjectStateSnapshot| s.diff.as_ref().is_some_and(|d| d.help.is_some());
+    if has_help(host) != has_help(app) {
+        return Err("Preview help visibility differs".into());
+    }
+    let mut host = host.clone();
+    let mut app = app.clone();
+    // Full help contents and each rendered viewport are checked by compare_preview_help.
+    if let Some(diff) = host.diff.as_mut() {
+        diff.help = None;
+    }
+    if let Some(diff) = app.diff.as_mut() {
+        diff.help = None;
+    }
     if host == app {
         Ok(())
     } else {
@@ -397,6 +514,10 @@ fn run_roots(
 
 #[derive(Default)]
 struct RunOptions {
+    plugin: Option<Arc<dyn Plugin>>,
+    contract: bool,
+    diff_entry_remap: bool,
+    pictures: bool,
     worktrees: bool,
     remove_switch_target: bool,
     launches: Option<Arc<Mutex<Vec<LaunchRecord>>>>,
@@ -423,6 +544,9 @@ fn run_roots_with(
     }
     let mut cfg: Config = toml::from_str(text).unwrap();
     let plugin = || -> Arc<dyn Plugin> {
+        if let Some(plugin) = &options.plugin {
+            return plugin.clone();
+        }
         match id {
             "git" => Arc::new(konoma_vcs::Git),
             "jj" => Arc::new(konoma_vcs::Jj),
@@ -466,6 +590,25 @@ fn run_roots_with(
         .and_then(toml::Value::as_bool)
         == Some(true);
     let mut host = Sim::with_config_sized(root, cfg, 90, 14);
+    if options.pictures {
+        host = host.with_media();
+    }
+    let image_replies = options.pictures.then(|| {
+        let (requests, receive_requests) = tokio::sync::mpsc::unbounded_channel();
+        let (answers, mut receive_answers) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::spawn(move || crate::resize_worker(receive_requests, answers));
+        let (publish, replies) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            while let Some(answer) = receive_answers.blocking_recv() {
+                if publish.send(answer).is_err() {
+                    break;
+                }
+            }
+        });
+        host.app
+            .attach_image_backend(ratatui_image::picker::Picker::halfblocks(), requests);
+        replies
+    });
     if options.launches.is_some() {
         host.app.set_office_runner(Arc::new(|_| {
             Err(std::io::Error::other("test: unexpected GUI launch"))
@@ -524,6 +667,14 @@ fn run_roots_with(
     let mut terminal = Terminal::new(SharedBackend(backend.clone())).unwrap();
     let fixture = read_snapshot_for_test("vcs_app_chrome");
     let mut graph_fixture = read_snapshot_for_test("vcs_app_graph");
+    if options.contract {
+        let contract = read_snapshot_for_test("vcs_app_diff");
+        for lang in ["en", "ja"] {
+            for screen in CONTRACT_ROOTS {
+                graph_fixture[lang][screen] = contract[lang]["contract"].clone();
+            }
+        }
+    }
     let worktree_fixture = options
         .worktrees
         .then(|| read_snapshot_for_test("vcs_app_worktrees"));
@@ -541,6 +692,12 @@ fn run_roots_with(
                     graph_fixture[lang][screen] = write_fixture[lang][&kind].clone();
                 }
             }
+        }
+    }
+    if options.diff_entry_remap {
+        let diff = read_snapshot_for_test("vcs_app_diff");
+        for lang in ["en", "ja"] {
+            graph_fixture[lang]["changes"] = diff[lang]["changes_remap"].clone();
         }
     }
     let mut host_writes = Vec::new();
@@ -614,11 +771,36 @@ fn run_roots_with(
                     "step {step}: launch command/target/line/backend/cwd"
                 );
                 *sink.lock().unwrap() = normalized_app;
-                *launch_backend.lock().unwrap() = state.backend.clone().unwrap();
+                if let Some(backend) = &state.backend {
+                    *launch_backend.lock().unwrap() = backend.clone();
+                }
+            }
+            if options.pictures {
+                host.settle_inline_images(
+                    "project diff picture fence",
+                    std::time::Duration::from_secs(30),
+                );
             }
             let mut host_frame = host.project_frame();
+            if let Some(replies) = &image_replies {
+                for _ in 0..8 {
+                    if !host.app.image_viewer.resize_pending() {
+                        break;
+                    }
+                    let answer = replies
+                        .recv_timeout(std::time::Duration::from_secs(30))
+                        .expect("project Preview resize worker reply");
+                    host.app.apply_image_resize(answer);
+                    host_frame = host.project_frame();
+                }
+                assert!(
+                    !host.app.image_viewer.resize_pending(),
+                    "the shown picture reaches its resize fence"
+                );
+            }
             let mut frame = frame;
             let mut host_snapshot = host_state(&host);
+            host_snapshot.diff = host_diff_snapshot(&mut host);
             if root != app_root {
                 let host_identity = if options.worktrees {
                     root.parent().unwrap()
@@ -676,6 +858,8 @@ fn run_roots_with(
             state.graph = app_graph.snapshot(picker_cursor(&state));
             let comparison = compare_states(&host_snapshot, &state);
             comparison.unwrap_or_else(|e| {
+                dump_parity_frame("host state fence", &host_frame);
+                dump_parity_frame("app state fence", &frame);
                 panic!("step {step}: screen/identity/filter/cursor/marks/prompt/menu/notice/graph/root/open_dir: {e}")
             });
             assert_eq!(
@@ -722,10 +906,18 @@ fn run_roots_with(
                 graph_fixture[&lang]["worktrees"] = fixture[&lang][kind][row].clone();
                 graph_fixture[&lang]["empty_worktrees"] = fixture[&lang][kind]["empty"].clone();
             }
+            graph_fixture["_footer_start"] =
+                serde_json::json!(if host.app.cfg.ui.statusbar == "bottom" {
+                    crate::ui::status::context_width(&host.app)
+                        .saturating_add(2)
+                        .min(host_frame.area.width)
+                } else {
+                    0
+                });
             frames(
                 &host_frame,
                 &frame,
-                &state,
+                (&state, &host_snapshot),
                 &lang,
                 &fixture,
                 &graph_fixture,
@@ -800,7 +992,17 @@ fn run_roots_with(
             )
             .unwrap();
         } else {
-            run_project_fenced_state_for_test(&mut terminal, &mut app, &cx, None, observe).unwrap();
+            let pictures = options.pictures.then(|| {
+                konoma_plugin::app::Pictures::new(
+                    ratatui_image::picker::Picker::halfblocks(),
+                    "git",
+                    app_root,
+                    1024,
+                )
+                .with_out(Box::new(Vec::<u8>::new()))
+            });
+            run_project_fenced_state_for_test(&mut terminal, &mut app, &cx, pictures, observe)
+                .unwrap();
         }
         let Some(text) = policy_change else { break };
         let shared = SharedConfig::parse(&text).unwrap();

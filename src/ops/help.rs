@@ -1016,6 +1016,67 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     if app.project_active() {
         return project_sections(app);
     }
+    {
+        if let Some(values) = crate::ops::preview_plan::front_values(app, ctx) {
+            use konoma_plugin::host::project::preview_presentation::{
+                PreviewHelpRow, PreviewSection,
+            };
+            let extra = global_rows()
+                .iter()
+                .filter_map(|r| render_row(app, ctx, r, &values.core))
+                .map(|r| PreviewHelpRow {
+                    keys_text: r.keys_text,
+                    description: r.desc,
+                    section: match r.sec {
+                        Sec::Tabs => PreviewSection::Tabs,
+                        Sec::Global => PreviewSection::Global,
+                        Sec::Move => PreviewSection::Move,
+                        Sec::Launch => PreviewSection::Launch,
+                        _ => PreviewSection::View,
+                    },
+                })
+                .collect();
+            let plugin = plugin_section(app, ctx)
+                .into_iter()
+                .map(|s| konoma_host_core::help::CoreSection {
+                    title: s.title,
+                    rows: s.rows,
+                })
+                .collect();
+            let mut seen = Vec::new();
+            let menus = app
+                .keymaps
+                .leader_keys_of(ctx)
+                .into_iter()
+                .filter_map(|(key, id)| {
+                    if seen.contains(&id) {
+                        return None;
+                    }
+                    seen.push(id);
+                    let section = crate::ui::help::leader_section(app, ctx, id, &help_key(key))?;
+                    Some(konoma_host_core::help::CoreSection {
+                        title: section.title,
+                        rows: section.rows,
+                    })
+                })
+                .collect();
+            return values
+                .help_sections(
+                    &crate::ops::preview_plan::help_words(app),
+                    &core_help::HostLookup { app, ctx },
+                    app.lang,
+                    extra,
+                    plugin,
+                    menus,
+                )
+                .into_iter()
+                .map(|s| HelpSection {
+                    title: s.title,
+                    rows: s.rows,
+                })
+                .collect();
+        }
+    }
     if ctx == Context::Diff {
         let p = app.diff_presentation();
         let (extra, menus) = diff_help_parts(app, &p);
@@ -1037,6 +1098,20 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
         }
         return sections;
     }
+    generic_sections_for(app, ctx)
+}
+
+#[cfg(all(test, feature = "git"))]
+pub(crate) fn project_sections_legacy_for_test(app: &App) -> Vec<HelpSection> {
+    project_sections(app)
+}
+
+#[cfg(all(test, feature = "git"))]
+pub(crate) fn preview_sections_legacy_for_test(app: &App, ctx: Context) -> Vec<HelpSection> {
+    generic_sections_for(app, ctx)
+}
+
+fn generic_sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     let (view_title, mut rows) = view_rows(app, ctx);
     rows.extend(global_rows());
     let facts = core_help::facts_for(app, ctx);

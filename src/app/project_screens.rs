@@ -15,6 +15,25 @@ use konoma_plugin::host::project::diff_presentation::{
 };
 
 impl App {
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn project_returns_to_preview_for_test(&self) -> bool {
+        self.tab
+            .project_navigation
+            .as_ref()
+            .is_some_and(|nav| nav.origin_mode == Mode::Preview && nav.origin_path.is_some())
+    }
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn project_preview_first_mark_for_test(&self) -> Option<usize> {
+        let cache = self.gutter_cache.as_ref()?;
+        if self.tab.preview_path.as_ref() != Some(&cache.path) {
+            return None;
+        }
+        cache
+            .marks
+            .keys()
+            .min()
+            .map(|n| n.saturating_sub(1) as usize)
+    }
     pub(crate) fn diff_presentation_capabilities(&self) -> DiffCapabilities {
         DiffCapabilities {
             global: true,
@@ -938,7 +957,15 @@ impl App {
                 if matches!(nav.origin_kind, Some(PreviewKind::GitDiff(_))) {
                     self.open_git_diff(&path);
                 } else {
+                    // The project overlays this Preview. Re-entering the file resets the
+                    // diff-only state, which belongs to the retained origin on this return.
+                    let from_diff = self.tab.preview_from_diff;
+                    let read_context = self.tab.diff_read_context;
                     self.enter_preview(&path);
+                    self.tab.preview_from_diff = from_diff;
+                    if from_diff {
+                        self.tab.diff_read_context = read_context;
+                    }
                 }
                 self.tab.preview_scroll = nav.origin_scroll;
                 self.tab.preview_hscroll = nav.origin_hscroll;
@@ -1562,6 +1589,39 @@ impl App {
         }
         self.ensure_project_view();
         true
+    }
+
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn project_diff_baseline_text_for_test(&self) -> Option<String> {
+        use konoma_plugin::host::project::md_diff::{MdDiffKind, MdDiffOutcome};
+        let path = self.tab.preview_path.as_deref()?;
+        let kind = if self.preview_is_diff_representation() {
+            MdDiffKind::Gutter
+        } else {
+            MdDiffKind::Rendered
+        };
+        match self.md_diff.landed_for(path, kind) {
+            Some(MdDiffOutcome::Ready { old_pre, .. }) => Some(old_pre),
+            _ => None,
+        }
+    }
+
+    pub(super) fn return_to_project_after_discard(&mut self) -> bool {
+        let Some(project) = self
+            .tab
+            .project_return
+            .as_ref()
+            .map(|nav| nav.project.clone())
+        else {
+            return false;
+        };
+        self.with_project_host(|host, _| {
+            host.invalidate(
+                &project,
+                konoma_plugin::host::project::ProjectInvalidation::Detection,
+            )
+        });
+        self.return_to_project()
     }
 
     pub(crate) fn resize_project(&mut self, cols: u16, rows: u16) {

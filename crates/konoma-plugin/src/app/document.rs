@@ -122,7 +122,7 @@ fn lay_out_preview(
     pics: Option<&mut DocPics>,
     display: &Display,
     gutter: Option<FilePreviewGutter<'_>>,
-) -> (Laid, Option<usize>) {
+) -> (Laid, Vec<usize>) {
     let gutter = file_gutter(dv, gutter);
     let active = gutter.is_some_and(FilePreviewGutter::has_changes);
     let render_width = if active {
@@ -179,9 +179,12 @@ fn lay_out_preview(
     };
     let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0) + usize::from(active);
     let marks = gutter.map_or_else(Vec::new, |g| g.project(&r.extras.block_rows));
-    let first_change = marks
-        .first()
-        .map(|(range, _)| row_prefix.get(range.start).copied().unwrap_or(range.start));
+    let change_rows = crate::host::project::diff_blocks::block_starts(
+        marks.iter().map(|(range, _)| range.clone()).collect(),
+    )
+    .into_iter()
+    .map(|line| row_prefix.get(line).copied().unwrap_or(line))
+    .collect();
     let lines = with_preview_gutter(lines, 0, &marks);
     if active {
         for image in &mut r.images {
@@ -195,7 +198,7 @@ fn lay_out_preview(
             images: std::mem::take(&mut r.images),
             max_line_cols,
         },
-        first_change,
+        change_rows,
     )
 }
 
@@ -293,12 +296,21 @@ pub struct DocCache {
     epoch: u64,
     laid: Arc<Laid>,
     gutter_ops: Option<Vec<konoma_widgets::markdown::BlockOp>>,
-    first_change: Option<usize>,
+    change_rows: Vec<usize>,
 }
 
 impl DocCache {
     pub(in crate::app) fn first_change(&self) -> Option<usize> {
-        self.first_change
+        self.change_rows.first().copied()
+    }
+    pub(in crate::app) fn change_blocks(
+        &self,
+        viewport: usize,
+    ) -> crate::host::project::diff_blocks::DiffBlocks {
+        crate::host::project::diff_blocks::DiffBlocks {
+            rows: self.change_rows.clone(),
+            max_v: self.laid.rows().saturating_sub(viewport),
+        }
     }
     /// The layout of `dv` at `width`, from the cache when nothing changed.
     pub fn get(
@@ -341,9 +353,9 @@ impl DocCache {
                 return Arc::clone(&c.laid);
             }
         }
-        let (laid, first_change) = match gutter {
+        let (laid, change_rows) = match gutter {
             Some(gutter) => lay_out_preview(dv, width, rows, lang, pics, display, Some(gutter)),
-            None => (lay_out(dv, width, rows, lang, pics, display), None),
+            None => (lay_out(dv, width, rows, lang, pics, display), Vec::new()),
         };
         let laid = Arc::new(laid);
         *slot = Some(DocCache {
@@ -357,7 +369,7 @@ impl DocCache {
             epoch,
             laid: Arc::clone(&laid),
             gutter_ops: gutter_ops.map(<[_]>::to_vec),
-            first_change,
+            change_rows,
         });
         laid
     }

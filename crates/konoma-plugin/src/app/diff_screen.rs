@@ -19,6 +19,7 @@ use super::{doc_pictures::DocPics, Display};
 use crate::host::project::md_diff::{MdDiffResult, MdDiffWorker};
 use crate::view::DocOptions;
 mod chrome;
+mod discard;
 mod media;
 #[cfg(test)]
 mod preview_tests;
@@ -107,6 +108,8 @@ pub struct DiffScreenReturn {
 }
 
 pub struct DiffScreenState {
+    discard: discard::Discard,
+    pub(in crate::app) project_owned: bool,
     command: Option<DiffScreenCommand>,
     file_previews: Option<crate::host::file_preview::FilePreviewSource>,
     preview_reply: Option<mpsc::Receiver<(crate::host::file_preview::ResolvedFilePreview, bool)>>,
@@ -143,6 +146,17 @@ pub struct DiffScreenState {
 }
 
 impl DiffScreenState {
+    pub(in crate::app) fn display(&self) -> &Display {
+        &self.display
+    }
+
+    pub(in crate::app) fn adopt_display(&mut self, display: Display) {
+        if self.display != display {
+            self.app_keys = self.app_keys.clone().with_wrap(display.wrap);
+            self.display = display;
+            self.rendered = None;
+        }
+    }
     pub fn open(
         request: FileDiffRequest,
         services: Arc<dyn ProjectServices>,
@@ -161,6 +175,18 @@ impl DiffScreenState {
         choice: Option<DiffView>,
         source: Option<crate::host::file_preview::FilePreviewSource>,
     ) -> Result<Self, Failure> {
+        Self::open_for_project_mode(request, services, config, layout, choice, source, false)
+    }
+
+    pub(in crate::app) fn open_for_project_mode(
+        request: FileDiffRequest,
+        services: Arc<dyn ProjectServices>,
+        config: &SharedConfig,
+        layout: DiffLayout,
+        choice: Option<DiffView>,
+        source: Option<crate::host::file_preview::FilePreviewSource>,
+        project_owned: bool,
+    ) -> Result<Self, Failure> {
         let (tx, rx) = mpsc::channel();
         let mut worker = MdDiffWorker::default();
         worker.attach(tx);
@@ -171,7 +197,7 @@ impl DiffScreenState {
             layout,
             choice,
             (worker, rx),
-            source,
+            (source, project_owned),
         )
     }
 
@@ -192,7 +218,7 @@ impl DiffScreenState {
             layout,
             choice,
             (markdown, markdown_rx),
-            None,
+            (None, false),
         )
     }
 
@@ -203,11 +229,14 @@ impl DiffScreenState {
         layout: DiffLayout,
         choice: Option<DiffView>,
         markdown: (MdDiffWorker, mpsc::Receiver<MdDiffResult>),
-        source: Option<crate::host::file_preview::FilePreviewSource>,
+        preview: (Option<crate::host::file_preview::FilePreviewSource>, bool),
     ) -> Result<Self, Failure> {
+        let (source, project_owned) = preview;
         let pending = services.clone().spawn_file_diff(request.clone())?;
         let read_context = request.info.backend.diff_read_context();
         let mut state = Self {
+            discard: discard::Discard::new(&request, &*services, config),
+            project_owned,
             command: None,
             file_previews: source,
             preview_reply: None,
@@ -251,6 +280,14 @@ impl DiffScreenState {
 
     /// Adopt only this receiver's reply. Replacing the receiver drops a stale refresh/open.
     pub fn poll(&mut self) -> Result<bool, Failure> {
+        match self.discard.poll() {
+            Ok(true) => return Ok(true),
+            Err(error) => {
+                self.discard_failure(error);
+                return Ok(true);
+            }
+            Ok(false) => {}
+        }
         let mut changed = false;
         if let Some(rx) = &self.preview_reply {
             match rx.try_recv() {
@@ -284,6 +321,7 @@ impl DiffScreenState {
             return None;
         }
         (self.pending.is_some()
+            || self.discard.pending()
             || self.preview_reply.is_some()
             || self.markdown.pending_for(&self.request.path)
             || self.media.pending())
@@ -340,6 +378,9 @@ impl DiffScreenState {
     ) -> Result<(DiffScreenAction, Option<String>), Failure> {
         use konoma_host_core::preview_plan::{fixed_keys, PreviewOp};
         use DiffUiOp as O;
+        if self.discard.confirming() {
+            return self.handle_discard_key(key);
+        }
         if self.menu {
             self.menu = false;
             if let Some(item) = self.options_menu().into_iter().find(|i| i.key == key) {
@@ -384,7 +425,9 @@ impl DiffScreenState {
     }
 
     fn op_for_key(&self, key: KeyPress) -> Option<DiffUiOp> {
-        if self.file_previews.is_some()
+        if self.discard.key(&self.keys, key) {
+            Some(DiffUiOp::Discard)
+        } else if self.file_previews.is_some()
             && self.keys.host_op(CoreContext::Diff, key)
                 == Some(konoma_host_core::keymap::HostOp::CycleRepresentation)
         {
@@ -396,8 +439,15 @@ impl DiffScreenState {
 
     fn execute_op(&mut self, op: DiffUiOp) -> Result<(DiffScreenAction, Option<String>), Failure> {
         use DiffUiOp as O;
+        if self.project_owned
+            && matches!(op, O::Navigate(_) | O::Layout | O::PageNext | O::PagePrev)
+            && !self.presentation().enabled(op)
+        {
+            return Ok((DiffScreenAction::Stay, None));
+        }
         let mut notice = None;
         match op {
+            O::Discard if self.discard.enabled => self.discard.confirm(),
             O::Edit if self.launch_enabled => return Ok((DiffScreenAction::Edit, None)),
             O::OpenExternal if self.launch_enabled => return Ok((DiffScreenAction::Open, None)),
             O::Tool if self.launch_enabled => return Ok((DiffScreenAction::Tool, None)),
@@ -681,22 +731,31 @@ impl DiffScreenState {
                 Some(DiffBinding {
                     op,
                     keys: lookup.keys_of(HelpOp::Act(a)),
-                    enabled: matches!(
-                        op,
-                        DiffUiOp::Navigate(_)
-                            | DiffUiOp::Layout
-                            | DiffUiOp::Back
-                            | DiffUiOp::PageNext
-                            | DiffUiOp::PagePrev
-                            | DiffUiOp::PathStyle
-                    ) && !(self.effective == DiffView::Rendered
-                        && (self.media_active() || self.display.wrap)
-                        && matches!(
+                    enabled: (self.launch_enabled
+                        && matches!(op, DiffUiOp::Edit | DiffUiOp::OpenExternal)
+                        && self
+                            .resolved_preview
+                            .as_ref()
+                            .is_some_and(|(_, exists)| *exists))
+                        || matches!(
                             op,
-                            DiffUiOp::Navigate(
-                                Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd
-                            )
-                        )),
+                            DiffUiOp::Navigate(_)
+                                | DiffUiOp::Layout
+                                | DiffUiOp::Back
+                                | DiffUiOp::PageNext
+                                | DiffUiOp::PagePrev
+                                | DiffUiOp::PathStyle
+                        ) && !(self.effective == DiffView::Rendered
+                            && (self.media_active() || self.display.wrap)
+                            && matches!(
+                                op,
+                                DiffUiOp::Navigate(
+                                    Motion::Left
+                                        | Motion::Right
+                                        | Motion::LineHome
+                                        | Motion::LineEnd
+                                )
+                            )),
                     label: if op == DiffUiOp::Layout {
                         Some(msg(CoreMsg::FtDiffLayout))
                     } else {
@@ -707,11 +766,23 @@ impl DiffScreenState {
                     } else {
                         default_help(CoreContext::Diff, a).map(msg)
                     },
-                    launch: false,
+                    launch: matches!(op, DiffUiOp::Edit | DiffUiOp::OpenExternal),
                     layers: vec![],
                 })
             })
             .collect();
+        bindings.push(DiffBinding {
+            op: DiffUiOp::Discard,
+            keys: self.discard.keys(&self.keys),
+            enabled: self.discard.enabled,
+            label: Some(self.word("discard", "破棄").into()),
+            help: Some(
+                self.word("discard whole file (confirm)", "ファイル全体を破棄(確認)")
+                    .into(),
+            ),
+            launch: false,
+            layers: vec![],
+        });
         for (op, en, ja) in [
             (DiffUiOp::View, "view", "表現"),
             (DiffUiOp::NextFile, "file", "ファイル"),
@@ -764,6 +835,10 @@ impl DiffScreenState {
             state: DiffPresentationState {
                 surface: if self.media_active() {
                     DiffSurface::Media
+                } else if self.project_owned
+                    && self.target() == konoma_host_core::project::DiffTarget::Other
+                {
+                    DiffSurface::Summary
                 } else if self.effective == DiffView::Rendered {
                     DiffSurface::Rendered
                 } else {
@@ -790,7 +865,7 @@ impl DiffScreenState {
             capabilities: DiffCapabilities {
                 view: true,
                 project: false,
-                discard: false,
+                discard: self.discard.enabled,
                 global: false,
                 tabs: false,
                 follow: false,
@@ -801,7 +876,7 @@ impl DiffScreenState {
             words: DiffPresentationWords {
                 view: msg(CoreMsg::PreviewGitDiff),
                 movement: msg(CoreMsg::HelpMove),
-                launch: String::new(),
+                launch: msg(CoreMsg::HelpLaunch),
                 tabs: String::new(),
                 global: String::new(),
                 words: vec![
@@ -891,20 +966,15 @@ impl DiffScreenState {
         self.app_keys.diff_presentation(&values)
     }
 
-    pub(super) fn draw_header(&self, buf: &mut Buffer, area: Rect) {
+    pub(super) fn context_spans(&self) -> Vec<ratatui::text::Span<'static>> {
         use ratatui::{
-            layout::Alignment,
             style::{Color, Style, Stylize},
-            text::{Line, Span},
-            widgets::{Paragraph, Widget},
+            text::Span,
         };
-        if area.height == 0 {
-            return;
-        }
-        let chip = |s: &str| {
+        let chip = |s: &str, bg| {
             Span::styled(
                 format!(" {s} "),
-                Style::new().fg(Color::White).bg(Color::Blue).bold(),
+                Style::new().fg(Color::White).bg(bg).bold(),
             )
         };
         let path = match self.display.path_style {
@@ -912,7 +982,7 @@ impl DiffScreenState {
             konoma_host_core::view_options::PathStyle::Full => self.word("abs", "絶対"),
             _ => "~",
         };
-        Paragraph::new(Line::from(vec![
+        vec![
             Span::styled(
                 match self.request.info.backend {
                     super::project::ProjectBackend::Git => self.word(" GIT ", " Git "),
@@ -927,10 +997,32 @@ impl DiffScreenState {
                     .bold(),
             ),
             Span::raw(" "),
-            chip(self.word("DIFF", "差分")),
+            if self.discard.confirming() {
+                chip(self.word("DELETE", "削除確認"), Color::Red)
+            } else {
+                chip(self.word("DIFF", "差分"), Color::Blue)
+            },
             Span::raw(format!("  {}{path}", self.word("path:", "パス:"))).dim(),
-        ]))
-        .alignment(Alignment::Right)
-        .render(Rect::new(area.x, area.y, area.width, 1), buf);
+        ]
+    }
+
+    #[cfg(test)]
+    pub(super) fn draw_header(&self, buf: &mut Buffer, area: Rect) {
+        crate::app::draw::draw_project_header(buf, area, self.context_spans());
+    }
+
+    pub(super) fn draw_chrome(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        footer: &[ratatui::text::Span<'static>],
+    ) {
+        crate::app::draw::draw_project_status(
+            buf,
+            area,
+            self.project_owned && self.display.combined_status,
+            self.context_spans(),
+            footer,
+        );
     }
 }
