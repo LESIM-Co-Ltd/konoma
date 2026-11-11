@@ -855,6 +855,10 @@ impl ProjectDetection {
     }
 
     /// Test hook: wait for a worker answer without sleeping or depending on its scheduling.
+    /// Returns once an answer sits in the slot, or once the detection is no longer `pending()`
+    /// (the answer was already taken by `poll`, e.g. by a drain that ran before this call, and
+    /// nothing else is coming). Waiting for a slot value alone would never end in that case.
+    /// The 120 s bound only guards against a worker that never answers.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn wait_for_result(&self) {
         let worker = self
@@ -865,7 +869,9 @@ impl ProjectDetection {
         let (guard, timeout) = worker
             .slot
             .ready
-            .wait_timeout_while(guard, Duration::from_secs(120), |value| value.is_none())
+            .wait_timeout_while(guard, Duration::from_secs(120), |value| {
+                value.is_none() && self.pending()
+            })
             .unwrap_or_else(|e| e.into_inner());
         assert!(
             !timeout.timed_out() || guard.is_some(),

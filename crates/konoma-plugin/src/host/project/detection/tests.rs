@@ -311,3 +311,31 @@ fn project_set_watch_paths_records_paths_only_for_a_known_project() {
         Some(vec![root.join("x")])
     );
 }
+
+/// A drain (`poll`) that runs before the test hook takes the answer out of the slot; no second
+/// answer comes, so a wait on the slot value alone could only end at its 120 s guard. The wait
+/// must end once the detection is no longer pending. (Under load the worker answers before the
+/// first drain of an e2e test, which is how this order shows up.)
+#[test]
+fn project_wait_for_result_returns_when_the_answer_was_already_polled() {
+    let dir = unique_tmp("project_wait_after_poll");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("project.marker"), "").unwrap();
+    let root = dir.canonicalize().unwrap();
+    let mut detection = ProjectDetection::default();
+    detection.ensure(
+        &root,
+        vec![declaration("polled", "project.marker", MarkerKind::File)],
+    );
+    detection.wait_for_result();
+    assert_eq!(detection.poll(), Some(false));
+    assert!(!detection.pending());
+    // The answer is consumed: this must return at once, not after the guard.
+    let started = std::time::Instant::now();
+    detection.wait_for_result();
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "wait_for_result waited for an answer that was already taken"
+    );
+    assert_eq!(detection.poll(), None);
+}
