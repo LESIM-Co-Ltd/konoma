@@ -17,12 +17,12 @@ concurrency:
 
 jobs:
   check:
-    # konoma targets macOS on Apple Silicon; macos-14 runners are arm64.
+    # konoma targets macOS on Apple Silicon; macos-15 runners are arm64.
     # One leg per feature set. The two sets build and test separately anyway, and a single job
     # running both took 12-19 minutes and hit the 20-minute limit whenever runners were busy
     # (three cancelled runs on 2026-10-21). Each leg does about half; the limit stays at 20.
     name: fmt / clippy / test (macOS Apple Silicon, ${{ matrix.features }})
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -189,7 +189,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, target: x86_64-apple-darwin }
+          - { os: macos-15, target: x86_64-apple-darwin }
     steps:
       - uses: actions/checkout@v7
 
