@@ -289,9 +289,11 @@ fn departed_preview_values_do_not_replace_diff_or_project_chrome() {
         drain(&mut host);
         host.app.flash = None;
         assert!(host.app.project_active());
-        assert_eq!(
-            crate::ops::help::help_context(&host.app),
-            crate::keymap::Context::Canvas
+        // Old hub: help_context() == Context::Screen(backend, Changes); the new path's context is
+        // not pinned, it is the pending decision `key-context-screen`.
+        super::vcs_port_map::pending_behavior(
+            "key-context-screen",
+            "old help_context() == Context::Screen(backend, Changes) after p",
         );
         let project_status: String = crate::ui::status::context_spans(&host.app)
             .iter()

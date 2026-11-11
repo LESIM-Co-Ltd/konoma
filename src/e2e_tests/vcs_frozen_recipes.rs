@@ -188,7 +188,7 @@ fn changes_paths(c: &mut Ctx) {
     std::fs::create_dir_all(&nested).unwrap();
     // `home` draws `~/...` from `HOME`: point it at the directory above the repository so the
     // frame is the same on every machine (this recipe runs in an isolated child process).
-    super::set_home(dir.parent().unwrap());
+    let _home = super::set_home(dir.parent().unwrap());
     for (tree, root) in [("repo", dir.as_path()), ("nested", nested.as_path())] {
         // `full` draws the absolute scratch path, whose name carries the pid and so also its
         // length and the column of everything after it, so it cannot be frozen cell for cell; the

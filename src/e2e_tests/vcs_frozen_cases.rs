@@ -189,13 +189,29 @@ fn isolated(test: &str) -> bool {
 /// Points `HOME` at a recipe's fixture directory. Home-relative paths (`~/...`) are drawn from
 /// `HOME` when a frame is drawn, so without this the frames would embed the machine's temp path.
 /// `HOME` is process-wide, so only a test that runs in its own child process (`isolated`) may call
-/// this; the child is never reused, so nothing restores it.
-pub(super) fn set_home(dir: &Path) {
+/// this. The returned guard puts the previous `HOME` back when the recipe ends, so a process that
+/// runs several recipes (the generator) draws every recipe's frames from the same starting `HOME`
+/// whatever the recipe order.
+#[must_use = "HOME is restored when the guard drops"]
+pub(super) fn set_home(dir: &Path) -> HomeGuard {
     assert!(
         std::env::var_os("KONOMA_VCS_HOST_CHILD").is_some(),
         "a recipe that sets HOME must run in an isolated child process"
     );
+    let previous = std::env::var_os("HOME");
     std::env::set_var("HOME", dir);
+    HomeGuard(previous)
+}
+
+pub(super) struct HomeGuard(Option<std::ffi::OsString>);
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+    }
 }
 
 /// A scratch repository directory whose own name is stable. Frames that show the repository path

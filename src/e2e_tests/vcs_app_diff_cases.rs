@@ -287,14 +287,13 @@ fn project_diff_preview_project_key_uses_project_footer_host() {
             host.key('p');
             drain(&mut host);
             assert!(host.app.project_active());
-            // Old hub: Context::Screen(backend, Changes) after `p`; recorded as pending.
+            // Old hub: key_context() and help_context() were both Context::Screen(backend,
+            // Changes) once the hub was open (`help_context` returned the screen's context for
+            // `is_git_view()`); the new path's `Context::Canvas` is not pinned here but recorded
+            // as the pending decision `key-context-screen`.
             super::vcs_port_map::pending_behavior(
                 "key-context-screen",
-                "old key_context() == Some(Context::Screen(backend, Changes)) after p",
-            );
-            assert_eq!(
-                crate::ops::help::help_context(&host.app),
-                crate::keymap::Context::Canvas
+                "old key_context()/help_context() == Some(Context::Screen(backend, Changes)) after p",
             );
             let first = host.project_frame();
             let second = host.project_frame();

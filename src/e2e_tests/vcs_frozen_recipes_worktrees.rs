@@ -33,7 +33,7 @@ pub(super) fn cells(c: &mut Ctx) {
     let (_guard, parent) = stable_root("vcs_worktrees");
     let dir = parent.parent().unwrap().to_path_buf();
     let (main, linked, _detached) = seed_worktrees(&dir);
-    super::super::set_home(&dir);
+    let _home = super::super::set_home(&dir);
     for (name, root) in [("main", &main), ("linked", &linked)] {
         for lang in ["en", "ja"] {
             for width in [80, 160] {
@@ -129,7 +129,7 @@ pub(super) fn diff(c: &mut Ctx) {
     let (_guard, parent) = stable_root("vcs_worktrees_diff");
     let dir = parent.parent().unwrap().to_path_buf();
     let (main, linked, _detached) = seed_worktrees(&dir);
-    super::super::set_home(&dir);
+    let _home = super::super::set_home(&dir);
     let body = (0..70)
         .map(|i| format!("line {i} 日本語 {}\n", "long ".repeat(30)))
         .collect::<String>();
