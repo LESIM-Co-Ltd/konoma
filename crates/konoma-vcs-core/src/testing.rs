@@ -96,9 +96,14 @@ pub fn count_file_diff_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
 /// already exist. Distinct from `app::follow::tests::init_git_repo`, a shell (`git init` +
 /// `git config`) variant that fixture also needs — kept separate rather than folded in here (see
 /// that module for why).
+///
+/// The initial branch is `master` explicitly: `git2::Repository::init` would take it from the
+/// machine's `init.defaultBranch`, and frozen frames name the branch.
 #[cfg(feature = "git")]
 pub fn init_git_repo(dir: &std::path::Path) {
-    let repo = git2::Repository::init(dir).unwrap();
+    let mut options = git2::RepositoryInitOptions::new();
+    options.initial_head("master");
+    let repo = git2::Repository::init_opts(dir, &options).unwrap();
     let mut cfg = repo.config().unwrap();
     cfg.set_str("user.name", "Test").unwrap();
     cfg.set_str("user.email", "test@example.com").unwrap();
