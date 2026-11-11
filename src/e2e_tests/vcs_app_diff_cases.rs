@@ -287,7 +287,11 @@ fn project_diff_preview_project_key_uses_project_footer_host() {
             host.key('p');
             drain(&mut host);
             assert!(host.app.project_active());
-            assert_eq!(host.app.key_context(), Some(crate::keymap::Context::Canvas));
+            // Old hub: Context::Screen(backend, Changes) after `p`; recorded as pending.
+            super::vcs_port_map::pending_behavior(
+                "key-context-screen",
+                "old key_context() == Some(Context::Screen(backend, Changes)) after p",
+            );
             assert_eq!(
                 crate::ops::help::help_context(&host.app),
                 crate::keymap::Context::Canvas
