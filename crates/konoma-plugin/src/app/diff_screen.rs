@@ -753,7 +753,7 @@ impl DiffScreenState {
                     position,
                     ..Default::default()
                 },
-                empty_text: if self.pending.is_some() {
+                empty_text: if self.pending.is_some() || self.preview_reply.is_some() {
                     CoreMsg::Loading.tr(self.lang)
                 } else if let Some(summary) = &summary {
                     summary

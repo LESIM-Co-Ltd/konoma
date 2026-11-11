@@ -29,6 +29,53 @@ impl Plugin for Document {
     }
 }
 
+#[test]
+fn pending_binary_summary_does_not_claim_no_changes() {
+    let dir = konoma_test_support::unique_tmp("pending_binary_summary");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("binary.bin");
+    std::fs::write(&path, b"\0binary").unwrap();
+    let mut state = DiffScreenState::open_for_project_mode(
+        FileDiffRequest {
+            root: dir.to_path_buf(),
+            path,
+            info: ProjectServiceInfo {
+                workdir: dir.to_path_buf(),
+                backend: ProjectBackend::Git,
+            },
+        },
+        Arc::new(Services(std::thread::current().id())),
+        &SharedConfig::default(),
+        DiffLayout::Unified,
+        Some(DiffView::Source),
+        Some(FilePreviewSource::new(
+            Arc::new(Registry::new()),
+            Vec::new(),
+            false,
+        )),
+        true,
+    )
+    .unwrap();
+    state.settle_preview_for_test();
+    assert!(state.poll().unwrap());
+    assert!(state.source_summary());
+    // Hold the worker state before publication, without relying on a computation's speed.
+    *state.media.worker.busy_for_test() = true;
+    let area = Rect::new(0, 0, 60, 12);
+    let mut frame = Buffer::empty(area);
+    state.draw(&mut frame, area);
+    let text = frame
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        text.contains("computing diff…"),
+        "pending binary frame: {text}"
+    );
+    assert!(!text.contains("(no changes)"));
+}
+
 pub(super) struct Services(pub(super) std::thread::ThreadId);
 impl ProjectServices for Services {
     fn inspect(

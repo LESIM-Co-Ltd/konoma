@@ -218,6 +218,11 @@ impl DiffScreenState {
         let inner = Block::bordered().inner(area);
         self.viewport = inner.height;
         let media_changed = self.poll_media(pics.as_deref_mut());
+        // The unresolved target is only a placeholder, not a binary classification.
+        // Wait for the worker's plan before starting a representation for this path.
+        if self.preview_reply.is_some() {
+            return media_changed;
+        }
         if self.media_active() || self.source_summary() {
             return self.prepare_media(inner, pics) || media_changed;
         }

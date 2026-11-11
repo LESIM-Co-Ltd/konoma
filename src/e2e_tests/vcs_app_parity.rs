@@ -873,6 +873,26 @@ fn run_roots_with(
                     .idle_workers
                     .as_ref()
                     .expect("only the idle-worker scenario observes pending work");
+                if matches!(steps.front(), Some(Step::BusyKey(_))) {
+                    if workers.publications("source") == 1 && workers.publications("resolve") == 0 {
+                        // The source reply is adopted, while classification is still held.
+                        // An empty binary source is not a completed, unchanged media diff.
+                        let text = frame
+                            .content
+                            .iter()
+                            .map(|cell| cell.symbol())
+                            .collect::<String>();
+                        assert!(text.contains("loading…"), "unresolved media frame: {text}");
+                        assert!(!text.contains("(no changes)"));
+                        assert!(!state.media.as_ref().unwrap().pending);
+                    }
+                    for kind in workers.initial_order {
+                        if workers.publications(kind) == 0 {
+                            workers.release_kind(kind);
+                            return Next::Timeout;
+                        }
+                    }
+                }
                 if matches!(steps.front(), Some(Step::BusyKey(_)))
                     && state.media.as_ref().is_some_and(|m| m.pending)
                 {

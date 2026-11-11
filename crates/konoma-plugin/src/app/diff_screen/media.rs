@@ -135,7 +135,14 @@ impl DiffScreenState {
                     konoma_base::size::human_size,
                 )
             })
-            .unwrap_or_else(|| self.word("(no changes)", "(変更なし)").into())
+            .unwrap_or_else(|| {
+                if self.media.pending() {
+                    self.word("computing diff…", "差分を計算中…")
+                } else {
+                    self.word("(no changes)", "(変更なし)")
+                }
+                .into()
+            })
     }
     fn media_outcome(&self) -> Option<&MediaDiffOutcome> {
         self.media.worker.outcome_for(&self.request.path)

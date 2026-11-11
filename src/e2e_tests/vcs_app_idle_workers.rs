@@ -13,12 +13,13 @@ struct IdleWorkers {
     replies: Arc<Mutex<std::sync::mpsc::Receiver<IdleReply>>>,
     deferred: Arc<Mutex<std::collections::VecDeque<IdleReply>>>,
     completed: Arc<Mutex<std::collections::BTreeMap<&'static str, usize>>>,
+    initial_order: [&'static str; 2],
     busy_key_sent: Arc<AtomicBool>,
     queued: Arc<AtomicBool>,
     gif: Arc<AtomicBool>,
 }
 impl IdleWorkers {
-    fn new() -> Self {
+    fn new(initial_order: [&'static str; 2]) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         Self {
             observer: Arc::new(move |kind, published| {
@@ -35,6 +36,7 @@ impl IdleWorkers {
             replies: Arc::new(Mutex::new(rx)),
             deferred: Default::default(),
             completed: Default::default(),
+            initial_order,
             busy_key_sent: Default::default(),
             queued: Default::default(),
             gif: Default::default(),
@@ -304,9 +306,13 @@ fn diff_and_preview_workers_finish_while_input_is_idle() {
     if isolated("diff_and_preview_workers_finish_while_input_is_idle") {
         return;
     }
-    for path in ["doc.md", "idle.gif"] {
+    for (path, initial_order) in [
+        ("doc.md", ["source", "resolve"]),
+        ("idle.gif", ["source", "resolve"]),
+        ("idle.gif", ["resolve", "source"]),
+    ] {
         let roots = diff_repositories(|| preview_shape_repo(path));
-        let workers = IdleWorkers::new();
+        let workers = IdleWorkers::new(initial_order);
         let text = config(
             "git",
             "en",
