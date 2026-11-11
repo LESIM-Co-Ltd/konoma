@@ -66,8 +66,8 @@ pub(super) const RECIPES: &[Recipe] = &[
     Recipe {
         name: "e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub",
         jj: false,
-        // trees x path styles (only `relative`; `home` / `full` embed the machine's absolute path)
-        min_cases: 2,
+        // trees x path styles (`relative` and `home`; `full` embeds the machine's absolute path)
+        min_cases: 2 * 2,
         run: changes_paths,
     },
     Recipe {
@@ -186,12 +186,15 @@ fn changes_paths(c: &mut Ctx) {
     git_repo_at(&dir, true);
     let nested = dir.join("sub/deep");
     std::fs::create_dir_all(&nested).unwrap();
+    // `home` draws `~/...` from `HOME`: point it at the directory above the repository so the
+    // frame is the same on every machine (this recipe runs in an isolated child process).
+    super::set_home(dir.parent().unwrap());
     for (tree, root) in [("repo", dir.as_path()), ("nested", nested.as_path())] {
-        // `home` and `full` draw the absolute scratch path, which differs per machine and user, so
-        // they cannot be frozen cell for cell; the old test still compares them, and the Buffer
-        // literals of `vcs_project_port.rs` (loop over `relative`, `home` and `full`) cover them.
-        let style = "relative";
-        {
+        // `full` draws the absolute scratch path, whose name carries the pid and so also its
+        // length and the column of everything after it, so it cannot be frozen cell for cell; the
+        // old test still compares it, and the Buffer literals of `vcs_project_port.rs` (loop over
+        // `relative`, `home` and `full`) cover it.
+        for style in ["relative", "home"] {
             let mut cfg = plugin_config("git", "vcs_paths_nested", "en");
             cfg.ui.path_style = style.into();
             cfg.plugins

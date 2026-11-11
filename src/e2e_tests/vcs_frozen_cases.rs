@@ -182,6 +182,22 @@ impl Ctx {
     }
 }
 
+fn isolated(test: &str) -> bool {
+    super::vcs_host_only::isolate_test("vcs_frozen_cases", test)
+}
+
+/// Points `HOME` at a recipe's fixture directory. Home-relative paths (`~/...`) are drawn from
+/// `HOME` when a frame is drawn, so without this the frames would embed the machine's temp path.
+/// `HOME` is process-wide, so only a test that runs in its own child process (`isolated`) may call
+/// this; the child is never reused, so nothing restores it.
+pub(super) fn set_home(dir: &Path) {
+    assert!(
+        std::env::var_os("KONOMA_VCS_HOST_CHILD").is_some(),
+        "a recipe that sets HOME must run in an isolated child process"
+    );
+    std::env::set_var("HOME", dir);
+}
+
 /// A scratch repository directory whose own name is stable. Frames that show the repository path
 /// (relative to its parent) would otherwise embed the pid-based name of `unique_tmp`. The guard
 /// removes the whole scratch tree.
@@ -403,6 +419,11 @@ fn e2e_vcs_frozen_generate_fixtures_only_when_asked() {
     if std::env::var("KONOMA_FREEZE_VCS").as_deref() != Ok("1") {
         return;
     }
+    // The generator runs the recipes that set `HOME`; it gets its own process (it inherits
+    // `KONOMA_FREEZE_VCS`).
+    if isolated("e2e_vcs_frozen_generate_fixtures_only_when_asked") {
+        return;
+    }
     std::fs::create_dir_all(FIXTURE_DIR).unwrap();
     for recipe in recipes::RECIPES {
         assert!(!skipped(recipe), "jj is required to freeze {}", recipe.name);
@@ -481,7 +502,6 @@ macro_rules! stale_tests {
 }
 
 stale_tests! {
-    e2e_vcs_frozen_stale_changes_paths => "e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub",
     e2e_vcs_frozen_stale_changes_git => "e2e_vcs_changes_git_body_cell_parity_with_staged_unstaged_rename_delete_cjk_and_empty",
     e2e_vcs_frozen_stale_changes_jj => "e2e_vcs_changes_jj_and_colocated_body_cell_parity_and_enter_parent_baseline",
     e2e_vcs_frozen_stale_branches_cells => "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
@@ -503,12 +523,39 @@ stale_tests! {
     e2e_vcs_frozen_stale_graph_cells => "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
     e2e_vcs_frozen_stale_graph_base_reload_detail => "e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub",
     e2e_vcs_frozen_stale_graph_jj_cells => "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
-    e2e_vcs_frozen_stale_worktrees_cells => "e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages",
-    e2e_vcs_frozen_stale_worktrees_diff => "e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy",
+}
+
+// The recipes below point the process-wide `HOME` at their fixture (`set_home`), so each runs in
+// its own process; the other tests of this binary read `HOME` too.
+#[test]
+fn e2e_vcs_frozen_stale_changes_paths() {
+    if isolated("e2e_vcs_frozen_stale_changes_paths") {
+        return;
+    }
+    stale("e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub");
+}
+
+#[test]
+fn e2e_vcs_frozen_stale_worktrees_cells() {
+    if isolated("e2e_vcs_frozen_stale_worktrees_cells") {
+        return;
+    }
+    stale("e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages");
+}
+
+#[test]
+fn e2e_vcs_frozen_stale_worktrees_diff() {
+    if isolated("e2e_vcs_frozen_stale_worktrees_diff") {
+        return;
+    }
+    stale("e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy");
 }
 
 #[test]
 fn e2e_vcs_frozen_replay_changes_paths() {
+    if isolated("e2e_vcs_frozen_replay_changes_paths") {
+        return;
+    }
     replay("e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub");
 }
 
@@ -619,10 +666,16 @@ fn e2e_vcs_frozen_replay_graph_jj_cells() {
 
 #[test]
 fn e2e_vcs_frozen_replay_worktrees_cells() {
+    if isolated("e2e_vcs_frozen_replay_worktrees_cells") {
+        return;
+    }
     replay("e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages");
 }
 
 #[test]
 fn e2e_vcs_frozen_replay_worktrees_diff() {
+    if isolated("e2e_vcs_frozen_replay_worktrees_diff") {
+        return;
+    }
     replay("e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy");
 }

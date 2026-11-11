@@ -395,11 +395,12 @@ fn vcs_port_original_git_and_jj_cycles_and_contexts() {
             .into_iter()
             .flat_map(|s| s.rows)
             .collect::<Vec<_>>();
-        let row = rows
-            .iter()
-            .find(|(keys, _)| keys.contains("Tab"))
-            .expect("cycle help row");
-        let _ = row;
+        // The help row of the screen cycle must exist; its key label and description are the
+        // pending `tab-help` decision below, so only its presence is asserted.
+        assert!(
+            rows.iter().any(|(keys, _)| keys.contains("Tab")),
+            "help has a Tab row for the screen cycle on {id}: {rows:?}"
+        );
         super::vcs_port_map::pending_behavior("tab-help", "Tab / ⇧Tab; cycle changes/log/graph/branches/worktrees; cycle changes/log/graph/bookmarks");
         screen(&mut sim, "log");
         press(&mut sim, KeyCode::Enter);

@@ -412,12 +412,7 @@ const GROUPS: &[Group] = &[
     ),
     (
         "e2e_key_context_of_the_version_control_screens_follows_the_backend",
-        &[
-            "context:root-canvas",
-            "context:plugin-backend",
-            "context:file-diff",
-            "context:detail",
-        ],
+        &["context:file-diff"],
         &["git", "jj"],
         "vcs_port_backend_contexts_and_bindings_real_repositories",
     ),
@@ -1535,6 +1530,9 @@ const OLD_TESTS: &[(&str, &[&str])] = IN_SCOPE_OLD_TESTS;
 /// Rows added by the audit-gap pass (see the row-count assertion for the breakdown).
 const GAP_ROWS: usize = 13 + 5 + 2 + 2 + 1;
 
+/// Grouped rows (3 assertions x git, jj) that moved to the pending side as `key-context-screen`.
+const CONTEXT_ROWS_MOVED: usize = 3 * 2;
+
 fn port_map() -> Vec<(&'static str, String, &'static str)> {
     let mut table: Vec<_> = GROUPS
         .iter()
@@ -1612,6 +1610,43 @@ fn names(source: &str) -> BTreeSet<&str> {
         .collect()
 }
 
+/// Names of the `#[test]` functions of `source`: the attribute must sit among the lines directly
+/// above the `fn` (other attributes, doc comments and blank lines may come between).
+fn test_names(source: &str) -> BTreeSet<&str> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = BTreeSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(name) = line
+            .trim_start()
+            .strip_prefix("fn ")
+            .and_then(|rest| rest.split_once('('))
+            .map(|(name, _)| name.trim())
+        else {
+            continue;
+        };
+        let is_test = lines[..i]
+            .iter()
+            .rev()
+            .map(|l| l.trim())
+            .take_while(|l| l.is_empty() || l.starts_with("#[") || l.starts_with("//"))
+            .any(|l| l == "#[test]");
+        if is_test {
+            out.insert(name);
+        }
+    }
+    out
+}
+
+#[test]
+fn test_names_requires_the_test_attribute_directly_above_the_function() {
+    let source = "#[test]\nfn a() {}\n\n#[cfg(x)]\n/// doc\n#[test]\nfn b() {}\nfn helper() {}\n#[test]\n\nfn c() {}\n#[cfg(x)]\nfn d() {}\n";
+    assert_eq!(
+        test_names(source),
+        BTreeSet::from(["a", "b", "c"]),
+        "helper and d carry no #[test] attribute"
+    );
+}
+
 #[test]
 fn every_ported_assertion_names_an_existing_new_test() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1622,7 +1657,8 @@ fn every_ported_assertion_names_an_existing_new_test() {
         .iter()
         .map(|p| std::fs::read_to_string(p).unwrap())
         .collect();
-    let functions: BTreeSet<_> = contents.iter().flat_map(|s| names(s)).collect();
+    // A mapped new test must be a real `#[test]` (a helper of the same name would never run).
+    let functions: BTreeSet<_> = contents.iter().flat_map(|s| test_names(s)).collect();
     let table = port_map();
     let mut seen = BTreeSet::new();
     let mut old_names = BTreeSet::new();
@@ -1636,10 +1672,12 @@ fn every_ported_assertion_names_an_existing_new_test() {
         assert!(
             functions.contains(new)
                 || PENDING_BEHAVIORS.iter().any(|p| p.marker == *new)
-                || matches!(
+                || (matches!(
                     *new,
                     "PENDING_DECISION:title-count" | "PENDING_DECISION:title-label"
-                ),
+                ) && PENDING_TITLES
+                    .iter()
+                    .any(|(o, id, marker)| o == old && *id == assertion.as_str() && marker == new)),
             "{old}/{assertion}: missing new test fn {new}"
         );
         old_names.insert(*old);
@@ -1673,7 +1711,7 @@ fn every_ported_assertion_names_an_existing_new_test() {
         // flash texts, old-name config, q/origin, filter and base pins; 5 + 2 for the worktrees
         // Space and one-Enter loops; 2 for unborn open-then-Tab; 1 for the branch footer Enter
         // token), and the pending rows.
-        1593 + 21 + GAP_ROWS + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
+        1593 - CONTEXT_ROWS_MOVED + 21 + GAP_ROWS + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
         "a ported assertion/case row was removed"
     );
     for p in PENDING_BEHAVIORS {

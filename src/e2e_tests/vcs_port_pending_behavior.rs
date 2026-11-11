@@ -62,6 +62,9 @@ const PENDING_BEHAVIORS: &[PendingBehavior] = &[
     PendingBehavior { old: "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row", assertion: "filter:input-surface", marker: "PENDING_DECISION:filter-input-surface", literal: "surface() == Surface::ListFilter while the / input line is open", old_frame: PENDING_FRAME_29, new_frame: PENDING_FRAME_30 },
     PendingBehavior { old: "e2e_slash_filters_the_log_by_the_text_shown", assertion: "filter:input-surface", marker: "PENDING_DECISION:filter-input-surface", literal: "surface() == Surface::ListFilter while the / input line is open", old_frame: PENDING_FRAME_29, new_frame: PENDING_FRAME_30 },
     PendingBehavior { old: "e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_languages", assertion: "help:graph:key-order", marker: "PENDING_DECISION:graph-help-order", literal: "g / G, l / Enter, s, x, b, /, r, Tab / ⇧Tab, h / Esc  ·  q; j / k under Movement", old_frame: PENDING_FRAME_27, new_frame: PENDING_FRAME_28 },
+    PendingBehavior { old: "e2e_key_context_of_the_version_control_screens_follows_the_backend", assertion: "context:root-canvas", marker: "PENDING_DECISION:key-context-screen", literal: "key_context() == Some(Context::Screen(backend, screen)) on changes/log/graph/branches/worktrees", old_frame: PENDING_FRAME_13, new_frame: PENDING_FRAME_14 },
+    PendingBehavior { old: "e2e_key_context_of_the_version_control_screens_follows_the_backend", assertion: "context:plugin-backend", marker: "PENDING_DECISION:key-context-screen", literal: "key_context() == Some(Context::Screen(Backend::Jj, Screen::Changes)) for a jj repository", old_frame: PENDING_FRAME_11, new_frame: PENDING_FRAME_12 },
+    PendingBehavior { old: "e2e_key_context_of_the_version_control_screens_follows_the_backend", assertion: "context:detail", marker: "PENDING_DECISION:key-context-screen", literal: "key_context() == Some(Context::Screen(backend, Screen::Detail)) on the commit detail", old_frame: PENDING_FRAME_0, new_frame: PENDING_FRAME_1 },
 ];
 #[cfg(feature = "git")]
 pub(super) fn pending_behavior(slug: &str, context: &str) {
@@ -106,6 +109,9 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
         ("e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row","filter:input-surface","PENDING_DECISION:filter-input-surface","surface() == Surface::ListFilter while the / input line is open"),
         ("e2e_slash_filters_the_log_by_the_text_shown","filter:input-surface","PENDING_DECISION:filter-input-surface","surface() == Surface::ListFilter while the / input line is open"),
         ("e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_languages","help:graph:key-order","PENDING_DECISION:graph-help-order","g / G, l / Enter, s, x, b, /, r, Tab / ⇧Tab, h / Esc  ·  q; j / k under Movement"),
+        ("e2e_key_context_of_the_version_control_screens_follows_the_backend","context:root-canvas","PENDING_DECISION:key-context-screen","key_context() == Some(Context::Screen(backend, screen)) on changes/log/graph/branches/worktrees"),
+        ("e2e_key_context_of_the_version_control_screens_follows_the_backend","context:plugin-backend","PENDING_DECISION:key-context-screen","key_context() == Some(Context::Screen(Backend::Jj, Screen::Changes)) for a jj repository"),
+        ("e2e_key_context_of_the_version_control_screens_follows_the_backend","context:detail","PENDING_DECISION:key-context-screen","key_context() == Some(Context::Screen(backend, Screen::Detail)) on the commit detail"),
     ];
     let actual = PENDING_BEHAVIORS
         .iter()

@@ -560,6 +560,19 @@ impl Sim {
         self.press(KeyCode::Char(c), KeyModifiers::NONE);
     }
 
+    /// Wait until the tab's project detection worker has answered the scan it started when the
+    /// `Sim` was built, and apply that answer. A test that deletes or renames the root (or a
+    /// watched project directory) calls this first: otherwise the worker's first scan can run
+    /// after the deletion under load, and its failure answer ("could not detect or watch
+    /// projects") arrives during the test's key loop. The wait is on the worker's own signal
+    /// (no sleep); with injected events no later native event can change the answer.
+    fn settle_projects(&mut self) {
+        if self.app.tab.projects.pending() {
+            self.app.tab.projects.wait_for_result();
+        }
+        self.app.poll_projects();
+    }
+
     /// Keep the legacy hub's tests on that implementation until their assertions migrate.
     #[cfg(feature = "git")]
     fn open_legacy_hub(&mut self) {
@@ -8501,6 +8514,8 @@ fn e2e_stale_listing_chip_stays_up_until_the_listing_recovers() {
 
     // The root disappears out from under us (an agent removing a directory konoma happens to be
     // showing). This is the fs-watch path the run loop drives, which cannot propagate a failure.
+    // The project detection must have answered the healthy root first (ordering, not timing).
+    s.settle_projects();
     std::fs::remove_dir_all(&root).unwrap();
     s.app.refresh_fs_watched(false, &[]);
     s.draw();
@@ -8597,6 +8612,7 @@ fn e2e_stale_listing_chip_shows_in_tree_and_preview() {
     assert!(matches!(s.app.tab.mode, Mode::Preview));
     s.dont_see("STALE");
 
+    s.settle_projects();
     std::fs::remove_dir_all(&root).unwrap();
     s.app.refresh_fs_watched(false, &[]);
     s.draw();
@@ -8627,6 +8643,7 @@ fn e2e_stale_listing_chip_does_not_break_the_tab_bar() {
     s.key('5');
     assert_eq!(s.app.active_tab_index(), 4);
 
+    s.settle_projects();
     std::fs::remove_dir_all(&root).unwrap();
     s.app.refresh_fs_watched(false, &[]);
     s.draw();

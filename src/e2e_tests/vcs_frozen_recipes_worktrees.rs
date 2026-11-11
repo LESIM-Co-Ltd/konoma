@@ -7,43 +7,9 @@ use super::super::Ctx;
 use super::stable_root;
 use std::path::Path;
 
-/// Points `HOME` at the fixture directory for the recipe's lifetime. The worktree rows print each
-/// path with the home prefix shortened to `~`, so without this the frames would embed the machine's
-/// temp path (and its length). Both sides read `HOME` when they draw. The recipe runs before any
-/// other thread of this test reads `HOME`, and the previous value is restored on drop.
-///
-/// The guards of two recipes in one process (`cargo test` runs tests as threads) are serialized by
-/// `HOME_LOCK`: without it the second guard would record the first one's fixture directory as the
-/// "previous" value and restore a deleted path. Under nextest every test is its own process.
-struct HomeGuard {
-    previous: Option<std::ffi::OsString>,
-    // Declared after `previous` and released after `drop` has restored HOME.
-    _lock: std::sync::MutexGuard<'static, ()>,
-}
-
-static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-impl HomeGuard {
-    fn set(dir: &Path) -> Self {
-        // A recipe that panicked while holding the lock already restored HOME in `drop`.
-        let lock = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var_os("HOME");
-        std::env::set_var("HOME", dir);
-        Self {
-            previous,
-            _lock: lock,
-        }
-    }
-}
-
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-    }
-}
+// The worktree rows print each path with the home prefix shortened to `~`, so these recipes point
+// `HOME` at the fixture (`set_home`, which needs an isolated child process) to keep the frames
+// free of the machine's temp path and its length. Both sides read `HOME` when they draw.
 
 /// `pair_settings` of `vcs_worktrees.rs` with its defaults: the worktrees screen of the legacy hub
 /// (`w`) or of the project host (`w` after `p`).
@@ -67,7 +33,7 @@ pub(super) fn cells(c: &mut Ctx) {
     let (_guard, parent) = stable_root("vcs_worktrees");
     let dir = parent.parent().unwrap().to_path_buf();
     let (main, linked, _detached) = seed_worktrees(&dir);
-    let _home = HomeGuard::set(&dir);
+    super::super::set_home(&dir);
     for (name, root) in [("main", &main), ("linked", &linked)] {
         for lang in ["en", "ja"] {
             for width in [80, 160] {
@@ -163,7 +129,7 @@ pub(super) fn diff(c: &mut Ctx) {
     let (_guard, parent) = stable_root("vcs_worktrees_diff");
     let dir = parent.parent().unwrap().to_path_buf();
     let (main, linked, _detached) = seed_worktrees(&dir);
-    let _home = HomeGuard::set(&dir);
+    super::super::set_home(&dir);
     let body = (0..70)
         .map(|i| format!("line {i} 日本語 {}\n", "long ".repeat(30)))
         .collect::<String>();

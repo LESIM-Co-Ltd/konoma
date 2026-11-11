@@ -936,7 +936,12 @@ fn vcs_port_backend_contexts_and_bindings_real_repositories() {
             vec!["changes", "log", "graph", "branches"]
         } {
             screen(&mut sim, name);
-            assert_eq!(sim.app.key_context(), Some(Context::Canvas));
+            // Old: Context::Screen(backend, screen). The new path's context is not pinned here;
+            // it is recorded as the pending decision `key-context-screen`.
+            super::vcs_port_map::pending_behavior(
+                "key-context-screen",
+                "old key_context() == Some(Context::Screen(backend, screen))",
+            );
             assert_eq!(
                 sim.app
                     .tab
@@ -956,9 +961,11 @@ fn vcs_port_backend_contexts_and_bindings_real_repositories() {
         screen(&mut sim, "log");
         press(&mut sim, KeyCode::Enter);
         assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");
-        // Old: Context::Screen(backend, Detail). New path: every project screen, the pushed
-        // detail included, reports the one Canvas context.
-        assert_eq!(sim.app.key_context(), Some(Context::Canvas), "detail {id}");
+        // Old: Context::Screen(backend, Detail); recorded as the pending `key-context-screen`.
+        super::vcs_port_map::pending_behavior(
+            "key-context-screen",
+            "old key_context() == Some(Context::Screen(backend, Detail))",
+        );
     };
     let binding = |table: &str, root: &std::path::Path, id: &str, expected: bool| {
         let mut cfg = config(id, "en");
