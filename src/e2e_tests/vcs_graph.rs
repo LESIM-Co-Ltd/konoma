@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn fixture() -> TmpDir {
+pub(in crate::e2e_tests) fn fixture() -> TmpDir {
     let dir = repo(1);
     let repository = git2::Repository::open(&dir).unwrap();
     let base = repository.head().unwrap().peel_to_commit().unwrap();
@@ -41,7 +41,7 @@ pub(super) fn fixture() -> TmpDir {
     dir
 }
 
-pub(super) fn picker_fixture() -> TmpDir {
+pub(in crate::e2e_tests) fn picker_fixture() -> TmpDir {
     let dir = fixture();
     let repository = git2::Repository::open(&dir).unwrap();
     let head = repository.head().unwrap().peel_to_commit().unwrap();
@@ -66,7 +66,7 @@ pub(super) fn picker_fixture() -> TmpDir {
     dir
 }
 
-pub(super) fn graph_pair(
+pub(in crate::e2e_tests) fn graph_pair(
     root: &std::path::Path,
     lang: &str,
     align: &str,

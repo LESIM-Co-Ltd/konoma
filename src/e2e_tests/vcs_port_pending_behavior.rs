@@ -59,6 +59,9 @@ const PENDING_BEHAVIORS: &[PendingBehavior] = &[
     PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:jj:en", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(En, Msg::StBookmark)", old_frame: PENDING_FRAME_19, new_frame: PENDING_FRAME_20 },
     PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:jj:ja", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(Jp, Msg::StBookmark)", old_frame: PENDING_FRAME_25, new_frame: PENDING_FRAME_26 },
     PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:git:en", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(En, Msg::StBranch)", old_frame: PENDING_FRAME_21, new_frame: PENDING_FRAME_22 },
+    PendingBehavior { old: "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row", assertion: "filter:input-surface", marker: "PENDING_DECISION:filter-input-surface", literal: "surface() == Surface::ListFilter while the / input line is open", old_frame: PENDING_FRAME_29, new_frame: PENDING_FRAME_30 },
+    PendingBehavior { old: "e2e_slash_filters_the_log_by_the_text_shown", assertion: "filter:input-surface", marker: "PENDING_DECISION:filter-input-surface", literal: "surface() == Surface::ListFilter while the / input line is open", old_frame: PENDING_FRAME_29, new_frame: PENDING_FRAME_30 },
+    PendingBehavior { old: "e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_languages", assertion: "help:graph:key-order", marker: "PENDING_DECISION:graph-help-order", literal: "g / G, l / Enter, s, x, b, /, r, Tab / ⇧Tab, h / Esc  ·  q; j / k under Movement", old_frame: PENDING_FRAME_27, new_frame: PENDING_FRAME_28 },
 ];
 #[cfg(feature = "git")]
 pub(super) fn pending_behavior(slug: &str, context: &str) {
@@ -100,6 +103,9 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
         ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:jj:en","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(En, Msg::StBookmark)"),
         ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:jj:ja","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(Jp, Msg::StBookmark)"),
         ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:git:en","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(En, Msg::StBranch)"),
+        ("e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row","filter:input-surface","PENDING_DECISION:filter-input-surface","surface() == Surface::ListFilter while the / input line is open"),
+        ("e2e_slash_filters_the_log_by_the_text_shown","filter:input-surface","PENDING_DECISION:filter-input-surface","surface() == Surface::ListFilter while the / input line is open"),
+        ("e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_languages","help:graph:key-order","PENDING_DECISION:graph-help-order","g / G, l / Enter, s, x, b, /, r, Tab / ⇧Tab, h / Esc  ·  q; j / k under Movement"),
     ];
     let actual = PENDING_BEHAVIORS
         .iter()
@@ -236,3 +242,79 @@ const PENDING_FRAME_26: &str = r#"                                              
 
 
 Tab/Shift-Tab:画:面   j/k:移 動:  /:絞 り 込:み:  q:戻:る   ?:ヘ ル プb  y:コ ピ ー     : コ"#;
+
+// Diagnostic frames for the graph help (old hub vs the p path) and the open `/` input line.
+const PENDING_FRAME_27: &str = r#"                                                                           GIT   HELP   sort: name ↑  path:rel
+┌ Git graph  (4) ─────┌ Help  (?/Esc to close, j/k to scroll) ─────────────────────────┐─────────────────────┐
+│●   Uncommitted chang│Git graph                                                       │nstaged · 1 untracked│
+│◆   (HEAD -> master, │  g / G           top / bottom                                  │  Author · 2020-01-01│
+│├─┐                  │  l / Enter       detail (commit diff / worktree diff)          │                     │
+││ ● (priority-branch-│  s               pin the selected commit's branch as the base (│  Author · 2020-01-01│
+│● │ Main commit      │  x               clear the pinned base                         │  Author · 2020-01-01│
+│├─┘                  │  b               choose which branches are shown               │                     │
+│●   0 日 本 語 の 長 い 件  │  /               filter the rows by the text they show         │  Author · 2020-01-01│
+│                     │  r               refresh listing & git status                  │                     │
+│                     │  Tab / ⇧Tab      cycle changes/log/graph/branches/worktrees    │                     │
+│                     │  h / Esc  ·  q   back to changes                               │                     │
+│                     │                                                                │                     │
+│                     │Movement                                                        │                     │
+│                     │  j / k           move (commit / uncommitted)                   │                     │
+│                     │                                                                │                     │
+│                     │Actions                                                         │                     │
+│                     │  Space l         detail                                        │                     │
+│                     │  Space s         base                                          │                     │
+│                     │  Space x         base off                                      │                     │
+│─────────────────────│  Space b         branches                                      │─────────────────────│
+│⎇ ● master  ● second-│  Space /         search                                        │                     │
+└─────────────────────└────────────────────────────────────────────────────────────────┘─────────────────────┘
+j/k:scroll  g/G:top/bottom  ?/q/Esc:close"#;
+const PENDING_FRAME_28: &str = r#"                                                                                     Project   HELP   path:rel
+ p:Changes  Log  Graph  b:Branches  w:Worktrees Git graph  (4)
+●   Uncommitted change┌ Help  (?/Esc to close, j/k to scroll) ─────────────────────────┐staged · 1 untracked
+◆   (HEAD -> master, s│Git graph                                                       │ Author · 2020-01-01
+├─┐                   │  j/k / ↑/↓       move (commit / uncommitted)                   │
+│ ● (priority-branch-w│  g/G             top / bottom                                  │ Author · 2020-01-01
+● │ Main commit       │  b               choose which branches are shown               │ Author · 2020-01-01
+├─┘                   │  Enter           detail (commit diff / worktree diff)          │
+●   0 日 本 語 の 長 い 件 名 │  s               pin the selected commit's branch as the base (│ Author · 2020-01-01
+                      │  x               clear the pinned base                         │
+                      │  /               filter the rows by the text they show         │
+                      │  r               refresh listing & git status                  │
+                      │  Tab / Shift-Tab cycle changes/log/graph/branches/worktrees    │
+                      │  h/q/Esc         back to changes                               │
+                      │                                                                │
+                      │Actions                                                         │
+                      │  Space s         base                                          │
+                      │  Space x         base off                                      │
+                      │  Space b         branches                                      │
+                      │  Space a         detail                                        │
+──────────────────────└────────────────────────────────────────────────────────────────┘────────────────────
+⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name
+
+j/k:scroll  g/G:top/bottom  ?/q/Esc:close"#;
+const PENDING_FRAME_29: &str = r#"                                                                          GIT   GRAPH   sort: name ↑  path:rel
+┌ Git graph  (4) ────────────────────────────────────────────────────────────────────────────────────────────┐
+│●   Uncommitted changes                                                  1 staged · 0 unstaged · 1 untracked│
+│◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語          17c49bb · 作 者  Author · 2020-01-01│
+│├─┐                                                                                                         │
+││ ● (priority-branch-with-a-long-name) Side 日h本 語e                        1b1491b · 作(者  Author · 2020-01-01│
+│● │ Main commit                                                           3b7da10 · 作 者  Author · 2020-01-01│
+│├─┘                                                                                                         │
+│                                                                                                            │
+│────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+/▏  Enter:apply Esc:clear"#;
+const PENDING_FRAME_30: &str = r#"                                                                                            Project   path:rel
+ p:Changes  Log  Graph  b:Branches  w:Worktrees Git graph  (4)
+●   Uncommitted changes                                                  1 staged · 0 unstaged · 1 untracked
+◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語          17c49bb · 作 者│ Author · 2020-01-01
+├─┐
+│ ● (priority-branch-with-a-long-name) Side 日/本b語t                        1b1491b · 作 者│ Author · 2020-01-01
+● │ Main commit                                                           3b7da10 · 作 者│ Author · 2020-01-01
+├─┘
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────
+⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name
+
+/▏  Enter:apply Esc:clear"#;

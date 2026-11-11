@@ -8,7 +8,7 @@ use crate::test_support::{init_git_repo, TmpDir};
 use konoma_vcs_core::git2;
 
 #[path = "vcs_graph.rs"]
-mod graph;
+pub(super) mod graph;
 #[path = "vcs_worktrees.rs"]
 mod worktrees;
 

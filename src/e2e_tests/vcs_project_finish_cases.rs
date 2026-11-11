@@ -10,14 +10,10 @@ fn real_list(sim: &Sim) -> konoma_plugin::view::ListView {
 
 #[test]
 fn vcs_port_git_a_is_inert_and_jj_a_keeps_literal_notices() {
-    if !crate::vcs::jj::available() {
-        return;
-    }
     if isolated("vcs_port_git_a_is_inert_and_jj_a_keeps_literal_notices") {
         return;
     }
     let git = super::vcs_log::repo(3);
-    let jj = super::vcs_log::graph_jj_fixture();
     for lang in ["en", "ja"] {
         let mut sim = open(&git, config("git", lang), (180, 22));
         screen(&mut sim, "graph");
@@ -67,7 +63,13 @@ fn vcs_port_git_a_is_inert_and_jj_a_keeps_literal_notices() {
             "Git Space actions must not contain the graph toggle: {:?}",
             menu.items.iter().map(|i| i.action).collect::<Vec<_>>()
         );
-
+    }
+    // Only the jj half needs the jj binary; the Git half above has already run.
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let jj = super::vcs_log::graph_jj_fixture();
+    for lang in ["en", "ja"] {
         let mut sim = open(&jj, config("jj", lang), (180, 22));
         screen(&mut sim, "graph");
         let original = shown_values(&sim);
@@ -254,6 +256,11 @@ fn vcs_port_tree_keys_refresh_and_meta_alignment_literals() {
     assert!(!sim.app.project_active());
     keys(&mut sim, "p");
     assert_eq!(sim.app.path_style, before);
+    assert!(
+        !sim.app.project_active(),
+        "p outside a repository does not open a project"
+    );
+    assert_eq!(sim.app.tab.mode, crate::app::Mode::Tree);
     let root = sandbox("vcs_finish_refresh");
     seed_repo_history(&root);
     let mut sim = open(&root, config("git", "en"), (180, 24));
@@ -530,10 +537,23 @@ fn vcs_port_copy_contexts_and_space_footer_order() {
             assert_ne!(a, b);
         }
     }
-    for name in ["changes", "log", "graph", "branches"] {
+    let mut checked = Vec::new();
+    for name in ["changes", "log", "graph", "branches", "worktrees"] {
         screen(&mut sim, name);
         assert_space_contract(&sim);
+        checked.push(name);
     }
+    // Every screen the project declares is checked: the loop above covers the whole Tab cycle.
+    assert_eq!(checked.len(), 5, "all five Git screens are in the Space check");
+    let first = sim.app.project_frame().unwrap().key.screen.clone();
+    for _ in 0..checked.len() {
+        press(&mut sim, KeyCode::Tab);
+    }
+    assert_eq!(
+        sim.app.project_frame().unwrap().key.screen,
+        first,
+        "five Tabs walk exactly the five checked screens"
+    );
     screen(&mut sim, "changes");
     press(&mut sim, KeyCode::Enter);
     assert_eq!(sim.app.key_context(), Some(Context::Diff));
@@ -586,6 +606,25 @@ fn graph_help_literals(sim: &Sim, jj: bool) {
     expected.sort();
     actual.sort();
     assert_eq!(actual, expected, "all literal graph help rows jj={jj}");
+    // jj has no base pin or all-revisions toggle on its graph; Git has no "all revisions" row.
+    let footer = crate::ui::status::hint_tokens(&sim.app).join("  ");
+    let help_text = graph
+        .rows
+        .iter()
+        .map(|(k, d)| format!("{k} {d}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !jj {
+        for needle in ["all revisions", "全リビジョン"] {
+            assert!(
+                !help_text.contains(needle) && !footer.contains(needle),
+                "git graph has no {needle}"
+            );
+        }
+    } else {
+        assert!(!footer.contains("base"), "jj graph footer has no base token: {footer}");
+        assert!(!help_text.contains("base"), "jj graph help has no base row");
+    }
     let mut titles = vec![title.to_owned()];
     for (leader, key) in [(LeaderId::Copy, "y"), (LeaderId::Actions, "Space")] {
         if let Some(section) =
@@ -657,21 +696,12 @@ fn graph_help_literals(sim: &Sim, jj: bool) {
 
 #[test]
 fn vcs_port_graph_picker_and_backend_help_exact_rows() {
-    if !crate::vcs::jj::available() {
-        return;
-    }
     if isolated("vcs_port_graph_picker_and_backend_help_exact_rows") {
         return;
     }
     let root = super::vcs_log::graph_picker_fixture();
-    let jjroot = super::vcs_log::graph_jj_fixture();
-    let colocated = super::vcs_log::jj_repo(true);
-    for lang in ["en", "ja"] {
-        for (root, id) in [
-            (root.as_path(), "git"),
-            (jjroot.as_path(), "jj"),
-            (colocated.as_path(), "jj"),
-        ] {
+    let run = |root: &std::path::Path, id: &str, lang: &str| {
+        {
             let mut sim = open(root, config(id, lang), (180, 28));
             screen(&mut sim, "graph");
             graph_help_literals(&sim, id == "jj");
@@ -734,14 +764,24 @@ fn vcs_port_graph_picker_and_backend_help_exact_rows() {
                 assert_eq!(footer, expected);
             }
         }
+    };
+    for lang in ["en", "ja"] {
+        run(&root, "git", lang);
+    }
+    // Only the jj halves need the jj binary; the Git half above has already run.
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let jjroot = super::vcs_log::graph_jj_fixture();
+    let colocated = super::vcs_log::jj_repo(true);
+    for lang in ["en", "ja"] {
+        run(&jjroot, "jj", lang);
+        run(&colocated, "jj", lang);
     }
 }
 
 #[test]
 fn vcs_port_renderer_normal_rows_markers_and_base_selection() {
-    if !crate::vcs::jj::available() {
-        return;
-    }
     if isolated("vcs_port_renderer_normal_rows_markers_and_base_selection") {
         return;
     }
@@ -870,6 +910,10 @@ fn vcs_port_renderer_normal_rows_markers_and_base_selection() {
             assert!(text.contains("br: ●") && text.contains("base: ●"));
         }
     }
+    // Only the jj bookmarks part needs the jj binary; the Git part above has already run.
+    if !crate::vcs::jj::available() {
+        return;
+    }
     let jjroot = super::vcs_log::jj_repo(false);
     super::vcs_log::jj(&jjroot, &["bookmark", "create", "-r", "@", "main"]);
     let mut sim = open(&jjroot, config("jj", "en"), (180, 24));
@@ -880,16 +924,11 @@ fn vcs_port_renderer_normal_rows_markers_and_base_selection() {
 
 #[test]
 fn vcs_port_backend_contexts_and_bindings_real_repositories() {
-    if !crate::vcs::jj::available() {
-        return;
-    }
     if isolated("vcs_port_backend_contexts_and_bindings_real_repositories") {
         return;
     }
     let root = super::vcs_changes::git_repo("vcs_finish_context", true);
-    let jjroot = super::vcs_log::jj_repo(false);
-    std::fs::write(jjroot.join("changed.txt"), "new\n").unwrap();
-    for (root, id) in [(root.as_path(), "git"), (jjroot.as_path(), "jj")] {
+    let contexts = |root: &std::path::Path, id: &str| {
         let mut sim = open(root, config(id, "en"), (180, 24));
         for name in if id == "git" {
             vec!["changes", "log", "graph", "branches", "worktrees"]
@@ -917,35 +956,43 @@ fn vcs_port_backend_contexts_and_bindings_real_repositories() {
         screen(&mut sim, "log");
         press(&mut sim, KeyCode::Enter);
         assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");
-    }
-    for (table, on_git, on_jj) in [
-        ("jj.changes", false, true),
-        ("git.changes", true, false),
-        ("git_changes", true, true),
-    ] {
-        for (root, id, expected) in [
-            (root.as_path(), "git", on_git),
-            (jjroot.as_path(), "jj", on_jj),
-        ] {
-            let mut cfg = config(id, "en");
-            cfg.keys
-                .surfaces
-                .insert(table.into(), [("Z".into(), "toggle_help".into())].into());
-            let mut sim = open(root, cfg, (180, 24));
-            keys(&mut sim, "Z");
-            if expected {
-                super::vcs_port_map::pending_behavior(
-                    "backend-bindings",
-                    "legacy backend-specific binding opens Help",
-                );
-            } else {
-                assert_ne!(
-                    sim.app.key_context(),
-                    Some(Context::Help),
-                    "backend binding {table}/{id}"
-                );
-            }
+        // Old: Context::Screen(backend, Detail). New path: every project screen, the pushed
+        // detail included, reports the one Canvas context.
+        assert_eq!(sim.app.key_context(), Some(Context::Canvas), "detail {id}");
+    };
+    let binding = |table: &str, root: &std::path::Path, id: &str, expected: bool| {
+        let mut cfg = config(id, "en");
+        cfg.keys
+            .surfaces
+            .insert(table.into(), [("Z".into(), "toggle_help".into())].into());
+        let mut sim = open(root, cfg, (180, 24));
+        keys(&mut sim, "Z");
+        if expected {
+            super::vcs_port_map::pending_behavior(
+                "backend-bindings",
+                "legacy backend-specific binding opens Help",
+            );
+        } else {
+            assert_ne!(
+                sim.app.key_context(),
+                Some(Context::Help),
+                "backend binding {table}/{id}"
+            );
         }
+    };
+    contexts(&root, "git");
+    for (table, on_git) in [("jj.changes", false), ("git.changes", true), ("git_changes", true)] {
+        binding(table, &root, "git", on_git);
+    }
+    // Only the jj halves need the jj binary; the Git halves above have already run.
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let jjroot = super::vcs_log::jj_repo(false);
+    std::fs::write(jjroot.join("changed.txt"), "new\n").unwrap();
+    contexts(&jjroot, "jj");
+    for (table, on_jj) in [("jj.changes", true), ("git.changes", false), ("git_changes", true)] {
+        binding(table, &jjroot, "jj", on_jj);
     }
 }
 
@@ -999,17 +1046,11 @@ fn vcs_port_worktree_footer_shared_priority_literal() {
 
 #[test]
 fn vcs_port_backend_display_words_copy_labels_and_project_origin() {
-    if !crate::vcs::jj::available() {
-        return;
-    }
     if isolated("vcs_port_backend_display_words_copy_labels_and_project_origin") {
         return;
     }
     let git = super::vcs_changes::git_repo("vcs_finish_display", true);
-    let jj = super::vcs_log::jj_repo(false);
-    super::vcs_log::jj(&jj, &["bookmark", "create", "-r", "@", "main"]);
-    std::fs::write(jj.join("changed.txt"), "new\n").unwrap();
-    for (root, id) in [(git.as_path(), "git"), (jj.as_path(), "jj")] {
+    let display = |root: &std::path::Path, id: &str| {
         for lang in ["en", "ja"] {
             let mut sim = open(root, config(id, lang), (200, 40));
             assert_eq!(
@@ -1122,5 +1163,14 @@ fn vcs_port_backend_display_words_copy_labels_and_project_origin() {
                 assert!(!footer.contains(tr(sim.app.lang, Msg::WkChangeId)));
             }
         }
+    };
+    display(&git, "git");
+    // Only the jj half needs the jj binary; the Git half above has already run.
+    if !crate::vcs::jj::available() {
+        return;
     }
+    let jj = super::vcs_log::jj_repo(false);
+    super::vcs_log::jj(&jj, &["bookmark", "create", "-r", "@", "main"]);
+    std::fs::write(jj.join("changed.txt"), "new\n").unwrap();
+    display(&jj, "jj");
 }

@@ -571,17 +571,35 @@ fn vcs_port_right_metadata_literal_padding_ellipsis_and_narrow_fallback() {
         let text = (0..width)
             .map(|x| frame[(x, 2)].symbol())
             .collect::<String>();
+        // The frame is wider than the column: measure the whole row, so overflow past the column
+        // (instead of elision) is visible.
+        let row = (0..width + 2)
+            .map(|x| frame[(x, 2)].symbol())
+            .collect::<String>();
+        let past_column = (width..width + 2)
+            .map(|x| frame[(x, 2)].symbol())
+            .collect::<String>();
+        assert_eq!(past_column.trim(), "", "width {width}: drawn past the column: {row:?}");
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(row.trim_end()),
+            row.trim_end().chars().count(),
+            "width {width}: unexpected wide cells: {row:?}"
+        );
         if width == 20 {
             assert!(text.starts_with("abc"));
             assert!(text.ends_with("date"));
             assert_eq!(unicode_width::UnicodeWidthStr::width(text.as_str()), 20);
+            assert_eq!(text, format!("abc{}date", " ".repeat(13)));
         } else if width == 12 {
             assert!(text.contains('…'));
             assert!(text.ends_with("date"));
             assert!(unicode_width::UnicodeWidthStr::width(text.as_str()) <= 12);
+            assert_eq!(text, "abcdef… date");
         } else {
-            assert!(!text.contains("longmeta"));
+            assert!(!row.contains("longmeta"), "meta must be dropped: {row:?}");
+            assert!(!row.contains("long"), "meta must be dropped: {row:?}");
             assert!(unicode_width::UnicodeWidthStr::width(text.as_str()) <= 5);
+            assert!(row.starts_with("abcd…"), "left side ellipsized at the tail: {row:?}");
         }
     }
 }

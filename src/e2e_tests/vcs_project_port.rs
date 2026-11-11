@@ -9,6 +9,7 @@ use konoma_plugin::host::project::ProjectContent;
 include!("vcs_project_style_cases.rs");
 include!("vcs_project_remaining_cases.rs");
 include!("vcs_project_finish_cases.rs");
+include!("vcs_project_gap_cases.rs");
 
 fn isolated(name: &str) -> bool {
     super::vcs_host_only::isolate_test("vcs_project_port", name)
@@ -271,7 +272,7 @@ fn vcs_port_log_and_changes_help_filter_marks_and_footer_priority() {
         );
     }
     let mut sim = open(&root, config("git", "en"), (160, 20));
-    for name in ["changes", "log", "graph", "branches"] {
+    for name in ["changes", "log", "graph", "branches", "worktrees"] {
         screen(&mut sim, name);
         let tokens = crate::ui::status::hint_tokens(&sim.app);
         let entries: Vec<_> = tokens.iter().flat_map(|t| t.split("  ")).collect();

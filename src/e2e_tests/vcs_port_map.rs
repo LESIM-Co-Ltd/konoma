@@ -65,11 +65,92 @@ const GROUPS: &[Group] = &[
         &[
             "tree:s:no-leader",
             "tree:o:stays-tree",
-            "p:project-active",
+            "p:inactive-outside-a-repository",
             "p:path-style-unchanged",
         ],
         &["git"],
         "vcs_port_tree_keys_refresh_and_meta_alignment_literals",
+    ),
+    (
+        "e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub",
+        &[
+            "graph:flash:literal-select-copy-base-detail",
+            "graph:picker:flash:literal-head-toggle",
+        ],
+        &["git", "en", "ja"],
+        "vcs_port_graph_flash_texts_are_literal_in_both_languages",
+    ),
+    (
+        "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+        &["config:old-ui-names:graph-and-log"],
+        &["git"],
+        "vcs_port_old_ui_names_reach_the_new_graph_and_log_through_the_real_config_path",
+    ),
+    (
+        "e2e_git_hub_to_log_shows_commit_subject",
+        &["log:q-returns-to-origin"],
+        &["git"],
+        "vcs_port_q_returns_to_origin_and_l_g_are_list_keys_on_log_and_graph",
+    ),
+    (
+        "e2e_git_graph_shows_commit_nodes",
+        &["graph:q-returns-to-origin"],
+        &["git"],
+        "vcs_port_q_returns_to_origin_and_l_g_are_list_keys_on_log_and_graph",
+    ),
+    (
+        "e2e_the_hub_g_and_l_are_the_list_keys_not_the_log_and_the_graph",
+        &["l-g:list-keys-on-log-and-graph"],
+        &["git"],
+        "vcs_port_q_returns_to_origin_and_l_g_are_list_keys_on_log_and_graph",
+    ),
+    (
+        "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+        &["graph:filter-rows-per-query-and-short-height-scroll"],
+        &["git"],
+        "vcs_port_graph_filter_rows_per_query_and_short_height_scroll",
+    ),
+    (
+        "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row",
+        &["filter:input-line-opens-and-closes-on-every-screen"],
+        &["git"],
+        "vcs_port_filter_input_line_opens_and_closes_and_dirty_bottom_row_base_pin",
+    ),
+    (
+        "e2e_graph_x_clears_the_base_and_zero_does_not",
+        &["base:dirty-bottom-row-pin"],
+        &["git"],
+        "vcs_port_filter_input_line_opens_and_closes_and_dirty_bottom_row_base_pin",
+    ),
+    (
+        "e2e_space_menu_follows_the_footer_order_and_labels_in_git",
+        &[
+            "space:declared-prefix",
+            "space:open-prefix",
+            "space:footer-label-or-menu-label",
+            "space:shorter-than-help",
+            "space:max-label-26",
+        ],
+        &["worktrees"],
+        "vcs_port_copy_contexts_and_space_footer_order",
+    ),
+    (
+        "e2e_vcs_project_footer_log_changes_and_worktrees_have_one_entry_per_key",
+        &["footer:one-enter", "footer:no-duplicate-chords"],
+        &["worktrees"],
+        "vcs_port_log_and_changes_help_filter_marks_and_footer_priority",
+    ),
+    (
+        "e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order",
+        &["unborn:open-then-tab-empty-log"],
+        &["en", "ja"],
+        "vcs_port_unborn_after_open_then_tab_shows_the_empty_log",
+    ),
+    (
+        "e2e_vcs_branches_copy_menu_clipboard_footer_and_help_match_legacy_acts",
+        &["footer:enter-token-per-row"],
+        &["git"],
+        "vcs_port_branch_footer_enter_token_per_row",
     ),
     (
         "e2e_r_reads_the_lists_again",
@@ -1451,6 +1532,9 @@ const GROUPS: &[Group] = &[
 // Kept independently from GROUPS so deleting a table entry cannot silently shrink the scope.
 const OLD_TESTS: &[(&str, &[&str])] = IN_SCOPE_OLD_TESTS;
 
+/// Rows added by the audit-gap pass (see the row-count assertion for the breakdown).
+const GAP_ROWS: usize = 13 + 5 + 2 + 2 + 1;
+
 fn port_map() -> Vec<(&'static str, String, &'static str)> {
     let mut table: Vec<_> = GROUPS
         .iter()
@@ -1585,7 +1669,11 @@ fn every_ported_assertion_names_an_existing_new_test() {
     );
     assert_eq!(
         table.len(),
-        1593 + 21 + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
+        // 1593 grouped rows, 21 frozen-frame rows, the GAP_ROWS audit-gap rows (13 for the
+        // flash texts, old-name config, q/origin, filter and base pins; 5 + 2 for the worktrees
+        // Space and one-Enter loops; 2 for unborn open-then-Tab; 1 for the branch footer Enter
+        // token), and the pending rows.
+        1593 + 21 + GAP_ROWS + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
         "a ported assertion/case row was removed"
     );
     for p in PENDING_BEHAVIORS {
@@ -1750,29 +1838,30 @@ fn jj_guarded(source: &str, name: &str, setup_names: &[&str]) -> bool {
     matches!((guarded, setup), (Some(g), Some(s)) if g < s)
 }
 
-#[test]
-fn vcs_port_all_real_jj_cases_are_guarded_before_setup() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/e2e_tests");
-    let setups = [
-        "jj",
-        "run_jj",
-        "jj_scratch_bare",
-        "jj_graph_fixture",
-        "graph_jj_fixture",
-        "jj_repo",
-        "jj_write_cases",
-        "jj_launch_cases",
-        "jj_diff_cases",
-        "jj_wrapped_diff_host_cases",
-        "jj_media_project_cases",
-        "jj_diff_chrome_cases",
-        "jj_colocated_representation_cases",
-        "preview_shape_repo_backend",
-        "jj_colocated_tool_cases",
-        "jj_colocated_changed_list_cases",
-        "selected_backend_repo_with_changed_sets",
-    ];
-    for (file, tests) in [
+const JJ_SETUPS: &[&str] = &[
+    "jj",
+    "run_jj",
+    "jj_scratch_bare",
+    "jj_graph_fixture",
+    "graph_jj_fixture",
+    "jj_repo",
+    "jj_write_cases",
+    "jj_launch_cases",
+    "jj_diff_cases",
+    "jj_wrapped_diff_host_cases",
+    "jj_media_project_cases",
+    "jj_diff_chrome_cases",
+    "jj_colocated_representation_cases",
+    "preview_shape_repo_backend",
+    "jj_colocated_tool_cases",
+    "jj_colocated_changed_list_cases",
+    "selected_backend_repo_with_changed_sets",
+];
+
+/// Every test that creates a real jj repository, by file: each must return when jj is missing
+/// before its first jj setup call.
+fn jj_guarded_tests() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
         (
             "vcs_project_finish_cases.rs",
             vec![
@@ -1835,7 +1924,14 @@ fn vcs_port_all_real_jj_cases_are_guarded_before_setup() {
             "vcs_app_diff_cases.rs",
             vec!["jj_project_diff_baselines_match_host"],
         ),
-    ] {
+    ]
+}
+
+#[test]
+fn vcs_port_all_real_jj_cases_are_guarded_before_setup() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/e2e_tests");
+    let setups = JJ_SETUPS.to_vec();
+    for (file, tests) in jj_guarded_tests() {
         let source = std::fs::read_to_string(root.join(file)).unwrap();
         for name in tests {
             assert!(
@@ -1876,6 +1972,79 @@ fn vcs_port_all_real_jj_cases_are_guarded_before_setup() {
         "example",
         &setups
     ));
+}
+
+/// Whether a map row asserts a Git case (case dimension `git`, or a `git:` assertion id).
+fn is_git_row(assertion: &str) -> bool {
+    let (id, case) = assertion.split_once('@').unwrap_or((assertion, ""));
+    id.starts_with("git:") || case.split([':', ',']).any(|d| d == "git")
+}
+
+/// The index of the first jj-availability guard that returns, if the body has one.
+fn jj_guard_position(body: &[String]) -> Option<usize> {
+    let guard = rust_tokens("if !crate::vcs::jj::available() {");
+    body.windows(guard.len()).position(|t| t == guard)
+}
+
+/// A test that carries Git rows must run its Git cases before the jj guard returns: the guard
+/// may only skip the jj cases. The Git half is recognised by the project open that precedes the
+/// guard (`open(`), after the child-process isolation call.
+fn git_cases_precede_the_guard(source: &str, name: &str) -> bool {
+    let Some(body) = body_tokens(source, name) else {
+        return false;
+    };
+    let Some(guard) = jj_guard_position(&body) else {
+        // No guard at all: the test never skips, so nothing is lost.
+        return true;
+    };
+    let isolated = body.windows(2).position(|t| t == ["isolated", "("]);
+    let open = body.windows(2).position(|t| t == ["open", "("]);
+    matches!((isolated, open), (Some(i), Some(o)) if i < o && o < guard)
+}
+
+#[test]
+fn vcs_port_git_cases_run_before_the_jj_guard_returns() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/e2e_tests");
+    let table = port_map();
+    let mut checked = 0;
+    for (file, tests) in jj_guarded_tests() {
+        let source = std::fs::read_to_string(root.join(file)).unwrap();
+        for name in tests {
+            if !table
+                .iter()
+                .any(|(_, assertion, new)| *new == name && is_git_row(assertion))
+            {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                git_cases_precede_the_guard(&source, name),
+                "{file}::{name} carries Git rows but returns on a missing jj before its Git cases"
+            );
+        }
+    }
+    // The tests whose Git halves used to be skipped without jj must be in scope (4 carry Git rows).
+    assert!(
+        checked >= 4,
+        "only {checked} Git-carrying guarded tests were checked"
+    );
+    // Detector self-checks: guard first (the old shape) is rejected; Git half first is accepted.
+    assert!(!git_cases_precede_the_guard(
+        "fn t() { if !crate::vcs::jj::available() { return; } if isolated(\"t\") { return; } open(a); }",
+        "t"
+    ));
+    assert!(!git_cases_precede_the_guard(
+        "fn t() { if isolated(\"t\") { return; } if !crate::vcs::jj::available() { return; } open(a); }",
+        "t"
+    ));
+    assert!(git_cases_precede_the_guard(
+        "fn t() { if isolated(\"t\") { return; } open(a); if !crate::vcs::jj::available() { return; } jj(b); }",
+        "t"
+    ));
+    assert!(is_git_row("git:a:no-flash@en"));
+    assert!(is_git_row("graph:open@git"));
+    assert!(!is_git_row("jj:a:all-notice@en"));
+    assert!(!is_git_row("palette:Red@real-status"));
 }
 
 #[test]

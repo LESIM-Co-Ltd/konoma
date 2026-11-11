@@ -137,10 +137,11 @@ fn vcs_port_original_graph_selection_base_picker_and_config() {
     sim.see("⌖ base:");
     keys(&mut sim, "x");
     sim.dont_see("⌖ base:");
+    assert_eq!(selected_value(&sim), selected, "x keeps the selected id");
     keys(&mut sim, "b");
     assert_eq!(sim.app.project_frame().unwrap().key.screen, "graph_picker");
     sim.see("feature-x");
-    let visible = |sim: &Sim| {
+    let mark = |sim: &Sim| {
         let content = sim.app.project_content().unwrap();
         let ProjectContent::List(list) = content.as_ref() else {
             panic!("list required")
@@ -151,15 +152,16 @@ fn vcs_port_original_graph_selection_base_picker_and_config() {
             .unwrap()
             .cells[0]
             .plain()
-            .starts_with("[x]")
     };
-    assert!(visible(&sim));
+    let on = "[x]   feature-x";
+    let off = "[ ]   feature-x";
+    assert_eq!(mark(&sim), on);
     keys(&mut sim, "n");
-    assert!(visible(&sim), "picker n is inert");
+    assert_eq!(mark(&sim), on, "picker n is inert");
     keys(&mut sim, "c");
-    assert!(!visible(&sim));
+    assert_eq!(mark(&sim), off);
     keys(&mut sim, "a");
-    assert!(visible(&sim));
+    assert_eq!(mark(&sim), on);
     keys(&mut sim, "q");
     assert!(!sim.app.project_pushed());
     assert_eq!(sim.app.project_frame().unwrap().key.screen, "graph");
@@ -354,36 +356,12 @@ fn vcs_port_original_log_and_graph_filter_identity() {
 
 #[test]
 fn vcs_port_original_git_and_jj_cycles_and_contexts() {
-    if !crate::vcs::jj::available() {
-        return;
-    }
     if isolated("vcs_port_original_git_and_jj_cycles_and_contexts") {
         return;
     }
     let git = sandbox("port_original_cycle");
     seed_repo(&git);
-    let jj = super::vcs_log::jj_repo(false);
-    for (root, id, forward, back) in [
-        (
-            git.as_path(),
-            "git",
-            vec!["log", "graph", "branches", "worktrees", "changes", "log"],
-            vec![
-                "changes",
-                "worktrees",
-                "branches",
-                "graph",
-                "log",
-                "changes",
-            ],
-        ),
-        (
-            jj.as_path(),
-            "jj",
-            vec!["log", "graph", "branches", "changes"],
-            vec!["branches", "graph", "log", "changes"],
-        ),
-    ] {
+    let cycle = |root: &std::path::Path, id: &str, forward: Vec<&str>, back: Vec<&str>| {
         let mut sim = open(root, config(id, "en"), (180, 30));
         assert_eq!(sim.app.project_frame().unwrap().key.screen, "changes");
         for (code, expected) in forward
@@ -424,5 +402,29 @@ fn vcs_port_original_git_and_jj_cycles_and_contexts() {
         screen(&mut sim, "log");
         press(&mut sim, KeyCode::Enter);
         assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");
+    };
+    cycle(
+        &git,
+        "git",
+        vec!["log", "graph", "branches", "worktrees", "changes", "log"],
+        vec![
+            "changes",
+            "worktrees",
+            "branches",
+            "graph",
+            "log",
+            "changes",
+        ],
+    );
+    // Only the jj half needs the jj binary; the Git half above has already run.
+    if !crate::vcs::jj::available() {
+        return;
     }
+    let jj = super::vcs_log::jj_repo(false);
+    cycle(
+        &jj,
+        "jj",
+        vec!["log", "graph", "branches", "changes"],
+        vec!["branches", "graph", "log", "changes"],
+    );
 }
