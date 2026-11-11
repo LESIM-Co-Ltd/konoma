@@ -142,6 +142,16 @@ impl ProjectLoopState {
                 if self.preview_project {
                     self.preview_project = false;
                     self.screen = None;
+                    if let Some(preview) = self.file_preview.as_mut() {
+                        preview.runner.resume_project_preview();
+                        preview.gutter.retain_position();
+                    } else {
+                        if let Some(diff) = self.diff.as_mut() {
+                            if let Err(error) = diff.resume_project_diff(&prepared.config) {
+                                prepared.notice = Some(error.message.get(prepared.lang).into());
+                            }
+                        }
+                    }
                     return false;
                 }
                 return true;

@@ -186,6 +186,12 @@ fn same_resources(a: &Resources, b: &Resources) -> bool {
 }
 
 impl DocPics {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn media_cache_for_test(
+        &self,
+    ) -> Vec<super::project::media_test_hooks::MediaCacheSnapshot> {
+        super::project::media_test_hooks::observe_cache(&self.cache)
+    }
     pub(crate) fn cell_px(&self) -> (u32, u32) {
         (self.font.0.into(), self.font.1.into())
     }

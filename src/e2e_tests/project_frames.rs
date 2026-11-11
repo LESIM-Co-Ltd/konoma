@@ -9,12 +9,24 @@ impl Sim {
     /// retains continuation cells of wide glyphs, so its stored screen is not a frame capture.
     #[cfg(feature = "git")]
     pub(super) fn project_frame(&mut self) -> Buffer {
+        self.project_frame_with_paints().0
+    }
+
+    #[cfg(feature = "git")]
+    pub(super) fn project_frame_with_paints(
+        &mut self,
+    ) -> (
+        Buffer,
+        Vec<(String, konoma_widgets::picture_overlay::PicturePaintRequest)>,
+    ) {
         super::vcs_changes::drain(self);
-        self.term
-            .draw(|frame| crate::ui::render(frame, &mut self.app))
-            .expect("capture project frame")
-            .buffer
-            .clone()
+        konoma_widgets::picture_overlay::record_inline_paints_for_test(|| {
+            self.term
+                .draw(|frame| crate::ui::render(frame, &mut self.app))
+                .expect("capture project frame")
+                .buffer
+                .clone()
+        })
     }
 }
 

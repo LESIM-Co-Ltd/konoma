@@ -1537,7 +1537,7 @@ fn tool_command(vcs: crate::vcs::VcsKind, cfg: &config::Config) -> (String, &'st
 
 fn git_tool_plan(app: &App) -> Option<konoma_plugin::host::project::launch::ProjectToolLaunch> {
     konoma_plugin::host::project::launch::project_tool_launch(
-        &tool_command(app.git_vcs, &app.cfg).0,
+        &tool_command(app.diff_vcs(), &app.cfg).0,
         &git_workdir(&app.tab.root),
     )
 }
@@ -1557,7 +1557,7 @@ fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Resul
             "{}{prog}: {e}",
             i18n::tr(
                 app.lang,
-                match app.git_vcs {
+                match app.diff_vcs() {
                     crate::vcs::VcsKind::Git => crate::i18n::Msg::GitToolFailed,
                     #[cfg(feature = "git")]
                     crate::vcs::VcsKind::Jj => crate::i18n::Msg::JjToolFailed,

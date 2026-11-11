@@ -70,7 +70,7 @@ fn display_chip(app: &App) -> Span<'static> {
     if app.in_git_view() {
         // Which backend is answering has to be visible: a colocated repository has both, and a diff
         // taken against `@-` is not the same thing as one taken against HEAD.
-        return match app.git_vcs {
+        return match app.diff_vcs() {
             crate::vcs::VcsKind::Git => chip(app.lang, Msg::StGit, Color::Yellow, false),
             #[cfg(feature = "git")]
             crate::vcs::VcsKind::Jj => chip(app.lang, Msg::StJj, Color::Magenta, false),
@@ -233,7 +233,8 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
     if !app.project_active() {
         spans.extend(match app.tab.mode {
             Mode::Tree => crate::ui::tree::context(app),
-            Mode::Preview => crate::ui::preview::context(app),
+            Mode::Preview if !app.is_git_diff_preview() => crate::ui::preview::context(app),
+            Mode::Preview => Vec::new(),
         });
     }
     let lang = app.lang;
@@ -408,7 +409,7 @@ fn footer_spans_with_project_dialog(
 /// Swaps a label whose wording assumes git for the one the answering backend uses.
 pub(crate) fn relabel_for_backend(app: &App, label: crate::i18n::Msg) -> crate::i18n::Msg {
     #[cfg(feature = "git")]
-    if app.git_vcs == crate::vcs::VcsKind::Jj {
+    if app.diff_vcs() == crate::vcs::VcsKind::Jj {
         use crate::i18n::Msg;
         return match label {
             Msg::WkShortHash => Msg::WkChangeId,

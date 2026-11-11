@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 /// Owned, read-only facts at a fence. No host surface or action types cross this seam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectStateSnapshot {
+    pub diff_actions: Vec<(String, String)>,
+    pub media: Option<super::media_test_hooks::MediaStateSnapshot>,
     pub return_to_preview: bool,
     pub diff: Option<ProjectDiffSnapshot>,
     pub root: Option<std::path::PathBuf>,
@@ -204,10 +206,70 @@ impl TestProjectClipboard {
     }
 }
 impl PreparedProjects {
+    pub fn observe_loop_for_test(&mut self) -> ProjectLoopProbe {
+        if self.file_previews.is_none() {
+            self.file_previews = Some(crate::host::file_preview::FilePreviewSource::new(
+                self.registry.clone(),
+                self.config.preview.rules.clone(),
+                self.config.external.preview_commands,
+            ));
+        }
+        let probe = ProjectLoopProbe::default();
+        self.test_observed = Some(Default::default());
+        self.test_probe = Some(probe.clone());
+        probe
+    }
+    pub fn observe_media_for_test(&mut self) {
+        self.test_observe_media = true;
+    }
     pub fn clipboard_for_test(&mut self) -> TestProjectClipboard {
         self.test_clipboard
             .get_or_insert_with(Default::default)
             .clone()
+    }
+}
+
+pub type ProjectReplyObserver = Arc<dyn Fn(&'static str, bool) + Send + Sync>;
+
+pub(in crate::app) fn observe_replies<T: Send + 'static>(
+    services: &dyn super::ProjectServices,
+    kind: &'static str,
+    rx: std::sync::mpsc::Receiver<T>,
+) -> std::sync::mpsc::Receiver<T> {
+    let Some(observe) = services.diff_reply_observer_for_test() else {
+        return rx;
+    };
+    let (tx, output) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(reply) = rx.recv() {
+            observe(kind, false);
+            if tx.send(reply).is_err() {
+                break;
+            }
+            observe(kind, true);
+        }
+    });
+    output
+}
+
+type LoopObservation = (ProjectIdleSnapshot, Buffer, ProjectStateSnapshot);
+#[derive(Clone, Default)]
+pub struct ProjectLoopProbe(Arc<Mutex<Option<LoopObservation>>>);
+impl ProjectLoopProbe {
+    pub fn snapshot(&self) -> LoopObservation {
+        self.0
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the normal loop published its frame before waiting")
+    }
+    pub(in crate::app) fn capture(
+        &self,
+        idle: ProjectIdleSnapshot,
+        frame: Buffer,
+        state: ProjectStateSnapshot,
+    ) {
+        *self.0.lock().unwrap() = Some((idle, frame, state));
     }
 }
 

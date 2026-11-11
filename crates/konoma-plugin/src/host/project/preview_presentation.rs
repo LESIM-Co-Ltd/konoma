@@ -6,6 +6,19 @@ use konoma_host_core::{
     preview_plan::{footer_plan, PreviewOp, PreviewState, PvDyn, PvFoot},
 };
 
+/// A caret can move inside wrapped text; a document without a caret can only pan unwrapped text.
+pub fn horizontal_moves(wrap: bool, caret: bool) -> bool {
+    caret || !wrap
+}
+
+/// The project action's menu word, shared by the diff and file-preview adapters.
+pub fn project_menu_label(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "git",
+        Lang::Jp => "Git",
+    }
+}
+
 /// Resolved bindings and availability supplied by a host, without exposing its action types.
 pub struct PreviewBinding {
     pub op: PreviewOp,

@@ -7,6 +7,39 @@ use konoma_host_core::{
 };
 use konoma_widgets::media_diff::MediaDiffLayout;
 
+/// Wording for the project operations supplied to the shared diff row plan.
+pub fn project_diff_help(op: DiffUiOp, lang: konoma_host_core::lang::Lang) -> Option<String> {
+    use konoma_host_core::lang::Lang;
+    Some(
+        match (op, lang) {
+            (DiffUiOp::Project, Lang::En) => {
+                "Git changes hub (stage/unstage/discard/commit; b=branch)"
+            }
+            (DiffUiOp::Project, Lang::Jp) => {
+                "Git 変更ハブ (ステージ/解除/破棄/コミット; b=ブランチ)"
+            }
+            (DiffUiOp::Tool, Lang::En) => "external git tool (lazygit)",
+            (DiffUiOp::Tool, Lang::Jp) => "外部 git ツール (lazygit)",
+            (DiffUiOp::Refresh, Lang::En) => "refresh listing & git status",
+            (DiffUiOp::Refresh, Lang::Jp) => "一覧と git status を再読込",
+            (DiffUiOp::NextFile | DiffUiOp::PrevFile, Lang::En) => {
+                "jump to next / previous changed file"
+            }
+            (DiffUiOp::NextFile | DiffUiOp::PrevFile, Lang::Jp) => {
+                "次 / 前の変更ファイルへジャンプ"
+            }
+            (DiffUiOp::NextBlock | DiffUiOp::PrevBlock, Lang::En) => {
+                "jump to the next / previous change block of the file"
+            }
+            (DiffUiOp::NextBlock | DiffUiOp::PrevBlock, Lang::Jp) => {
+                "ファイル内の次 / 前の変更のかたまりへジャンプ"
+            }
+            _ => return None,
+        }
+        .into(),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffUiOp {
     Navigate(Motion),
@@ -141,6 +174,8 @@ pub enum DiffRepresentation {
 
 #[derive(Clone, Debug)]
 pub struct DiffPresentationState {
+    /// The displayed body and its motions. Footer selection may deliberately use fewer hints.
+    pub drawn_surface: Option<DiffSurface>,
     pub surface: DiffSurface,
     pub wrap: bool,
     pub media_pictures: bool,
@@ -158,6 +193,7 @@ pub struct DiffPresentationState {
 impl Default for DiffPresentationState {
     fn default() -> Self {
         Self {
+            drawn_surface: None,
             surface: DiffSurface::Source,
             wrap: false,
             media_pictures: false,
@@ -233,6 +269,20 @@ impl DiffPresentationState {
             return false;
         }
         match op {
+            DiffUiOp::Navigate(
+                Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd,
+            ) => {
+                self.drawn() == DiffSurface::Source
+                    || (self.drawn() == DiffSurface::Rendered && !self.wrap)
+            }
+            DiffUiOp::Navigate(Motion::PageDown | Motion::PageUp)
+                if self.drawn() == DiffSurface::Media =>
+            {
+                self.can_page
+            }
+            DiffUiOp::Navigate(_) => {
+                matches!(self.drawn(), DiffSurface::Source | DiffSurface::Rendered)
+            }
             DiffUiOp::Layout => self.media_pictures || self.surface == DiffSurface::Source,
             DiffUiOp::PageNext | DiffUiOp::PagePrev => self.can_page,
             DiffUiOp::View => self.next_representation.is_some(),
@@ -264,6 +314,12 @@ impl DiffPresentationState {
     }
     fn reduced(&self) -> bool {
         matches!(self.surface, DiffSurface::Media | DiffSurface::Summary)
+    }
+    fn drawn(&self) -> DiffSurface {
+        self.drawn_surface.unwrap_or(self.surface)
+    }
+    fn reduced_help(&self) -> bool {
+        matches!(self.drawn(), DiffSurface::Media | DiffSurface::Summary)
     }
 }
 
@@ -399,6 +455,108 @@ pub fn default_options() -> [(KeyPress, DiffUiOp); 2] {
 }
 
 impl DiffPresentation {
+    /// Assemble project diff actions with the same candidate assignment used by the host.
+    pub fn actions_menu(
+        &self,
+        keys: &konoma_host_core::keymap::CoreKeys,
+        lang: konoma_host_core::lang::Lang,
+    ) -> Vec<Item<DiffUiOp, String>> {
+        use konoma_host_core::{
+            help::default_label,
+            keymap::{CoreContext, HostOp},
+            preview_plan::{self as plan, PreviewOp},
+        };
+        let lift = |op| match op {
+            DiffUiOp::View => Some(PreviewOp::Host(HostOp::CycleDiffView)),
+            DiffUiOp::NextFile => Some(PreviewOp::Host(HostOp::JumpNextChange)),
+            DiffUiOp::PrevFile => Some(PreviewOp::Host(HostOp::JumpPrevChange)),
+            DiffUiOp::NextBlock => Some(PreviewOp::Host(HostOp::DiffNextChange)),
+            DiffUiOp::PrevBlock => Some(PreviewOp::Host(HostOp::DiffPrevChange)),
+            DiffUiOp::Project => Some(PreviewOp::Host(HostOp::OpenGitView)),
+            DiffUiOp::Tool => Some(PreviewOp::Host(HostOp::GitLaunchTool)),
+            DiffUiOp::Refresh => Some(PreviewOp::Host(HostOp::Refresh)),
+            _ => match op.core() {
+                Some(konoma_host_core::help::HelpOp::Act(a)) => Some(PreviewOp::Core(a)),
+                _ => None,
+            },
+        };
+        let lower = |op| match op {
+            PreviewOp::Host(o) => match o {
+                HostOp::CycleDiffView => Some(DiffUiOp::View),
+                HostOp::JumpNextChange => Some(DiffUiOp::NextFile),
+                HostOp::JumpPrevChange => Some(DiffUiOp::PrevFile),
+                HostOp::DiffNextChange => Some(DiffUiOp::NextBlock),
+                HostOp::DiffPrevChange => Some(DiffUiOp::PrevBlock),
+                HostOp::OpenGitView => Some(DiffUiOp::Project),
+                HostOp::GitLaunchTool => Some(DiffUiOp::Tool),
+                HostOp::Refresh => Some(DiffUiOp::Refresh),
+                _ => None,
+            },
+            PreviewOp::Core(a) => DiffUiOp::from_core(konoma_host_core::help::HelpOp::Act(a)),
+            _ => None,
+        };
+        let word = |en: &str, ja: &str| {
+            if lang == konoma_host_core::lang::Lang::Jp {
+                ja.to_owned()
+            } else {
+                en.to_owned()
+            }
+        };
+        let label = |op| match lower(op) {
+            Some(DiffUiOp::PageNext) => Some(word("next page", "次のページ")),
+            Some(DiffUiOp::PagePrev) => Some(word("previous page", "前のページ")),
+            Some(DiffUiOp::Project) => {
+                Some(super::preview_presentation::project_menu_label(lang).into())
+            }
+            Some(DiffUiOp::NextFile) => Some(word("next changed file", "次の変更ファイル")),
+            Some(DiffUiOp::PrevFile) => Some(word("previous changed file", "前の変更ファイル")),
+            Some(DiffUiOp::NextBlock) => Some(word("next change", "次の変更")),
+            Some(DiffUiOp::PrevBlock) => Some(word("previous change", "前の変更")),
+            Some(DiffUiOp::Global(2)) => Some(word("quit konoma", "konoma を終了")),
+            Some(DiffUiOp::PathStyle) => Some(word("path", "パス")),
+            Some(op) => self.label(op, false),
+            _ => match op {
+                PreviewOp::Core(a) => {
+                    default_label(CoreContext::Diff, a).map(|m| m.tr(lang).into())
+                }
+                _ => None,
+            },
+        };
+        let prio: Vec<_> = self.priority.iter().filter_map(|p| lift(p.op)).collect();
+        let own: Vec<_> = self
+            .declarations
+            .iter()
+            .flat_map(|r| &r.groups)
+            .flatten()
+            .filter_map(|op| lift(*op))
+            .collect();
+        let skeleton = plan::space_skeleton(keys, keys, CoreContext::Diff, |o| o, vec![]);
+        let candidates = skeleton.candidates(|o| {
+            !matches!(
+                o,
+                PreviewOp::Core(konoma_host_core::keymap::CoreAction::Navigate(_))
+                    | PreviewOp::Cancel
+            ) && label(o).is_some()
+        });
+        konoma_host_core::menu::build_items(
+            candidates,
+            &prio,
+            &own,
+            &plan::help_everywhere(),
+            |o| o.mnemonic(),
+            |o| lower(o).is_some_and(|op| self.enabled(op)),
+            label,
+        )
+        .into_iter()
+        .filter_map(|i| {
+            Some(Item {
+                key: i.key,
+                action: lower(i.action)?,
+                label: i.label,
+            })
+        })
+        .collect()
+    }
     /// Standalone adapter: resolve shared keys from the small host's actual keymap, keeping
     /// its translated declarations and the keys of operations supplied by the project host.
     pub fn build_with_lookup(
@@ -619,7 +777,7 @@ impl DiffPresentation {
             description: None,
         };
         let mut rows = Vec::new();
-        if !self.state.reduced() {
+        if !self.state.reduced_help() {
             let mut scroll = r(vec![O::Navigate(M::Down), O::Navigate(M::Up)]);
             scroll.literal = Some("↑ ↓");
             rows.push(scroll);
@@ -648,7 +806,7 @@ impl DiffPresentation {
         tool.description = Some(DiffWord::ToolHelp);
         rows.push(tool);
         rows.push(r(vec![O::Refresh]));
-        if !self.state.reduced() {
+        if !self.state.reduced_help() {
             rows.extend([
                 r(vec![O::Navigate(M::PageDown), O::Navigate(M::PageUp)]),
                 r(vec![O::Navigate(M::HalfDown), O::Navigate(M::HalfUp)]),

@@ -13,6 +13,35 @@ use worker::MediaDiffSideDecoded;
 use worker::MediaDiffWorker;
 
 impl App {
+    /// The selected diff backend, with the ordinary cached status for non-project views.
+    pub(crate) fn diff_vcs(&self) -> crate::vcs::VcsKind {
+        self.selected_diff_backend().unwrap_or(self.git_vcs)
+    }
+
+    pub(crate) fn selected_diff_backend(&self) -> Option<crate::vcs::VcsKind> {
+        #[cfg(feature = "git")]
+        if self.is_git_diff_preview() || self.tab.preview_from_diff {
+            match self.tab.diff_read_context.backend {
+                crate::vcs::Preference::Git => return Some(crate::vcs::VcsKind::Git),
+                crate::vcs::Preference::Jj => return Some(crate::vcs::VcsKind::Jj),
+                crate::vcs::Preference::Auto => {}
+            }
+        }
+        None
+    }
+    /// Inspect the retained worker without dispatching, polling or adopting a reply.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn media_diff_for_test(&self) -> &MediaDiffWorker {
+        &self.media_diff
+    }
+
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn media_cache_for_test(
+        &self,
+    ) -> Vec<konoma_plugin::app::project::media_test_hooks::MediaCacheSnapshot> {
+        konoma_plugin::app::project::media_test_hooks::observe_cache(&self.md_images)
+    }
+
     pub fn attach_media_diff_loader(&mut self, tx: std::sync::mpsc::Sender<MediaDiffResult>) {
         self.media_diff.attach(tx);
     }
@@ -465,7 +494,11 @@ impl App {
     /// `resolve_old_bytes` decides the *old* side's label.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn media_new_side_msg(&self) -> crate::i18n::Msg {
-        if is_jj(&self.tab.root) {
+        if match self.tab.diff_read_context.backend {
+            crate::vcs::Preference::Git => false,
+            crate::vcs::Preference::Jj => true,
+            crate::vcs::Preference::Auto => is_jj(&self.tab.root),
+        } {
             crate::i18n::Msg::MediaBaseWorkCopyJj
         } else {
             crate::i18n::Msg::MediaBaseWorkTreeGit

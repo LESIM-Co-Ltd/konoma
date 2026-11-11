@@ -57,6 +57,10 @@ fn compare_preview_help(
     document: bool,
 ) {
     let wanted_sections = expected_preview_help_sections(&host_help.sections, lang, document);
+    if app_help.sections != wanted_sections {
+        dump_parity_frame("host help rows differ", host);
+        dump_parity_frame("app help rows differ", app);
+    }
     assert_eq!(
         app_help.sections, wanted_sections,
         "every Preview help row, including off-screen rows; only the explicit design rows may differ"
@@ -729,8 +733,10 @@ fn host_diff_snapshot(host: &mut Sim) -> Option<konoma_plugin::app::project::Pro
         host.app.diff_block_rows_for_test().first().copied()
     };
     Some(ProjectDiffSnapshot {
-        help: (preview && host.app.show_help).then(|| {
-            konoma_plugin::app::project::ProjectHelpSnapshot {
+        help: host
+            .app
+            .show_help
+            .then(|| konoma_plugin::app::project::ProjectHelpSnapshot {
                 sections: crate::ops::help::sections_for(
                     &host.app,
                     crate::ops::help::help_context(&host.app),
@@ -740,15 +746,14 @@ fn host_diff_snapshot(host: &mut Sim) -> Option<konoma_plugin::app::project::Pro
                 .collect(),
                 scroll: host.app.help_scroll as usize,
                 title: crate::ops::core_help::help_title(&host.app),
-            }
-        }),
+            }),
         baseline_text: (effective != DiffView::Source)
             .then(|| host.app.project_diff_baseline_text_for_test())
             .flatten(),
         preview_context: preview
             .then(|| format!("{:?}", crate::ops::help::help_context(&host.app))),
         path,
-        baseline: match host.app.git_vcs {
+        baseline: match host.app.diff_vcs() {
             crate::vcs::VcsKind::Git => "HEAD",
             crate::vcs::VcsKind::Jj => "@-",
         }
@@ -2097,20 +2102,68 @@ fn project_diff_image_preview_and_table_source_chrome_match_host() {
 }
 
 fn preview_shape_repo(path: &str) -> crate::test_support::TmpDir {
+    preview_shape_repo_backend(path, "git")
+}
+
+fn preview_shape_repo_backend(path: &str, id: &str) -> crate::test_support::TmpDir {
     let root = sandbox("vcs_app_preview_shapes");
-    seed_repo_markdown(&root);
+    if id == "git" {
+        seed_repo_markdown(&root);
+    } else {
+        super::vcs_changes::seed_jj_write_repository(&root, false);
+    }
     if path == "doc.md" {
+        if id == "jj" {
+            let old = read_snapshot_for_test("vcs_app_diff")["markdown_head_baseline"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            std::fs::write(root.join(path), &old).unwrap();
+            jj(&root, &["new", "-m", "preview parent"]);
+            std::fs::write(
+                root.join(path),
+                old.replace("Original paragraph.", "CHANGED paragraph."),
+            )
+            .unwrap();
+        }
         return root;
     }
-    if path == "image.png" {
+    let media = matches!(
+        path,
+        "image.svg"
+            | "image.gif"
+            | "idle.gif"
+            | "pages.pdf"
+            | "added.png"
+            | "deleted.png"
+            | "broken.png"
+            | "crop.png"
+    );
+    if path == "added.png" {
+        write_solid_png(&root.join(path), 8, 8, [40, 50, 60]);
+        return root;
+    }
+    if media {
+        write_project_media(&root.join(path), false);
+    } else if path == "image.png" {
         write_solid_png(&root.join(path), 8, 8, [10, 20, 30]);
+    } else if path == "binary.bin" {
+        std::fs::write(root.join(path), b"\0old binary").unwrap();
     } else {
         std::fs::write(root.join(path), "name,value\nold,1\n").unwrap();
     }
-    crate::test_support::run_git(&root, &["add", path]);
-    crate::test_support::run_git(&root, &["commit", "-qm", "preview shape"]);
-    if path == "image.png" {
+    if id == "git" {
+        crate::test_support::run_git(&root, &["add", path]);
+        crate::test_support::run_git(&root, &["commit", "-qm", "preview shape"]);
+    } else {
+        jj(&root, &["new", "-m", "preview shape"]);
+    }
+    if media {
+        write_project_media(&root.join(path), true);
+    } else if path == "image.png" {
         write_solid_png(&root.join(path), 8, 8, [40, 50, 60]);
+    } else if path == "binary.bin" {
+        std::fs::write(root.join(path), b"\0new binary").unwrap();
     } else {
         std::fs::write(root.join(path), "name,value\nnew,2\n").unwrap();
     }

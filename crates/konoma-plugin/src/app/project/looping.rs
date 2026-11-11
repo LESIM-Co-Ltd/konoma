@@ -332,6 +332,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                             .get_or_insert_with(|| error.message.get(prepared.lang).into());
                     }
                     if state.file_preview.is_some() {
+                        if let Some(p) = pictures.as_mut() {
+                            p.doc_pics().prune_media_diff_picture_cache();
+                        }
                         state.preview_open =
                             super::preview::PendingPreview::start(prepared, diff.return_info());
                     }
@@ -462,12 +465,13 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 redraw = true;
             }
             #[cfg(any(test, feature = "test-hooks"))]
-            let preview_snapshot = events
-                .project_fenced()
+            let preview_snapshot = (events.project_fenced() || prepared.test_probe.is_some())
                 .then(|| state.idle_snapshot(prepared, &info, pictures.as_ref(), &fence));
             #[cfg(any(test, feature = "test-hooks"))]
-            if events.project_fenced() && state.file_preview.is_some() {
-                state.publish_state_for_test(prepared, &info);
+            if (events.project_fenced() || prepared.test_probe.is_some())
+                && state.file_preview.is_some()
+            {
+                state.publish_state_for_test(prepared, &info, pictures.as_ref());
             }
             if let Some(preview) = state
                 .file_preview
@@ -475,7 +479,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 .filter(|_| !state.preview_project)
             {
                 #[cfg(any(test, feature = "test-hooks"))]
-                if events.project_fenced() {
+                if events.project_fenced() || prepared.test_probe.is_some() {
                     preview.gutter.detection = Some(prepared.detection.clone());
                     preview.gutter.idle = preview_snapshot;
                 }
@@ -525,6 +529,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         state.launch.tool(prepared, &service);
                     }
                     crate::app::looping::FileLoopExit::Refresh => {
+                        if let Some(p) = pictures.as_mut() {
+                            p.doc_pics().prune_media_diff_picture_cache();
+                        }
                         let project = state.diff_return.as_ref().unwrap().project.clone();
                         state.with_host(&info, |host, _| {
                             host.invalidate(&project, ProjectInvalidation::Detection)
@@ -568,6 +575,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                             preview.source.path,
                             state.diff.as_ref().unwrap().request.path
                         );
+                        let keep_media = state.diff.as_ref().is_some_and(|d| d.project_owned);
                         state.file_preview = None;
                         state.diff = None;
                         state.screen = state.diff_return.take();
@@ -575,7 +583,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                             p.forget();
                             p.forget_still();
                             p.reset_document();
-                            p.doc_pics().prune_media_diff_picture_cache();
+                            if !keep_media {
+                                p.doc_pics().prune_media_diff_picture_cache();
+                            }
                         }
                         redraw = true;
                     }
@@ -666,7 +676,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                             );
                             state
                                 .diff
-                                .as_ref()
+                                .as_mut()
                                 .unwrap()
                                 .draw_help(frame.buffer_mut(), whole);
                             state
@@ -743,6 +753,33 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             .flatten()
             .min();
             #[cfg(any(test, feature = "test-hooks"))]
+            if let Some(probe) = &prepared.test_probe {
+                prepared.detection.fence_watch_for_test();
+                let snapshot = state.idle_snapshot(prepared, &info, pictures.as_ref(), &fence);
+                if !snapshot.owners
+                    || !snapshot.contexts
+                    || !snapshot.detection
+                    || !snapshot.watch
+                    || !snapshot.navigation
+                    || !snapshot.replay
+                    || state.preview_open.is_some()
+                {
+                    state.wait_project_for_test(prepared, &snapshot);
+                    redraw = true;
+                    continue;
+                }
+                state.publish_state_for_test(prepared, &info, pictures.as_ref());
+                let observed = prepared
+                    .test_observed
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap();
+                probe.capture(snapshot, crate::app::draw::test_frame(), observed);
+            }
+            #[cfg(any(test, feature = "test-hooks"))]
             let fenced = if events.project_fenced() {
                 prepared.detection.fence_watch_for_test();
                 let snapshot = state.idle_snapshot(prepared, &info, pictures.as_ref(), &fence);
@@ -751,7 +788,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     redraw = true;
                     continue;
                 }
-                state.publish_state_for_test(prepared, &info);
+                state.publish_state_for_test(prepared, &info, pictures.as_ref());
                 Some(events.project_idle(snapshot, crate::app::draw::test_frame()))
             } else {
                 None
@@ -776,7 +813,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                             state.preview_open = None;
                             if let Some(p) = pictures.as_mut() {
                                 p.reset_document();
-                                p.doc_pics().prune_media_diff_picture_cache();
+                                if !state.diff.as_ref().is_some_and(|d| d.project_owned) {
+                                    p.doc_pics().prune_media_diff_picture_cache();
+                                }
                             }
                         }
                     }

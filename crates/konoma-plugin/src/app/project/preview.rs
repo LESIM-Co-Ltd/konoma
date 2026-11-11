@@ -112,6 +112,8 @@ pub(in crate::app) struct PreviewGutter {
     #[cfg(any(test, feature = "test-hooks"))]
     pub(in crate::app) observed:
         Option<std::sync::Arc<std::sync::Mutex<Option<super::ProjectStateSnapshot>>>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) probe: Option<super::ProjectLoopProbe>,
 }
 
 impl PreviewGutter {
@@ -157,6 +159,8 @@ impl PreviewGutter {
             detection: None,
             #[cfg(any(test, feature = "test-hooks"))]
             observed: None,
+            #[cfg(any(test, feature = "test-hooks"))]
+            probe: None,
         }
     }
 
@@ -409,6 +413,12 @@ impl PendingPreview {
         #[cfg(any(test, feature = "test-hooks"))]
         {
             gutter.observed = prepared.test_observed.clone();
+            gutter.probe = prepared.test_probe.clone();
+            gutter.markdown_rx = super::idle_test_hooks::observe_replies(
+                &*prepared.services,
+                "preview",
+                gutter.markdown_rx,
+            );
         }
         let (raw, lines) = diff.take_preview_lines();
         gutter.raw = raw;

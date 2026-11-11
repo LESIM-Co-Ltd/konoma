@@ -962,6 +962,42 @@ fn e2e_vcs_graph_jj_repository_tests_guard_optional_binary() {
     // Whitespace, comments, strings and local variable names do not delimit a function.
     assert!(
         jj_test_is_guarded(
+            include_str!("vcs_app_media_cases.rs"),
+            "wrapped_diff_hides_horizontal_moves_in_footer_help_and_menu"
+        ),
+        "the wrapped diff test must guard real jj cases when jj is absent"
+    );
+    assert!(jj_test_is_guarded(
+        include_str!("vcs_app_media_cases.rs"),
+        "media_both_sides_pages_keys_and_previews_match_host"
+    ));
+    assert!(jj_test_is_guarded(
+        include_str!("vcs_app_media_cases.rs"),
+        "colocated_backend_selection_is_consistent_across_all_representations"
+    ));
+    assert!(jj_test_is_guarded(
+        include_str!("vcs_app_media_cases.rs"),
+        "diff_screen_help_and_project_keys_match_host_in_every_representation"
+    ));
+    assert!(jj_test_is_guarded(
+        include_str!("vcs_app_media_cases.rs"),
+        "jj_deleted_media_keeps_the_same_keys_after_project_and_refresh"
+    ));
+    assert!(jj_test_is_guarded(
+        include_str!("vcs_app_media_cases.rs"),
+        "colocated_diff_tool_uses_the_selected_backend"
+    ));
+    for name in [
+        "colocated_changed_file_navigation_uses_project_backend_in_every_representation",
+        "colocated_tree_changed_file_navigation_keeps_its_global_backend",
+    ] {
+        assert!(jj_test_is_guarded(
+            include_str!("vcs_app_media_cases.rs"),
+            name
+        ));
+    }
+    assert!(
+        jj_test_is_guarded(
             include_str!("vcs_app_write_cases.rs"),
             "confirmation_retry_and_read_only_match_host"
         ),
@@ -1101,6 +1137,14 @@ fn jj_test_is_guarded(source: &str, name: &str) -> bool {
                 | "jj_write_cases"
                 | "jj_launch_cases"
                 | "jj_diff_cases"
+                | "jj_wrapped_diff_host_cases"
+                | "jj_media_project_cases"
+                | "jj_diff_chrome_cases"
+                | "jj_colocated_representation_cases"
+                | "preview_shape_repo_backend"
+                | "jj_colocated_tool_cases"
+                | "jj_colocated_changed_list_cases"
+                | "selected_backend_repo_with_changed_sets"
         ) && t[1] == "("
     });
     matches!((guarded, setup), (Some(guard), Some(setup)) if guard < setup)

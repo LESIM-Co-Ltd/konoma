@@ -97,7 +97,9 @@ impl ProjectLoopState {
             format!(" {} ", CoreMsg::ProjectTitle.tr(prepared.keys.lang())),
             Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
         )];
-        if self.diff.as_ref().is_some_and(|d| d.closed) {
+        if self.diff.as_ref().is_some_and(|d| d.closed)
+            || (self.preview_project && self.file_preview.is_none())
+        {
             header.extend([
                 Span::raw(" "),
                 Span::styled(

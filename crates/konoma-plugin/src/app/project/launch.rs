@@ -55,6 +55,7 @@ pub(super) struct LaunchState {
 enum PendingLaunch {
     File(Verb, mpsc::Receiver<Option<ProjectLaunchTarget>>),
     Tool(ProjectToolLaunch, bool),
+    Copy(mpsc::Receiver<String>),
 }
 
 impl Default for LaunchState {
@@ -71,8 +72,36 @@ impl Default for LaunchState {
 }
 
 impl LaunchState {
+    pub(super) fn copy(&mut self, prepared: &PreparedProjects, text: String) {
+        let lang = prepared.keys.lang();
+        #[cfg(any(test, feature = "test-hooks"))]
+        let sink = prepared.test_clipboard.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let write = || konoma_host_core::clipboard::set_text(&text).map_err(|e| e.to_string());
+            #[cfg(any(test, feature = "test-hooks"))]
+            let outcome = sink.map_or_else(write, |sink| sink.write(&text));
+            #[cfg(not(any(test, feature = "test-hooks")))]
+            let outcome = write();
+            let notice = match outcome {
+                Ok(()) => konoma_host_core::copy::copied_preview_notice(lang, &text),
+                Err(error) => konoma_host_core::copy::copy_failed_notice(lang, &error),
+            };
+            let _ = tx.send(notice);
+        });
+        self.queue.push_back(PendingLaunch::Copy(rx));
+    }
+
     #[cfg(any(test, feature = "test-hooks"))]
     pub(super) fn fence_for_test(&mut self) {
+        if let Some(PendingLaunch::Copy(reply)) = self.queue.front_mut() {
+            let notice = reply
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("project idle fence: copy publication");
+            let (tx, rx) = mpsc::channel();
+            tx.send(notice).expect("copy receiver");
+            *reply = rx;
+        }
         if let Some(PendingLaunch::File(_, reply)) = self.queue.front_mut() {
             let target = reply
                 .recv_timeout(std::time::Duration::from_secs(30))
@@ -151,6 +180,13 @@ impl LaunchState {
         cx: &ProjectLoopCx,
         pictures: Option<&mut Pictures>,
     ) -> Result<bool, AppError> {
+        if let Some(PendingLaunch::Copy(reply)) = self.queue.front() {
+            if let Ok(notice) = reply.try_recv() {
+                self.queue.pop_front();
+                prepared.notice = Some(notice);
+                return Ok(true);
+            }
+        }
         let Some(lc) = cx.launch.as_ref() else {
             return Ok(false);
         };

@@ -218,7 +218,11 @@ fn prepare_at(
         #[cfg(any(test, feature = "test-hooks"))]
         test_observed: None,
         #[cfg(any(test, feature = "test-hooks"))]
+        test_probe: None,
+        #[cfg(any(test, feature = "test-hooks"))]
         test_observe_pending: false,
+        #[cfg(any(test, feature = "test-hooks"))]
+        test_observe_media: false,
         #[cfg(any(test, feature = "test-hooks"))]
         test_clipboard: None,
         file_preview: None,

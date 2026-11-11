@@ -539,6 +539,11 @@ fn build_actions_in(
         |a| !gated || action_enabled(app, ctx, a),
         |a| match a {
             Action::Plugin(p) => plugin_label(app, ctx, p),
+            #[cfg(feature = "git")]
+            Action::OpenGitView => Some(
+                konoma_plugin::host::project::preview_presentation::project_menu_label(app.lang)
+                    .into(),
+            ),
             _ if decl::repr_label(app, a).is_some() => decl::repr_label(app, a),
             _ => label_of(app, ctx, a, &prio).map(|m| tr(app.lang, m).to_string()),
         },

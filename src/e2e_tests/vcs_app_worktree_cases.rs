@@ -458,8 +458,8 @@ impl LaunchRecord {
         record
     }
 }
-fn collect_host_launches(host: &mut Sim, records: &mut Vec<LaunchRecord>) {
-    let backend = match host.app.git_vcs {
+fn collect_host_launches(host: &mut Sim, records: &mut Vec<LaunchRecord>) -> bool {
+    let backend = match host.app.diff_vcs() {
         crate::vcs::VcsKind::Git => "git",
         crate::vcs::VcsKind::Jj => "jj",
     };
@@ -482,7 +482,9 @@ fn collect_host_launches(host: &mut Sim, records: &mut Vec<LaunchRecord>) {
     if host.app.take_launch_git_tool() {
         let plan = crate::git_tool_plan(&host.app).unwrap();
         records.push(LaunchRecord::new(&plan.attempt, &plan.cwd, backend));
+        return true;
     }
+    false
 }
 
 #[test]

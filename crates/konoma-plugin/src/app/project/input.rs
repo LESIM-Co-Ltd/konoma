@@ -201,6 +201,24 @@ impl ProjectLoopState {
                 Ok((DiffScreenAction::Tool, _)) => {
                     self.launch.tool(prepared, &diff.request.info.clone())
                 }
+                Ok((DiffScreenAction::Copy(kind), _)) => {
+                    let text = konoma_host_core::copy::path_text(
+                        &diff.request.path,
+                        &prepared.open_dir,
+                        kind,
+                    );
+                    self.launch.copy(prepared, text);
+                }
+                Ok((DiffScreenAction::Project, _)) => {
+                    let project = self.diff_return.as_ref().unwrap().project.clone();
+                    if let Some(first) =
+                        self.with_host(info, |host, _| host.first_screen(&project, info.id))
+                    {
+                        self.screen = Some(ProjectHost::start_screen(project, first));
+                        self.preview_project = true;
+                        self.ensure(info);
+                    }
+                }
                 Err(error) => prepared.notice = Some(error.message.get(prepared.lang).into()),
             }
             return false;

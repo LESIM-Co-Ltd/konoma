@@ -11,14 +11,14 @@ use konoma_vcs_core::vcs::{Preference, Vcs};
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 
-const GIT_MD: &str = "# Git HEAD\n";
-const JJ_MD: &str = "# Jj parent\n";
+pub(super) const GIT_MD: &str = "# Git HEAD\n";
+pub(super) const JJ_MD: &str = "# Jj parent\n";
 const CURRENT_MD: &str = "# Jj current\n";
 const INDEX_MD: &str = "# Git index\n";
 const WORK_MD: &str = "# Working file\n";
-const GIT_SVG: &str =
+pub(super) const GIT_SVG: &str =
     "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><!-- Git HEAD --></svg>";
-const JJ_SVG: &str =
+pub(super) const JJ_SVG: &str =
     "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><!-- Jj parent --></svg>";
 const CURRENT_SVG: &str =
     "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><!-- Jj current --></svg>";
@@ -88,31 +88,7 @@ fn selected_backend_drives_raw_rendered_preview_and_media() {
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
         return;
     }
-    let dir = sandbox("selected_diff_backend").into_canonical().unwrap();
-    init_git_repo(&dir);
-    write_pair(&dir, GIT_MD, GIT_SVG);
-    git(&dir, &["add", "."]);
-    git(&dir, &["commit", "-qm", "seed"]);
-    assert!(crate::test_support::run_jj(
-        &dir,
-        &["git", "init", "--colocate", "."]
-    ));
-    write_pair(&dir, JJ_MD, JJ_SVG);
-    assert!(crate::test_support::run_jj(
-        &dir,
-        &["commit", "-m", "parent"]
-    ));
-    write_pair(&dir, CURRENT_MD, CURRENT_SVG);
-    assert!(crate::test_support::run_jj(
-        &dir,
-        &["describe", "-m", "current"]
-    ));
-    write_pair(&dir, GIT_MD, GIT_SVG);
-    git(&dir, &["add", "a.md", "b.svg"]);
-    git(&dir, &["commit", "-qm", "git head"]);
-    write_pair(&dir, INDEX_MD, INDEX_SVG);
-    git(&dir, &["add", "a.md", "b.svg"]);
-    write_pair(&dir, WORK_MD, WORK_SVG);
+    let dir = selected_backend_repo();
     assert_eq!(
         konoma_vcs_core::vcs::Jj
             .contents_at(&dir, "@", &dir.join("a.md"))
@@ -303,4 +279,107 @@ fn selected_backend_drives_raw_rendered_preview_and_media() {
         checked >= 26,
         "both backends and every presentation must run: {checked}"
     );
+}
+
+pub(super) fn selected_backend_repo() -> crate::test_support::TmpDir {
+    selected_backend_repo_variant(false, false)
+}
+
+pub(super) fn selected_backend_repo_with_code() -> crate::test_support::TmpDir {
+    selected_backend_repo_variant(true, false)
+}
+
+pub(super) fn selected_backend_repo_with_changed_sets() -> crate::test_support::TmpDir {
+    selected_backend_repo_variant(false, true)
+}
+
+fn selected_backend_repo_variant(code: bool, changed_sets: bool) -> crate::test_support::TmpDir {
+    let dir = sandbox("selected_diff_backend").into_canonical().unwrap();
+    let write = |md, svg| {
+        write_pair(&dir, md, svg);
+        if changed_sets {
+            std::fs::write(
+                dir.join("c-git-only.md"),
+                if md == GIT_MD { GIT_MD } else { WORK_MD },
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("d-jj-only.md"),
+                if md == JJ_MD { JJ_MD } else { WORK_MD },
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("e-git-only.svg"),
+                if md == GIT_MD { GIT_SVG } else { WORK_SVG },
+            )
+            .unwrap();
+        }
+        if code {
+            let value = match md {
+                GIT_MD => "// Git HEAD\nlet stable = 1;\n// Working file\n",
+                JJ_MD => "// Working file\nlet stable = 1;\n// Jj parent\n",
+                WORK_MD => "// Working file\nlet stable = 1;\n// Working file\n",
+                _ => "// Current/index\nlet stable = 1;\n// Current/index\n",
+            };
+            std::fs::write(dir.join("c.rs"), value).unwrap();
+            std::fs::write(dir.join("d.txt"), value).unwrap();
+        }
+    };
+    init_git_repo(&dir);
+    write(GIT_MD, GIT_SVG);
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-qm", "seed"]);
+    assert!(crate::test_support::run_jj(
+        &dir,
+        &["git", "init", "--colocate", "."]
+    ));
+    write(JJ_MD, JJ_SVG);
+    assert!(crate::test_support::run_jj(
+        &dir,
+        &["commit", "-m", "parent"]
+    ));
+    write(CURRENT_MD, CURRENT_SVG);
+    assert!(crate::test_support::run_jj(
+        &dir,
+        &["describe", "-m", "current"]
+    ));
+    write(GIT_MD, GIT_SVG);
+    git(
+        &dir,
+        if changed_sets {
+            &[
+                "add",
+                "a.md",
+                "b.svg",
+                "c-git-only.md",
+                "d-jj-only.md",
+                "e-git-only.svg",
+            ]
+        } else if code {
+            &["add", "a.md", "b.svg", "c.rs", "d.txt"]
+        } else {
+            &["add", "a.md", "b.svg"]
+        },
+    );
+    git(&dir, &["commit", "-qm", "git head"]);
+    write(INDEX_MD, INDEX_SVG);
+    git(
+        &dir,
+        if changed_sets {
+            &[
+                "add",
+                "a.md",
+                "b.svg",
+                "c-git-only.md",
+                "d-jj-only.md",
+                "e-git-only.svg",
+            ]
+        } else if code {
+            &["add", "a.md", "b.svg", "c.rs", "d.txt"]
+        } else {
+            &["add", "a.md", "b.svg"]
+        },
+    );
+    write(WORK_MD, WORK_SVG);
+    dir
 }

@@ -147,8 +147,6 @@ pub(super) const HELP_HOST_ONLY: &[&str] = &[
     "P ",
     "F ",
     "Space ",
-    "h / l",
-    "0 / $",
     "/ n / N",
     "Y ",
     "R ",

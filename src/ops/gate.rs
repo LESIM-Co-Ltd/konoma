@@ -62,6 +62,27 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         }
     }
     match a {
+        A::Navigate(
+            m @ (crate::keymap::Motion::Left
+            | crate::keymap::Motion::Right
+            | crate::keymap::Motion::LineHome
+            | crate::keymap::Motion::LineEnd),
+        ) if ctx == Context::Diff => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::Navigate(m),
+        ),
+        A::Navigate(
+            m @ (crate::keymap::Motion::Left
+            | crate::keymap::Motion::Right
+            | crate::keymap::Motion::LineHome
+            | crate::keymap::Motion::LineEnd),
+        ) if ctx == Context::Document && !app.shows_picture_frame_plugin() => when(
+            konoma_plugin::host::project::preview_presentation::horizontal_moves(
+                app.cfg.ui.wrap,
+                app.is_windowed(),
+            ) || (m != crate::keymap::Motion::LineEnd
+                && crate::ops::preview_plan::state(app, ctx).mermaid_pannable),
+        ),
         // --- A plugin's own action: the session's word, the same one the footer and the help read ---
         A::Plugin(p) => gate_plugin(app, ctx, p),
 

@@ -33,6 +33,8 @@ include!("vcs_app_worktree_cases.rs");
 include!("vcs_app_launch_targets.rs");
 include!("vcs_app_root_jobs.rs");
 include!("vcs_app_diff_cases.rs");
+include!("vcs_app_media_cases.rs");
+include!("vcs_app_idle_workers.rs");
 
 thread_local! {
     static TALLY: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
@@ -86,6 +88,8 @@ impl Backend for SharedBackend {
 
 type BeforeKey = Box<dyn Fn(&Path)>;
 enum Step {
+    HelpPages,
+    BusyKey(KeyEvent),
     Key(KeyEvent),
     Resize(u16, u16),
     BeforeKey(BeforeKey, KeyEvent),
@@ -256,9 +260,40 @@ fn frames(
         && state.notice.is_none();
     let normal_root = normal_root && !help_open;
     let mut expected = host.clone();
+    if !state.diff_actions.is_empty() && !help_open {
+        let wanted = expected_diff_actions(&host_state.diff_actions, lang);
+        assert_eq!(
+            state.diff_actions, wanted,
+            "all diff action menu entries, including clipped entries"
+        );
+        for (side, frame, items) in [
+            ("host", host, &host_state.diff_actions),
+            ("app", app, &wanted),
+        ] {
+            let language = if lang == "ja" {
+                konoma_host_core::lang::Lang::Jp
+            } else {
+                konoma_host_core::lang::Lang::En
+            };
+            let spans = konoma_widgets::footer_line::which_key_spans(
+                konoma_host_core::help_msg::CoreMsg::WkActionsTitle.tr(language),
+                items,
+                frame.area.width,
+            );
+            let mut row = Buffer::empty(Rect::new(0, 0, frame.area.width, 1));
+            Paragraph::new(Line::from(spans)).render(row.area, &mut row);
+            compare_frames(&row, &cells(frame, frame.area.bottom() - 1))
+                .unwrap_or_else(|e| panic!("explicit {side} diff actions :1266: {e}"));
+            if side == "app" {
+                for x in 0..frame.area.width {
+                    expected[(x, frame.area.bottom() - 1)] = row[(x, 0)].clone();
+                }
+            }
+        }
+    }
     if help_open && state.stack.len() == 1 && state.diff.is_none() {
         // §4-1:220 and §7-5:967 apply to the root return key's help row as well as its footer.
-        // Check each description's complete cells before substituting only this documented row.
+        // Render each explicit description independently; no observed app cells become expected cells.
         let screen = state.stack.last().unwrap();
         let row = &graph_fixture["root_help"][lang][screen];
         if let Some(keys) = row["key"].as_str() {
@@ -291,9 +326,11 @@ fn frames(
                 }
                 compare_frames(&wanted, &actual)
                     .unwrap_or_else(|e| panic!("explicit {side} root help {screen}: {e}"));
-            }
-            for x in 0..width {
-                expected[(desc_x + x, y)] = app[(desc_x + x, y)].clone();
+                if side == "app" {
+                    for x in 0..width {
+                        expected[(desc_x + x, y)] = wanted[(x, 0)].clone();
+                    }
+                }
             }
         }
     }
@@ -389,8 +426,9 @@ fn frames(
             )
             .unwrap_or_else(|e| panic!("explicit {side} footer {kind}: {e}"));
         }
-        for x in footer_start..host.area.width {
-            expected[(x, y)] = app[(x, y)].clone();
+        let wanted = expected_footer(fixture, lang, &kind, "app", footer_width);
+        for x in 0..footer_width {
+            expected[(footer_start + x, y)] = wanted[(x, 0)].clone();
         }
     }
     if state.diff.as_ref().is_some_and(|d| {
@@ -418,7 +456,30 @@ fn frames(
         let width = host.area.width.saturating_sub(start);
         let mut chrome = fixture.clone();
         for (side, frame) in [("host", host), ("app", app)] {
-            let tokens = diff[lang][kind][side].as_str().unwrap();
+            let media = read_snapshot_for_test("vcs_app_media");
+            let tokens = if kind == "preview_image"
+                && state
+                    .diff
+                    .as_ref()
+                    .unwrap()
+                    .path
+                    .extension()
+                    .is_some_and(|ext| ext == "pdf")
+            {
+                media["paged_preview"][lang][side].as_str().unwrap()
+            } else {
+                diff[lang][kind][side].as_str().unwrap()
+            };
+            // A binary/failed preview has no changed source line to jump to. Its footer
+            // uses the same declared tokens, with the inactive change operation omitted.
+            let tokens = tokens
+                .split("  ")
+                .filter(|token| {
+                    state.diff.as_ref().unwrap().first_change.is_some()
+                        || !token.starts_with("n/N:")
+                })
+                .collect::<Vec<_>>()
+                .join("  ");
             chrome[lang]["preview"][side][width.to_string()] =
                 serde_json::Value::String(konoma_widgets::help_panel::fit_tokens(
                     &tokens.split("  ").map(str::to_string).collect::<Vec<_>>(),
@@ -434,8 +495,9 @@ fn frames(
             )
             .unwrap_or_else(|e| panic!("explicit {side} project Preview capabilities footer: {e}"));
         }
-        for x in start..host.area.width {
-            expected[(x, host.area.bottom() - 1)] = app[(x, app.area.bottom() - 1)].clone();
+        let wanted = expected_footer(&chrome, lang, "preview", "app", width);
+        for x in 0..width {
+            expected[(start + x, host.area.bottom() - 1)] = wanted[(x, 0)].clone();
         }
     }
     if let Some(app_help) = state.diff.as_ref().and_then(|d| d.help.as_ref()) {
@@ -453,6 +515,34 @@ fn frames(
             lang,
             state.diff.as_ref().unwrap().preview_context.as_deref() == Some("Document"),
         );
+        if state.media.is_some()
+            && host_state.diff.as_ref().is_some_and(|d| {
+                d.path.extension().is_some_and(|ext| ext == "svg")
+                    && d.effective == konoma_host_core::project::DiffView::Source
+                    && d.hscroll > 0
+            })
+        {
+            let names_horizontal = host_help
+                .sections
+                .iter()
+                .flat_map(|(_, rows)| rows)
+                .any(|(keys, _)| keys.contains("h / l"));
+            if !names_horizontal {
+                eprintln!(
+                    "Source horizontal state: {:?}",
+                    host_state.diff.as_ref().map(|d| (&d.path, d.hscroll))
+                );
+                dump_parity_frame(
+                    "host Source horizontal motion works but help omits it",
+                    host,
+                );
+                dump_parity_frame("app Source horizontal motion works but help omits it", app);
+            }
+            assert!(
+                names_horizontal,
+                "Source x moved, so the full help must name horizontal motions"
+            );
+        }
     }
     compare_frames(&expected, app).unwrap_or_else(|e| {
         dump_parity_frame("host whole frame", host);
@@ -468,6 +558,21 @@ fn compare_states(host: &ProjectStateSnapshot, app: &ProjectStateSnapshot) -> Re
     }
     let mut host = host.clone();
     let mut app = app.clone();
+    if !host.diff_actions.is_empty() || !app.diff_actions.is_empty() {
+        let lang = if host.diff_actions.iter().any(|(_, label)| label == "パス") {
+            "ja"
+        } else {
+            "en"
+        };
+        let wanted = expected_diff_actions(&host.diff_actions, lang);
+        if app.diff_actions != wanted {
+            return Err(format!(
+                "explicit diff actions: expected {wanted:?}, app {:?}",
+                app.diff_actions
+            ));
+        }
+        host.diff_actions = wanted;
+    }
     // Full help contents and each rendered viewport are checked by compare_preview_help.
     if let Some(diff) = host.diff.as_mut() {
         diff.help = None;
@@ -514,10 +619,13 @@ fn run_roots(
 
 #[derive(Default)]
 struct RunOptions {
+    idle_workers: Option<IdleWorkers>,
+    colocated: bool,
     plugin: Option<Arc<dyn Plugin>>,
     contract: bool,
     diff_entry_remap: bool,
     pictures: bool,
+    media: bool,
     worktrees: bool,
     remove_switch_target: bool,
     launches: Option<Arc<Mutex<Vec<LaunchRecord>>>>,
@@ -593,6 +701,14 @@ fn run_roots_with(
     if options.pictures {
         host = host.with_media();
     }
+    if options.idle_workers.is_some() {
+        host = host.with_async_md_diff();
+    }
+    let host_media_replies = options.idle_workers.as_ref().map(|_| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        host.app.attach_media_diff_loader(tx);
+        rx
+    });
     let image_replies = options.pictures.then(|| {
         let (requests, receive_requests) = tokio::sync::mpsc::unbounded_channel();
         let (answers, mut receive_answers) = tokio::sync::mpsc::unbounded_channel();
@@ -637,9 +753,20 @@ fn run_roots_with(
         app_root,
         TermCaps::new(),
         (SharedConfig::parse(text).unwrap(), None),
-        Arc::new(konoma_vcs::standalone::VcsServices),
+        options.idle_workers.as_ref().map_or_else(
+            || {
+                Arc::new(konoma_vcs::standalone::VcsServices)
+                    as Arc<dyn konoma_plugin::app::project::ProjectServices>
+            },
+            |workers| workers.services(),
+        ),
     )
     .unwrap_or_else(|e| panic!("{}", e.error));
+    if options.colocated {
+        // This scenario owns an isolated process. Keep the ordinary detection default at auto;
+        // each project diff must carry its explicit selection into its workers instead.
+        crate::vcs::set_preference(crate::vcs::Preference::Auto);
+    }
     assert_eq!(
         app.screen.as_ref().unwrap().project.plugin,
         id,
@@ -662,6 +789,9 @@ fn run_roots_with(
         jobs.attach(&mut host, &mut app);
     }
     let clipboard = app.clipboard_for_test();
+    if options.media {
+        app.observe_media_for_test();
+    }
     clipboard.fail(failure);
     let backend = Arc::new(Mutex::new(TestBackend::new(90, 14)));
     let mut terminal = Terminal::new(SharedBackend(backend.clone())).unwrap();
@@ -718,8 +848,8 @@ fn run_roots_with(
                 Ok(Some(0))
             }))
     });
-    let count = steps.len();
-    let mut steps = steps.into_iter();
+    let mut count = steps.len();
+    let mut steps = std::collections::VecDeque::from(steps);
     let mut step = 0;
     let mut expected_acts = Vec::<String>::new();
     let mut refresh_before = None;
@@ -737,7 +867,122 @@ fn run_roots_with(
             if let Some(jobs) = &mut root_jobs {
                 return jobs.observe(idle, frame, state, &mut host, &fixture, &graph_fixture);
             }
+            if !idle.is_idle() {
+                let workers = options
+                    .idle_workers
+                    .as_ref()
+                    .expect("only the idle-worker scenario observes pending work");
+                if matches!(steps.front(), Some(Step::BusyKey(_)))
+                    && state.media.as_ref().is_some_and(|m| m.pending)
+                {
+                    if workers.publications("source") == 0 {
+                        workers.release_kind("source");
+                        return Next::Timeout;
+                    }
+                    compare_pending_media_key_frame(&mut host, &state, &frame, root, app_root);
+                    let Some(Step::BusyKey(key)) = steps.pop_front() else {
+                        unreachable!()
+                    };
+                    step += 1;
+                    host.press(key.code, key.modifiers);
+                    drain(&mut host);
+                    workers
+                        .busy_key_sent
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Next::Event(AppEvent::Key(key_from_crossterm(&key).unwrap()));
+                }
+                if workers
+                    .busy_key_sent
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    && !workers.queued.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    for kind in ["source", "resolve"] {
+                        if workers.publications(kind) < 2 {
+                            workers.release_kind(kind);
+                            return Next::Timeout;
+                        }
+                    }
+                }
+                if state.media.as_ref().is_some_and(|m| m.queued.is_some()) {
+                    assert!(
+                        host.app.media_diff_for_test().queued().is_some(),
+                        "both real media workers queue the refresh"
+                    );
+                    assert_eq!(
+                        crate::poll_timeout(&host.app),
+                        std::time::Duration::from_millis(100),
+                        "the host's existing idle poll wakes queued media"
+                    );
+                    let (host_frame, paints) = host.project_frame_with_paints();
+                    let mut host_media = host_media_snapshot(&host, &state, paints);
+                    let mut app_media = state.media.clone().unwrap();
+                    for (media, repo) in [(&mut host_media, root), (&mut app_media, app_root)] {
+                        if let Some(want) = media.queued.as_mut() {
+                            want.0 = Path::new("<repo>").join(want.0.strip_prefix(repo).unwrap());
+                        }
+                    }
+                    if host_media != app_media {
+                        dump_parity_frame("host queued media", &host_frame);
+                        dump_parity_frame("app queued media", &frame);
+                    }
+                    assert_eq!(
+                        host_media, app_media,
+                        "queued media state before publication"
+                    );
+                    compare_pending_media_key_frame(&mut host, &state, &frame, root, app_root);
+                    workers
+                        .queued
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                workers.release_one();
+                return Next::Timeout;
+            }
             assert!(idle.is_idle());
+            if let Some(workers) = &options.idle_workers {
+                for _ in 0..16 {
+                    if !host.app.md_diff_pending_for_current() {
+                        break;
+                    }
+                    assert!(
+                        crate::poll_timeout(&host.app) <= std::time::Duration::from_millis(100),
+                        "host Markdown worker has an idle deadline"
+                    );
+                    host.drain_md_diff();
+                }
+                for _ in 0..16 {
+                    if !host.app.media_diff_for_test().busy() {
+                        break;
+                    }
+                    assert!(
+                        crate::poll_timeout(&host.app) <= std::time::Duration::from_millis(100),
+                        "host media worker has an idle deadline"
+                    );
+                    let reply = host_media_replies
+                        .as_ref()
+                        .unwrap()
+                        .recv_timeout(ROOT_WAIT)
+                        .expect("host media reply publication");
+                    host.app.apply_media_diff(reply);
+                    host.draw();
+                }
+                if state
+                    .media
+                    .as_ref()
+                    .is_some_and(|m| m.cache.iter().any(|c| c.frame == 1))
+                {
+                    host.app.advance_md_gifs_if_due();
+                    if host
+                        .app
+                        .media_cache_for_test()
+                        .iter()
+                        .any(|entry| entry.frames > 1 && entry.frame == 0)
+                    {
+                        host.app.age_md_gif_frames_for_test();
+                        host.app.advance_md_gifs_if_due();
+                    }
+                    workers.gif.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
             if options.worktrees && !host.app.project_active() {
                 check_switched_tree(&mut host, &state, root, app_root);
             }
@@ -781,7 +1026,7 @@ fn run_roots_with(
                     std::time::Duration::from_secs(30),
                 );
             }
-            let mut host_frame = host.project_frame();
+            let (mut host_frame, host_paints) = host.project_frame_with_paints();
             if let Some(replies) = &image_replies {
                 for _ in 0..8 {
                     if !host.app.image_viewer.resize_pending() {
@@ -801,6 +1046,22 @@ fn run_roots_with(
             let mut frame = frame;
             let mut host_snapshot = host_state(&host);
             host_snapshot.diff = host_diff_snapshot(&mut host);
+            if host_snapshot.diff.is_some() && host_snapshot.menu.as_deref() == Some("actions") {
+                host_snapshot.diff_actions = crate::ops::menu::menu(
+                    &host.app,
+                    crate::keymap::Context::Diff,
+                    crate::keymap::LeaderId::Actions,
+                    crate::ops::menu::View::Open,
+                )
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|i| (konoma_host_core::help::help_key(i.key), i.label))
+                .collect();
+            }
+            if options.media {
+                host_snapshot.media = Some(host_media_snapshot(&host, &host_snapshot, host_paints));
+            }
             if root != app_root {
                 let host_identity = if options.worktrees {
                     root.parent().unwrap()
@@ -816,7 +1077,11 @@ fn run_roots_with(
                 normalize_write_state(&mut state, app_identity);
                 normalize_write_frame(&mut host_frame, root);
                 normalize_write_frame(&mut frame, app_root);
-                assert_write_repositories(root, app_root, id, step);
+                if options.colocated {
+                    assert_colocated_repositories(root, app_root);
+                } else {
+                    assert_write_repositories(root, app_root, id, step);
+                }
                 let writes = |calls: &Arc<Mutex<VcsCalls>>| {
                     calls
                         .lock()
@@ -924,9 +1189,34 @@ fn run_roots_with(
                 host.app.show_help,
             );
             check(step, &state, &host, &host_writes);
-            let Some(next) = steps.next() else {
+            let Some(mut next) = steps.pop_front() else {
                 return Next::End;
             };
+            if matches!(next, Step::HelpPages) {
+                let help = state
+                    .diff
+                    .as_ref()
+                    .and_then(|diff| diff.help.as_ref())
+                    .expect("HelpPages requires the actual open help");
+                let refs = help
+                    .sections
+                    .iter()
+                    .map(|(title, rows)| (title.as_str(), rows.as_slice()))
+                    .collect::<Vec<_>>();
+                let app_lines = konoma_widgets::help_panel::help_lines(&refs).len();
+                let host_lines = crate::ui::help::help_lines(&host.app).len();
+                let area = frame.area;
+                let keys = usize::from(
+                    konoma_widgets::help_panel::max_scroll(app_lines, area)
+                        .max(konoma_widgets::help_panel::max_scroll(host_lines, area)),
+                ) + 1;
+                assert!(keys <= 500);
+                count += keys - 1;
+                for _ in 1..keys {
+                    steps.push_front(ch('j'));
+                }
+                next = ch('j');
+            }
             step += 1;
             let next = match next {
                 Step::BeforeKey(before, key) => {
@@ -965,7 +1255,13 @@ fn run_roots_with(
                         host.press(key.code, key.modifiers);
                         drain(&mut host);
                         if options.launches.is_some() {
-                            collect_host_launches(&mut host, &mut host_launches);
+                            let tool = collect_host_launches(&mut host, &mut host_launches);
+                            if tool && options.media {
+                                // The real standalone/host loops refresh after returning from a
+                                // recorded tool handoff; no external program is started here.
+                                host.app.refresh().unwrap();
+                                drain(&mut host);
+                            }
                         }
                     };
                     if failure {
@@ -979,7 +1275,13 @@ fn run_roots_with(
                     clear_test_clipboard();
                     AppEvent::Key(key_from_crossterm(&key).unwrap())
                 }
-                Step::BeforeKey(..) | Step::Write(..) | Step::Policy(..) => unreachable!(),
+                Step::BeforeKey(..)
+                | Step::Write(..)
+                | Step::Policy(..)
+                | Step::BusyKey(..)
+                | Step::HelpPages => {
+                    unreachable!()
+                }
             };
             Next::Event(event)
         };
@@ -1001,8 +1303,12 @@ fn run_roots_with(
                 )
                 .with_out(Box::new(Vec::<u8>::new()))
             });
-            run_project_fenced_state_for_test(&mut terminal, &mut app, &cx, pictures, observe)
-                .unwrap();
+            if let Some(workers) = &options.idle_workers {
+                workers.run(&mut terminal, &mut app, &cx, pictures, observe);
+            } else {
+                run_project_fenced_state_for_test(&mut terminal, &mut app, &cx, pictures, observe)
+                    .unwrap();
+            }
         }
         let Some(text) = policy_change else { break };
         let shared = SharedConfig::parse(&text).unwrap();

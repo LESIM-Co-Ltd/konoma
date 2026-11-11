@@ -25,6 +25,7 @@ impl ProjectLoopState {
         &self,
         prepared: &PreparedProjects,
         info: &ProjectContextInfo<StandaloneSurface>,
+        pictures: Option<&Pictures>,
     ) {
         if let Some(slot) = &prepared.test_observed {
             let nav = self.screen.as_ref().or(self.diff_return.as_ref());
@@ -45,6 +46,27 @@ impl ProjectLoopState {
                 prepared.notice.clone(),
             );
             state.return_to_preview = self.preview_project;
+            if prepared.test_observe_media {
+                state.media = Some(self.diff.as_ref().filter(|d| !d.closed).map_or_else(
+                    || super::super::media_test_hooks::MediaStateSnapshot {
+                        cache: pictures.map_or_else(
+                            || {
+                                self.diff
+                                    .as_ref()
+                                    .map_or_else(Vec::new, |d| d.unpictured_cache_for_test())
+                            },
+                            Pictures::media_cache_for_test,
+                        ),
+                        ..Default::default()
+                    },
+                    |d| {
+                        d.media_snapshot_for_test(
+                            pictures,
+                            !self.preview_project && self.file_preview.is_none(),
+                        )
+                    },
+                ));
+            }
             state.diff = self
                 .diff
                 .as_ref()
@@ -63,6 +85,9 @@ impl ProjectLoopState {
                 .filter(|d| !d.closed && !self.preview_project)
             {
                 state.menu = diff.menu_for_test();
+                if state.menu.as_deref() == Some("actions") {
+                    state.diff_actions = diff.actions_for_test();
+                }
             }
             state.root =
                 Some(nav.map_or_else(|| prepared.open_dir.clone(), |nav| nav.project.root.clone()));
@@ -142,11 +167,10 @@ impl ProjectLoopState {
         waited
     }
 
-    pub(super) fn wait_idle_for_test(
+    pub(super) fn wait_project_for_test(
         &mut self,
         prepared: &PreparedProjects,
         snapshot: &ProjectIdleSnapshot,
-        mut pictures: Option<&mut Pictures>,
     ) {
         let waited = self.wait_owners_for_test();
         if !waited && !snapshot.contexts {
@@ -170,6 +194,24 @@ impl ProjectLoopState {
         if !snapshot.detection {
             prepared.detection.wait_for_result();
         }
+        if let Some(pending) = self.preview_open.as_mut() {
+            pending.fence_for_test();
+        }
+        if let Some(root) = self.root_switch.as_mut() {
+            root.fence_for_test();
+        }
+        if !snapshot.navigation {
+            self.launch.fence_for_test();
+        }
+    }
+
+    pub(super) fn wait_idle_for_test(
+        &mut self,
+        prepared: &PreparedProjects,
+        snapshot: &ProjectIdleSnapshot,
+        mut pictures: Option<&mut Pictures>,
+    ) {
+        self.wait_project_for_test(prepared, snapshot);
         if !snapshot.representations {
             if let Some(diff) = self.diff.as_mut() {
                 diff.settle_representations_with_pictures_for_test(
@@ -180,17 +222,8 @@ impl ProjectLoopState {
                 }
             }
         }
-        if let Some(pending) = self.preview_open.as_mut() {
-            pending.fence_for_test();
-        }
         if let Some(pictures) = pictures {
             pictures.settle_for_test();
-        }
-        if let Some(root) = self.root_switch.as_mut() {
-            root.fence_for_test();
-        }
-        if !snapshot.navigation {
-            self.launch.fence_for_test();
         }
     }
 }

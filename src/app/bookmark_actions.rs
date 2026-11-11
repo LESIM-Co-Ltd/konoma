@@ -998,6 +998,8 @@ impl App {
     fn diff_jump_changed(&mut self, dir: i64) {
         let paths = if self.diff_follow_scope {
             self.follow_session_paths()
+        } else if let Some(paths) = self.project_diff_changed_paths() {
+            paths
         } else {
             self.ensure_git_status_now();
             self.changed_paths()
@@ -1084,6 +1086,8 @@ impl App {
         };
         let paths = if self.diff_follow_scope {
             self.follow_session_paths()
+        } else if let Some(paths) = self.project_diff_changed_paths() {
+            paths
         } else {
             self.changed_paths()
         };

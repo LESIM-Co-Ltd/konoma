@@ -327,6 +327,7 @@ pub(in crate::app) struct ProjectPreviewChrome {
     pub context: konoma_host_core::keymap::CoreContext,
     pub help: bool,
     pub image_zoom: Option<f64>,
+    pub image_page: Option<(u32, u32)>,
 }
 
 pub(in crate::app) fn preview_context(
@@ -367,6 +368,9 @@ pub(in crate::app) fn preview_context(
     }
     if let Some(zoom) = chrome.image_zoom {
         spans.push(Span::raw(format!("  x{zoom:.2}")).bold());
+    }
+    if let Some((page, count)) = chrome.image_page.filter(|(_, count)| *count > 1) {
+        spans.push(Span::raw(format!("  {page}/{count}")).bold());
     }
     spans.push(Span::raw(format!("  {}{path}", word("path:", "パス:"))).dim());
     spans

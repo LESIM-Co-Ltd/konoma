@@ -161,17 +161,6 @@ impl AppKeys {
             .push((CoreAction::PreviewBack, Some(CoreMsg::BackToTree)));
         core.help.retain(|(a, _)| *a != CoreAction::Quit);
         core.help.push((CoreAction::Quit, Some(CoreMsg::Quit)));
-        if context == CoreContext::Document {
-            // The host lists these document operations as reference rows while wrapped too.
-            core.off.retain(|op| {
-                !matches!(
-                    op,
-                    HelpOp::Act(CoreAction::Navigate(
-                        Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd
-                    ))
-                )
-            });
-        }
         let mut ops = help_order(context, &state);
         ops.extend(konoma_host_core::preview_plan::help_everywhere());
         for entry in footer_plan(context, &state) {
@@ -247,9 +236,12 @@ impl AppKeys {
                     keys.dedup();
                     let jp = self.lang == Lang::Jp;
                     let label = match op {
-                        konoma_host_core::keymap::HostOp::OpenGitView => {
-                            Some(if jp { "Git" } else { "git" }.into())
-                        }
+                        konoma_host_core::keymap::HostOp::OpenGitView => Some(
+                            crate::host::project::preview_presentation::project_menu_label(
+                                self.lang,
+                            )
+                            .into(),
+                        ),
                         konoma_host_core::keymap::HostOp::GitLaunchTool => {
                             Some(if jp { "ツール" } else { "tool" }.into())
                         }
@@ -521,7 +513,12 @@ impl AppKeys {
             // The sideways motions only act on text that does not wrap.
             HelpOp::Act(CoreAction::Navigate(
                 Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd,
-            )) => scrolls && (self.caret || !self.wrap),
+            )) => {
+                scrolls
+                    && crate::host::project::preview_presentation::horizontal_moves(
+                        self.wrap, self.caret,
+                    )
+            }
             HelpOp::Act(CoreAction::Navigate(_)) => scrolls,
             HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
                 true
@@ -654,7 +651,10 @@ impl AppKeys {
             None => self.menu_key_acts(ctx, key),
             // Sideways, the text moves only when it does not wrap (the open help does not).
             Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
-                scrolls && (self.caret || !self.wrap)
+                scrolls
+                    && crate::host::project::preview_presentation::horizontal_moves(
+                        self.wrap, self.caret,
+                    )
             }
             Some(Act::Move(_)) => scrolls,
             Some(_) => true,
@@ -2001,6 +2001,11 @@ pub(in crate::app) struct FileLoopState {
 }
 
 impl FileLoopState {
+    pub(in crate::app) fn resume_project_preview(&mut self) {
+        self.st.caret_line = 0;
+        self.st.caret_col = 0;
+        self.need_view = true;
+    }
     pub(in crate::app) fn invalidate(&mut self) {
         self.need_view = true;
         self.refresh_on_resume = true;
@@ -2582,6 +2587,9 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
             help: st.help.is_some(),
             image_zoom: (core_ctx == CoreContext::Image)
                 .then(|| pictures.as_deref().map_or(1.0, Pictures::still_zoom)),
+            image_page: (core_ctx == CoreContext::Image)
+                .then(|| st.pages.map(|count| (st.at_page as u32 + 1, count as u32)))
+                .flatten(),
         });
         let width = project_chrome.map_or(whole_width, |chrome| {
             draw::status_footer_width(whole_width, chrome.combined, &draw::preview_context(chrome))
@@ -2962,76 +2970,96 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
         // A key and a resize ask for a new view; a timeout does unless the pictures woke the loop.
         *need_view = true;
         #[cfg(any(test, feature = "test-hooks"))]
-        let fenced = if events.project_fenced() {
-            let preview = preview.as_deref_mut().expect("project Preview fence");
-            // Runtime and launch publication belong to the project owner. A frame fence
-            // must yield to that owner before waiting for the file's own work.
-            if preview.owner_wake.is_some() {
-                *refresh_on_resume = false;
-                return Ok(FileLoopExit::Yield);
-            }
-            if let Some(detection) = &preview.detection {
-                detection.fence_watch_for_test();
-                if !detection.watch_settled_for_test() {
+        let fenced =
+            if events.project_fenced() || preview.as_deref().is_some_and(|p| p.probe.is_some()) {
+                let preview = preview.as_deref_mut().expect("project Preview fence");
+                // Runtime and launch publication belong to the project owner. A frame fence
+                // must yield to that owner before waiting for the file's own work.
+                if preview.owner_wake.is_some() {
                     *refresh_on_resume = false;
                     return Ok(FileLoopExit::Yield);
                 }
-            }
-            let mut snapshot = preview.idle.clone().expect("project owner snapshot");
-            snapshot.preview = preview.wake_in().is_none();
-            snapshot.pictures = pictures.as_deref().is_none_or(Pictures::settled_for_test);
-            if !snapshot.preview || !snapshot.pictures {
-                *need_view = false;
-                continue;
-            }
-            snapshot.drawn_generation = snapshot.state_generation;
-            preview.idle = Some(snapshot.clone());
-            if let Some(slot) = &preview.observed {
-                let mut slot = slot.lock().unwrap();
-                if let Some(state) = slot.as_mut() {
-                    state.menu = st.menu.map(|(_, menu)| {
-                        match menu {
-                            CoreMenu::Options => "options",
-                            CoreMenu::Copy => "copy",
-                            CoreMenu::Actions => "actions",
-                            _ => "other",
-                        }
-                        .into()
-                    });
-                    state.notice = st.flash.clone();
+                if let Some(detection) = &preview.detection {
+                    detection.fence_watch_for_test();
+                    if !detection.watch_settled_for_test() {
+                        *refresh_on_resume = false;
+                        return Ok(FileLoopExit::Yield);
+                    }
                 }
-                if let Some(diff) = slot.as_mut().and_then(|s| s.diff.as_mut()) {
-                    diff.help = project_help;
-                    diff.effective = konoma_host_core::project::DiffView::Preview;
-                    diff.next_representation = None;
-                    diff.split_drawn = None;
-                    diff.wrap = st.display.wrap;
-                    diff.scroll = match &*base {
-                        Frame::Document(d) => d.scroll,
-                        _ => st.scroll,
-                    };
-                    diff.hscroll = st.hscroll;
-                    diff.editor_line = super::edit_line::edit_line();
-                    diff.first_change = st
-                        .doc
-                        .as_ref()
-                        .and_then(super::document::DocCache::first_change)
-                        .or_else(|| {
-                            preview
-                                .line_marks()?
-                                .keys()
-                                .min()
-                                .map(|n| n.saturating_sub(1) as usize)
+                let mut snapshot = preview.idle.clone().expect("project owner snapshot");
+                snapshot.preview = preview.wake_in().is_none();
+                snapshot.pictures = pictures.as_deref().is_none_or(Pictures::settled_for_test);
+                if events.project_fenced() && (!snapshot.preview || !snapshot.pictures) {
+                    *need_view = false;
+                    continue;
+                }
+                snapshot.drawn_generation = snapshot.state_generation;
+                preview.idle = Some(snapshot.clone());
+                if let Some(slot) = &preview.observed {
+                    let mut slot = slot.lock().unwrap();
+                    if let Some(state) = slot.as_mut() {
+                        state.menu = st.menu.map(|(_, menu)| {
+                            match menu {
+                                CoreMenu::Options => "options",
+                                CoreMenu::Copy => "copy",
+                                CoreMenu::Actions => "actions",
+                                _ => "other",
+                            }
+                            .into()
                         });
-                    diff.source_lines.clear();
-                    diff.baseline_text = preview.baseline_text_for_test();
-                    diff.preview_context = Some(format!("{core_ctx:?}"));
+                        state.notice = st.flash.clone();
+                        if let Some(media) = state.media.as_mut() {
+                            media.cache = pictures
+                                .as_deref()
+                                .map_or_else(Vec::new, Pictures::media_cache_for_test);
+                            media.paints.clear();
+                        }
+                    }
+                    if let Some(diff) = slot.as_mut().and_then(|s| s.diff.as_mut()) {
+                        diff.help = project_help;
+                        diff.effective = konoma_host_core::project::DiffView::Preview;
+                        diff.next_representation = None;
+                        diff.split_drawn = None;
+                        diff.wrap = st.display.wrap;
+                        diff.scroll = match &*base {
+                            Frame::Document(d) => d.scroll,
+                            _ => st.scroll,
+                        };
+                        diff.hscroll = st.hscroll;
+                        diff.editor_line = super::edit_line::edit_line();
+                        diff.first_change = st
+                            .doc
+                            .as_ref()
+                            .and_then(super::document::DocCache::first_change)
+                            .or_else(|| {
+                                preview
+                                    .line_marks()?
+                                    .keys()
+                                    .min()
+                                    .map(|n| n.saturating_sub(1) as usize)
+                            });
+                        diff.source_lines.clear();
+                        diff.baseline_text = preview.baseline_text_for_test();
+                        diff.preview_context = Some(format!("{core_ctx:?}"));
+                    }
                 }
-            }
-            Some(events.project_idle(snapshot, draw::test_frame()))
-        } else {
-            None
-        };
+                if let Some(probe) = &preview.probe {
+                    let observed = preview
+                        .observed
+                        .as_ref()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap();
+                    probe.capture(snapshot.clone(), draw::test_frame(), observed);
+                }
+                events
+                    .project_fenced()
+                    .then(|| events.project_idle(snapshot, draw::test_frame()))
+            } else {
+                None
+            };
         #[cfg(any(test, feature = "test-hooks"))]
         let next = fenced.unwrap_or_else(|| events.next(wait));
         #[cfg(not(any(test, feature = "test-hooks")))]

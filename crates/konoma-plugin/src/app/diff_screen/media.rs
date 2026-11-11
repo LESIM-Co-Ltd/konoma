@@ -14,9 +14,15 @@ pub(super) struct Media {
     outcome: Option<MediaDiffOutcome>,
     cell_px: Option<(u32, u32)>,
     pub paints: Vec<(String, PicturePaintRequest)>,
+    pub unpictured: konoma_widgets::inline_images::InlineImageCache,
 }
 
 impl Media {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn observe_replies(&mut self, services: &dyn ProjectServices) {
+        let rx = std::mem::replace(&mut self.rx, mpsc::channel().1);
+        self.rx = super::super::project::idle_test_hooks::observe_replies(services, "media", rx);
+    }
     pub fn new(layout: &str) -> Self {
         let (tx, rx) = mpsc::channel();
         let mut worker = MediaDiffWorker::default();
@@ -29,6 +35,7 @@ impl Media {
             outcome: None,
             cell_px: None,
             paints: vec![],
+            unpictured: Default::default(),
         }
     }
     pub fn pending(&self) -> bool {
@@ -37,6 +44,35 @@ impl Media {
 }
 
 impl DiffScreenState {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn media_snapshot_for_test(
+        &self,
+        pictures: Option<&crate::app::Pictures>,
+        visible: bool,
+    ) -> super::super::project::media_test_hooks::MediaStateSnapshot {
+        let mut snapshot = super::super::project::media_test_hooks::MediaStateSnapshot::worker(
+            &self.media.worker,
+            &self.request.path,
+            self.media_page(),
+            self.media.layout,
+            pictures.map(crate::app::Pictures::cell_px_for_test),
+            self.media.pending() && self.wake_in().is_some(),
+        );
+        snapshot.cache = pictures.map_or_else(
+            || self.unpictured_cache_for_test(),
+            crate::app::Pictures::media_cache_for_test,
+        );
+        if visible && self.media_active() {
+            snapshot.paints = self.media.paints.clone();
+        }
+        snapshot
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn unpictured_cache_for_test(
+        &self,
+    ) -> Vec<super::super::project::media_test_hooks::MediaCacheSnapshot> {
+        super::super::project::media_test_hooks::observe_cache(&self.media.unpictured)
+    }
     #[cfg(any(test, feature = "test-hooks"))]
     pub(super) fn settle_media_for_test(&mut self, mut pictures: Option<&mut DocPics>) {
         while self.media.pending() {
@@ -71,6 +107,35 @@ impl DiffScreenState {
 
     pub(super) fn media_active(&self) -> bool {
         self.effective == DiffView::Rendered && self.target() != DiffTarget::Markdown
+    }
+    pub(super) fn source_summary(&self) -> bool {
+        self.project_owned
+            && self.effective == DiffView::Source
+            && self.target() == DiffTarget::Other
+            && self.data.as_ref().is_some_and(|data| data.lines.is_empty())
+    }
+    pub(super) fn source_summary_text(&self) -> String {
+        use crate::host::project::diff_frame::{
+            binary_summary, binary_summary_values, BinarySummaryWords,
+        };
+        self.media
+            .outcome
+            .as_ref()
+            .and_then(binary_summary_values)
+            .and_then(|values| {
+                binary_summary(
+                    values,
+                    BinarySummaryWords {
+                        binary_file: self.word("binary file", "バイナリファイル"),
+                        none: self.word("(none)", "(なし)"),
+                        same_size_different_content: self
+                            .word("same size, content differs", "同じサイズ・内容が異なる"),
+                        byte_unit: self.word("B", "バイト"),
+                    },
+                    konoma_base::size::human_size,
+                )
+            })
+            .unwrap_or_else(|| self.word("(no changes)", "(変更なし)").into())
     }
     fn media_outcome(&self) -> Option<&MediaDiffOutcome> {
         self.media.worker.outcome_for(&self.request.path)
@@ -128,11 +193,39 @@ impl DiffScreenState {
     }
 
     fn adopt_media(&mut self, result: MediaDiffResult, pics: &mut Option<&mut DocPics>) -> bool {
+        let project_owned = self.project_owned;
+        let cache = &mut self.media.unpictured;
         self.media
             .worker
             .apply(result, |computed| match pics.as_deref_mut() {
                 Some(p) => p.materialize_media_diff(computed),
-                None => shared::materialize_media_diff(computed, |_| {}),
+                None => {
+                    let outcome = shared::materialize_media_diff(computed, |p| {
+                        if project_owned {
+                            use konoma_widgets::inline_images::{DecodedImage, SvgTrust};
+                            cache
+                                .cache
+                                .entry(p.cache_key.clone())
+                                .or_default()
+                                .svg_trust = p.svg_base.map_or(SvgTrust::Embedded, SvgTrust::File);
+                            let request = cache.next_request(&p.cache_key);
+                            cache.file_decoded(
+                                DecodedImage {
+                                    path: p.cache_key,
+                                    image: Ok(p.image),
+                                    svg: p.svg,
+                                    reraster: false,
+                                    frames: p.frames,
+                                    request,
+                                },
+                                Some(p.natural_px),
+                            );
+                            cache.evict_to(konoma_widgets::inline_images::MD_IMAGE_CACHE_BYTES);
+                        }
+                    });
+                    shared::prune_media_diff_picture_cache(&mut cache.cache, Some(&outcome));
+                    outcome
+                }
             })
     }
 
@@ -189,7 +282,9 @@ impl DiffScreenState {
         outcome = self.media.worker.landed_for(&path, page, px);
         self.media.outcome = outcome;
         self.scroll = 0;
-        self.hscroll = 0;
+        if !self.project_owned {
+            self.hscroll = 0;
+        }
         changed
     }
 

@@ -14,8 +14,19 @@ impl DiffScreenTestHooks for DiffScreenState {
 }
 
 impl DiffScreenState {
+    pub(in crate::app) fn actions_for_test(&self) -> Vec<(String, String)> {
+        self.actions_menu()
+            .into_iter()
+            .map(|i| (konoma_host_core::help::help_key(i.key), i.label))
+            .collect()
+    }
     pub(in crate::app) fn menu_for_test(&self) -> Option<String> {
-        self.menu.then(|| "options".into())
+        self.extra_menu
+            .map(|m| match m {
+                konoma_host_core::keymap::CoreMenu::Actions => "actions".into(),
+                _ => "copy".into(),
+            })
+            .or_else(|| self.menu.then(|| "options".into()))
     }
     pub(in crate::app) fn snapshot_for_test(
         &self,
@@ -23,7 +34,17 @@ impl DiffScreenState {
         width: u16,
     ) -> crate::app::project::ProjectDiffSnapshot {
         crate::app::project::ProjectDiffSnapshot {
-            help: None,
+            help: self
+                .help
+                .map(|top| crate::app::project::ProjectHelpSnapshot {
+                    sections: self
+                        .help_sections()
+                        .into_iter()
+                        .map(|s| (s.title, s.rows))
+                        .collect(),
+                    scroll: usize::from(top),
+                    title: self.app_keys.help_title(),
+                }),
             path: self.request.path.clone(),
             baseline: match self.request.info.backend {
                 crate::app::project::ProjectBackend::Git => "HEAD",

@@ -39,6 +39,12 @@ pub use gate::{action_enabled, gate, Gate};
 /// workspace: the first frames of a screen opened before the scan lands must name jj's keys too.
 #[cfg(feature = "git")]
 pub fn backend(app: &crate::app::App) -> crate::keymap::Backend {
+    if let Some(selected) = app.selected_diff_backend() {
+        return match selected {
+            crate::vcs::VcsKind::Git => crate::keymap::Backend::Git,
+            crate::vcs::VcsKind::Jj => crate::keymap::Backend::Jj,
+        };
+    }
     if app.git_vcs == crate::vcs::VcsKind::Jj
         || crate::vcs::detect(&app.tab.root) == crate::vcs::VcsKind::Jj
     {

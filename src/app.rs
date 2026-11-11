@@ -5039,7 +5039,11 @@ impl App {
         };
         let hit = matches!(&self.gutter_cache, Some(c) if c.path == path);
         if !hit {
-            let diff = crate::vcs::file_diff(&self.tab.root, &path);
+            let diff = if self.tab.preview_from_diff {
+                self.compute_gitdiff_lines(&path, false)
+            } else {
+                crate::vcs::file_diff(&self.tab.root, &path)
+            };
             let marks = gutter_marks(&diff);
             self.gutter_cache = Some(GutterCache {
                 path: path.clone(),

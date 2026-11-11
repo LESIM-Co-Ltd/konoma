@@ -3,7 +3,10 @@
 #[cfg(any(test, feature = "test-hooks"))]
 mod graph_test_hooks;
 #[cfg(any(test, feature = "test-hooks"))]
-mod idle_test_hooks;
+pub(in crate::app) mod idle_test_hooks;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod media_test_hooks;
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use graph_test_hooks::{
@@ -36,8 +39,8 @@ mod representation_test_hooks;
 pub use idle_test_hooks::{
     observe_project_state_for_test, read_snapshot_for_test, run_project_fenced_for_test,
     run_project_fenced_state_for_test, run_project_observed_for_test, ProjectDiffSnapshot,
-    ProjectHelpSnapshot, ProjectIdleSnapshot, ProjectPromptSnapshot, ProjectStateSnapshot,
-    TestProjectClipboard,
+    ProjectHelpSnapshot, ProjectIdleSnapshot, ProjectLoopProbe, ProjectPromptSnapshot,
+    ProjectReplyObserver, ProjectStateSnapshot, TestProjectClipboard,
 };
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
@@ -99,6 +102,10 @@ pub struct ProjectServiceInfo {
 /// belong on workers. These return raw data only: shared Markdown/media workers choose baselines
 /// and prepare their own content. Classification and verbs remain registry/host decisions.
 pub trait ProjectServices: Send + Sync + 'static {
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn diff_reply_observer_for_test(&self) -> Option<ProjectReplyObserver> {
+        None
+    }
     /// Opt in to the VCS program's project-diff chrome. Other embedders retain
     /// the ordinary file runner's layout and controls.
     fn project_diff_chrome(&self) -> bool {
@@ -188,7 +195,11 @@ pub struct PreparedProjects {
     #[cfg(any(test, feature = "test-hooks"))]
     test_observed: Option<Arc<std::sync::Mutex<Option<ProjectStateSnapshot>>>>,
     #[cfg(any(test, feature = "test-hooks"))]
+    test_probe: Option<ProjectLoopProbe>,
+    #[cfg(any(test, feature = "test-hooks"))]
     test_observe_pending: bool,
+    #[cfg(any(test, feature = "test-hooks"))]
+    test_observe_media: bool,
     #[cfg(any(test, feature = "test-hooks"))]
     test_clipboard: Option<TestProjectClipboard>,
     file_preview: Option<preview::FilePreviewState>,

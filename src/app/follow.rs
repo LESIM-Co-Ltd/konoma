@@ -416,7 +416,12 @@ impl App {
         let marks = if self.cfg.ui.git_gutter {
             self.git_gutter_marks()
         } else {
-            gutter_marks(&crate::vcs::file_diff(&self.tab.root, &path))
+            let diff = if self.tab.preview_from_diff {
+                self.compute_gitdiff_lines(&path, false)
+            } else {
+                crate::vcs::file_diff(&self.tab.root, &path)
+            };
+            gutter_marks(&diff)
         };
         let Some(first) = marks.keys().min().copied() else {
             return;

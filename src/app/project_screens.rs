@@ -48,7 +48,7 @@ impl App {
     }
     pub(crate) fn diff_presentation_state(&self) -> DiffPresentationState {
         #[cfg(feature = "git")]
-        let jj = self.git_vcs == crate::vcs::VcsKind::Jj;
+        let jj = self.diff_vcs() == crate::vcs::VcsKind::Jj;
         #[cfg(not(feature = "git"))]
         let jj = false;
         let next_representation = self.diff_view_cycle_hint().map(|message| match message {
@@ -57,6 +57,20 @@ impl App {
             _ => DiffRepresentation::Preview,
         });
         DiffPresentationState {
+            drawn_surface: Some(if self.diff_media_active() {
+                DiffSurface::Media
+            } else if self.diff_rendered_active() {
+                DiffSurface::Rendered
+            } else if self.diff_footer_is_media_or_summary()
+                && self
+                    .diff_cache
+                    .as_ref()
+                    .is_none_or(|cache| cache.lines.is_empty())
+            {
+                DiffSurface::Summary
+            } else {
+                DiffSurface::Source
+            }),
             surface: if self.diff_media_active() {
                 DiffSurface::Media
             } else if self.diff_footer_is_media_or_summary() {
@@ -720,6 +734,56 @@ impl App {
         available.then(|| path.clone())
     }
 
+    /// Use the selected project's complete owner-prepared list, not the tree's status cache.
+    /// The owner resolves target existence; filtering here only reads cached values.
+    pub(super) fn project_diff_changed_paths(&self) -> Option<Vec<PathBuf>> {
+        let plugin = match self.selected_diff_backend()? {
+            crate::vcs::VcsKind::Git => "git",
+            #[cfg(feature = "git")]
+            crate::vcs::VcsKind::Jj => "jj",
+        };
+        let nav = self
+            .tab
+            .project_return
+            .as_ref()
+            .or(self.tab.project_navigation.as_ref())?;
+        if nav.project.plugin != plugin {
+            return None;
+        }
+        let runtime = self.project_runtimes.get(&nav.project)?;
+        // Arbitrary OpenDiff callers' rows are not a changed-file catalogue.
+        // The standard VCS declaration owns that catalogue on its Changes screen.
+        if !runtime
+            .project
+            .declaration
+            .screens
+            .iter()
+            .any(|screen| screen.id == "changes")
+        {
+            return None;
+        }
+        let key = ScreenKey::new("changes", nav.frame()?.key.tab);
+        let paths = runtime
+            .views
+            .get(&key)
+            .and_then(|content| {
+                let ProjectContent::List(list) = content.as_ref() else {
+                    return None;
+                };
+                Some(
+                    list.rows
+                        .iter()
+                        .filter(|row| row.selectable && row.kind == "file")
+                        .filter_map(|row| row.target.as_ref())
+                        .filter(|path| runtime.can_launch_target(&key, path))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
+        Some(konoma_plugin::host::project::diff_files::ordered_changed_paths(&self.tab.root, paths))
+    }
+
     fn action_project(&self, action: PluginAct) -> Option<ProjectKey> {
         let detected: Vec<_> = self
             .tab
@@ -955,7 +1019,13 @@ impl App {
         match (nav.origin_mode, nav.origin_path) {
             (Mode::Preview, Some(path)) => {
                 if matches!(nav.origin_kind, Some(PreviewKind::GitDiff(_))) {
-                    self.open_git_diff(&path);
+                    self.open_git_diff_with(
+                        &path,
+                        super::git_view::DiffOpen {
+                            read_context: self.tab.diff_read_context,
+                            ..Default::default()
+                        },
+                    );
                 } else {
                     // The project overlays this Preview. Re-entering the file resets the
                     // diff-only state, which belongs to the retained origin on this return.

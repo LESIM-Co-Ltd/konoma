@@ -164,6 +164,19 @@ pub struct Pictures {
 
 impl Pictures {
     #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn media_cache_for_test(
+        &self,
+    ) -> Vec<super::project::media_test_hooks::MediaCacheSnapshot> {
+        self.doc
+            .as_ref()
+            .map_or_else(Vec::new, DocPics::media_cache_for_test)
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn cell_px_for_test(&self) -> (u32, u32) {
+        let font = self.picker.font_size();
+        (font.width.into(), font.height.into())
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(in crate::app) fn settled_for_test(&self) -> bool {
         self.job.is_none()
             && self.again_at.is_none()

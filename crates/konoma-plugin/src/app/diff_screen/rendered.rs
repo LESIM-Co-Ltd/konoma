@@ -58,6 +58,12 @@ impl DiffScreenState {
         let project_owned = self.project_owned;
         let request = self.request.clone();
         let (tx, rx) = mpsc::channel();
+        #[cfg(any(test, feature = "test-hooks"))]
+        let rx = if project_owned {
+            super::super::project::idle_test_hooks::observe_replies(&*services, "resolve", rx)
+        } else {
+            rx
+        };
         self.preview_reply = Some(rx);
         let _ = std::thread::Builder::new()
             .name("diff-preview-plan".into())
@@ -212,7 +218,7 @@ impl DiffScreenState {
         let inner = Block::bordered().inner(area);
         self.viewport = inner.height;
         let media_changed = self.poll_media(pics.as_deref_mut());
-        if self.media_active() {
+        if self.media_active() || self.source_summary() {
             return self.prepare_media(inner, pics) || media_changed;
         }
         let mut changed = self.ensure_rendered(inner, pics.as_deref_mut()) || media_changed;
@@ -394,7 +400,7 @@ impl DiffScreenState {
 
     /// Paint after the shared frame. The ordinary overlay owns clipping and crop.
     pub fn draw_overlay(&self, pics: &mut DocPics, buf: &mut Buffer, area: Rect) {
-        if self.help.is_some() {
+        if self.help.is_some() && !self.project_owned {
             pics.draw(buf, area, None);
             return;
         }

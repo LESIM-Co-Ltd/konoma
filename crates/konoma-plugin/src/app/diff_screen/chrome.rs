@@ -45,7 +45,7 @@ impl DiffScreenState {
             keys: &self.keys,
             ctx: CoreContext::Diff,
         };
-        let menus = lookup
+        let mut menus = lookup
             .keys_of(HelpOp::Menu(CoreMenu::Options))
             .first()
             .map(|key| DiffHelpMenu {
@@ -61,7 +61,58 @@ impl DiffScreenState {
             })
             .into_iter()
             .collect::<Vec<_>>();
-        self.presentation().help_sections(&[], &menus)
+        if self.project_owned {
+            if let Some(key) = lookup.keys_of(HelpOp::Menu(CoreMenu::Actions)).first() {
+                menus.insert(
+                    0,
+                    DiffHelpMenu {
+                        title: CoreMsg::WkActionsTitle.tr(self.lang).into(),
+                        prefix: help_key(*key),
+                        items: self.actions_menu(),
+                    },
+                );
+            }
+            if let (Some(key), Some(copy)) = (
+                lookup.keys_of(HelpOp::Menu(CoreMenu::Copy)).first(),
+                menu_view(
+                    &self.keys,
+                    CoreContext::Diff,
+                    CoreMenu::Copy,
+                    self.lang,
+                    false,
+                ),
+            ) {
+                menus.push(DiffHelpMenu {
+                    title: copy.title,
+                    prefix: help_key(*key),
+                    items: copy
+                        .items
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, item)| Item {
+                            key: item.key,
+                            action: DiffUiOp::Host(100 + i),
+                            label: item.label,
+                        })
+                        .collect(),
+                });
+            }
+        }
+        let mut sections = self.presentation().help_sections(&[], &menus);
+        if self.project_owned {
+            // General rows use the same core declaration as other project-owned previews.
+            sections.extend(
+                konoma_host_core::help::core_sections(
+                    CoreContext::Diff,
+                    &konoma_host_core::help::HelpFacts::default(),
+                    &lookup,
+                    self.lang,
+                )
+                .into_iter()
+                .filter(|s| s.title == CoreMsg::HelpGlobal.tr(self.lang)),
+            );
+        }
+        sections
     }
 
     pub(in crate::app) fn footer(
@@ -73,6 +124,9 @@ impl DiffScreenState {
         use ratatui::style::Stylize;
         if let Some(note) = notice {
             return footer_line::flash_spans(note);
+        }
+        if let Some(footer) = self.extra_menu_footer(width) {
+            return footer;
         }
         if self.discard.confirming() {
             return vec![ratatui::text::Span::raw(self.word(
@@ -113,7 +167,7 @@ impl DiffScreenState {
         vec![ratatui::text::Span::raw(help_panel::fit_tokens(&tokens, width)).bold()]
     }
 
-    pub(in crate::app) fn draw_help(&self, buf: &mut Buffer, area: Rect) {
+    pub(in crate::app) fn draw_help(&mut self, buf: &mut Buffer, area: Rect) {
         let Some(top) = self.help else { return };
         let sections = self.help_sections();
         let lines = konoma_widgets::help_panel::help_lines(
@@ -122,6 +176,12 @@ impl DiffScreenState {
                 .map(|s| (s.title.as_str(), s.rows.as_slice()))
                 .collect::<Vec<_>>(),
         );
+        let top = if self.project_owned {
+            top.min(konoma_widgets::help_panel::max_scroll(lines.len(), area))
+        } else {
+            top
+        };
+        self.help = Some(top);
         konoma_widgets::help_panel::render_panel(buf, area, lines, top, self.app_keys.help_title());
     }
 }

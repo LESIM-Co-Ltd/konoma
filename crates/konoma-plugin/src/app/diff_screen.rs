@@ -23,6 +23,7 @@ mod discard;
 mod media;
 #[cfg(test)]
 mod preview_tests;
+mod project_chrome;
 mod rendered;
 #[cfg(test)]
 mod representation_tests;
@@ -88,6 +89,8 @@ pub enum DiffScreenAction {
     Edit,
     Open,
     Tool,
+    Project,
+    Copy(konoma_host_core::keymap::CopyKind),
 }
 
 /// Navigation requested by a diff representation; execution belongs to its caller.
@@ -131,6 +134,7 @@ pub struct DiffScreenState {
     app_keys: super::AppKeys,
     help: Option<u16>,
     menu: bool,
+    extra_menu: Option<konoma_host_core::keymap::CoreMenu>,
     display: Display,
     lang: Lang,
     block: Option<usize>,
@@ -234,6 +238,19 @@ impl DiffScreenState {
         let (source, project_owned) = preview;
         let pending = services.clone().spawn_file_diff(request.clone())?;
         let read_context = request.info.backend.diff_read_context();
+        let mut keys = file_diff_keys(scheme_from_str(&config.ui.keys), &config.keys);
+        if project_owned {
+            // Project-only host operations never enter ordinary standalone file apps.
+            keys.contexts
+                .entry(CoreContext::Diff)
+                .or_default()
+                .extend(konoma_host_core::keymap::host_ops_table(CoreContext::Diff));
+            keys = keys.with_config(
+                &config.keys.to_keymap_config(),
+                &konoma_host_core::keymap::HostOp::ALL,
+                &[("preview_git_diff", CoreContext::Diff)],
+            );
+        }
         let mut state = Self {
             discard: discard::Discard::new(&request, &*services, config),
             project_owned,
@@ -253,10 +270,11 @@ impl DiffScreenState {
             scroll: 0,
             hscroll: 0,
             split_drawn: false,
-            keys: file_diff_keys(scheme_from_str(&config.ui.keys), &config.keys),
+            keys,
             app_keys: super::AppKeys::for_file_diff(config),
             help: None,
             menu: false,
+            extra_menu: None,
             display: Display::of(config),
             lang: Lang::parse(&config.ui.lang),
             block: None,
@@ -273,6 +291,15 @@ impl DiffScreenState {
             )),
             notice: None,
         };
+        #[cfg(any(test, feature = "test-hooks"))]
+        if project_owned {
+            state.markdown_rx = super::project::idle_test_hooks::observe_replies(
+                &*state.services,
+                "rendered",
+                state.markdown_rx,
+            );
+            state.media.observe_replies(&*state.services);
+        }
         state.resolve_preview();
         state.choose_effective();
         Ok(state)
@@ -360,7 +387,9 @@ impl DiffScreenState {
         self.resolve_preview();
         self.markdown.invalidate();
         self.media.worker.invalidate();
-        self.media.page = 1;
+        if !self.project_owned {
+            self.media.page = 1;
+        }
         self.rendered = None;
         self.choose_effective();
         self.data = None;
@@ -372,6 +401,17 @@ impl DiffScreenState {
         Ok(())
     }
 
+    pub(in crate::app) fn resume_project_diff(
+        &mut self,
+        config: &SharedConfig,
+    ) -> Result<(), Failure> {
+        // The host reopens a diff when the project overlay returns: use the configured choice,
+        // keep its saved scroll position and the project-owned picture cache.
+        self.choice = DiffView::parse(&config.ui.diff_view);
+        self.media.page = 1;
+        self.reload()
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyPress,
@@ -380,6 +420,11 @@ impl DiffScreenState {
         use DiffUiOp as O;
         if self.discard.confirming() {
             return self.handle_discard_key(key);
+        }
+        if self.project_owned {
+            if let Some(action) = self.project_menu_key(key)? {
+                return Ok(action);
+            }
         }
         if self.menu {
             self.menu = false;
@@ -451,6 +496,7 @@ impl DiffScreenState {
             O::Edit if self.launch_enabled => return Ok((DiffScreenAction::Edit, None)),
             O::OpenExternal if self.launch_enabled => return Ok((DiffScreenAction::Open, None)),
             O::Tool if self.launch_enabled => return Ok((DiffScreenAction::Tool, None)),
+            O::Project if self.project_owned => return Ok((DiffScreenAction::Project, None)),
             O::Global(1) => self.help = Some(0),
             O::Options => self.menu = !self.options_menu().is_empty(),
             O::PathStyle => self.display.path_style = self.display.path_style.next(),
@@ -608,6 +654,7 @@ impl DiffScreenState {
         self.choice = transition.choice;
         self.scroll = 0;
         self.hscroll = 0;
+        self.media.page = 1;
         self.block = None;
         // The gutter may own the previous raw receiver. Reopen on the worker, as the host does.
         self.reload()
@@ -685,6 +732,7 @@ impl DiffScreenState {
             .data
             .as_ref()
             .and_then(|d| changed_path_position(&d.paths, &self.request.path));
+        let summary = self.source_summary().then(|| self.source_summary_text());
         let update = draw_source_diff(
             buf,
             area,
@@ -707,6 +755,8 @@ impl DiffScreenState {
                 },
                 empty_text: if self.pending.is_some() {
                     CoreMsg::Loading.tr(self.lang)
+                } else if let Some(summary) = &summary {
+                    summary
                 } else {
                     self.word("(no changes)", "(変更なし)")
                 },
@@ -731,12 +781,13 @@ impl DiffScreenState {
                 Some(DiffBinding {
                     op,
                     keys: lookup.keys_of(HelpOp::Act(a)),
-                    enabled: (self.launch_enabled
-                        && matches!(op, DiffUiOp::Edit | DiffUiOp::OpenExternal)
-                        && self
-                            .resolved_preview
-                            .as_ref()
-                            .is_some_and(|(_, exists)| *exists))
+                    enabled: (self.project_owned && matches!(op, DiffUiOp::Global(1 | 2)))
+                        || (self.launch_enabled
+                            && matches!(op, DiffUiOp::Edit | DiffUiOp::OpenExternal)
+                            && self
+                                .resolved_preview
+                                .as_ref()
+                                .is_some_and(|(_, exists)| *exists))
                         || matches!(
                             op,
                             DiffUiOp::Navigate(_)
@@ -745,17 +796,7 @@ impl DiffScreenState {
                                 | DiffUiOp::PageNext
                                 | DiffUiOp::PagePrev
                                 | DiffUiOp::PathStyle
-                        ) && !(self.effective == DiffView::Rendered
-                            && (self.media_active() || self.display.wrap)
-                            && matches!(
-                                op,
-                                DiffUiOp::Navigate(
-                                    Motion::Left
-                                        | Motion::Right
-                                        | Motion::LineHome
-                                        | Motion::LineEnd
-                                )
-                            )),
+                        ),
                     label: if op == DiffUiOp::Layout {
                         Some(msg(CoreMsg::FtDiffLayout))
                     } else {
@@ -790,6 +831,8 @@ impl DiffScreenState {
             (DiffUiOp::NextBlock, "change", "変更"),
             (DiffUiOp::PrevBlock, "change", "変更"),
             (DiffUiOp::Refresh, "refresh", "再読込"),
+            (DiffUiOp::Project, "git", "git"),
+            (DiffUiOp::Tool, "tool", "ツール"),
         ] {
             let mut keys: Vec<_> = self
                 .keys
@@ -806,9 +849,16 @@ impl DiffScreenState {
             bindings.push(DiffBinding {
                 op,
                 keys,
-                enabled: true,
+                enabled: match op {
+                    DiffUiOp::Project => self.project_owned,
+                    DiffUiOp::Tool => self.project_owned && self.launch_enabled,
+                    _ => true,
+                },
                 label: Some(self.word(en, ja).into()),
-                help: None,
+                help: self
+                    .project_owned
+                    .then_some(op)
+                    .and_then(|op| project_diff_help(op, self.lang)),
                 launch: false,
                 layers: vec![],
             });
@@ -833,10 +883,28 @@ impl DiffScreenState {
         });
         let mut values = DiffPresentationValues {
             state: DiffPresentationState {
+                drawn_surface: self.project_owned.then_some(if self.media_active() {
+                    DiffSurface::Media
+                } else if self.effective == DiffView::Rendered {
+                    DiffSurface::Rendered
+                } else if matches!(
+                    self.target(),
+                    konoma_host_core::project::DiffTarget::Other
+                        | konoma_host_core::project::DiffTarget::Svg
+                ) && self.data.as_ref().is_none_or(|data| data.lines.is_empty())
+                {
+                    DiffSurface::Summary
+                } else {
+                    DiffSurface::Source
+                }),
                 surface: if self.media_active() {
                     DiffSurface::Media
                 } else if self.project_owned
-                    && self.target() == konoma_host_core::project::DiffTarget::Other
+                    && matches!(
+                        self.target(),
+                        konoma_host_core::project::DiffTarget::Other
+                            | konoma_host_core::project::DiffTarget::Svg
+                    )
                 {
                     DiffSurface::Summary
                 } else if self.effective == DiffView::Rendered {
@@ -859,17 +927,18 @@ impl DiffScreenState {
                 }),
                 representation_count: self.representations().len(),
                 change_blocks: !self.blocks().rows.is_empty(),
-                change_files: self.data.as_ref().is_some_and(|d| !d.paths.is_empty()),
+                change_files: self.project_owned
+                    || self.data.as_ref().is_some_and(|d| !d.paths.is_empty()),
                 ..Default::default()
             },
             capabilities: DiffCapabilities {
                 view: true,
-                project: false,
+                project: self.project_owned,
                 discard: self.discard.enabled,
-                global: false,
+                global: self.project_owned,
                 tabs: false,
                 follow: false,
-                tool: false,
+                tool: self.project_owned && self.launch_enabled,
                 blocks: true,
             },
             bindings,
@@ -892,6 +961,10 @@ impl DiffScreenState {
                         DiffWord::BackHelp,
                         DiffMsg::BackToGitView.tr(self.lang).into(),
                     ),
+                    (
+                        DiffWord::ToolHelp,
+                        project_diff_help(DiffUiOp::Tool, self.lang).unwrap(),
+                    ),
                     (DiffWord::Options, msg(CoreMsg::HintOptions)),
                     (
                         DiffWord::HorizontalEnds,
@@ -899,6 +972,10 @@ impl DiffScreenState {
                     ),
                 ],
                 dynamic: vec![
+                    (
+                        DiffTextId::Files,
+                        self.word("next/prev file", "次/前の変更").into(),
+                    ),
                     (
                         DiffTextId::MediaLayout(self.media.layout.next()),
                         self.media_layout_label(self.media.layout.next()).into(),
@@ -999,6 +1076,8 @@ impl DiffScreenState {
             Span::raw(" "),
             if self.discard.confirming() {
                 chip(self.word("DELETE", "削除確認"), Color::Red)
+            } else if self.help.is_some() && self.project_owned {
+                chip(self.word("HELP", "ヘルプ"), Color::DarkGray)
             } else {
                 chip(self.word("DIFF", "差分"), Color::Blue)
             },
