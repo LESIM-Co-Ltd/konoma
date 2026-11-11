@@ -128,8 +128,10 @@ fn vcs_port_original_graph_selection_base_picker_and_config() {
         "commit"
     );
     sim.dont_see("⌖ base:");
-    keys(&mut sim, "g");
+    // A row below the top, so a selection that fell back to the first row would be noticed.
+    keys(&mut sim, "gj");
     let selected = selected_value(&sim);
+    assert_ne!(selected, top, "the base pin is tried on a row that is not the first");
     keys(&mut sim, "s");
     sim.see("⌖ base:");
     assert_eq!(selected_value(&sim), selected);
