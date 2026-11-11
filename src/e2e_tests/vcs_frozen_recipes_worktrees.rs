@@ -11,19 +11,34 @@ use std::path::Path;
 /// path with the home prefix shortened to `~`, so without this the frames would embed the machine's
 /// temp path (and its length). Both sides read `HOME` when they draw. The recipe runs before any
 /// other thread of this test reads `HOME`, and the previous value is restored on drop.
-struct HomeGuard(Option<std::ffi::OsString>);
+///
+/// The guards of two recipes in one process (`cargo test` runs tests as threads) are serialized by
+/// `HOME_LOCK`: without it the second guard would record the first one's fixture directory as the
+/// "previous" value and restore a deleted path. Under nextest every test is its own process.
+struct HomeGuard {
+    previous: Option<std::ffi::OsString>,
+    // Declared after `previous` and released after `drop` has restored HOME.
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl HomeGuard {
     fn set(dir: &Path) -> Self {
+        // A recipe that panicked while holding the lock already restored HOME in `drop`.
+        let lock = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var_os("HOME");
         std::env::set_var("HOME", dir);
-        Self(previous)
+        Self {
+            previous,
+            _lock: lock,
+        }
     }
 }
 
 impl Drop for HomeGuard {
     fn drop(&mut self) {
-        match self.0.take() {
+        match self.previous.take() {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
         }
