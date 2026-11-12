@@ -207,32 +207,101 @@ fn project_help_cells_preserve_graph_and_picker_sections() {
         )],
     );
     for jj in [false, true] {
-        let facts = ProjectPresentationFacts {
-            graph_jj: Some(jj),
-            ..Default::default()
-        };
+        let facts = graph_facts(jj, vec![KeyPress::ch('q')]);
         let mut w = words();
         if jj {
             w.graph = "jj graph";
+            w.screens = "cycle changes/log/graph/bookmarks";
+        }
+        // The v0.31.2 graph help: the graph keys in the legacy order, the leave row `h / Esc  ·  q`,
+        // then the move row in its own Movement section.
+        cells(
+            &presentation(&facts, &[]).help_sections(&w, &[]),
+            &graph_cells(jj, "h / Esc  ·  q", w.screens),
+        );
+    }
+}
+
+fn graph_facts(jj: bool, back: Vec<KeyPress>) -> ProjectPresentationFacts {
+    let mut facts = default_keymap_facts();
+    facts.graph_jj = Some(jj);
+    facts.vcs_jj = Some(jj);
+    facts.filter = true;
+    facts.motions.ends = vec![KeyPress::ch('g'), KeyPress::ch('G')];
+    facts.motions.left = vec![KeyPress::ch('h')];
+    facts.motions.back = back;
+    facts
+}
+
+fn graph_cells(
+    jj: bool,
+    leave: &'static str,
+    screens: &'static str,
+) -> [(&'static str, &'static [(&'static str, &'static str)]); 2] {
+    // The leak keeps the expectation table `'static` like the literal tables of the other tests.
+    let rows: &'static [(&'static str, &'static str)] = Box::leak(Box::new([
+        ("g / G", "top/bottom"),
+        ("/", "filter the list"),
+        ("r", "refresh"),
+        ("Tab / ⇧Tab", screens),
+        (leave, "back to changes"),
+    ]));
+    [
+        (if jj { "jj graph" } else { "Git graph" }, rows),
+        ("Movement", &[("j / k", "move (commit / uncommitted)")]),
+    ]
+}
+
+/// The graph help names the keys that act: moving the back key to `x` shows `x` where `q` was,
+/// and the rest of the help (order, other rows) is unchanged. Tab and Shift-Tab are fixed keys of
+/// the canvas (`host/project/input.rs` matches `KeyCode::Tab | KeyCode::BackTab`, and
+/// `src/ops/keys.rs` declares them per context), so the cycle row cannot move.
+#[test]
+fn project_graph_help_shows_the_moved_back_key_in_place() {
+    for jj in [false, true] {
+        let facts = graph_facts(jj, vec![KeyPress::ch('x')]);
+        let mut w = words();
+        if jj {
+            w.graph = "jj graph";
+            w.screens = "cycle changes/log/graph/bookmarks";
         }
         cells(
             &presentation(&facts, &[]).help_sections(&w, &[]),
-            &[(
-                if jj { "jj graph" } else { "Git graph" },
-                &[
-                    ("j/k / ↑/↓", "move (commit / uncommitted)"),
-                    ("g/G", "top/bottom"),
-                    ("/", "filter the list"),
-                    ("r", "refresh"),
-                    (
-                        "Tab / Shift-Tab",
-                        "cycle changes/log/graph/branches/worktrees",
-                    ),
-                    ("h/q/Esc", "back to changes"),
-                ],
-            )],
+            &graph_cells(jj, "h / Esc  ·  x", w.screens),
         );
     }
+}
+
+/// The cycle row of a version-control project lists the screens that project cycles: git has
+/// worktrees, jj has none (and lists bookmarks instead). A project that is not version control
+/// keeps the generic wording.
+#[test]
+fn project_cycle_help_row_lists_only_the_screens_of_the_backend() {
+    let rows_of = |vcs_jj: Option<bool>| {
+        let mut facts = default_keymap_facts();
+        facts.content = Some(ProjectPresentationContent::List);
+        facts.vcs_jj = vcs_jj;
+        let mut w = words();
+        w.screens = match vcs_jj {
+            Some(true) => "cycle changes/log/graph/bookmarks",
+            _ => "cycle changes/log/graph/branches/worktrees",
+        };
+        presentation(&facts, &[])
+            .help_sections(&w, &[])
+            .into_iter()
+            .flat_map(|s| s.rows)
+            .filter(|(keys, _)| keys.contains("Tab"))
+            .collect::<Vec<_>>()
+    };
+    let row = |description: &str| vec![("Tab / ⇧Tab".to_string(), description.to_string())];
+    assert_eq!(
+        rows_of(Some(false)),
+        row("cycle changes/log/graph/branches/worktrees")
+    );
+    let jj = rows_of(Some(true));
+    assert_eq!(jj, row("cycle changes/log/graph/bookmarks"));
+    assert!(!jj[0].1.contains("worktree"));
+    assert_eq!(rows_of(None), row("Cycle project screens"));
 }
 
 #[test]

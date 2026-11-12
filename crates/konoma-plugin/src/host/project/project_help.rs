@@ -225,7 +225,14 @@ impl ProjectPresentation {
         }
         let esc = KeyPress::key(KeyCode::Esc);
         let columns: Vec<Vec<KeyPress>> = (0..first.len().max(1))
-            .map(|i| first.get(i).copied().into_iter().chain((i == 0).then_some(esc)).collect())
+            .map(|i| {
+                first
+                    .get(i)
+                    .copied()
+                    .into_iter()
+                    .chain((i == 0).then_some(esc))
+                    .collect()
+            })
             .collect();
         write_columns(&columns, true)
     }

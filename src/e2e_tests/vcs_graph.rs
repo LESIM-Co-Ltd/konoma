@@ -790,13 +790,14 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
         "graph help must have neither missing nor extra rows"
     );
     // The v0.31.2 graph help, key by key and in order: the graph section, then its movement.
-    let rows_of = |sections: &[crate::ui::help::HelpSection]| -> Vec<(String, Vec<(String, String)>)> {
-        sections
-            .iter()
-            .filter(|section| section.title == title || section.title == movement_title)
-            .map(|section| (section.title.clone(), section.rows.clone()))
-            .collect()
-    };
+    let rows_of =
+        |sections: &[crate::ui::help::HelpSection]| -> Vec<(String, Vec<(String, String)>)> {
+            sections
+                .iter()
+                .filter(|section| section.title == title || section.title == movement_title)
+                .map(|section| (section.title.clone(), section.rows.clone()))
+                .collect()
+        };
     assert_eq!(
         rows_of(&actual),
         rows_of(&legacy),
@@ -855,7 +856,17 @@ fn vcs_port_graph_help_keys_and_order_equal_legacy() {
         let keys: Vec<_> = graph[0].rows.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
             keys,
-            ["g / G", "l / Enter", "s", "x", "b", "/", "r", "Tab / ⇧Tab", "h / Esc  ·  q"],
+            [
+                "g / G",
+                "l / Enter",
+                "s",
+                "x",
+                "b",
+                "/",
+                "r",
+                "Tab / ⇧Tab",
+                "h / Esc  ·  q"
+            ],
             "{lang}"
         );
         assert_eq!(graph[1].rows[0].0, "j / k", "{lang}");

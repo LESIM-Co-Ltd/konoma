@@ -633,7 +633,8 @@ fn graph_help_literals(sim: &Sim, jj: bool) {
         assert!(!footer.contains("base"), "jj graph footer has no base token: {footer}");
         assert!(!help_text.contains("base"), "jj graph help has no base row");
     }
-    let mut titles = vec![title.to_owned()];
+    // As in the v0.31.2 frame: the graph section, then Movement, then the leader sections.
+    let mut titles = vec![title.to_owned(), tr(sim.app.lang, Msg::HelpMove).to_owned()];
     for (leader, key) in [(LeaderId::Copy, "y"), (LeaderId::Actions, "Space")] {
         if let Some(section) =
             crate::ui::help::leader_section(&sim.app, Context::Canvas, leader, key)

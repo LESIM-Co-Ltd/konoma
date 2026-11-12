@@ -49,11 +49,23 @@ pub(super) fn declare(mut manifest: Manifest, jj: bool) -> Manifest {
                 .help(t!(en: "clear the pinned base", ja: "基準の固定を解除"))
                 .footer(6).refresh(RefreshTarget::CurrentScreen).project_context(ActContext::screen("graph", [] as [&str; 0])))
     };
-    manifest.action(Act::new("graph_picker").key("b")
-        .label(if jj { t!(en: "bookmarks", ja: "ブックマーク") } else { t!(en: "branches", ja: "ブランチ") })
-        .help(if jj { t!(en: "bookmarks", ja: "ブックマーク") } else { t!(en: "choose which branches are shown", ja: "表示するブランチを選ぶ") })
-        .footer(7).refresh(RefreshTarget::screen("graph_picker"))
-        .project_context(ActContext::screen("graph", [] as [&str; 0])))
+    manifest.action(
+        Act::new("graph_picker")
+            .key("b")
+            .label(if jj {
+                t!(en: "bookmarks", ja: "ブックマーク")
+            } else {
+                t!(en: "branches", ja: "ブランチ")
+            })
+            .help(if jj {
+                t!(en: "bookmarks", ja: "ブックマーク")
+            } else {
+                t!(en: "choose which branches are shown", ja: "表示するブランチを選ぶ")
+            })
+            .footer(7)
+            .refresh(RefreshTarget::screen("graph_picker"))
+            .project_context(ActContext::screen("graph", [] as [&str; 0])),
+    )
 }
 
 fn picker_action(id: &str, key: &str, label: Tr, priority: u8) -> Act {
