@@ -17,7 +17,7 @@ fn see_title(sim: &Sim, lang: &str) {
 
 #[test]
 fn vcs_keys_git_h_goes_back_from_every_list_screen() {
-    if !isolated("vcs_keys_git_h_goes_back_from_every_list_screen") {
+    if isolated("vcs_keys_git_h_goes_back_from_every_list_screen") {
         return;
     }
     let repo = super::vcs_changes::git_repo("vcs_keys_git_h_back", true);
@@ -38,7 +38,7 @@ fn vcs_keys_git_h_goes_back_from_every_list_screen() {
 
 #[test]
 fn vcs_keys_git_detail_h_pans_and_q_pops() {
-    if !isolated("vcs_keys_git_detail_h_pans_and_q_pops") {
+    if isolated("vcs_keys_git_detail_h_pans_and_q_pops") {
         return;
     }
     let repo = super::vcs_changes::git_repo("vcs_keys_git_h_pop", true);
@@ -57,7 +57,7 @@ fn vcs_keys_git_detail_h_pans_and_q_pops() {
 
 #[test]
 fn vcs_keys_git_d_opens_the_uncommitted_diff_or_flashes_no_changes() {
-    if !isolated("vcs_keys_git_d_opens_the_uncommitted_diff_or_flashes_no_changes") {
+    if isolated("vcs_keys_git_d_opens_the_uncommitted_diff_or_flashes_no_changes") {
         return;
     }
     for lang in ["en", "ja"] {
@@ -82,7 +82,7 @@ fn vcs_keys_git_d_opens_the_uncommitted_diff_or_flashes_no_changes() {
 
 #[test]
 fn vcs_keys_git_bang_requests_the_tool_and_respects_the_external_flag() {
-    if !isolated("vcs_keys_git_bang_requests_the_tool_and_respects_the_external_flag") {
+    if isolated("vcs_keys_git_bang_requests_the_tool_and_respects_the_external_flag") {
         return;
     }
     let repo = super::vcs_changes::git_repo("vcs_keys_git_bang", true);
@@ -110,7 +110,7 @@ fn vcs_keys_git_bang_requests_the_tool_and_respects_the_external_flag() {
 
 #[test]
 fn vcs_keys_jj_h_back_and_d_diff_all() {
-    if !isolated("vcs_keys_jj_h_back_and_d_diff_all") || !crate::vcs::jj::available() {
+    if isolated("vcs_keys_jj_h_back_and_d_diff_all") || !crate::vcs::jj::available() {
         return;
     }
     let Some(repo) = crate::test_support::jj_scratch_seeded("vcs_keys_jj") else {
@@ -138,7 +138,7 @@ fn vcs_keys_jj_h_back_and_d_diff_all() {
 
 #[test]
 fn vcs_keys_jj_d_in_a_non_colocated_repo_shows_the_working_copy_diff() {
-    if !isolated("vcs_keys_jj_d_in_a_non_colocated_repo_shows_the_working_copy_diff")
+    if isolated("vcs_keys_jj_d_in_a_non_colocated_repo_shows_the_working_copy_diff")
         || !crate::vcs::jj::available()
     {
         return;

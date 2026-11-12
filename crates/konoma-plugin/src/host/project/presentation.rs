@@ -145,8 +145,24 @@ impl ProjectMotionKeys {
     }
 }
 
+/// A screen's jump key shown in the footer of the project's first screen.
+#[derive(Clone, Debug)]
+pub struct ProjectJumpHint {
+    pub footer: u8,
+    pub key: KeyPress,
+    pub label: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ProjectPresentationFacts {
+    /// The project's first screen (a root screen: its back key closes the project).
+    pub home: bool,
+    /// The jump keys of the other screens, already restricted to the home screen.
+    pub jump_hints: Vec<ProjectJumpHint>,
+    /// The footer priority of the host's new-tab key on this screen, when the screen shows it.
+    pub new_tab_footer: Option<u8>,
+    /// The keys that launch the configured tool on this screen (empty when `!` does not act).
+    pub tool_keys: Vec<KeyPress>,
     /// None retains the loading screen's existing list-like controls.
     pub content: Option<ProjectPresentationContent>,
     pub marks: bool,
@@ -165,6 +181,41 @@ pub struct ProjectPresentationFacts {
     pub copy_keys: Vec<KeyPress>,
     /// A screen's translated filter wording, used only in its footer.
     pub filter_label: Option<String>,
+}
+
+impl ProjectPresentationFacts {
+    /// Fills `home`, `jump_hints` and `new_tab_footer` from the project's declared screens, as
+    /// shown on the screen `current`: the home screen (the first one that is not pushed) lists
+    /// every other screen's jump key, and a screen shows the new-tab key when it declares so.
+    pub fn with_declared_screens(
+        mut self,
+        screens: &[crate::project::ProjectScreen],
+        current: &str,
+        lang: &str,
+    ) -> Self {
+        self.home = screens.iter().find(|s| !s.pushed).is_some_and(|s| s.id == current);
+        self.new_tab_footer = screens
+            .iter()
+            .find(|s| s.id == current)
+            .and_then(|s| s.new_tab_hint);
+        self.jump_hints = if self.home {
+            screens
+                .iter()
+                .filter(|s| !s.pushed && s.id != current)
+                .filter_map(|s| {
+                    let (footer, label) = s.jump_hint.as_ref()?;
+                    Some(ProjectJumpHint {
+                        footer: *footer,
+                        key: KeyPress::ch(s.key?),
+                        label: label.get(lang).to_string(),
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -219,6 +270,8 @@ pub struct ProjectPresentationWords<'a> {
     pub half_page: &'a str,
     pub page: &'a str,
     pub line_ends: &'a str,
+    pub close: &'a str,
+    pub tool: &'a str,
 }
 
 /// One redraw's derived values. No project state or execution policy is owned here.
@@ -350,7 +403,118 @@ impl ProjectPresentation {
         }
         let mut hints = acts::footer_hints(&acts);
         let mut footer_priority = Vec::new();
-        let footer_tokens = if facts.picker || facts.graph_jj.is_some() {
+        let footer_tokens = if facts.vcs_jj.is_some()
+            && !facts.picker
+            && !facts.pushed
+            && matches!(facts.content, None | Some(ProjectPresentationContent::List))
+        {
+            // The old hub's footer for every VCS list screen: the open key and the screen's own
+            // operations by footer priority, then the host's tool, search, screens and back keys.
+            let graph = facts.graph_jj.is_some();
+            let mut entries: Vec<(u8, PresentationToken)> = Vec::new();
+            let mut open = controls
+                .iter()
+                .find(|c| c.id == Id::Open)
+                .map(old_hub_open_token);
+            let mut open_priority = 0;
+            for hint in hints {
+                let first = hint.members[0];
+                if bindings
+                    .iter()
+                    .any(|b| b.binding.act == first.act && b.declared_enter)
+                {
+                    if !graph {
+                        open_priority = first.footer.unwrap_or(0);
+                    }
+                    if let Some(open) = open.as_mut() {
+                        open.ops = hint
+                            .members
+                            .iter()
+                            .map(|b| PresentationOp::ProjectAction(b.act))
+                            .collect();
+                    }
+                    continue;
+                }
+                // The old bridge planned the first member even while its group was disabled.
+                footer_priority.push(PresentationOp::ProjectAction(first.act));
+                let keys = hint.keys(enabled);
+                if !keys.is_empty() {
+                    entries.push((
+                        first.footer.unwrap_or(u8::MAX),
+                        PresentationToken {
+                            text: format!("{}:{}", write_keys(&keys), hint.label(words.language)),
+                            keys,
+                            ops: hint
+                                .members
+                                .iter()
+                                .map(|b| PresentationOp::ProjectAction(b.act))
+                                .collect(),
+                        },
+                    ));
+                }
+            }
+            if let Some(open) = open {
+                entries.insert(0, (open_priority, open));
+            }
+            for jump in &facts.jump_hints {
+                // An action that owns the letter keeps it.
+                if bindings.iter().any(|b| b.binding.key == Some(jump.key)) {
+                    continue;
+                }
+                entries.push((
+                    jump.footer,
+                    dynamic(format!("{}:{}", footer_key(jump.key, true), jump.label)),
+                ));
+            }
+            if let Some(priority) = facts
+                .new_tab_footer
+                .filter(|_| capabilities.can_open_tab)
+            {
+                entries.push((
+                    priority,
+                    dynamic(format!(
+                        "{}:{}",
+                        footer_key(KeyPress::ctrl_ch('t'), false),
+                        words.new_tab
+                    )),
+                ));
+            }
+            entries.sort_by_key(|(priority, _)| *priority);
+            let mut tokens = Vec::new();
+            if !facts.home && !facts.graph_scroll.is_empty() {
+                tokens.push(dynamic(format!(
+                    "{}:{}",
+                    write_keys(&facts.graph_scroll),
+                    words.nav
+                )));
+            }
+            tokens.extend(entries.into_iter().map(|(_, token)| token));
+            if !facts.tool_keys.is_empty() {
+                tokens.push(dynamic(format!(
+                    "{}:{}",
+                    write_keys(&facts.tool_keys),
+                    words.tool
+                )));
+            }
+            if !facts.motions.filter.is_empty() {
+                tokens.push(dynamic(format!(
+                    "{}:{}",
+                    write_keys(&facts.motions.filter),
+                    words.search
+                )));
+            }
+            tokens.push(dynamic(format!("Tab/⇧Tab:{}", words.screens)));
+            let mut leave = facts.motions.left.clone();
+            leave.extend(facts.motions.back.iter().copied());
+            if !facts.home {
+                leave.push(KeyPress::key(KeyCode::Esc));
+            }
+            if !leave.is_empty() {
+                let word = if facts.home { words.close } else { words.back };
+                tokens.push(dynamic(format!("{}:{}", write_keys(&leave), word)));
+            }
+            tokens
+        } else if facts.picker || facts.graph_jj.is_some() {
             // Preserve the legacy VCS wording and priority until the old hub is removed.
             let mut tokens = Vec::new();
             if !facts.picker {

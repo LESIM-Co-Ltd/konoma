@@ -101,7 +101,7 @@ impl ProjectLoopState {
                 label: b.binding.label.get(prepared.lang).into(),
                 right_aliases,
             });
-        let facts = ProjectPresentationFacts {
+        let mut facts = ProjectPresentationFacts {
             content: content.as_deref().map(|c| match c {
                 ProjectContent::List(_) => ProjectPresentationContent::List,
                 ProjectContent::Lines(_) => ProjectPresentationContent::Lines,
@@ -169,10 +169,33 @@ impl ProjectLoopState {
                 .find(|s| s.id == nav.frame().unwrap().key.screen)
                 .and_then(|s| s.filter_label.as_ref())
                 .map(|l| l.get(prepared.lang).into()),
-        };
+            ..Default::default()
+        }
+        .with_declared_screens(
+            &declaration.screens,
+            &nav.frame().unwrap().key.screen,
+            prepared.lang,
+        );
+        // `!` launches the tool on every standalone screen; the footer shows it where the host
+        // does (the changes screen), and only when this program can launch at all.
+        if self.launch_enabled && facts.home {
+            use konoma_host_core::keymap::{CoreBinding, HostOp};
+            facts.tool_keys = crate::host::project::diff_keys::file_diff_keys(
+                scheme_from_str(&prepared.config.ui.keys),
+                &prepared.config.keys,
+            )
+            .bound(CoreContext::Diff)
+            .into_iter()
+            .filter(|(_, b)| matches!(b, CoreBinding::Host(HostOp::GitLaunchTool)))
+            .map(|(key, _)| key)
+            .collect();
+        }
         let t = |en, ja| if prepared.lang == "ja" { ja } else { en };
         let msg = |m: CoreMsg| m.tr(prepared.keys.lang());
-        let back = if nav.stack.len() > 1 || self.preview_project {
+        let back = if nav.stack.len() > 1
+            || self.preview_project
+            || (declaration.version_control && !facts.home)
+        {
             t("back", "戻る")
         } else {
             t("quit", "終了")
@@ -214,6 +237,8 @@ impl ProjectLoopState {
             half_page: msg(CoreMsg::HelpHalfPage),
             page: msg(CoreMsg::HintPage),
             line_ends: msg(CoreMsg::HintLineEnds),
+            close: msg(CoreMsg::FtClose),
+            tool: t("tool", "ツール"),
         };
         let project = ProjectPresentation::build(
             &facts,

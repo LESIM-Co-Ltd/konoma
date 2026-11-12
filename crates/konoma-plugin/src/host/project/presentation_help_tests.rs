@@ -95,6 +95,8 @@ fn presentation(
             half_page: "half page",
             page: "page",
             line_ends: "line ends",
+            close: "close",
+            tool: "tool",
         },
     )
 }

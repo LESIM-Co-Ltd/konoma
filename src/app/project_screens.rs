@@ -1591,6 +1591,26 @@ impl App {
         keys
     }
 
+    /// The keys of the project's tool launch, shown in the footer where the old hub showed `!`:
+    /// the changes screens (its screen table is the only one that binds it).
+    fn project_tool_keys(&self) -> Vec<KeyPress> {
+        #[cfg(feature = "git")]
+        {
+            use crate::keymap::{Action, Screen};
+            if matches!(
+                self.canvas_screen(),
+                Some(Context::Screen(_, Screen::Changes))
+            ) {
+                return self.keymaps.keys_of_on(
+                    Context::Canvas,
+                    self.screen_keys_for(Context::Canvas),
+                    Action::GitLaunchTool,
+                );
+            }
+        }
+        Vec::new()
+    }
+
     pub(crate) fn project_presentation(&self) -> Option<(ProjectPresentation, Vec<PluginAct>)> {
         use crate::keymap::{Action, LeaderId, Motion};
         if !self.project_active() {
@@ -1685,6 +1705,18 @@ impl App {
                 vec![]
             },
             filter_label,
+            tool_keys: self.project_tool_keys(),
+            ..Default::default()
+        };
+        let facts = match self.tab.project_navigation.as_ref().and_then(|nav| {
+            let screen = nav.stack.last()?.key.screen.clone();
+            let screens = &self.project_runtimes.get(&nav.project)?.project.declaration.screens;
+            Some((screens, screen))
+        }) {
+            Some((screens, screen)) => {
+                facts.with_declared_screens(screens, &screen, self.plugin_lang())
+            }
+            None => facts,
         };
         let move_list = konoma_plugin::t!(en: "move", ja: "移動");
         let mark = konoma_plugin::t!(en: "mark", ja: "マーク");
@@ -1713,6 +1745,8 @@ impl App {
             half_page: tr(self.lang, Msg::HelpHalfPage),
             page: tr(self.lang, Msg::HintPage),
             line_ends: tr(self.lang, Msg::HintLineEnds),
+            close: tr(self.lang, Msg::FtClose),
+            tool: tr(self.lang, Msg::FtTool),
         };
         Some((
             ProjectPresentation::build(

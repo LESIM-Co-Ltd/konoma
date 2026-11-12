@@ -36,6 +36,8 @@ fn words(ja: bool) -> ProjectPresentationWords<'static> {
             half_page: "半ページ",
             page: "ページ",
             line_ends: "行頭/行末",
+            close: "閉じる",
+            tool: "ツール",
         }
     } else {
         ProjectPresentationWords {
@@ -62,6 +64,8 @@ fn words(ja: bool) -> ProjectPresentationWords<'static> {
             half_page: "half page",
             page: "page",
             line_ends: "line ends",
+            close: "close",
+            tool: "tool",
         }
     }
 }
