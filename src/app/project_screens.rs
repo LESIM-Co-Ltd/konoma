@@ -1634,6 +1634,7 @@ impl App {
             pushed: self.project_pushed(),
             picker: self.project_picker(),
             graph_jj: self.project_graph_jj(),
+            vcs_jj: self.project_vcs_jj(),
             row_target: self.project_row_target().is_some(),
             open: self.project_open_facts(&actions, &bindings),
             motions: ProjectMotionKeys {
@@ -1648,6 +1649,7 @@ impl App {
                 half_page: motion_keys(&[Motion::HalfDown, Motion::HalfUp]),
                 page: motion_keys(&[Motion::PageDown, Motion::PageUp]),
                 line_ends: motion_keys(&[Motion::LineHome, Motion::LineEnd]),
+                left: motion_keys(&[Motion::Left]),
                 back: self.project_back_keys(),
                 filter: self.project_filter_keys(),
                 help: self.keymaps.keys_of_on(
@@ -1767,6 +1769,11 @@ impl App {
     /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
     pub(crate) fn project_graph_jj(&self) -> Option<bool> {
         self.tab.project_navigation.as_ref()?.graph_jj()
+    }
+
+    /// jj or git on any screen of the project (see `graph_jj` for the graph alone).
+    pub(crate) fn project_vcs_jj(&self) -> Option<bool> {
+        self.tab.project_navigation.as_ref()?.vcs_jj()
     }
 
     pub(crate) fn project_pushed(&self) -> bool {

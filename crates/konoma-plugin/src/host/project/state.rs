@@ -169,6 +169,16 @@ impl<I> ProjectScreenState<I> {
         }
     }
 
+    /// Whether the project belongs to jj (`Some(true)`) or git (`Some(false)`) on any of its
+    /// screens; other providers are not a version-control project and give `None`.
+    pub fn vcs_jj(&self) -> Option<bool> {
+        match self.project.plugin.as_str() {
+            "git" => Some(false),
+            "jj" => Some(true),
+            _ => None,
+        }
+    }
+
     pub fn initialize_frame(&mut self, content: &ProjectContent, declaration: &ProjectDecl) {
         let marks = self.marks_enabled(Some(declaration));
         let Some(frame) = self.frame_mut().filter(|frame| !frame.initialized) else {

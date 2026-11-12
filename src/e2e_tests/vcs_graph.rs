@@ -749,7 +749,10 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
         .iter()
         .find(|section| section.title == title)
         .unwrap();
-    let mut expected_titles = vec![title.to_string()];
+    let mut expected_titles = vec![
+        title.to_string(),
+        tr(old.app.lang, Msg::HelpMove).to_string(),
+    ];
     for (leader, key) in [
         (crate::keymap::LeaderId::Copy, "y"),
         (crate::keymap::LeaderId::Actions, "Space"),
@@ -772,11 +775,32 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
         .iter()
         .map(|(_, text)| text.clone())
         .collect();
+    let movement_title = tr(old.app.lang, Msg::HelpMove);
+    // The move row now sits in its own section, as in the legacy help.
+    actual_help.extend(
+        actual
+            .iter()
+            .filter(|section| section.title == movement_title)
+            .flat_map(|section| section.rows.iter().map(|(_, text)| text.clone())),
+    );
     expected_help.sort();
     actual_help.sort();
     assert_eq!(
         actual_help, expected_help,
         "graph help must have neither missing nor extra rows"
+    );
+    // The v0.31.2 graph help, key by key and in order: the graph section, then its movement.
+    let rows_of = |sections: &[crate::ui::help::HelpSection]| -> Vec<(String, Vec<(String, String)>)> {
+        sections
+            .iter()
+            .filter(|section| section.title == title || section.title == movement_title)
+            .map(|section| (section.title.clone(), section.rows.clone()))
+            .collect()
+    };
+    assert_eq!(
+        rows_of(&actual),
+        rows_of(&legacy),
+        "graph help keys and order must be the legacy help's"
     );
     let legacy = crate::ops::footer::render_tokens(
         &old.app,
@@ -816,6 +840,25 @@ fn e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_lan
     for lang in ["en", "ja"] {
         let (old, new) = graph_pair(&dir, lang, "right", (160, 16), 12, false, true);
         hints_match(&old, &new, false);
+    }
+}
+
+/// The graph help's keys and order are the legacy help's (git, both languages): `g / G`,
+/// `l / Enter`, `s`, `x`, `b`, `/`, `r`, `Tab / ⇧Tab`, `h / Esc  ·  q`, then `j / k` under Movement.
+#[test]
+fn vcs_port_graph_help_keys_and_order_equal_legacy() {
+    let dir = fixture();
+    for lang in ["en", "ja"] {
+        let (old, new) = graph_pair(&dir, lang, "right", (160, 16), 12, false, true);
+        hints_match(&old, &new, false);
+        let graph = crate::ops::help::sections_for(&new.app, crate::keymap::Context::Canvas);
+        let keys: Vec<_> = graph[0].rows.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["g / G", "l / Enter", "s", "x", "b", "/", "r", "Tab / ⇧Tab", "h / Esc  ·  q"],
+            "{lang}"
+        );
+        assert_eq!(graph[1].rows[0].0, "j / k", "{lang}");
     }
 }
 

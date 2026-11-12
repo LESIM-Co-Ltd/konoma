@@ -28,6 +28,7 @@ fn words() -> ProjectHelpWords<'static> {
         search: "filter the list",
         refresh: "refresh",
         screens: "cycle changes/log/graph/branches/worktrees",
+        movement: "Movement",
         back_to_changes: "back to changes",
         cycle: "Cycle project screens",
         back: "Pop this screen or return to the previous view",

@@ -10,11 +10,6 @@ use std::path::Path;
 pub(super) fn declare(mut manifest: Manifest, jj: bool) -> Manifest {
     manifest = manifest
         .hint_group(HintGroup::new("picker_reorder", t!(en: "reorder", ja: "並替")))
-        .action(Act::new("graph_picker").key("b")
-            .label(if jj { t!(en: "bookmarks", ja: "ブックマーク") } else { t!(en: "branches", ja: "ブランチ") })
-            .help(if jj { t!(en: "bookmarks", ja: "ブックマーク") } else { t!(en: "choose which branches are shown", ja: "表示するブランチを選ぶ") })
-            .footer(7).refresh(RefreshTarget::screen("graph_picker"))
-            .project_context(ActContext::screen("graph", [] as [&str; 0])))
         .action(picker_action("picker_toggle", "x", t!(en: "toggle", ja: "トグル"), 0))
         .action(picker_action("picker_down", "J", t!(en: "move down", ja: "下へ移動"), 1).hint_group("picker_reorder"))
         .action(picker_action("picker_up", "K", t!(en: "move up", ja: "上へ移動"), 1).hint_group("picker_reorder"))
@@ -31,7 +26,9 @@ pub(super) fn declare(mut manifest: Manifest, jj: bool) -> Manifest {
             .help(t!(en: "detail (commit diff / worktree diff)", ja: "詳細 (コミット差分 / 作業ツリー差分)"))
             .footer(4)
             .project_context(ActContext::screen("graph", ["commit", "worktree"])));
-    if jj {
+    // The graph's help lists its actions in declaration order: detail, the base or all-revisions
+    // actions, then the branch picker (the order of the v0.31.2 graph help).
+    manifest = if jj {
         manifest.action(
             Act::new("graph_all")
                 .key("a")
@@ -51,7 +48,12 @@ pub(super) fn declare(mut manifest: Manifest, jj: bool) -> Manifest {
                 .label(t!(en: "base off", ja: "基準解除"))
                 .help(t!(en: "clear the pinned base", ja: "基準の固定を解除"))
                 .footer(6).refresh(RefreshTarget::CurrentScreen).project_context(ActContext::screen("graph", [] as [&str; 0])))
-    }
+    };
+    manifest.action(Act::new("graph_picker").key("b")
+        .label(if jj { t!(en: "bookmarks", ja: "ブックマーク") } else { t!(en: "branches", ja: "ブランチ") })
+        .help(if jj { t!(en: "bookmarks", ja: "ブックマーク") } else { t!(en: "choose which branches are shown", ja: "表示するブランチを選ぶ") })
+        .footer(7).refresh(RefreshTarget::screen("graph_picker"))
+        .project_context(ActContext::screen("graph", [] as [&str; 0])))
 }
 
 fn picker_action(id: &str, key: &str, label: Tr, priority: u8) -> Act {

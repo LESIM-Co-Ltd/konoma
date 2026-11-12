@@ -112,6 +112,8 @@ pub struct ProjectMotionKeys {
     pub half_page: Vec<KeyPress>,
     pub page: Vec<KeyPress>,
     pub line_ends: Vec<KeyPress>,
+    /// The keys of the Left motion (`h`): they leave the graph and every pushed screen.
+    pub left: Vec<KeyPress>,
     /// The canvas's own `q` (leave), `/` (filter) and the help key, as the host's effective keys
     /// on this screen: empty when the config unbinds them, the bound key when it moves them.
     pub back: Vec<KeyPress>,
@@ -152,6 +154,8 @@ pub struct ProjectPresentationFacts {
     pub pushed: bool,
     pub picker: bool,
     pub graph_jj: Option<bool>,
+    /// jj (`Some(true)`) or git (`Some(false)`) on every screen of the project; None elsewhere.
+    pub vcs_jj: Option<bool>,
     pub row_target: bool,
     pub open: Option<ProjectOpenFacts>,
     pub motions: ProjectMotionKeys,
@@ -456,7 +460,21 @@ impl ProjectPresentation {
             .collect();
         let plugin_rows = rows
             .into_iter()
-            .map(|(keys, description, _)| {
+            .map(|(mut keys, description, binding)| {
+                // On the graph the Enter action's row also lists the keys that open the row like
+                // Enter does (`l`), ahead of Enter; the arrow stays an unlisted alias.
+                if facts.graph_jj.is_some() && binding.key == Some(KeyPress::key(KeyCode::Enter)) {
+                    if let Some(open) = &facts.open {
+                        let mut aliases: Vec<_> = open
+                            .right_aliases
+                            .iter()
+                            .copied()
+                            .filter(|key| key.code != KeyCode::Right && !keys.contains(key))
+                            .collect();
+                        aliases.append(&mut keys);
+                        keys = aliases;
+                    }
+                }
                 let (columns, zipped) = konoma_host_core::help::zip_columns(&keys, |key| vec![key]);
                 (
                     project_help::write_columns(&columns, zipped),

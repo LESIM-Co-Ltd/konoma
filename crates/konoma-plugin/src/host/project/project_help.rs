@@ -17,6 +17,8 @@ pub struct ProjectHelpWords<'a> {
     pub search: &'a str,
     pub refresh: &'a str,
     pub screens: &'a str,
+    /// Title of the graph's separate movement section.
+    pub movement: &'a str,
     pub back_to_changes: &'a str,
     pub cycle: &'a str,
     pub back: &'a str,
@@ -67,20 +69,30 @@ impl ProjectPresentation {
         }
         if self.facts.graph_jj.is_some() {
             plugin.title = words.graph.into();
-            plugin.rows.splice(
-                0..0,
-                [
-                    ("j/k / ↑/↓".into(), words.move_commit.into()),
-                    ("g/G".into(), words.ends.into()),
-                ],
-            );
+            let motions = &self.facts.motions;
+            if !motions.ends.is_empty() {
+                plugin
+                    .rows
+                    .insert(0, (joined(&motions.ends, " / "), words.ends.into()));
+            }
+            if self.facts.filter && !motions.filter.is_empty() {
+                plugin
+                    .rows
+                    .push((joined(&motions.filter, " / "), words.search.into()));
+            }
             plugin.rows.extend([
-                ("/".into(), words.search.into()),
                 ("r".into(), words.refresh.into()),
-                ("Tab / Shift-Tab".into(), words.screens.into()),
-                ("h/q/Esc".into(), words.back_to_changes.into()),
+                (cycle_keys(), words.screens.into()),
+                (self.leave_keys(), words.back_to_changes.into()),
             ]);
             sections.push(plugin);
+            let scroll = motions.plain_scroll();
+            if !scroll.is_empty() {
+                sections.push(CoreSection {
+                    title: words.movement.into(),
+                    rows: vec![(joined(&scroll, " / "), words.move_commit.into())],
+                });
+            }
         } else {
             if !plugin.rows.is_empty() {
                 sections.push(plugin);
@@ -107,16 +119,16 @@ impl ProjectPresentation {
                         .push((control.rendered_keys(), control.label));
                 }
                 if !self.facts.pushed {
-                    navigation
-                        .rows
-                        .push(("Tab / Shift-Tab".into(), words.cycle.into()));
+                    // A version-control project lists the screens it cycles; any other
+                    // provider keeps the generic wording.
+                    let description = if self.facts.vcs_jj.is_some() {
+                        words.screens
+                    } else {
+                        words.cycle
+                    };
+                    navigation.rows.push((cycle_keys(), description.into()));
                 }
-                let joined = |keys: &[KeyPress]| {
-                    keys.iter()
-                        .map(|k| help_key(*k))
-                        .collect::<Vec<_>>()
-                        .join("/")
-                };
+                let joined = |keys: &[KeyPress]| joined(keys, "/");
                 let motions = &self.facts.motions;
                 let plain = motions.plain_scroll();
                 navigation.rows.push((
@@ -181,6 +193,41 @@ impl ProjectPresentation {
             &pairs,
         ));
         sections
+    }
+}
+
+fn joined(keys: &[KeyPress], separator: &str) -> String {
+    keys.iter()
+        .map(|k| help_key(*k))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+/// The screen-cycle keys. Tab and Shift-Tab are fixed keys of the canvas (not in the host's
+/// keymap), so they are written in the help notation every other help screen uses.
+fn cycle_keys() -> String {
+    joined(
+        &[KeyPress::key(KeyCode::Tab), KeyPress::key(KeyCode::BackTab)],
+        " / ",
+    )
+}
+
+impl ProjectPresentation {
+    /// The graph's leave row: the Left keys and Esc zipped against the back keys, as the old
+    /// hub wrote it (`h / Esc  ·  q`).
+    fn leave_keys(&self) -> String {
+        let motions = &self.facts.motions;
+        let mut first = motions.left.clone();
+        for key in &motions.back {
+            if !first.contains(key) {
+                first.push(*key);
+            }
+        }
+        let esc = KeyPress::key(KeyCode::Esc);
+        let columns: Vec<Vec<KeyPress>> = (0..first.len().max(1))
+            .map(|i| first.get(i).copied().into_iter().chain((i == 0).then_some(esc)).collect())
+            .collect();
+        write_columns(&columns, true)
     }
 }
 

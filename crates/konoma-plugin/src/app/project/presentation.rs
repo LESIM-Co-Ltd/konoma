@@ -112,6 +112,7 @@ impl ProjectLoopState {
             pushed: nav.pushed(Some(declaration)),
             picker: nav.picker(),
             graph_jj: nav.graph_jj(),
+            vcs_jj: nav.vcs_jj(),
             row_target: content
                 .as_deref()
                 .and_then(|c| {
@@ -130,6 +131,7 @@ impl ProjectLoopState {
                 half_page: motion_keys(&[Motion::HalfDown, Motion::HalfUp]),
                 page: motion_keys(&[Motion::PageDown, Motion::PageUp]),
                 line_ends: motion_keys(&[Motion::LineHome, Motion::LineEnd]),
+                left: motion_keys(&[Motion::Left]),
                 // The standalone app has no per-screen keys: `q` and `/` are always bound.
                 back: vec![KeyPress::ch('q')],
                 filter: vec![KeyPress::ch('/')],
@@ -255,7 +257,8 @@ impl ProjectLoopState {
                     "行の表示文字列で絞り込み",
                 ),
                 refresh: t("refresh listing & git status", "一覧と git status を再読込"),
-                screens: if facts.graph_jj == Some(true) {
+                movement: msg(CoreMsg::HelpMove),
+                screens: if facts.vcs_jj == Some(true) {
                     t(
                         "cycle changes/log/graph/bookmarks",
                         "画面を巡回: 変更/ログ/グラフ/ブックマーク",

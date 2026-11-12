@@ -816,6 +816,24 @@ const GROUPS: &[Group] = &[
         "vcs_port_original_git_and_jj_cycles_and_contexts",
     ),
     (
+        "e2e_tab_walks_the_git_screens_both_ways",
+        &["help:tab-key-label", "help:tab-description"],
+        &["backend:git"],
+        "vcs_port_original_git_and_jj_cycles_and_contexts",
+    ),
+    (
+        "e2e_tab_skips_the_worktrees_in_a_jj_repository",
+        &["help:tab-description"],
+        &["backend:jj"],
+        "vcs_port_original_git_and_jj_cycles_and_contexts",
+    ),
+    (
+        "e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_languages",
+        &["help:graph:key-order"],
+        &["gamma"],
+        "vcs_port_graph_help_keys_and_order_equal_legacy",
+    ),
+    (
         "e2e_tab_skips_the_worktrees_in_a_jj_repository",
         &["screen:cycle", "backend:jj"],
         &["forward:log,graph,branches,changes"],
@@ -1740,8 +1758,9 @@ fn every_ported_assertion_names_an_existing_new_test() {
         // assertions), 21 frozen-frame rows, the GAP_ROWS audit-gap rows (13 for the
         // flash texts, old-name config, q/origin, filter and base pins; 5 + 2 for the worktrees
         // Space and one-Enter loops; 2 for unborn open-then-Tab; 1 for the branch footer Enter
-        // token), and the pending rows.
-        1593 + 11 - CONTEXT_ROWS_MOVED
+        // token), the 4 help rows (screen-cycle label and descriptions, graph key order) that
+        // are now ordinary assertions, and the pending rows.
+        1593 + 11 + 4 - CONTEXT_ROWS_MOVED
             + 21
             + GAP_ROWS
             + PENDING_TITLES.len()

@@ -178,6 +178,7 @@ fn cells(sim: &mut Sim, names: &[&str]) -> Value {
                 search: "filter the rows by the text they show",
                 refresh: "Refresh",
                 screens: "Cycle project screens",
+                movement: "Movement",
                 back_to_changes: back,
                 cycle: "Cycle project screens",
                 back,

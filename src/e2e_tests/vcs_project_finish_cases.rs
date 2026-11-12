@@ -574,7 +574,7 @@ fn graph_help_literals(sim: &Sim, jj: bool) {
         .iter()
         .find(|s| s.title == title)
         .expect("graph help section");
-    let mut messages = vec![Msg::GitMoveCommit, Msg::TopBottom, Msg::GitDetail];
+    let mut messages = vec![Msg::TopBottom, Msg::GitDetail];
     if jj {
         messages.extend([Msg::JjGraphAllRow, Msg::JjBookmarksRow]);
     } else {
@@ -598,10 +598,18 @@ fn graph_help_literals(sim: &Sim, jj: bool) {
         .into_iter()
         .map(|m| tr(sim.app.lang, m).to_owned())
         .collect::<Vec<_>>();
+    // The move row sits in its own Movement section after the graph section.
+    expected.push(tr(sim.app.lang, Msg::GitMoveCommit).to_owned());
     let mut actual = graph
         .rows
         .iter()
         .map(|(_, d)| d.clone())
+        .chain(
+            sections
+                .iter()
+                .filter(|s| s.title == tr(sim.app.lang, Msg::HelpMove))
+                .flat_map(|s| s.rows.iter().map(|(_, d)| d.clone())),
+        )
         .collect::<Vec<_>>();
     expected.sort();
     actual.sort();

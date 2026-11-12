@@ -432,13 +432,27 @@ fn vcs_port_original_git_and_jj_cycles_and_contexts() {
             .into_iter()
             .flat_map(|s| s.rows)
             .collect::<Vec<_>>();
-        // The help row of the screen cycle must exist; its key label and description are the
-        // pending `tab-help` decision below, so only its presence is asserted.
-        assert!(
-            rows.iter().any(|(keys, _)| keys.contains("Tab")),
-            "help has a Tab row for the screen cycle on {id}: {rows:?}"
+        // The v0.31.2 help row of the screen cycle: the label `Tab / ⇧Tab` and the backend's own
+        // list of the screens it cycles (jj has no worktrees).
+        let tab_rows: Vec<_> = rows.iter().filter(|(keys, _)| keys.contains("Tab")).collect();
+        let screens = if id == "git" {
+            crate::i18n::Msg::GitScreensHelp
+        } else {
+            crate::i18n::Msg::JjScreensHelp
+        };
+        assert_eq!(
+            tab_rows,
+            [&(
+                "Tab / ⇧Tab".to_string(),
+                crate::i18n::tr(sim.app.lang, screens).to_string()
+            )],
+            "help has exactly the legacy screen-cycle row on {id}: {rows:?}"
         );
-        super::vcs_port_map::pending_behavior("tab-help", "Tab / ⇧Tab; cycle changes/log/graph/branches/worktrees; cycle changes/log/graph/bookmarks");
+        assert_eq!(
+            tab_rows[0].1.contains("worktree"),
+            id == "git",
+            "only git cycles worktrees on {id}"
+        );
         screen(&mut sim, "log");
         press(&mut sim, KeyCode::Enter);
         assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");

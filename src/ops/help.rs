@@ -947,8 +947,9 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
         .and_then(|a| app.plugin_keys.name_of(a.plugin()))
         .map(|name| name.get(app.plugin_lang()))
         .unwrap_or_default();
-    let jj = app.project_graph_jj() == Some(true);
+    let jj = app.project_vcs_jj() == Some(true);
     let words = ProjectHelpWords {
+        movement: tr(app.lang, Msg::HelpMove),
         plugin,
         project: tr(app.lang, Msg::ProjectTitle),
         picker: tr(app.lang, Msg::GraphPickerTitle),
