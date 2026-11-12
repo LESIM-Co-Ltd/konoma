@@ -417,6 +417,31 @@ const GROUPS: &[Group] = &[
         "vcs_port_backend_contexts_and_bindings_real_repositories",
     ),
     (
+        "e2e_key_context_of_the_version_control_screens_follows_the_backend",
+        &[
+            "context:root-canvas:changes",
+            "context:root-canvas:log",
+            "context:root-canvas:graph",
+            "context:root-canvas:branches",
+            "context:root-canvas:worktrees",
+            "context:plugin-backend",
+            "context:detail",
+        ],
+        &["fixture"],
+        "vcs_port_backend_contexts_and_bindings_real_repositories",
+    ),
+    (
+        "e2e_a_backend_binding_fires_only_for_that_backend",
+        &[
+            "binding:jj.changes/jj",
+            "binding:git.changes/git",
+            "binding:git_changes/git",
+            "binding:git_changes/jj",
+        ],
+        &["fixture"],
+        "vcs_port_backend_contexts_and_bindings_real_repositories",
+    ),
+    (
         "e2e_a_backend_binding_fires_only_for_that_backend",
         &["binding:wrong-backend-stays-canvas"],
         &["jj.changes/git", "git.changes/jj"],
@@ -1530,7 +1555,12 @@ const OLD_TESTS: &[(&str, &[&str])] = IN_SCOPE_OLD_TESTS;
 /// Rows added by the audit-gap pass (see the row-count assertion for the breakdown).
 const GAP_ROWS: usize = 13 + 5 + 2 + 2 + 1;
 
-/// Grouped rows (3 assertions x git, jj) that moved to the pending side as `key-context-screen`.
+/// Grouped rows that left GROUPS before the key-context and binding rows came back as ordinary
+/// assertions: the old key-context group had the assertions `context:root-canvas`,
+/// `context:plugin-backend` and `context:detail` for the cases git and jj (3 x 2 = 6 rows), and
+/// 1593 is the table size from before they were cut out. They are now covered by the 11 rows
+/// (7 `context:*`, 4 `binding:*`) that the row-count assertion adds back, so the 6 stay
+/// subtracted.
 const CONTEXT_ROWS_MOVED: usize = 3 * 2;
 
 fn port_map() -> Vec<(&'static str, String, &'static str)> {
@@ -1707,11 +1737,16 @@ fn every_ported_assertion_names_an_existing_new_test() {
     );
     assert_eq!(
         table.len(),
-        // 1593 grouped rows, 21 frozen-frame rows, the GAP_ROWS audit-gap rows (13 for the
+        // 1593 grouped rows (+ the 11 key-context and backend-binding rows that are now ordinary
+        // assertions), 21 frozen-frame rows, the GAP_ROWS audit-gap rows (13 for the
         // flash texts, old-name config, q/origin, filter and base pins; 5 + 2 for the worktrees
         // Space and one-Enter loops; 2 for unborn open-then-Tab; 1 for the branch footer Enter
         // token), and the pending rows.
-        1593 - CONTEXT_ROWS_MOVED + 21 + GAP_ROWS + PENDING_TITLES.len() + PENDING_BEHAVIORS.len(),
+        1593 + 11 - CONTEXT_ROWS_MOVED
+            + 21
+            + GAP_ROWS
+            + PENDING_TITLES.len()
+            + PENDING_BEHAVIORS.len(),
         "a ported assertion/case row was removed"
     );
     for p in PENDING_BEHAVIORS {

@@ -111,14 +111,43 @@ impl ProjectPresentation {
                         .rows
                         .push(("Tab / Shift-Tab".into(), words.cycle.into()));
                 }
-                navigation.rows.extend([
-                    ("q / Esc".into(), words.back.into()),
-                    ("j/k / ↑/↓".into(), words.scroll.into()),
-                ]);
+                let joined = |keys: &[KeyPress]| {
+                    keys.iter()
+                        .map(|k| help_key(*k))
+                        .collect::<Vec<_>>()
+                        .join("/")
+                };
+                let motions = &self.facts.motions;
+                let plain = motions.plain_scroll();
+                navigation.rows.push((
+                    if motions.back.is_empty() {
+                        "Esc".into()
+                    } else {
+                        format!("{} / Esc", joined(&motions.back))
+                    },
+                    words.back.into(),
+                ));
+                navigation.rows.push((
+                    if plain.is_empty() {
+                        "↑/↓".into()
+                    } else {
+                        format!("{} / ↑/↓", joined(&plain))
+                    },
+                    words.scroll.into(),
+                ));
             }
             if self.facts.content == Some(ProjectPresentationContent::List) {
-                if self.facts.filter {
-                    navigation.rows.push(("/".into(), words.filter.into()));
+                if self.facts.filter && !self.facts.motions.filter.is_empty() {
+                    navigation.rows.push((
+                        self.facts
+                            .motions
+                            .filter
+                            .iter()
+                            .map(|k| help_key(*k))
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                        words.filter.into(),
+                    ));
                 }
                 if self.facts.marks {
                     navigation.rows.push(("V".into(), words.mark.into()));

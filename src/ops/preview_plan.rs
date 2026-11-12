@@ -144,7 +144,11 @@ pub fn values(
             launch: crate::ops::decl::decl(action).launch,
             layers: crate::ops::keys::keys_of(app, ctx, action)
                 .into_iter()
-                .filter_map(|key| app.keymaps.layer_of_key(ctx, key).map(|layer| (key, layer)))
+                .filter_map(|key| {
+                    app.keymaps
+                        .layer_of_key_on(ctx, app.screen_keys_for(ctx), key)
+                        .map(|layer| (key, layer))
+                })
                 .collect(),
         });
     }

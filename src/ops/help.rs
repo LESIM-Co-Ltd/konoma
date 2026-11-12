@@ -849,7 +849,10 @@ fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<R
         if decl(lead).launch {
             Sec::Launch
         } else {
-            match first_key.and_then(|k| app.keymaps.layer_of_key(ctx, k)) {
+            match first_key.and_then(|k| {
+                app.keymaps
+                    .layer_of_key_on(ctx, app.screen_keys_for(ctx), k)
+            }) {
                 Some(KeyLayer::Global) => Sec::Global,
                 Some(KeyLayer::Basic) => Sec::Move,
                 _ => Sec::View,
@@ -1151,7 +1154,7 @@ fn generic_sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     push(&mut out, Msg::HelpLaunch, take(&mut by, Sec::Launch));
     // The menus behind `y` and `Space`: every leader this screen opens.
     let mut seen: Vec<LeaderId> = Vec::new();
-    for (k, id) in app.keymaps.leader_keys_of(ctx) {
+    for (k, id) in app.keymaps.leader_keys_of_on(ctx, app.screen_keys_for(ctx)) {
         if seen.contains(&id) {
             continue;
         }

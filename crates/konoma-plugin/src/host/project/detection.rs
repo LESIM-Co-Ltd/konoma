@@ -859,6 +859,10 @@ impl ProjectDetection {
     /// (the answer was already taken by `poll`, e.g. by a drain that ran before this call, and
     /// nothing else is coming). Waiting for a slot value alone would never end in that case.
     /// The 120 s bound only guards against a worker that never answers.
+    ///
+    /// This is for the first answer only. A rescan (a later request after the first answer was
+    /// taken) is not waited for here: once `pending()` is false this returns at once, so wait for
+    /// a rescan with the `inject_event` fence instead.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn wait_for_result(&self) {
         let worker = self

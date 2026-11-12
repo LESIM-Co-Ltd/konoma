@@ -543,7 +543,7 @@ fn host_view_of(s: &mut super::Sim, with_help: bool) -> HostView {
         .filter(|_| !with_help)
         .map(|i| match i.act {
             Action::Plugin(_) => Vec::new(),
-            a => s.app.keymaps.keys_of(ctx, a),
+            a => s.app.keymaps.keys_of_on(ctx, None, a),
         })
         .collect();
     let mut bound: Vec<KeyPress> = if with_help {

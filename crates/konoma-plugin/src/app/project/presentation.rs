@@ -130,6 +130,12 @@ impl ProjectLoopState {
                 half_page: motion_keys(&[Motion::HalfDown, Motion::HalfUp]),
                 page: motion_keys(&[Motion::PageDown, Motion::PageUp]),
                 line_ends: motion_keys(&[Motion::LineHome, Motion::LineEnd]),
+                // The standalone app has no per-screen keys: `q` and `/` are always bound.
+                back: vec![KeyPress::ch('q')],
+                filter: vec![KeyPress::ch('/')],
+                help: self
+                    .keys
+                    .keys_of(CoreContext::Canvas, CoreAction::ToggleHelp),
             },
             graph_scroll: {
                 let (columns, _) =

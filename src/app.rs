@@ -3162,10 +3162,51 @@ impl App {
     /// modals, which do not use the keymap). A projection of [`App::surface`] refined by what is on
     /// screen: a decorated document vs source for the text preview, and git vs jj for the
     /// version-control screens. The one place that decides the context; `handle_key` uses nothing
-    /// else.
+    /// else. A project canvas is `Context::Canvas` whatever plugin screen it shows; the screen is
+    /// [`App::canvas_screen`].
     pub fn key_context(&self) -> Option<crate::keymap::Context> {
         let sfc = self.surface();
         crate::keymap::Context::of_surface(sfc, self.shows_document(), self.screen_is_jj(sfc))
+    }
+
+    /// The plugin screen (`git.changes`, `jj.log`, ...) a version-control project canvas shows,
+    /// built from the plugin id and screen key the canvas's navigation already carries. It is the
+    /// identity the config's `[keys."<plugin id>.<screen>"]` section addresses: those keys are
+    /// layered over the canvas's (`KeyMap::resolve_on` and its siblings take it). `None` for every
+    /// other surface and for the canvases of other plugins. It names what the canvas shows, so it
+    /// holds while an overlay (help, a menu) is in front of it; [`App::screen_keys_for`] says when
+    /// a lookup applies it.
+    #[cfg(feature = "git")]
+    pub fn canvas_screen(&self) -> Option<crate::keymap::Context> {
+        use crate::keymap::{Backend, Context, Screen};
+        let nav = self.tab.project_navigation.as_ref()?;
+        let frame = nav.frame()?;
+        Some(Context::Screen(
+            Backend::from_id(&nav.project.plugin)?,
+            Screen::from_name(&frame.key.screen)?,
+        ))
+    }
+
+    /// No version-control screens without the `git` feature.
+    #[cfg(not(feature = "git"))]
+    pub fn canvas_screen(&self) -> Option<crate::keymap::Context> {
+        None
+    }
+
+    /// The screen whose config keys layer over a lookup in `ctx`: the canvas's own screen for the
+    /// contexts the canvas takes its keys from (`Canvas`, and the `Text` table its motion keys
+    /// are read from) while the canvas shows a list or text. `None` for the `Diff` table, for a
+    /// canvas that shows a diff (the diff's own table wins there, as in the released hub), for an
+    /// overlay's own context (help, menus, dialogs) and for everything outside a canvas. Every key
+    /// lookup and hint on a canvas passes this to the `KeyMap::*_on` functions.
+    pub fn screen_keys_for(&self, ctx: crate::keymap::Context) -> Option<crate::keymap::Context> {
+        use crate::keymap::Context;
+        let own_content = !self
+            .project_content()
+            .is_some_and(|c| matches!(c.as_ref(), project_screens::ProjectContent::Diff(_)));
+        (matches!(ctx, Context::Canvas | Context::Text) && own_content)
+            .then(|| self.canvas_screen())
+            .flatten()
     }
 
     /// Whether the version-control screen `sfc` is open for a jj repository: the cached `git_vcs`

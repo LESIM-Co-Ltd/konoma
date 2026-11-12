@@ -182,7 +182,11 @@ impl App {
                     .map(|key| {
                         (
                             *key,
-                            match self.keymaps.layer_of_key(Context::Diff, *key) {
+                            match self.keymaps.layer_of_key_on(
+                                Context::Diff,
+                                self.screen_keys_for(Context::Diff),
+                                *key,
+                            ) {
                                 Some(konoma_host_core::help::KeyLayer::Basic) => {
                                     DiffHelpSection::Move
                                 }
@@ -482,7 +486,8 @@ impl App {
                 .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))),
             key.code,
             list_override,
-            self.keymaps.resolve(Context::Text, None, kp)
+            self.keymaps
+                .resolve_on(Context::Text, self.screen_keys_for(Context::Text), kp)
                 == Resolution::Action(Action::Navigate(Motion::Right)),
         )
     }
@@ -523,9 +528,11 @@ impl App {
             .label
             .get(self.plugin_lang())
             .to_string();
-        let mut candidates = self
-            .keymaps
-            .keys_of(Context::Text, Action::Navigate(Motion::Right));
+        let mut candidates = self.keymaps.keys_of_on(
+            Context::Text,
+            self.screen_keys_for(Context::Text),
+            Action::Navigate(Motion::Right),
+        );
         #[cfg(feature = "git")]
         if let Some(table) = self.keymaps.types.get(&crate::keymap::ViewType::List) {
             candidates.extend(table.keys().copied());
@@ -1075,9 +1082,15 @@ impl App {
         #[cfg(not(feature = "git"))]
         let list_override = None;
         let motion = crate::ops::keys::fixed_action(Context::Text, key.code)
-            .or_else(|| match self.keymaps.resolve(Context::Text, None, kp) {
-                Resolution::Action(action) => Some(action),
-                _ => None,
+            .or_else(|| {
+                match self.keymaps.resolve_on(
+                    Context::Text,
+                    self.screen_keys_for(Context::Text),
+                    kp,
+                ) {
+                    Resolution::Action(action) => Some(action),
+                    _ => None,
+                }
             })
             .and_then(|action| match action {
                 Action::Navigate(motion) => Some(motion),
@@ -1101,24 +1114,38 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let screen = self.screen_keys_for(Context::Canvas);
         let facts = ProjectKeyFacts {
+            unbound: ['q', '/']
+                .into_iter()
+                .filter(|c| self.keymaps.unbound_on(screen, KeyPress::ch(*c)))
+                .map(KeyCode::Char)
+                .collect(),
             blocked: self.show_help
                 || self.dialog.is_some()
                 || self.is_tab_list()
                 || self.is_bookmark_list()
                 || self.is_info(),
             leader: self.pending_leader.is_some(),
-            global: self.keymaps.layer_of_key(Context::Canvas, kp)
-                == Some(crate::keymap::KeyLayer::Global),
+            global: self.keymaps.layer_of_key_on(
+                Context::Canvas,
+                self.screen_keys_for(Context::Canvas),
+                kp,
+            ) == Some(crate::keymap::KeyLayer::Global),
             motion,
             cycle_layout: self
                 .project_content()
                 .is_some_and(|c| matches!(c.as_ref(), ProjectContent::Diff(_)))
-                && self.keymaps.resolve(Context::Diff, None, kp)
+                && self
+                    .keymaps
+                    .resolve_on(Context::Diff, self.screen_keys_for(Context::Diff), kp)
                     == Resolution::Action(Action::CycleDiffLayout),
             list_override,
-            text_right: self.keymaps.resolve(Context::Text, None, kp)
-                == Resolution::Action(Action::Navigate(Motion::Right)),
+            text_right: self.keymaps.resolve_on(
+                Context::Text,
+                self.screen_keys_for(Context::Text),
+                kp,
+            ) == Resolution::Action(Action::Navigate(Motion::Right)),
             action: action.and_then(|p| self.project_action(p).map(|a| a.id)),
             enter_action: self.project_enter_action().and_then(|action| match action {
                 Action::Plugin(p) => self.project_action(p).map(|a| a.id),
@@ -1464,6 +1491,17 @@ impl App {
         Some(self.project_presentation()?.0.controls().to_vec())
     }
 
+    /// The canvas's own fixed keys among `keys` that the effective keymap leaves bound on this
+    /// screen (a `noop` on the screen's table unbinds one). The one answer for the key handling
+    /// ([`ProjectKeyFacts::unbound`]) and the footer and help hints.
+    fn project_fixed_keys<const N: usize>(&self, keys: [char; N]) -> Vec<KeyPress> {
+        let screen = self.screen_keys_for(Context::Canvas);
+        keys.into_iter()
+            .map(KeyPress::ch)
+            .filter(|kp| !self.keymaps.unbound_on(screen, *kp))
+            .collect()
+    }
+
     pub(crate) fn project_presentation(&self) -> Option<(ProjectPresentation, Vec<PluginAct>)> {
         use crate::keymap::{Action, LeaderId, Motion};
         if !self.project_active() {
@@ -1473,7 +1511,13 @@ impl App {
         let motion_keys = |motions: &[Motion]| {
             motions
                 .iter()
-                .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(*m)))
+                .flat_map(|m| {
+                    self.keymaps.keys_of_on(
+                        Context::Text,
+                        self.screen_keys_for(Context::Text),
+                        Action::Navigate(*m),
+                    )
+                })
                 .collect()
         };
         let filter_label = self.tab.project_navigation.as_ref().and_then(|nav| {
@@ -1519,10 +1563,21 @@ impl App {
                 scroll: motion_keys(&[Motion::Down, Motion::Up]),
                 hscroll: motion_keys(&[Motion::Left, Motion::Right]),
                 ends: motion_keys(&[Motion::Top, Motion::Bottom]),
-                diff_layout: self.keymaps.keys_of(Context::Diff, Action::CycleDiffLayout),
+                diff_layout: self.keymaps.keys_of_on(
+                    Context::Diff,
+                    self.screen_keys_for(Context::Diff),
+                    Action::CycleDiffLayout,
+                ),
                 half_page: motion_keys(&[Motion::HalfDown, Motion::HalfUp]),
                 page: motion_keys(&[Motion::PageDown, Motion::PageUp]),
                 line_ends: motion_keys(&[Motion::LineHome, Motion::LineEnd]),
+                back: self.project_fixed_keys(['q']),
+                filter: self.project_fixed_keys(['/']),
+                help: self.keymaps.keys_of_on(
+                    Context::Canvas,
+                    self.screen_keys_for(Context::Canvas),
+                    Action::ToggleHelp,
+                ),
             },
             graph_scroll,
             copy_keys: if bindings
@@ -1530,7 +1585,7 @@ impl App {
                 .any(|b| b.binding.copy_key.is_some() && b.enabled)
             {
                 self.keymaps
-                    .leader_keys_of(Context::Canvas)
+                    .leader_keys_of_on(Context::Canvas, self.screen_keys_for(Context::Canvas))
                     .into_iter()
                     .filter(|(_, id)| *id == LeaderId::Copy)
                     .map(|(key, _)| key)

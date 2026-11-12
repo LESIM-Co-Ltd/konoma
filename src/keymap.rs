@@ -828,6 +828,12 @@ pub struct KeyMap {
     /// Each context's own table (layer 4 in the design's numbering): what it adds to, or does
     /// differently from, the layers below it.
     pub contexts: HashMap<Context, ContextMap>,
+    /// The keys the config wrote for a plugin's screen (`[keys."git.changes"]`, and the old
+    /// `git_changes` for both backends), kept apart from the defaults of `contexts`. A project
+    /// canvas has the canvas's defaults, not the old per-screen ones; the user's own keys for
+    /// its screen sit on top ([`KeyMap::resolve_canvas_screen`]).
+    #[cfg(feature = "git")]
+    pub screen_keys: HashMap<Context, ContextMap>,
     /// Layer 2: keys shared by the contexts that show the same kind of thing.
     pub types: HashMap<ViewType, ContextMap>,
     /// Layer 1: keys every context with a cursor shares ([`Context::inherits_basic`]).
@@ -884,6 +890,11 @@ impl Backend {
             Backend::Jj => "jj",
         }
     }
+
+    /// The backend whose plugin id is `id` (the reverse of [`Backend::id`]).
+    pub fn from_id(id: &str) -> Option<Backend> {
+        Backend::ALL.into_iter().find(|b| b.id() == id)
+    }
 }
 
 /// The screens of the version-control views (the second half of `git.changes`).
@@ -921,6 +932,11 @@ impl Screen {
             Screen::Worktrees => "worktrees",
             Screen::Detail => "detail",
         }
+    }
+
+    /// The screen named `name` (the reverse of [`Screen::name`]).
+    pub fn from_name(name: &str) -> Option<Screen> {
+        Screen::ALL.into_iter().find(|s| s.name() == name)
     }
 
     /// The old (pre-context) surface name of this screen: `git_changes` for [`Screen::Changes`].
@@ -1659,6 +1675,8 @@ impl KeyMap {
 
         let mut km = KeyMap {
             contexts,
+            #[cfg(feature = "git")]
+            screen_keys: HashMap::new(),
             types,
             basic,
             global,
@@ -1936,6 +1954,11 @@ impl KeyMap {
                 }
             },
             KeyTarget::Context(c) => {
+                #[cfg(feature = "git")]
+                if matches!(c, Context::Screen(..)) {
+                    let own = self.screen_keys.entry(c).or_default();
+                    own.insert(kp, action.map_or(Binding::Unbound, Binding::Run));
+                }
                 let inherited = self.inherited(c, kp).is_some();
                 let table = self.contexts.entry(c).or_default();
                 match action {
@@ -2127,20 +2150,64 @@ impl KeyMap {
         }
         Resolution::Unbound
     }
-}
 
-impl KeyMap {
-    /// Every key that runs `action` in `ctx` right now (config applied), in a fixed display order:
-    /// plain characters first, then Ctrl-chords, then named keys. A key counts only if it
-    /// *resolves* to the action, so a key shadowed by a more specific layer is not listed. The
-    /// fixed keys (`Enter`, `Esc`, ...) are not in the keymap; `ops::keys` adds them.
-    pub fn keys_of(&self, ctx: Context, action: Action) -> Vec<KeyPress> {
+    /// The keys the config wrote for the plugin screen `screen` (`Context::Screen(..)`, from
+    /// `App::canvas_screen`), if the canvas shows one. The one place the canvas's screen keys are
+    /// read: every `*_on` lookup below (key handling and every hint) goes through it.
+    #[cfg(feature = "git")]
+    fn screen_table(&self, screen: Option<Context>) -> Option<&ContextMap> {
+        self.screen_keys.get(&screen?)
+    }
+
+    #[cfg(not(feature = "git"))]
+    fn screen_table(&self, _screen: Option<Context>) -> Option<&ContextMap> {
+        None
+    }
+
+    /// Whether the config unbinds `kp` (`noop`) on the project canvas that shows `screen`. The
+    /// canvas's own fixed keys (`q`, `/`) are not in the keymap; this is how the one effective-keys
+    /// answer reaches them, for the key handling and the footer alike.
+    pub fn unbound_on(&self, screen: Option<Context>, kp: KeyPress) -> bool {
+        matches!(
+            self.screen_table(screen).and_then(|m| m.get(&kp)),
+            Some(Binding::Unbound)
+        )
+    }
+
+    /// [`KeyMap::resolve`] (no leader pending) on a project canvas that shows `screen`: the keys
+    /// the config wrote for that screen sit on top of `ctx`'s layers. The screen has no default
+    /// table of its own here (the canvas's keys and the plugin's actions are the defaults), so a
+    /// key written for `git.changes` acts on the git changes screen only. A `none` entry hides
+    /// the layers below it like an `Unbound` mark in a context's own table: `global` still
+    /// applies.
+    pub fn resolve_on(&self, ctx: Context, screen: Option<Context>, kp: KeyPress) -> Resolution {
+        match self.screen_table(screen).and_then(|m| m.get(&kp)) {
+            Some(Binding::Unbound) => match self.global.get(&kp) {
+                Some(b) => binding_to_resolution(b),
+                None => Resolution::Unbound,
+            },
+            Some(b) => binding_to_resolution(b),
+            None => self.resolve(ctx, None, kp),
+        }
+    }
+
+    /// Every key that runs `action` in `ctx` right now (config applied; `screen` is the canvas's
+    /// plugin screen or `None`, see [`KeyMap::resolve_on`]), in a fixed display order: plain
+    /// characters first, then Ctrl-chords, then named keys. A key counts only if it *resolves* to
+    /// the action, so a key shadowed by a more specific layer is not listed. The fixed keys
+    /// (`Enter`, `Esc`, ...) are not in the keymap; `ops::keys` adds them.
+    pub fn keys_of_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+        action: Action,
+    ) -> Vec<KeyPress> {
         let want = Binding::Run(action);
         let mut out: Vec<KeyPress> = Vec::new();
-        self.each_key_of(ctx, |k, b| {
+        self.each_key_of_on(ctx, screen, |k, b| {
             if *b == want
                 && !out.contains(&k)
-                && self.resolve(ctx, None, k) == Resolution::Action(action)
+                && self.resolve_on(ctx, screen, k) == Resolution::Action(action)
             {
                 out.push(k);
             }
@@ -2149,13 +2216,16 @@ impl KeyMap {
         out
     }
 
-    /// Every `(key, operation)` pair that resolves in `ctx` right now (config applied), in the
-    /// order of `display_order`. Menus, `Unbound` marks and shadowed keys are left out.
-    pub fn bound_actions(&self, ctx: Context) -> Vec<(KeyPress, Action)> {
+    /// [`KeyMap::bound_actions`] on a canvas that shows `screen` (see [`KeyMap::resolve_on`]).
+    pub fn bound_actions_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+    ) -> Vec<(KeyPress, Action)> {
         let mut out: Vec<(KeyPress, Action)> = Vec::new();
-        self.each_key_of(ctx, |k, b| {
+        self.each_key_of_on(ctx, screen, |k, b| {
             if let Binding::Run(a) = b {
-                if self.resolve(ctx, None, k) == Resolution::Action(*a)
+                if self.resolve_on(ctx, screen, k) == Resolution::Action(*a)
                     && !out.iter().any(|(o, _)| *o == k)
                 {
                     out.push((k, *a));
@@ -2166,13 +2236,17 @@ impl KeyMap {
         out
     }
 
-    /// The keys that open a leader menu in `ctx` (`y`, `Space`, ...), with the menu each opens.
-    pub fn leader_keys_of(&self, ctx: Context) -> Vec<(KeyPress, LeaderId)> {
+    /// [`KeyMap::leader_keys_of`] on a canvas that shows `screen` (see [`KeyMap::resolve_on`]).
+    pub fn leader_keys_of_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+    ) -> Vec<(KeyPress, LeaderId)> {
         let mut out: Vec<(KeyPress, LeaderId)> = Vec::new();
-        self.each_key_of(ctx, |k, b| {
+        self.each_key_of_on(ctx, screen, |k, b| {
             if let Binding::Leader(id) = b {
                 if !out.iter().any(|(o, _)| *o == k)
-                    && self.resolve(ctx, None, k) == Resolution::EnterLeader(*id)
+                    && self.resolve_on(ctx, screen, k) == Resolution::EnterLeader(*id)
                 {
                     out.push((k, *id));
                 }
@@ -2180,6 +2254,46 @@ impl KeyMap {
         });
         out.sort_by_key(|(k, _)| display_order(*k));
         out
+    }
+
+    /// [`KeyMap::layer_of_key`] on a canvas that shows `screen` (see [`KeyMap::resolve_on`]).
+    pub fn layer_of_key_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+        kp: KeyPress,
+    ) -> Option<KeyLayer> {
+        match self.screen_table(screen).and_then(|m| m.get(&kp)) {
+            Some(Binding::Unbound) => self.global.contains_key(&kp).then_some(KeyLayer::Global),
+            Some(_) => Some(KeyLayer::View),
+            None => self.layer_of_key(ctx, kp),
+        }
+    }
+
+    /// [`KeyMap::each_key_of`] plus the keys the config wrote for `screen`.
+    fn each_key_of_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+        mut f: impl FnMut(KeyPress, &Binding),
+    ) {
+        if let Some(m) = self.screen_table(screen) {
+            m.iter().for_each(|(k, b)| f(*k, b));
+        }
+        self.each_key_of(ctx, f);
+    }
+}
+
+impl KeyMap {
+    /// Every `(key, operation)` pair that resolves in `ctx` right now (config applied), in the
+    /// order of `display_order`. Menus, `Unbound` marks and shadowed keys are left out.
+    pub fn bound_actions(&self, ctx: Context) -> Vec<(KeyPress, Action)> {
+        self.bound_actions_on(ctx, None)
+    }
+
+    /// The keys that open a leader menu in `ctx` (`y`, `Space`, ...), with the menu each opens.
+    pub fn leader_keys_of(&self, ctx: Context) -> Vec<(KeyPress, LeaderId)> {
+        self.leader_keys_of_on(ctx, None)
     }
 
     /// Visit every `(key, binding)` of the tables `ctx` looks into: its own, its view types',

@@ -434,7 +434,7 @@ fn candidates(
         return declared;
     }
     let skeleton = Skeleton {
-        bound: app.keymaps.bound_actions(ctx),
+        bound: app.keymaps.bound_actions_on(ctx, app.screen_keys_for(ctx)),
         // What the context has by default but no key reaches now (moved away by `[keys]`, or lost
         // to a conflict).
         defaults: app

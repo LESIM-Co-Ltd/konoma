@@ -2494,6 +2494,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // The keymap context: `None` exactly on the surfaces that do not use the keymap (text input,
     // confirm modals), which are handled before any lookup below.
     let ctx = app.key_context();
+    // The plugin screen a project canvas shows: its `[keys."<id>.<screen>"]` keys sit on top of
+    // the context's own layers in every lookup below.
+    let screen = ctx.and_then(|c| app.screen_keys_for(c));
 
     if app.follow_enabled() {
         // User's choice (2026-07-23): follow is maximally sticky = within the follow diff, every
@@ -2504,7 +2507,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         let leaves_follow_view = app.pending_leader.is_none()
             && ctx.is_some_and(|c| {
                 matches!(
-                    app.keymaps.resolve(c, None, KeyPress::norm(&key)),
+                    app.keymaps.resolve_on(c, screen, KeyPress::norm(&key)),
                     Resolution::Action(Action::PreviewBack)
                 )
             });
@@ -2546,7 +2549,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     if let Some(a) = app.plugin_action_for_key(ctx, kp) {
         return dispatch_action(app, a, sfc);
     }
-    match app.keymaps.resolve(ctx, None, kp) {
+    match app.keymaps.resolve_on(ctx, screen, kp) {
         Resolution::EnterLeader(id) => {
             // The copy leader (default `y`) always opens the which-key menu. While focused on a
             // code block in decorated Markdown, `c:code block` appears in that menu and is

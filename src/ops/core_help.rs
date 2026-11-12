@@ -53,7 +53,7 @@ impl KeyLookup for HostLookup<'_> {
                 };
                 self.app
                     .keymaps
-                    .leader_keys_of(self.ctx)
+                    .leader_keys_of_on(self.ctx, self.app.screen_keys_for(self.ctx))
                     .into_iter()
                     .filter(|(_, l)| *l == id)
                     .map(|(k, _)| k)
@@ -66,7 +66,9 @@ impl KeyLookup for HostLookup<'_> {
     }
 
     fn layer_of(&self, key: KeyPress) -> Option<KeyLayer> {
-        self.app.keymaps.layer_of_key(self.ctx, key)
+        self.app
+            .keymaps
+            .layer_of_key_on(self.ctx, self.app.screen_keys_for(self.ctx), key)
     }
 }
 

@@ -929,6 +929,12 @@ fn vcs_port_backend_contexts_and_bindings_real_repositories() {
     }
     let root = super::vcs_changes::git_repo("vcs_finish_context", true);
     let contexts = |root: &std::path::Path, id: &str| {
+        use crate::keymap::{Backend, Screen};
+        let backend = match id {
+            "git" => Backend::Git,
+            "jj" => Backend::Jj,
+            other => panic!("unexpected backend {other}"),
+        };
         let mut sim = open(root, config(id, "en"), (180, 24));
         for name in if id == "git" {
             vec!["changes", "log", "graph", "branches", "worktrees"]
@@ -936,12 +942,22 @@ fn vcs_port_backend_contexts_and_bindings_real_repositories() {
             vec!["changes", "log", "graph", "branches"]
         } {
             screen(&mut sim, name);
-            // Old: Context::Screen(backend, screen). The new path's context is not pinned here;
-            // it is recorded as the pending decision `key-context-screen`.
-            super::vcs_port_map::pending_behavior(
-                "key-context-screen",
-                "old key_context() == Some(Context::Screen(backend, screen))",
+            // Old: Context::Screen(backend, screen). The expected screen is spelled out here, not
+            // derived through the production name lookup.
+            let expected = match name {
+                "changes" => Screen::Changes,
+                "log" => Screen::Log,
+                "graph" => Screen::Graph,
+                "branches" => Screen::Branches,
+                "worktrees" => Screen::Worktrees,
+                other => panic!("unexpected screen {other}"),
+            };
+            assert_eq!(
+                sim.app.canvas_screen(),
+                Some(Context::Screen(backend, expected)),
+                "{id}/{name}"
             );
+            assert_eq!(sim.app.key_context(), Some(Context::Canvas), "{id}/{name}");
             assert_eq!(
                 sim.app
                     .tab
@@ -961,11 +977,13 @@ fn vcs_port_backend_contexts_and_bindings_real_repositories() {
         screen(&mut sim, "log");
         press(&mut sim, KeyCode::Enter);
         assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");
-        // Old: Context::Screen(backend, Detail); recorded as the pending `key-context-screen`.
-        super::vcs_port_map::pending_behavior(
-            "key-context-screen",
-            "old key_context() == Some(Context::Screen(backend, Detail))",
+        // Old: Context::Screen(backend, Detail).
+        assert_eq!(
+            sim.app.canvas_screen(),
+            Some(Context::Screen(backend, Screen::Detail)),
+            "{id}/detail"
         );
+        assert_eq!(sim.app.key_context(), Some(Context::Canvas), "{id}/detail");
     };
     let binding = |table: &str, root: &std::path::Path, id: &str, expected: bool| {
         let mut cfg = config(id, "en");
@@ -974,18 +992,13 @@ fn vcs_port_backend_contexts_and_bindings_real_repositories() {
             .insert(table.into(), [("Z".into(), "toggle_help".into())].into());
         let mut sim = open(root, cfg, (180, 24));
         keys(&mut sim, "Z");
-        if expected {
-            super::vcs_port_map::pending_behavior(
-                "backend-bindings",
-                "legacy backend-specific binding opens Help",
-            );
-        } else {
-            assert_ne!(
-                sim.app.key_context(),
-                Some(Context::Help),
-                "backend binding {table}/{id}"
-            );
-        }
+        // Old: the binding fires (Help opens) exactly on the backend the table names; the old
+        // name `git_changes` reaches both.
+        assert_eq!(
+            sim.app.key_context() == Some(Context::Help),
+            expected,
+            "[keys.{table:?}] on {id}"
+        );
     };
     contexts(&root, "git");
     for (table, on_git) in [("jj.changes", false), ("git.changes", true), ("git_changes", true)] {
@@ -1180,4 +1193,147 @@ fn vcs_port_backend_display_words_copy_labels_and_project_origin() {
     super::vcs_log::jj(&jj, &["bookmark", "create", "-r", "@", "main"]);
     std::fs::write(jj.join("changed.txt"), "new\n").unwrap();
     display(&jj, "jj");
+}
+
+/// The footer tokens, the help text and the Space menu rows the app shows on its canvas now.
+fn shown_hints(sim: &Sim) -> (String, String, String) {
+    let footer = crate::ui::status::hint_tokens(&sim.app).join("  ");
+    let help = crate::ui::help::help_lines(&sim.app)
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ctx = sim.app.key_context().expect("a canvas context");
+    let menu = crate::ops::menu::menu(
+        &sim.app,
+        ctx,
+        crate::keymap::LeaderId::Actions,
+        crate::ops::menu::View::Open,
+    )
+    .expect("the Space menu")
+    .items
+    .iter()
+    .map(|i| format!("{:?}:{}", i.key.code, i.label))
+    .collect::<Vec<_>>()
+    .join("  ");
+    (footer, help, menu)
+}
+
+#[test]
+fn vcs_port_screen_keys_decide_the_keys_and_the_footer_hint_together() {
+    if isolated("vcs_port_screen_keys_decide_the_keys_and_the_footer_hint_together") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_screen_keys", true);
+    // `noop` is the config's unbind word. `[keys."git.changes"] j = "noop"`: j does nothing on
+    // git changes and its hint goes with it; git log keeps j.
+    for table in ["git.changes", "git_changes"] {
+        let mut cfg = config("git", "en");
+        cfg.keys
+            .surfaces
+            .insert(table.into(), [("j".into(), "noop".into())].into());
+        let mut sim = open(&root, cfg, (180, 24));
+        let before = sim.app.project_act_context().selected;
+        keys(&mut sim, "j");
+        assert_eq!(sim.app.project_act_context().selected, before, "{table}: j acts");
+        keys(&mut sim, "k");
+        let (footer, help, _) = shown_hints(&sim);
+        assert!(footer.contains("k:move") && !footer.contains("j/k:move"), "{table}: {footer}");
+        // The help body's scroll row reads the same keys (the list screen's row is the arrows
+        // plus what is still bound).
+        assert!(help.contains("k / ↑/↓") && !help.contains("j/k / ↑/↓"), "{table}: {help}");
+        screen(&mut sim, "log");
+        let (footer, _, _) = shown_hints(&sim);
+        assert!(footer.contains("j/k:move"), "{table} on log: {footer}");
+    }
+    // The other backend's table does not reach git.
+    let mut cfg = config("git", "en");
+    cfg.keys
+        .surfaces
+        .insert("jj.changes".into(), [("j".into(), "noop".into())].into());
+    let sim = open(&root, cfg, (180, 24));
+    assert!(shown_hints(&sim).0.contains("j/k:move"));
+    // A key written for the screen acts there (and only there).
+    for (table, acts) in [("git.changes", true), ("git_changes", true), ("jj.changes", false)] {
+        let mut cfg = config("git", "en");
+        cfg.keys
+            .surfaces
+            .insert(table.into(), [("Z".into(), "toggle_help".into())].into());
+        let mut sim = open(&root, cfg, (180, 24));
+        keys(&mut sim, "Z");
+        assert_eq!(sim.app.key_context() == Some(Context::Help), acts, "{table}");
+    }
+}
+
+#[test]
+fn vcs_port_screen_keys_back_filter_help_follow_the_effective_keys() {
+    if isolated("vcs_port_screen_keys_back_filter_help_follow_the_effective_keys") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_screen_keys_fixed", true);
+    // Defaults: the three controls and the help rows are shown.
+    {
+        let sim = open(&root, config("git", "en"), (180, 24));
+        let (footer, help, _) = shown_hints(&sim);
+        for word in ["q:back", "/:filter", "?:help"] {
+            assert!(footer.contains(word), "default footer {word}: {footer}");
+        }
+        assert!(help.contains("j/k / ↑/↓"), "default help: {help}");
+    }
+    // `q` and `/` unbound on git.changes (both spellings of the table): the keys do nothing and
+    // their controls and help rows go; git log keeps them.
+    for table in ["git.changes", "git_changes"] {
+        let mut cfg = config("git", "en");
+        cfg.keys.surfaces.insert(
+            table.into(),
+            [("q".into(), "noop".into()), ("/".into(), "noop".into())].into(),
+        );
+        let mut sim = open(&root, cfg, (180, 24));
+        keys(&mut sim, "q");
+        assert!(sim.app.project_active(), "{table}: q still leaves");
+        keys(&mut sim, "/");
+        assert!(
+            !sim.app.project_frame().is_some_and(|f| f.filtering),
+            "{table}: / still filters"
+        );
+        let (footer, help, _) = shown_hints(&sim);
+        assert!(!footer.contains("q:back"), "{table}: {footer}");
+        assert!(!footer.contains("/:filter"), "{table}: {footer}");
+        assert!(footer.contains("?:help"), "{table}: {footer}");
+        assert!(!help.contains("q / Esc"), "{table}: {help}");
+        screen(&mut sim, "log");
+        let (footer, _, _) = shown_hints(&sim);
+        assert!(footer.contains("q:back"), "{table} on log: {footer}");
+        assert!(footer.contains("/:filter"), "{table} on log: {footer}");
+        keys(&mut sim, "/");
+        assert!(sim.app.project_frame().is_some_and(|f| f.filtering));
+    }
+    // jj's table does not reach git.
+    let mut cfg = config("git", "en");
+    cfg.keys.surfaces.insert(
+        "jj.changes".into(),
+        [("q".into(), "noop".into()), ("/".into(), "noop".into())].into(),
+    );
+    let mut sim = open(&root, cfg, (180, 24));
+    let footer = shown_hints(&sim).0;
+    assert!(footer.contains("q:back") && footer.contains("/:filter"), "{footer}");
+    keys(&mut sim, "/");
+    assert!(sim.app.project_frame().is_some_and(|f| f.filtering));
+    // A help key written for the screen acts, is shown in the footer, and is in the help; the
+    // global `?` stays (a context-level noop does not hide a global key).
+    for table in ["git.changes", "git_changes"] {
+        let mut cfg = config("git", "en");
+        cfg.keys
+            .surfaces
+            .insert(table.into(), [("Z".into(), "toggle_help".into())].into());
+        let mut sim = open(&root, cfg, (180, 24));
+        let (footer, _, _) = shown_hints(&sim);
+        assert!(footer.contains("Z:help") || footer.contains("?/Z:help"), "{table}: {footer}");
+        keys(&mut sim, "Z");
+        assert_eq!(sim.app.key_context(), Some(Context::Help), "{table}");
+        keys(&mut sim, "?");
+        screen(&mut sim, "log");
+        let (footer, _, _) = shown_hints(&sim);
+        assert!(!footer.contains("Z:help") && !footer.contains("/Z:help"), "{table} on log: {footer}");
+    }
 }

@@ -112,6 +112,35 @@ pub struct ProjectMotionKeys {
     pub half_page: Vec<KeyPress>,
     pub page: Vec<KeyPress>,
     pub line_ends: Vec<KeyPress>,
+    /// The canvas's own `q` (leave), `/` (filter) and the help key, as the host's effective keys
+    /// on this screen: empty when the config unbinds them, the bound key when it moves them.
+    pub back: Vec<KeyPress>,
+    pub filter: Vec<KeyPress>,
+    pub help: Vec<KeyPress>,
+}
+
+impl ProjectMotionKeys {
+    /// The plain character keys shown for moving up/down: the lowercase ones when the keymap has
+    /// any (`j`/`k`), so an uppercase alias such as `J` is not listed next to them; otherwise
+    /// every plain character key, so a remapped screen still shows its own keys.
+    pub fn plain_scroll(&self) -> Vec<KeyPress> {
+        let plain: Vec<KeyPress> = self
+            .scroll
+            .iter()
+            .copied()
+            .filter(|k| matches!(k.code, KeyCode::Char(_)) && !k.ctrl)
+            .collect();
+        let lower: Vec<KeyPress> = plain
+            .iter()
+            .copied()
+            .filter(|k| matches!(k.code, KeyCode::Char(c) if !c.is_uppercase()))
+            .collect();
+        if lower.is_empty() {
+            plain
+        } else {
+            lower
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -242,25 +271,35 @@ impl ProjectPresentation {
                 ProjectControl::new(Id::Screens, tabs(), words.screens).shared(),
                 ProjectControl::new(
                     Id::Move,
-                    vec![KeyPress::ch('j'), KeyPress::ch('k')],
+                    // The plain character keys the keymap gives the down/up motions on this
+                    // screen (`j`/`k` by default); a key the config unbinds is not shown.
+                    facts.motions.plain_scroll(),
                     if list { words.move_list } else { words.scroll },
                 )
                 .shared(),
             ];
+            controls.retain(|c| c.id != Id::Move || !c.keys.is_empty());
             if list && facts.marks {
                 controls.push(
                     ProjectControl::new(Id::Mark, vec![KeyPress::ch('V')], words.mark).shared(),
                 );
             }
-            if list && facts.filter {
+            if list && facts.filter && !facts.motions.filter.is_empty() {
                 controls.push(
-                    ProjectControl::new(Id::Filter, vec![KeyPress::ch('/')], words.filter).shared(),
+                    ProjectControl::new(Id::Filter, facts.motions.filter.clone(), words.filter)
+                        .shared(),
                 );
             }
-            controls
-                .push(ProjectControl::new(Id::Back, vec![KeyPress::ch('q')], words.back).shared());
-            controls
-                .push(ProjectControl::new(Id::Help, vec![KeyPress::ch('?')], words.help).shared());
+            if !facts.motions.back.is_empty() {
+                controls.push(
+                    ProjectControl::new(Id::Back, facts.motions.back.clone(), words.back).shared(),
+                );
+            }
+            if !facts.motions.help.is_empty() {
+                controls.push(
+                    ProjectControl::new(Id::Help, facts.motions.help.clone(), words.help).shared(),
+                );
+            }
             controls
         });
         if let Some(open) = facts
@@ -563,15 +602,12 @@ fn text_controls(
     if !facts.pushed {
         hints.push(ProjectControl::new(Id::Screens, tabs(), words.cycle).shared());
     }
-    hints.push(
-        ProjectControl::new(
-            Id::Back,
-            vec![KeyPress::ch('q'), KeyPress::key(KeyCode::Esc)],
-            words.pop,
-        )
-        .shared(),
-    );
-    hints.push(ProjectControl::new(Id::Help, vec![KeyPress::ch('?')], words.help).shared());
+    let mut leave = facts.motions.back.clone();
+    leave.push(KeyPress::key(KeyCode::Esc));
+    hints.push(ProjectControl::new(Id::Back, leave, words.pop).shared());
+    if !facts.motions.help.is_empty() {
+        hints.push(ProjectControl::new(Id::Help, facts.motions.help.clone(), words.help).shared());
+    }
     Some(hints)
 }
 

@@ -50,11 +50,6 @@ fn vcs_port_original_log_detail_history_and_six_copy_keys() {
     }
     screen(&mut sim, "graph");
     keys(&mut sim, "g");
-    // Old hub: Context::Screen(backend, Graph) / Screen(backend, Detail); recorded as pending.
-    super::vcs_port_map::pending_behavior(
-        "key-context-screen",
-        "old key_context() == Some(Context::Screen(backend, screen)) on graph and detail",
-    );
     for detail in [false, true] {
         if detail {
             press(&mut sim, KeyCode::Enter);
@@ -62,6 +57,19 @@ fn vcs_port_original_log_detail_history_and_six_copy_keys() {
         assert_eq!(
             sim.app.project_frame().unwrap().key.screen,
             if detail { "detail" } else { "graph" }
+        );
+        // Old hub: Context::Screen(backend, Graph) / Screen(backend, Detail).
+        assert_eq!(
+            sim.app.canvas_screen(),
+            Some(crate::keymap::Context::Screen(
+                crate::keymap::Backend::Git,
+                if detail {
+                    crate::keymap::Screen::Detail
+                } else {
+                    crate::keymap::Screen::Graph
+                }
+            )),
+            "graph/detail key context"
         );
         keys(&mut sim, "y");
         assert_eq!(sim.app.pending_leader, Some(LeaderId::Copy));
@@ -74,11 +82,15 @@ fn vcs_port_original_log_detail_history_and_six_copy_keys() {
     let mut sim = open(&root, config("git", "en"), (180, 30));
     screen(&mut sim, "log");
     sim.see("init");
-    // Old hub: Context::Screen(backend, Log); recorded as pending.
-    super::vcs_port_map::pending_behavior(
-        "key-context-screen",
-        "old key_context() == Some(Context::Screen(backend, Log))",
+    // Old hub: Context::Screen(backend, Log).
+    assert_eq!(
+        sim.app.canvas_screen(),
+        Some(crate::keymap::Context::Screen(
+            crate::keymap::Backend::Git,
+            crate::keymap::Screen::Log
+        ))
     );
+    assert_eq!(sim.app.key_context(), Some(crate::keymap::Context::Canvas));
     let meta = crate::git::commit_meta(&root, &selected_value(&sim)).unwrap();
     assert_eq!(meta.message.lines().next(), Some("init"));
     assert_eq!(meta.author, "t");
@@ -381,11 +393,24 @@ fn vcs_port_original_git_and_jj_cycles_and_contexts() {
         {
             press(&mut sim, code);
             assert_eq!(sim.app.project_frame().unwrap().key.screen, expected);
-            // Old hub: Context::Screen(backend, screen); recorded as pending.
-            super::vcs_port_map::pending_behavior(
-                "key-context-screen",
-                "old key_context() == Some(Context::Screen(backend, screen)) after Tab/BackTab",
-            );
+            // Old hub: Context::Screen(backend, screen) after every Tab / BackTab.
+            {
+                use crate::keymap::{Backend, Context, Screen};
+                let backend = if id == "git" { Backend::Git } else { Backend::Jj };
+                let screen = match expected {
+                    "changes" => Screen::Changes,
+                    "log" => Screen::Log,
+                    "graph" => Screen::Graph,
+                    "branches" => Screen::Branches,
+                    "worktrees" => Screen::Worktrees,
+                    other => panic!("unexpected screen {other}"),
+                };
+                assert_eq!(
+                    sim.app.canvas_screen(),
+                    Some(Context::Screen(backend, screen)),
+                    "{id}/{expected} after Tab/BackTab"
+                );
+            }
             assert_eq!(
                 sim.app
                     .tab

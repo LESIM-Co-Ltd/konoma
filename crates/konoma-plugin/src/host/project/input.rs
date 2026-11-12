@@ -26,6 +26,10 @@ pub struct ProjectKeyFacts {
     pub policy: ProjectWritePolicy,
     pub viewport: ProjectViewport,
     pub layout: DiffLayout,
+    /// The canvas's own fixed keys (`q` leaves, `/` filters) that the host's effective keymap has
+    /// unbound on this screen. Such a key does nothing and is not shown; the footer's controls
+    /// read the same effective keys.
+    pub unbound: Vec<KeyCode>,
 }
 
 impl Default for ProjectKeyFacts {
@@ -44,6 +48,7 @@ impl Default for ProjectKeyFacts {
             policy: ProjectWritePolicy::default(),
             viewport: ProjectViewport::default(),
             layout: DiffLayout::Unified,
+            unbound: Vec::new(),
         }
     }
 }
@@ -107,16 +112,16 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             .runtimes
             .get(&nav.project)
             .map(|r| &r.project.declaration);
+        let off = |c: char| facts.unbound.contains(&KeyCode::Char(c));
         let navigation = !interaction
             && !facts.leader
-            && (matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Tab | KeyCode::BackTab
-            ) || declaration.is_some_and(|d| {
-                d.screens
-                    .iter()
-                    .any(|s| s.key.is_some_and(|c| key.code == KeyCode::Char(c)))
-            }));
+            && (matches!(key.code, KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab)
+                || key.code == KeyCode::Char('q') && !off('q')
+                || declaration.is_some_and(|d| {
+                    d.screens
+                        .iter()
+                        .any(|s| s.key.is_some_and(|c| key.code == KeyCode::Char(c)))
+                }));
         let global = !interaction
             && (key
                 .modifiers
@@ -125,16 +130,16 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         let local_movement = !interaction
             && !facts.leader
             && self.content(context).is_some()
-            && matches!(
+            && (matches!(
                 key.code,
-                KeyCode::Char('j' | 'k' | 'g' | 'G' | 'V' | '/')
+                KeyCode::Char('j' | 'k' | 'g' | 'G' | 'V')
                     | KeyCode::Up
                     | KeyCode::Down
                     | KeyCode::Home
                     | KeyCode::End
                     | KeyCode::PageUp
                     | KeyCode::PageDown
-            );
+            ) || key.code == KeyCode::Char('/') && !off('/'));
         if !navigation
             && !global
             && !local_movement
@@ -246,7 +251,8 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             KeyCode::Esc if nav.frame().is_some_and(|f| !f.query.is_empty()) => {
                 nav.clear_filter(content.as_deref())
             }
-            KeyCode::Char('q') | KeyCode::Esc => update.dispatch = ProjectDispatch::LeaveProject,
+            KeyCode::Char('q') if !off('q') => update.dispatch = ProjectDispatch::LeaveProject,
+            KeyCode::Esc => update.dispatch = ProjectDispatch::LeaveProject,
             KeyCode::Tab | KeyCode::BackTab => {
                 let Some(runtime) = self.runtimes.get(&nav.project) else {
                     return ProjectUpdate::new(ProjectDispatch::Unhandled);
@@ -274,7 +280,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                 *frame = ProjectFrame::new(ScreenKey::new(&screens[next].id, context.id));
                 update.commands.push(ProjectCommand::EnsureView);
             }
-            KeyCode::Char('/') if list && nav.filter_enabled(declaration) => {
+            KeyCode::Char('/') if list && !off('/') && nav.filter_enabled(declaration) => {
                 nav.start_filter(content.as_deref())
             }
             KeyCode::Char('V') if list => {
