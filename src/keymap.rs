@@ -831,7 +831,7 @@ pub struct KeyMap {
     /// The keys the config wrote for a plugin's screen (`[keys."git.changes"]`, and the old
     /// `git_changes` for both backends), kept apart from the defaults of `contexts`. A project
     /// canvas has the canvas's defaults, not the old per-screen ones; the user's own keys for
-    /// its screen sit on top ([`KeyMap::resolve_canvas_screen`]).
+    /// its screen sit on top ([`KeyMap::resolve_on`] and the other `*_on` lookups).
     #[cfg(feature = "git")]
     pub screen_keys: HashMap<Context, ContextMap>,
     /// Layer 2: keys shared by the contexts that show the same kind of thing.
@@ -2164,21 +2164,25 @@ impl KeyMap {
         None
     }
 
-    /// Whether the config unbinds `kp` (`noop`) on the project canvas that shows `screen`. The
-    /// canvas's own fixed keys (`q`, `/`) are not in the keymap; this is how the one effective-keys
-    /// answer reaches them, for the key handling and the footer alike.
-    pub fn unbound_on(&self, screen: Option<Context>, kp: KeyPress) -> bool {
-        matches!(
-            self.screen_table(screen).and_then(|m| m.get(&kp)),
-            Some(Binding::Unbound)
-        )
+    /// Whether the canvas's own fixed key `kp` (`q` leaves, `/` filters; they are not in the
+    /// keymap) still acts as its fixed operation on the project canvas that shows `screen`. It
+    /// does unless the config wrote `kp` for that screen: unbound (`noop`) or bound to an action
+    /// that is not one of `own` (the spellings of the fixed operation, which the released hub
+    /// bound by default). A rebound key then acts as its new action through the `*_on` lookups.
+    /// This is the one answer for the key handling and the footer / help hints alike.
+    pub fn fixed_key_acts_on(&self, screen: Option<Context>, kp: KeyPress, own: &[Action]) -> bool {
+        match self.screen_table(screen).and_then(|m| m.get(&kp)) {
+            None => true,
+            Some(Binding::Run(action)) => own.contains(action),
+            Some(_) => false,
+        }
     }
 
     /// [`KeyMap::resolve`] (no leader pending) on a project canvas that shows `screen`: the keys
     /// the config wrote for that screen sit on top of `ctx`'s layers. The screen has no default
     /// table of its own here (the canvas's keys and the plugin's actions are the defaults), so a
-    /// key written for `git.changes` acts on the git changes screen only. A `none` entry hides
-    /// the layers below it like an `Unbound` mark in a context's own table: `global` still
+    /// key written for `git.changes` acts on the git changes screen only. A `noop` / `disabled`
+    /// entry hides the layers below it like an `Unbound` mark in a context's own table: `global` still
     /// applies.
     pub fn resolve_on(&self, ctx: Context, screen: Option<Context>, kp: KeyPress) -> Resolution {
         match self.screen_table(screen).and_then(|m| m.get(&kp)) {

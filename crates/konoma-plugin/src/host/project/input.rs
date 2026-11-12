@@ -27,8 +27,9 @@ pub struct ProjectKeyFacts {
     pub viewport: ProjectViewport,
     pub layout: DiffLayout,
     /// The canvas's own fixed keys (`q` leaves, `/` filters) that the host's effective keymap has
-    /// unbound on this screen. Such a key does nothing and is not shown; the footer's controls
-    /// read the same effective keys.
+    /// taken away on this screen (unbound, or bound to another action). Such a key does not act
+    /// as its fixed operation and is not shown as one; the footer's controls read the same
+    /// effective keys.
     pub unbound: Vec<KeyCode>,
 }
 

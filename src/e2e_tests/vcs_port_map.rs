@@ -1555,12 +1555,11 @@ const OLD_TESTS: &[(&str, &[&str])] = IN_SCOPE_OLD_TESTS;
 /// Rows added by the audit-gap pass (see the row-count assertion for the breakdown).
 const GAP_ROWS: usize = 13 + 5 + 2 + 2 + 1;
 
-/// Grouped rows that left GROUPS before the key-context and binding rows came back as ordinary
-/// assertions: the old key-context group had the assertions `context:root-canvas`,
-/// `context:plugin-backend` and `context:detail` for the cases git and jj (3 x 2 = 6 rows), and
-/// 1593 is the table size from before they were cut out. They are now covered by the 11 rows
-/// (7 `context:*`, 4 `binding:*`) that the row-count assertion adds back, so the 6 stay
-/// subtracted.
+/// Rows subtracted from the 1593 grouped rows. 1593 counts the old key-context group's 6 rows
+/// (the assertions `context:root-canvas`, `context:plugin-backend` and `context:detail`, each for
+/// the cases git and jj: 3 x 2 = 6), but those 6 are no longer produced by GROUPS. The 11 rows
+/// that replace them (7 `context:*`, 4 `binding:*`) are added back separately in the row-count
+/// assertion, so these 6 are subtracted to avoid counting the old group twice.
 const CONTEXT_ROWS_MOVED: usize = 3 * 2;
 
 fn port_map() -> Vec<(&'static str, String, &'static str)> {

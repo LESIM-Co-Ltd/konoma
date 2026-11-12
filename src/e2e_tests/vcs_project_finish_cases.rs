@@ -1195,28 +1195,16 @@ fn vcs_port_backend_display_words_copy_labels_and_project_origin() {
     display(&jj, "jj");
 }
 
-/// The footer tokens, the help text and the Space menu rows the app shows on its canvas now.
-fn shown_hints(sim: &Sim) -> (String, String, String) {
+/// The footer tokens and the help text the app shows on its canvas now. (The project canvas's
+/// Space menu is built from the plugin's actions only, so screen config keys never reach it.)
+fn shown_hints(sim: &Sim) -> (String, String) {
     let footer = crate::ui::status::hint_tokens(&sim.app).join("  ");
     let help = crate::ui::help::help_lines(&sim.app)
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n");
-    let ctx = sim.app.key_context().expect("a canvas context");
-    let menu = crate::ops::menu::menu(
-        &sim.app,
-        ctx,
-        crate::keymap::LeaderId::Actions,
-        crate::ops::menu::View::Open,
-    )
-    .expect("the Space menu")
-    .items
-    .iter()
-    .map(|i| format!("{:?}:{}", i.key.code, i.label))
-    .collect::<Vec<_>>()
-    .join("  ");
-    (footer, help, menu)
+    (footer, help)
 }
 
 #[test]
@@ -1237,13 +1225,13 @@ fn vcs_port_screen_keys_decide_the_keys_and_the_footer_hint_together() {
         keys(&mut sim, "j");
         assert_eq!(sim.app.project_act_context().selected, before, "{table}: j acts");
         keys(&mut sim, "k");
-        let (footer, help, _) = shown_hints(&sim);
+        let (footer, help) = shown_hints(&sim);
         assert!(footer.contains("k:move") && !footer.contains("j/k:move"), "{table}: {footer}");
         // The help body's scroll row reads the same keys (the list screen's row is the arrows
         // plus what is still bound).
         assert!(help.contains("k / ↑/↓") && !help.contains("j/k / ↑/↓"), "{table}: {help}");
         screen(&mut sim, "log");
-        let (footer, _, _) = shown_hints(&sim);
+        let (footer, _) = shown_hints(&sim);
         assert!(footer.contains("j/k:move"), "{table} on log: {footer}");
     }
     // The other backend's table does not reach git.
@@ -1252,8 +1240,7 @@ fn vcs_port_screen_keys_decide_the_keys_and_the_footer_hint_together() {
         .surfaces
         .insert("jj.changes".into(), [("j".into(), "noop".into())].into());
     let sim = open(&root, cfg, (180, 24));
-    assert!(shown_hints(&sim).0.contains("j/k:move"));
-    // A key written for the screen acts there (and only there).
+    assert!(shown_hints(&sim).0.contains("j/k:move"));    // A key written for the screen acts there (and only there).
     for (table, acts) in [("git.changes", true), ("git_changes", true), ("jj.changes", false)] {
         let mut cfg = config("git", "en");
         cfg.keys
@@ -1263,6 +1250,32 @@ fn vcs_port_screen_keys_decide_the_keys_and_the_footer_hint_together() {
         keys(&mut sim, "Z");
         assert_eq!(sim.app.key_context() == Some(Context::Help), acts, "{table}");
     }
+    // Only the jj half needs the jj binary; the Git half above has already run.
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let jjroot = super::vcs_log::jj_repo(false);
+    std::fs::write(jjroot.join("changed.txt"), "new\n").unwrap();
+    // A second row, so that a j that acts would move the selection.
+    std::fs::write(jjroot.join("changed2.txt"), "new\n").unwrap();
+    // `[keys."jj.changes"] j = "noop"` removes j's action and its footer/help hint on the jj
+    // changes screen; the git changes screen (above) keeps both.
+    let sim = open(&jjroot, config("jj", "en"), (180, 24));
+    let (footer, help) = shown_hints(&sim);
+    assert!(footer.contains("j/k:move"), "jj default footer: {footer}");
+    assert!(help.contains("j/k / ↑/↓"), "jj default help: {help}");
+    let mut cfg = config("jj", "en");
+    cfg.keys
+        .surfaces
+        .insert("jj.changes".into(), [("j".into(), "noop".into())].into());
+    let mut sim = open(&jjroot, cfg, (180, 24));
+    let before = sim.app.project_act_context().selected;
+    keys(&mut sim, "j");
+    assert_eq!(sim.app.project_act_context().selected, before, "jj.changes: j acts");
+    keys(&mut sim, "k");
+    let (footer, help) = shown_hints(&sim);
+    assert!(footer.contains("k:move") && !footer.contains("j/k:move"), "jj: {footer}");
+    assert!(help.contains("k / ↑/↓") && !help.contains("j/k / ↑/↓"), "jj: {help}");
 }
 
 #[test]
@@ -1274,7 +1287,7 @@ fn vcs_port_screen_keys_back_filter_help_follow_the_effective_keys() {
     // Defaults: the three controls and the help rows are shown.
     {
         let sim = open(&root, config("git", "en"), (180, 24));
-        let (footer, help, _) = shown_hints(&sim);
+        let (footer, help) = shown_hints(&sim);
         for word in ["q:back", "/:filter", "?:help"] {
             assert!(footer.contains(word), "default footer {word}: {footer}");
         }
@@ -1296,13 +1309,13 @@ fn vcs_port_screen_keys_back_filter_help_follow_the_effective_keys() {
             !sim.app.project_frame().is_some_and(|f| f.filtering),
             "{table}: / still filters"
         );
-        let (footer, help, _) = shown_hints(&sim);
+        let (footer, help) = shown_hints(&sim);
         assert!(!footer.contains("q:back"), "{table}: {footer}");
         assert!(!footer.contains("/:filter"), "{table}: {footer}");
         assert!(footer.contains("?:help"), "{table}: {footer}");
         assert!(!help.contains("q / Esc"), "{table}: {help}");
         screen(&mut sim, "log");
-        let (footer, _, _) = shown_hints(&sim);
+        let (footer, _) = shown_hints(&sim);
         assert!(footer.contains("q:back"), "{table} on log: {footer}");
         assert!(footer.contains("/:filter"), "{table} on log: {footer}");
         keys(&mut sim, "/");
@@ -1327,13 +1340,80 @@ fn vcs_port_screen_keys_back_filter_help_follow_the_effective_keys() {
             .surfaces
             .insert(table.into(), [("Z".into(), "toggle_help".into())].into());
         let mut sim = open(&root, cfg, (180, 24));
-        let (footer, _, _) = shown_hints(&sim);
+        let (footer, _) = shown_hints(&sim);
         assert!(footer.contains("Z:help") || footer.contains("?/Z:help"), "{table}: {footer}");
         keys(&mut sim, "Z");
         assert_eq!(sim.app.key_context(), Some(Context::Help), "{table}");
         keys(&mut sim, "?");
         screen(&mut sim, "log");
-        let (footer, _, _) = shown_hints(&sim);
+        let (footer, _) = shown_hints(&sim);
         assert!(!footer.contains("Z:help") && !footer.contains("/Z:help"), "{table} on log: {footer}");
     }
+}
+
+/// The released hub bound `q` and `/` in the screen's table, so `[keys.git_changes] q = ...`
+/// rebound them. On the canvas the fixed key acts as its fixed operation only while the
+/// effective keys do not bind it to something else; the footer and the help follow.
+#[test]
+fn vcs_port_rebinding_a_canvas_fixed_key_replaces_its_fixed_action() {
+    if isolated("vcs_port_rebinding_a_canvas_fixed_key_replaces_its_fixed_action") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_fixed_rebind", true);
+    for table in ["git.changes", "git_changes"] {
+        // `q` rebound to the help: it opens the help instead of leaving, the footer and the
+        // help show it as the help key and no longer as Back.
+        let mut cfg = config("git", "en");
+        cfg.keys
+            .surfaces
+            .insert(table.into(), [("q".into(), "toggle_help".into())].into());
+        let mut sim = open(&root, cfg, (180, 24));
+        let (footer, help) = shown_hints(&sim);
+        assert!(!footer.contains("q:back"), "{table}: {footer}");
+        assert!(footer.contains("?/q:help"), "{table}: {footer}");
+        assert!(!help.contains("q / Esc"), "{table}: {help}");
+        keys(&mut sim, "q");
+        assert!(sim.app.project_active(), "{table}: q still leaves");
+        assert_eq!(sim.app.key_context(), Some(Context::Help), "{table}: q opens help");
+        keys(&mut sim, "?");
+        // Git log has no entry for `q`: it leaves there, as before.
+        screen(&mut sim, "log");
+        let (footer, _) = shown_hints(&sim);
+        assert!(footer.contains("q:back"), "{table} on log: {footer}");
+        // `/` rebound to the help: no filter, no `/:filter`.
+        let mut cfg = config("git", "en");
+        cfg.keys
+            .surfaces
+            .insert(table.into(), [("/".into(), "toggle_help".into())].into());
+        let mut sim = open(&root, cfg, (180, 24));
+        let (footer, _) = shown_hints(&sim);
+        assert!(!footer.contains("/:filter"), "{table}: {footer}");
+        assert!(footer.contains("q:back"), "{table}: {footer}");
+        keys(&mut sim, "/");
+        assert!(!sim.app.project_frame().is_some_and(|f| f.filtering), "{table}: / filters");
+        assert_eq!(sim.app.key_context(), Some(Context::Help), "{table}: / opens help");
+        keys(&mut sim, "?");
+        screen(&mut sim, "log");
+        keys(&mut sim, "/");
+        assert!(sim.app.project_frame().is_some_and(|f| f.filtering), "{table} on log");
+        // An entry that names the fixed operation itself changes nothing.
+        let mut cfg = config("git", "en");
+        cfg.keys.surfaces.insert(
+            table.into(),
+            [("q".into(), "git_close".into()), ("/".into(), "list_filter_start".into())].into(),
+        );
+        let mut sim = open(&root, cfg, (180, 24));
+        let (footer, _) = shown_hints(&sim);
+        assert!(footer.contains("q:back") && footer.contains("/:filter"), "{table}: {footer}");
+        keys(&mut sim, "/");
+        assert!(sim.app.project_frame().is_some_and(|f| f.filtering), "{table}: own /");
+    }
+    // jj's table does not reach git.
+    let mut cfg = config("git", "en");
+    cfg.keys
+        .surfaces
+        .insert("jj.changes".into(), [("q".into(), "toggle_help".into())].into());
+    let sim = open(&root, cfg, (180, 24));
+    let (footer, _) = shown_hints(&sim);
+    assert!(footer.contains("q:back"), "{footer}");
 }

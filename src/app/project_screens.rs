@@ -1114,11 +1114,10 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        let screen = self.screen_keys_for(Context::Canvas);
         let facts = ProjectKeyFacts {
             unbound: ['q', '/']
                 .into_iter()
-                .filter(|c| self.keymaps.unbound_on(screen, KeyPress::ch(*c)))
+                .filter(|c| !self.project_fixed_key_acts(*c))
                 .map(KeyCode::Char)
                 .collect(),
             blocked: self.show_help
@@ -1495,11 +1494,32 @@ impl App {
     /// screen (a `noop` on the screen's table unbinds one). The one answer for the key handling
     /// ([`ProjectKeyFacts::unbound`]) and the footer and help hints.
     fn project_fixed_keys<const N: usize>(&self, keys: [char; N]) -> Vec<KeyPress> {
-        let screen = self.screen_keys_for(Context::Canvas);
         keys.into_iter()
+            .filter(|c| self.project_fixed_key_acts(*c))
             .map(KeyPress::ch)
-            .filter(|kp| !self.keymaps.unbound_on(screen, *kp))
             .collect()
+    }
+
+    /// Whether the canvas's fixed key `c` (`q` or `/`) still acts as its fixed operation on the
+    /// screen the canvas shows (see [`KeyMap::fixed_key_acts_on`]).
+    fn project_fixed_key_acts(&self, c: char) -> bool {
+        use crate::keymap::Action;
+        // The released hub bound these by default, so an entry naming the same operation does
+        // not displace the fixed key.
+        #[cfg(feature = "git")]
+        let own: &[Action] = match c {
+            'q' => &[Action::GitClose, Action::WorktreeClose],
+            '/' => &[
+                Action::ListFilterStart,
+                Action::BranchFilterStart,
+                Action::WorktreeFilterStart,
+            ],
+            _ => &[],
+        };
+        #[cfg(not(feature = "git"))]
+        let own: &[Action] = &[];
+        self.keymaps
+            .fixed_key_acts_on(self.screen_keys_for(Context::Canvas), KeyPress::ch(c), own)
     }
 
     pub(crate) fn project_presentation(&self) -> Option<(ProjectPresentation, Vec<PluginAct>)> {
