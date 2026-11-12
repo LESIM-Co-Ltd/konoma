@@ -479,6 +479,30 @@ const GROUPS: &[Group] = &[
         "vcs_port_backend_display_words_copy_labels_and_project_origin",
     ),
     (
+        "jj_changes_hub_footer_uses_jj_words_never_git_write_words",
+        &["footer:literal"],
+        &["jj:en,ja", "git:en"],
+        "vcs_port_every_screen_footer_equals_old_hub",
+    ),
+    (
+        "jj_changes_hub_footer_uses_jj_words_never_git_write_words",
+        &["footer:worktree-word"],
+        &["git"],
+        "vcs_port_every_screen_footer_equals_old_hub",
+    ),
+    (
+        "jj_graph_footer_shows_jj_hint_not_git_base_pin_hint",
+        &["footer:literal"],
+        &["jj", "git"],
+        "vcs_port_graph_footer_equals_old_hub",
+    ),
+    (
+        "jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops",
+        &["footer:literal"],
+        &["jj", "git"],
+        "vcs_port_every_screen_footer_equals_old_hub",
+    ),
+    (
         "jj_chip_shows_in_git_view_for_jj_not_for_git",
         &["project:selected-backend-id"],
         &["git:en", "jj:en,ja"],
@@ -1787,7 +1811,9 @@ fn every_ported_assertion_names_an_existing_new_test() {
         // now ordinary assertions, and the pending rows. (The 2 `help:context:changes` rows are
         // dropped: their facts are asserted in place, with no old test name to map.) The log
         // exit test lists `h` as a third key beside `q` and `Esc`: 3 more rows (one per id).
-        1593 + 11 + 4 + 8 + 3 - CONTEXT_ROWS_MOVED
+        // The 8 project-footer rows (3 + 1 changes, 2 graph, 2 bookmarks/branches) are now
+        // ordinary assertions too.
+        1593 + 11 + 4 + 8 + 8 + 3 - CONTEXT_ROWS_MOVED
             + 21
             + GAP_ROWS
             + PENDING_TITLES.len()

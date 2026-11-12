@@ -122,7 +122,18 @@ fn vcs_port_every_screen_footer_equals_old_hub() {
     ];
     for (lang, name, want) in &cases {
         let mut sim = open(&git, config("git", lang), (220, 30));
-        assert_eq!(&screen_footer(&mut sim, name), want, "git {lang} {name}");
+        let footer = screen_footer(&mut sim, name);
+        assert_eq!(&footer, want, "git {lang} {name}");
+        // Old hub `jj_changes_hub_footer_uses_jj_words_never_git_write_words`, git half: the
+        // write words and the worktree hint show, none of jj's words do.
+        if *name == "changes" && *lang == "en" {
+            for word in ["stage", "unstage", "commit", "worktree"] {
+                assert!(footer.contains(word), "git footer lacks {word:?}: {footer}");
+            }
+            for word in ["sync", "bookmarks"] {
+                assert!(!footer.contains(word), "git footer shows jj word {word:?}: {footer}");
+            }
+        }
     }
     if !crate::vcs::jj::available() {
         return;
@@ -140,7 +151,21 @@ fn vcs_port_every_screen_footer_equals_old_hub() {
     ];
     for (lang, name, want) in &cases {
         let mut sim = open(&jj, config("jj", lang), (220, 30));
-        assert_eq!(&screen_footer(&mut sim, name), want, "jj {lang} {name}");
+        let footer = screen_footer(&mut sim, name);
+        assert_eq!(&footer, want, "jj {lang} {name}");
+        // Old hub `jj_changes_hub_footer_uses_jj_words_never_git_write_words` (both languages)
+        // and `jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops`: a read-only
+        // backend shows none of git's write words or branch operations.
+        if *name == "changes" {
+            for word in ["stage", "unstage", "commit", "worktree"] {
+                assert!(!footer.contains(word), "jj {lang} footer shows git word {word:?}: {footer}");
+            }
+        }
+        if *name == "branches" && *lang == "en" {
+            for word in ["checkout", "new", "delete"] {
+                assert!(!footer.contains(word), "jj bookmarks footer shows {word:?}: {footer}");
+            }
+        }
     }
 }
 
