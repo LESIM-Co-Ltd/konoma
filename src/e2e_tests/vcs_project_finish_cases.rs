@@ -1204,6 +1204,85 @@ fn vcs_port_backend_display_words_copy_labels_and_project_origin() {
     display(&jj, "jj");
 }
 
+/// The status bar's mode chips as drawn: the display chip (GIT / JJ) and the internal chip (the
+/// screen's word), each with surrounding blanks trimmed. Released v0.31.2: `display_chip` and
+/// `internal_chip` in src/ui/status.rs.
+fn mode_chips(sim: &Sim) -> Vec<String> {
+    crate::ui::status::context_spans(&sim.app)
+        .iter()
+        .map(|s| s.content.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn assert_mode_chips(sim: &mut Sim, id: &str, lang: &str, ctx: &str) {
+    let l = sim.app.lang;
+    let display = tr(l, if id == "jj" { Msg::StJj } else { Msg::StGit });
+    let other = tr(l, if id == "jj" { Msg::StGit } else { Msg::StJj });
+    let list = if id == "jj" {
+        tr(l, Msg::StBookmark)
+    } else {
+        tr(l, Msg::StBranch)
+    };
+    let mut screens: Vec<(&str, String)> = vec![
+        ("changes", tr(l, Msg::StChanges).to_string()),
+        ("log", tr(l, Msg::StLog).to_string()),
+        ("graph", tr(l, Msg::StGraph).to_string()),
+        ("branches", list.to_string()),
+    ];
+    if id == "git" {
+        screens.push(("worktrees", tr(l, Msg::StWorktrees).to_string()));
+    }
+    for (name, word) in screens {
+        screen(sim, name);
+        let chips = mode_chips(sim);
+        let here = format!("{ctx}/{id}/{lang}/{name}: {chips:?}");
+        assert!(chips.iter().any(|c| c == display), "{here}: display chip");
+        assert!(chips.iter().all(|c| c != other), "{here}: no other backend's chip");
+        assert!(chips.iter().any(|c| *c == word), "{here}: internal chip {word:?}");
+        assert!(
+            chips.iter().all(|c| c != tr(l, Msg::ProjectTitle)),
+            "{here}: no generic project chip on a git/jj canvas"
+        );
+    }
+    // Detail (opened from the log) and the graph's branch panel.
+    screen(sim, "log");
+    keys(sim, "l");
+    let chips = mode_chips(sim);
+    assert!(chips.iter().any(|c| *c == tr(l, Msg::StCommitDiff)), "{ctx}/{id}/{lang}: {chips:?}");
+    assert!(chips.iter().any(|c| c == display), "{ctx}/{id}/{lang}: detail display chip");
+    keys(sim, "q");
+    screen(sim, "graph");
+    keys(sim, "b");
+    let picker = format!("{} - {}", tr(l, Msg::StGraph), tr(l, Msg::StBranch));
+    let chips = mode_chips(sim);
+    assert!(chips.iter().any(|c| *c == picker), "{ctx}/{id}/{lang}: picker {chips:?}");
+    keys(sim, "q");
+}
+
+#[test]
+fn vcs_port_mode_chips_follow_the_backend_and_the_screen() {
+    if isolated("vcs_port_mode_chips_follow_the_backend_and_the_screen") {
+        return;
+    }
+    let git = super::vcs_log::repo(3);
+    for lang in ["en", "ja"] {
+        let mut sim = open(&git, config("git", lang), (160, 20));
+        assert_mode_chips(&mut sim, "git", lang, "chips");
+    }
+    // Only the jj half needs the jj binary; the Git half above has already run.
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let jj = super::vcs_log::jj_repo(false);
+    super::vcs_log::jj(&jj, &["bookmark", "create", "-r", "@", "main"]);
+    std::fs::write(jj.join("changed.txt"), "new\n").unwrap();
+    for lang in ["en", "ja"] {
+        let mut sim = open(&jj, config("jj", lang), (160, 20));
+        assert_mode_chips(&mut sim, "jj", lang, "chips");
+    }
+}
+
 /// The footer tokens and the help text the app shows on its canvas now. (The project canvas's
 /// Space menu is built from the plugin's actions only, so screen config keys never reach it.)
 fn shown_hints(sim: &Sim) -> (String, String) {

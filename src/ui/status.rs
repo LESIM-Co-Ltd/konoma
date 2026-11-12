@@ -64,13 +64,16 @@ fn chip_str(text: String, bg: Color, dark_bg: bool) -> Span<'static> {
 /// Display-mode (outer) chip. In a Git view = GIT (yellow) / TREE = white / PREVIEW/IMAGE = blue.
 /// Since Git has grown, the changes hub/log/graph/branches/detail **promote the main mode to GIT**.
 fn display_chip(app: &App) -> Span<'static> {
-    if app.project_active() {
+    // A version-control project canvas names the backend answering, as the released git views did;
+    // a canvas of any other provider keeps the generic project chip.
+    let vcs = app.project_vcs();
+    if app.project_active() && vcs.is_none() {
         return chip(app.lang, Msg::ProjectTitle, Color::Cyan, false);
     }
-    if app.in_git_view() {
+    if vcs.is_some() || app.in_git_view() {
         // Which backend is answering has to be visible: a colocated repository has both, and a diff
         // taken against `@-` is not the same thing as one taken against HEAD.
-        return match app.diff_vcs() {
+        return match vcs.unwrap_or_else(|| app.diff_vcs()) {
             crate::vcs::VcsKind::Git => chip(app.lang, Msg::StGit, Color::Yellow, false),
             #[cfg(feature = "git")]
             crate::vcs::VcsKind::Jj => chip(app.lang, Msg::StJj, Color::Magenta, false),
@@ -93,7 +96,12 @@ fn display_chip(app: &App) -> Span<'static> {
 /// Nested state is a breadcrumb `parent - child` (e.g. the graph's branch panel = `GRAPH - BRANCH`).
 fn internal_chip(app: &App) -> Option<Span<'static>> {
     // The graph's branch panel is a sub-state of GRAPH, so it's shown as a breadcrumb.
-    if matches!(app.internal_mode()?, InternalMode::GitGraphPicker) {
+    // An overlay in front of a version-control canvas (help, a dialog) shows its own mode; the
+    // canvas's screen names the chip when nothing is in front of it.
+    let mode = app
+        .internal_mode()
+        .or_else(|| app.project_internal_mode())?;
+    if matches!(mode, InternalMode::GitGraphPicker) {
         let text = format!(
             "{} - {}",
             tr(app.lang, Msg::StGraph),
@@ -101,7 +109,7 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         );
         return Some(chip_str(text, Color::Yellow, false));
     }
-    let (msg, bg, dark) = match app.internal_mode()? {
+    let (msg, bg, dark) = match mode {
         // Help is part of the same "view-only overlay" family as Info (dim/DarkGray).
         InternalMode::Help => (Msg::StHelp, Color::DarkGray, true),
         InternalMode::Visual => (Msg::StVisual, Color::Magenta, true),
@@ -149,7 +157,7 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         // Branch operations are also part of the Git family's yellow.
         InternalMode::GitBranch => {
             // jj's list holds bookmarks; the word is not a synonym for branch there.
-            match app.git_vcs {
+            match app.project_vcs().unwrap_or(app.git_vcs) {
                 crate::vcs::VcsKind::Git => (Msg::StBranch, Color::Yellow, false),
                 #[cfg(feature = "git")]
                 crate::vcs::VcsKind::Jj => (Msg::StBookmark, Color::Yellow, false),

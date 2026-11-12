@@ -384,13 +384,10 @@ fn vcs_port_filter_input_line_opens_and_closes_and_dirty_bottom_row_base_pin() {
     if isolated("vcs_port_filter_input_line_opens_and_closes_and_dirty_bottom_row_base_pin") {
         return;
     }
-    // The `/` input line opens and closes on every filterable screen. The surface / key context
-    // while it is open is a pending design difference (the old hub used Surface::ListFilter):
-    // it is registered, not asserted.
-    super::vcs_port_map::pending_behavior(
-        "filter-input-surface",
-        "Surface::ListFilter while the / input line is open",
-    );
+    // The `/` input line opens and closes on every filterable screen. The old hub switched to
+    // Surface::ListFilter while it was open; the same fact is held here by the single `Canvas`
+    // key context with the input line open on the canvas's own screen: the typed keys go to the
+    // line (a typed `q` filters and does not leave the project) and `Esc` closes it.
     let root = sandbox("port_filter_surface");
     seed_repo_history(&root);
     std::fs::write(root.join("new.txt"), "x\n").unwrap();
@@ -400,8 +397,30 @@ fn vcs_port_filter_input_line_opens_and_closes_and_dirty_bottom_row_base_pin() {
         assert!(!sim.app.project_frame().unwrap().filtering, "{name} before /");
         keys(&mut sim, "/");
         assert!(sim.app.project_frame().unwrap().filtering, "{name}");
+        // The key context stays the single `Canvas`; the screen is the canvas's own.
+        assert_eq!(sim.app.key_context(), Some(crate::keymap::Context::Canvas), "{name}");
+        assert_eq!(
+            sim.app.canvas_screen(),
+            Some(crate::keymap::Context::Screen(
+                crate::keymap::Backend::Git,
+                match name {
+                    "changes" => crate::keymap::Screen::Changes,
+                    "log" => crate::keymap::Screen::Log,
+                    "graph" => crate::keymap::Screen::Graph,
+                    _ => crate::keymap::Screen::Branches,
+                }
+            )),
+            "{name}: the input line is open on the canvas's screen"
+        );
+        // The line takes the keys: `q` is text, not "leave", and the screen does not change.
+        keys(&mut sim, "q");
+        assert!(sim.app.project_active(), "{name}: a typed q does not leave the project");
+        assert!(sim.app.project_frame().unwrap().filtering, "{name}: still typing");
+        assert_eq!(sim.app.project_frame().unwrap().query, "q", "{name}: q went to the filter");
+        assert_eq!(sim.app.project_frame().unwrap().key.screen, name, "{name}");
         press(&mut sim, KeyCode::Esc);
         assert!(!sim.app.project_frame().unwrap().filtering, "{name}");
+        assert!(sim.app.project_active(), "{name}: Esc closes the line only");
     }
     // The base pin on the bottom row of a dirty repository (the working-tree row is first).
     let dirty = sandbox("port_base_dirty");

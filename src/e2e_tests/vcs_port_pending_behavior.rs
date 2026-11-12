@@ -33,8 +33,6 @@ const PENDING_BEHAVIORS: &[PendingBehavior] = &[
     PendingBehavior { old: "changes_hub_help_shows_jj_section_and_hides_git_write_keys", assertion: "help:jj:bookmarks", marker: "PENDING_DECISION:project-help-wording", literal: "bookmarks", old_frame: PENDING_FRAME_7, new_frame: PENDING_FRAME_8 },
     PendingBehavior { old: "changes_hub_help_shows_jj_section_and_hides_git_write_keys", assertion: "help:jj:external-tool", marker: "PENDING_DECISION:project-help-wording", literal: "external jj tool (lazyjj)", old_frame: PENDING_FRAME_7, new_frame: PENDING_FRAME_8 },
     PendingBehavior { old: "changes_hub_help_shows_jj_section_and_hides_git_write_keys", assertion: "help:git:worktree", marker: "PENDING_DECISION:project-help-wording", literal: "ghelp.contains(\"worktree\")", old_frame: PENDING_FRAME_9, new_frame: PENDING_FRAME_10 },
-    PendingBehavior { old: "project_diff_preview_project_key_uses_project_footer_host", assertion: "help:context:changes", marker: "PENDING_DECISION:project-help-wording", literal: "help_context() == Some(Context::Screen(backend, Changes)) after p", old_frame: CAP_CTX_CHANGES_OLD, new_frame: CAP_CTX_CHANGES_NEW },
-    PendingBehavior { old: "departed_preview_values_do_not_replace_diff_or_project_chrome", assertion: "help:context:changes", marker: "PENDING_DECISION:project-help-wording", literal: "help_context() == Some(Context::Screen(backend, Changes)) after p", old_frame: CAP_CTX_CHANGES_OLD, new_frame: CAP_CTX_CHANGES_NEW },
     PendingBehavior { old: "jj_changes_hub_footer_uses_jj_words_never_git_write_words", assertion: "footer:jj:en", marker: "PENDING_DECISION:project-footer-contract", literal: "l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close", old_frame: PENDING_FRAME_11, new_frame: PENDING_FRAME_12 },
     PendingBehavior { old: "jj_changes_hub_footer_uses_jj_words_never_git_write_words", assertion: "footer:jj:ja", marker: "PENDING_DECISION:project-footer-contract", literal: "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる", old_frame: PENDING_FRAME_23, new_frame: PENDING_FRAME_24 },
     PendingBehavior { old: "jj_changes_hub_footer_uses_jj_words_never_git_write_words", assertion: "footer:git:en", marker: "PENDING_DECISION:project-footer-contract", literal: "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close", old_frame: PENDING_FRAME_13, new_frame: PENDING_FRAME_14 },
@@ -43,24 +41,7 @@ const PENDING_BEHAVIORS: &[PendingBehavior] = &[
     PendingBehavior { old: "jj_graph_footer_shows_jj_hint_not_git_base_pin_hint", assertion: "footer:git:literal", marker: "PENDING_DECISION:project-footer-contract", literal: "j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back", old_frame: PENDING_FRAME_17, new_frame: PENDING_FRAME_18 },
     PendingBehavior { old: "jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops", assertion: "footer:jj:literal", marker: "PENDING_DECISION:project-footer-contract", literal: "j/k:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back", old_frame: PENDING_FRAME_19, new_frame: PENDING_FRAME_20 },
     PendingBehavior { old: "jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops", assertion: "footer:git:literal", marker: "PENDING_DECISION:project-footer-contract", literal: "j/k:nav  l/Enter:checkout  c:new  d:delete  /:search  Tab/⇧Tab:screens  h/q/Esc:back", old_frame: PENDING_FRAME_21, new_frame: PENDING_FRAME_22 },
-    PendingBehavior { old: "jj_chip_shows_in_git_view_for_jj_not_for_git", assertion: "chip:jj:en", marker: "PENDING_DECISION:project-mode-chip", literal: "display_chip.trim() == tr(En, Msg::StJj)", old_frame: PENDING_FRAME_11, new_frame: PENDING_FRAME_12 },
-    PendingBehavior { old: "jj_chip_shows_in_git_view_for_jj_not_for_git", assertion: "chip:jj:ja", marker: "PENDING_DECISION:project-mode-chip", literal: "display_chip.trim() == tr(Jp, Msg::StJj)", old_frame: PENDING_FRAME_23, new_frame: PENDING_FRAME_24 },
-    PendingBehavior { old: "jj_chip_shows_in_git_view_for_jj_not_for_git", assertion: "chip:git:en", marker: "PENDING_DECISION:project-mode-chip", literal: "display_chip.trim() == tr(En, StGit) && != tr(En, StJj)", old_frame: PENDING_FRAME_13, new_frame: PENDING_FRAME_14 },
-    PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:jj:en", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(En, Msg::StBookmark)", old_frame: PENDING_FRAME_19, new_frame: PENDING_FRAME_20 },
-    PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:jj:ja", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(Jp, Msg::StBookmark)", old_frame: PENDING_FRAME_25, new_frame: PENDING_FRAME_26 },
-    PendingBehavior { old: "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", assertion: "chip:git:en", marker: "PENDING_DECISION:project-mode-chip", literal: "internal_chip.is_some(); chip.trim() == tr(En, Msg::StBranch)", old_frame: PENDING_FRAME_21, new_frame: PENDING_FRAME_22 },
-    PendingBehavior { old: "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row", assertion: "filter:input-surface", marker: "PENDING_DECISION:filter-input-surface", literal: "surface() == Surface::ListFilter while the / input line is open", old_frame: CAP_FILTER_CHANGES_OLD, new_frame: CAP_FILTER_CHANGES_NEW },
-    PendingBehavior { old: "e2e_slash_filters_the_log_by_the_text_shown", assertion: "filter:input-surface", marker: "PENDING_DECISION:filter-input-surface", literal: "surface() == Surface::ListFilter while the / input line is open", old_frame: CAP_FILTER_LOG_OLD, new_frame: CAP_FILTER_LOG_NEW },
 ];
-#[cfg(feature = "git")]
-pub(super) fn pending_behavior(slug: &str, context: &str) {
-    assert!(
-        PENDING_BEHAVIORS
-            .iter()
-            .any(|p| p.marker.strip_prefix("PENDING_DECISION:") == Some(slug)),
-        "unregistered design difference {slug}: {context}"
-    );
-}
 #[test]
 fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
     let expected = [
@@ -71,8 +52,6 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
         ("changes_hub_help_shows_jj_section_and_hides_git_write_keys","help:jj:bookmarks","PENDING_DECISION:project-help-wording","bookmarks"),
         ("changes_hub_help_shows_jj_section_and_hides_git_write_keys","help:jj:external-tool","PENDING_DECISION:project-help-wording","external jj tool (lazyjj)"),
         ("changes_hub_help_shows_jj_section_and_hides_git_write_keys","help:git:worktree","PENDING_DECISION:project-help-wording","ghelp.contains(\"worktree\")"),
-        ("project_diff_preview_project_key_uses_project_footer_host","help:context:changes","PENDING_DECISION:project-help-wording","help_context() == Some(Context::Screen(backend, Changes)) after p"),
-        ("departed_preview_values_do_not_replace_diff_or_project_chrome","help:context:changes","PENDING_DECISION:project-help-wording","help_context() == Some(Context::Screen(backend, Changes)) after p"),
         ("jj_changes_hub_footer_uses_jj_words_never_git_write_words","footer:jj:en","PENDING_DECISION:project-footer-contract","l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"),
         ("jj_changes_hub_footer_uses_jj_words_never_git_write_words","footer:jj:ja","PENDING_DECISION:project-footer-contract","l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"),
         ("jj_changes_hub_footer_uses_jj_words_never_git_write_words","footer:git:en","PENDING_DECISION:project-footer-contract","s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"),
@@ -81,14 +60,6 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
         ("jj_graph_footer_shows_jj_hint_not_git_base_pin_hint","footer:git:literal","PENDING_DECISION:project-footer-contract","j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back"),
         ("jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops","footer:jj:literal","PENDING_DECISION:project-footer-contract","j/k:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back"),
         ("jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops","footer:git:literal","PENDING_DECISION:project-footer-contract","j/k:nav  l/Enter:checkout  c:new  d:delete  /:search  Tab/⇧Tab:screens  h/q/Esc:back"),
-        ("jj_chip_shows_in_git_view_for_jj_not_for_git","chip:jj:en","PENDING_DECISION:project-mode-chip","display_chip.trim() == tr(En, Msg::StJj)"),
-        ("jj_chip_shows_in_git_view_for_jj_not_for_git","chip:jj:ja","PENDING_DECISION:project-mode-chip","display_chip.trim() == tr(Jp, Msg::StJj)"),
-        ("jj_chip_shows_in_git_view_for_jj_not_for_git","chip:git:en","PENDING_DECISION:project-mode-chip","display_chip.trim() == tr(En, StGit) && != tr(En, StJj)"),
-        ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:jj:en","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(En, Msg::StBookmark)"),
-        ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:jj:ja","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(Jp, Msg::StBookmark)"),
-        ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list","chip:git:en","PENDING_DECISION:project-mode-chip","internal_chip.is_some(); chip.trim() == tr(En, Msg::StBranch)"),
-        ("e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row","filter:input-surface","PENDING_DECISION:filter-input-surface","surface() == Surface::ListFilter while the / input line is open"),
-        ("e2e_slash_filters_the_log_by_the_text_shown","filter:input-surface","PENDING_DECISION:filter-input-surface","surface() == Surface::ListFilter while the / input line is open"),
     ];
     let actual = PENDING_BEHAVIORS
         .iter()
@@ -117,28 +88,18 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
             // The ja header is double-width text (`プロジェクト`), which the dump interleaves.
             _ if a.ends_with(":ja") => ("jj", "ja"),
             "e2e_space_menu_follows_the_footer_order_and_labels_in_git" => ("GIT LOG", "Project"),
-            "project_diff_preview_project_key_uses_project_footer_host"
-            | "departed_preview_values_do_not_replace_diff_or_project_chrome" => {
-                ("GIT CHANGES", "Project")
-            }
             "changes_hub_help_shows_jj_section_and_hides_git_write_keys" => {
                 (pick("JJ HELP", "GIT HELP"), "Project HELP")
             }
-            "jj_changes_hub_footer_uses_jj_words_never_git_write_words"
-            | "jj_chip_shows_in_git_view_for_jj_not_for_git" => {
+            "jj_changes_hub_footer_uses_jj_words_never_git_write_words" => {
                 (pick("JJ CHANGES", "GIT CHANGES"), "Project")
             }
             "jj_graph_footer_shows_jj_hint_not_git_base_pin_hint" => {
                 (pick("JJ GRAPH", "GIT GRAPH"), "Project")
             }
-            "jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops"
-            | "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list" => {
+            "jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops" => {
                 (pick("JJ BOOKMARK", "GIT BRANCH"), "Project")
             }
-            "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row" => {
-                ("GIT CHANGES", "Project")
-            }
-            "e2e_slash_filters_the_log_by_the_text_shown" => ("GIT LOG", "Project"),
             other => panic!("no expected screen for {other}/{a}"),
         }
     }
@@ -192,23 +153,12 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
             ("changes_hub_help_shows_jj_section_and_hides_git_write_keys", _) => {
                 (&["Git ⎇ master (7)", "w worktrees"], &["w:Worktrees", "w Worktrees"])
             }
-            (
-                "project_diff_preview_project_key_uses_project_footer_host"
-                | "departed_preview_values_do_not_replace_diff_or_project_chrome",
-                _,
-            ) => (&["GIT CHANGES", "Git ⎇ master (7)"], &["b:Branches", "Space:Actions"]),
             ("jj_changes_hub_footer_uses_jj_words_never_git_write_words", "footer:jj:en") => (
                 &["l/Enter:diff d:diff-all", "jj @"],
                 &["b:Bookmarks", "Space:Actions s:sync"],
             ),
-            ("jj_chip_shows_in_git_view_for_jj_not_for_git", "chip:jj:en") => {
-                (&["JJ CHANGES", "jj @"], &["b:Bookmarks", "changed.txt"])
-            }
-            (
-                "jj_changes_hub_footer_uses_jj_words_never_git_write_words"
-                | "jj_chip_shows_in_git_view_for_jj_not_for_git",
-                a,
-            ) if a.ends_with(":ja") => (&["jj @ ovxlwwlv"], &["changed.txt"]),
+            ("jj_changes_hub_footer_uses_jj_words_never_git_write_words", a)
+                if a.ends_with(":ja") => (&["jj @ ovxlwwlv"], &["changed.txt"]),
             ("jj_changes_hub_footer_uses_jj_words_never_git_write_words", "footer:git:en") => (
                 &["s/S:stage(all)", "Git ⎇ master (7)"],
                 &["f-added.txt", "Space:Actions s/S:stage(all)"],
@@ -217,9 +167,6 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
                 &["w:worktrees", "Git ⎇ master (7)"],
                 &["f-added.txt", "w:Worktrees"],
             ),
-            ("jj_chip_shows_in_git_view_for_jj_not_for_git", _) => {
-                (&["GIT CHANGES", "Git ⎇ master (7)"], &["f-added.txt", "b:Branches"])
-            }
             ("jj_graph_footer_shows_jj_hint_not_git_base_pin_hint", a) if a.contains(":jj:") => {
                 (&["a:all revisions", "jj graph (3)"], &["jj graph (3)", "b:Bookmarks"])
             }
@@ -231,25 +178,10 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
             {
                 (&["jj bookmarks (1)", "j/k:nav /:search"], &["b:Bookmarks", "y:copy"])
             }
-            ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", a) if a.ends_with(":ja") => {
-                (&["jj bookmarks (1)"], &["main"])
-            }
-            ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", a) if a.contains(":jj:") => {
-                (&["JJ BOOKMARK", "jj bookmarks (1)"], &["b:Bookmarks", "main"])
-            }
             ("jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops", _) => (
                 &["Git branches (1)", "l/Enter:checkout"],
                 &["* master", "c:new d:delete"],
             ),
-            ("bookmark_chip_shows_for_jj_list_branch_chip_for_git_list", _) => {
-                (&["GIT BRANCH", "Git branches (1)"], &["* master", "b:Branches"])
-            }
-            ("e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row", _) => {
-                (&["Git ⎇ master /unstaged"], &["b-unstaged.txt", "/unstaged▏"])
-            }
-            ("e2e_slash_filters_the_log_by_the_text_shown", _) => {
-                (&["Git log ⎇ master /seed"], &["seed Test", "/seed▏"])
-            }
             (other, a) => panic!("no screen words for {other}/{a}"),
         }
     }
@@ -300,10 +232,6 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
     }
     for (frame, want) in [
         (CAP_SPACE_LOG_NEW, "Actions ▸"),
-        (CAP_FILTER_CHANGES_NEW, "/unstaged▏"),
-        (CAP_FILTER_LOG_NEW, "/seed▏"),
-        (CAP_FILTER_CHANGES_OLD, "/unstaged▏"),
-        (CAP_FILTER_LOG_OLD, "/seed▏"),
         (CAP_SPACE_LOG_OLD, "Actions ▸"),
     ] {
         assert!(frame.contains(want), "frame lacks `{want}`");
@@ -338,7 +266,7 @@ fn pending_behavior_decisions_keep_old_literals_and_both_frames() {
     );
 }
 
-// Diagnostic frames for the ja chip rows (old hub vs the p path, Lang::Jp).
+// Diagnostic frames for the ja footer rows (old hub vs the p path, Lang::Jp).
 const PENDING_FRAME_23: &str = r#"                                                                                                                             jj   変 更    sort: name ↑  パ ス :相 対
 ┌ jj @ ovxlwwlv 次8の0日 本 語v Summary  (1) ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │  A vcs_log_jj_73108_0/changed.txt                                                                                                                            │
@@ -387,53 +315,3 @@ const PENDING_FRAME_24: &str = r#"                                              
 
 
 Tab/Shift-Tab:画 面   j/k:移 動:  /:絞 り 込:み   q:戻:る   ?:ヘ ルpプc  ↵/l/→:差:分   Ctrl-t:別 タ ブ   Space:操 作   s:同 期"#;
-const PENDING_FRAME_25: &str = r#"                                                                                                                     jj   ブ ッjク マ ー ク    sort: name ↑  パ ス :相 対
-┌ jj bookmarks  (1)0───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│  main                                                                                                                                                        │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-│                                                                                                                                                              │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-j/k:移e動:  /:検 索:  Tab/⇧Tab:画ッ面ク  h/q/Esc:戻同る期:               :              e 編       G t"#;
-const PENDING_FRAME_26: &str = r#"                                                                                                                                        プsロrジ:ェnクmト    パ ス :相 対
- p:変s更l  ロjグ_  グ0ラ_フ   b:ブxッwクlマ ー ク
-  main ) 次
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Tab/Shift-Tab:画:面   j/k:移 動:  /:絞 り 込:み:  q:戻:る   ?:ヘ ル プb  y:コ ピ ー     : コ"#;
-
-// Diagnostic frames for the open `/` input line.

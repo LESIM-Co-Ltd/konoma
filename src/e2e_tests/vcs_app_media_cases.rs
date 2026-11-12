@@ -290,8 +290,9 @@ fn departed_preview_values_do_not_replace_diff_or_project_chrome() {
         host.app.flash = None;
         assert!(host.app.project_active());
         // Old hub: key_context() and help_context() were both Context::Screen(backend, Changes).
-        // The key context is `canvas` now and the screen is the canvas's `canvas_screen`; the help
-        // context is the pending decision `project-help-wording`.
+        // The same facts are held in the new design as the single `Canvas` key context plus the
+        // canvas's own screen (`canvas_screen`), which is the changes screen of the backend; the
+        // help follows that screen.
         assert_eq!(
             host.app.canvas_screen(),
             Some(crate::keymap::Context::Screen(
@@ -304,10 +305,6 @@ fn departed_preview_values_do_not_replace_diff_or_project_chrome() {
             host.app.key_context(),
             Some(crate::keymap::Context::Canvas),
             "key context after p"
-        );
-        super::vcs_port_map::pending_behavior(
-            "project-help-wording",
-            "old help_context() == Some(Context::Screen(backend, Changes)) after p",
         );
         let project_status: String = crate::ui::status::context_spans(&host.app)
             .iter()

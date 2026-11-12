@@ -272,6 +272,56 @@ fn project_graph_help_shows_the_moved_back_key_in_place() {
     }
 }
 
+/// The graph help follows every motion key of the host's keymap: the filter moved to `f` shows
+/// `f` and not `/`; with `ends` empty there is no `g / G` row; with `left` empty the back row has
+/// no `h`; with the scroll keys empty there is no `j / k` row.
+#[test]
+fn project_graph_help_follows_the_changed_motions() {
+    let rows_of = |facts: &ProjectPresentationFacts| {
+        presentation(facts, &[])
+            .help_sections(&words(), &[])
+            .into_iter()
+            .flat_map(|s| s.rows)
+            .collect::<Vec<_>>()
+    };
+    let has_row = |rows: &[(String, String)], description: &str| {
+        rows.iter().find(|(_, d)| d == description).cloned()
+    };
+    let base = graph_facts(false, vec![KeyPress::ch('q')]);
+    let rows = rows_of(&base);
+    assert_eq!(has_row(&rows, "filter the list").unwrap().0, "/");
+    assert!(has_row(&rows, "top/bottom").is_some());
+    assert!(rows.iter().any(|(k, _)| k == "j / k"));
+    // The filter key moved to `f`.
+    let mut moved = base.clone();
+    moved.motions.filter = vec![KeyPress::ch('f')];
+    let rows = rows_of(&moved);
+    assert_eq!(has_row(&rows, "filter the list").unwrap().0, "f");
+    assert!(rows.iter().all(|(k, _)| k != "/"), "no stale `/`: {rows:?}");
+    // `ends` unbound: no top/bottom row.
+    let mut no_ends = base.clone();
+    no_ends.motions.ends.clear();
+    let rows = rows_of(&no_ends);
+    assert!(has_row(&rows, "top/bottom").is_none(), "{rows:?}");
+    assert!(rows.iter().all(|(k, _)| k != "g / G"), "{rows:?}");
+    // `left` unbound: the back row remains, without `h`.
+    let mut no_left = base.clone();
+    no_left.motions.left.clear();
+    let rows = rows_of(&no_left);
+    let back = has_row(&rows, "back to changes").expect("the back row stays");
+    assert!(!back.0.contains('h'), "back row without h: {back:?}");
+    assert!(back.0.contains('q'), "back row keeps q: {back:?}");
+    // The scroll keys unbound: no `j / k` row.
+    let mut no_scroll = base.clone();
+    no_scroll.motions.scroll.clear();
+    let rows = rows_of(&no_scroll);
+    assert!(
+        has_row(&rows, "move (commit / uncommitted)").is_none(),
+        "{rows:?}"
+    );
+    assert!(rows.iter().all(|(k, _)| k != "j / k"), "{rows:?}");
+}
+
 /// The cycle row of a version-control project lists the screens that project cycles: git has
 /// worktrees, jj has none (and lists bookmarks instead). A project that is not version control
 /// keeps the generic wording.

@@ -491,6 +491,30 @@ const GROUPS: &[Group] = &[
         "vcs_port_renderer_normal_rows_markers_and_base_selection",
     ),
     (
+        "jj_chip_shows_in_git_view_for_jj_not_for_git",
+        &["chip:display"],
+        &["git:en", "jj:en,ja"],
+        "vcs_port_mode_chips_follow_the_backend_and_the_screen",
+    ),
+    (
+        "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list",
+        &["chip:internal"],
+        &["git:en", "jj:en,ja"],
+        "vcs_port_mode_chips_follow_the_backend_and_the_screen",
+    ),
+    (
+        "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row",
+        &["filter:input-surface"],
+        &["git"],
+        "vcs_port_filter_input_line_opens_and_closes_and_dirty_bottom_row_base_pin",
+    ),
+    (
+        "e2e_slash_filters_the_log_by_the_text_shown",
+        &["filter:input-surface"],
+        &["git"],
+        "vcs_port_filter_input_line_opens_and_closes_and_dirty_bottom_row_base_pin",
+    ),
+    (
         "copy_menu_relabels_short_hash_to_change_id_for_jj_not_git",
         &[
             "copy:first-label-exact",
@@ -1759,8 +1783,10 @@ fn every_ported_assertion_names_an_existing_new_test() {
         // flash texts, old-name config, q/origin, filter and base pins; 5 + 2 for the worktrees
         // Space and one-Enter loops; 2 for unborn open-then-Tab; 1 for the branch footer Enter
         // token), the 4 help rows (screen-cycle label and descriptions, graph key order) that
-        // are now ordinary assertions, and the pending rows.
-        1593 + 11 + 4 - CONTEXT_ROWS_MOVED
+        // are now ordinary assertions, the 8 rows (6 mode-chip, 2 filter input-line) that are
+        // now ordinary assertions, and the pending rows. (The 2 `help:context:changes` rows are
+        // dropped: their facts are asserted in place, with no old test name to map.)
+        1593 + 11 + 4 + 8 - CONTEXT_ROWS_MOVED
             + 21
             + GAP_ROWS
             + PENDING_TITLES.len()
@@ -1961,6 +1987,7 @@ fn jj_guarded_tests() -> Vec<(&'static str, Vec<&'static str>)> {
                 "vcs_port_renderer_normal_rows_markers_and_base_selection",
                 "vcs_port_backend_contexts_and_bindings_real_repositories",
                 "vcs_port_backend_display_words_copy_labels_and_project_origin",
+                "vcs_port_mode_chips_follow_the_backend_and_the_screen",
                 "vcs_port_moved_jj_worktree_close_reloads_the_changes_from_the_top",
             ],
         ),
