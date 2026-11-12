@@ -671,3 +671,51 @@ fn project_footer_generic_list_back_token_names_the_left_key() {
         assert!(!footer.contains("h/q"), "{footer}");
     }
 }
+
+/// A key bound to both `Left` and back is named once in every back token: the generic list, the
+/// VCS list composition and a pushed screen (which has no `Left` in its token).
+#[test]
+fn project_footer_back_token_names_a_shared_left_and_back_key_once() {
+    let mut motions = default_keymap_motions();
+    motions.left = vec![KeyPress::ch('q')];
+    motions.back = vec![KeyPress::ch('q')];
+    let generic = ProjectPresentationFacts {
+        content: Some(ProjectPresentationContent::List),
+        filter: true,
+        motions: motions.clone(),
+        ..Default::default()
+    };
+    let p = build(&generic, &[], false, true);
+    cells(
+        &p,
+        80,
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help",
+    );
+    // The rendered text dedupes on its own (`write_keys`); the control's key list must too, since
+    // it is what the menus and the help read.
+    let back: Vec<&ProjectControl> = p
+        .controls()
+        .iter()
+        .filter(|c| c.keys.contains(&KeyPress::ch('q')))
+        .collect();
+    assert_eq!(back.len(), 1, "{back:?}");
+    assert_eq!(back[0].keys, vec![KeyPress::ch('q')], "{back:?}");
+    for home in [true, false] {
+        let vcs = ProjectPresentationFacts {
+            content: Some(ProjectPresentationContent::List),
+            vcs_jj: Some(true),
+            home,
+            filter: true,
+            motions: motions.clone(),
+            ..Default::default()
+        };
+        let p = build(&vcs, &[], false, true);
+        let footer: Vec<String> = p.footer_tokens().iter().map(|t| t.text.clone()).collect();
+        let last = footer.last().cloned().unwrap_or_default();
+        assert_eq!(
+            last,
+            if home { "q:close" } else { "q/Esc:back" },
+            "{footer:?}"
+        );
+    }
+}

@@ -122,6 +122,24 @@ pub struct ProjectMotionKeys {
 }
 
 impl ProjectMotionKeys {
+    /// The keys that leave a screen, in footer order: the `Left` keys (when `left` is true),
+    /// then the canvas's own back keys, then `extra`. A key bound to both appears once, at its
+    /// first position, so the footer never reads `q/q:back`.
+    pub fn leave_keys(&self, left: bool, extra: &[KeyPress]) -> Vec<KeyPress> {
+        let mut keys: Vec<KeyPress> = Vec::new();
+        let sources = [
+            if left { self.left.as_slice() } else { &[] },
+            self.back.as_slice(),
+            extra,
+        ];
+        for key in sources.into_iter().flatten() {
+            if !keys.contains(key) {
+                keys.push(*key);
+            }
+        }
+        keys
+    }
+
     /// The plain character keys shown for moving up/down: the lowercase ones when the keymap has
     /// any (`j`/`k`), so an uppercase alias such as `J` is not listed next to them; otherwise
     /// every plain character key, so a remapped screen still shows its own keys.
@@ -357,12 +375,7 @@ impl ProjectPresentation {
             }
             // On a list the scheme's `Left` key goes back like `q` (state.rs `apply_motion`);
             // on a text or diff screen it pans, so only a list names it.
-            let mut leave = if list {
-                facts.motions.left.clone()
-            } else {
-                Vec::new()
-            };
-            leave.extend(facts.motions.back.iter().copied());
+            let leave = facts.motions.leave_keys(list, &[]);
             if !leave.is_empty() {
                 controls.push(ProjectControl::new(Id::Back, leave, words.back).shared());
             }
@@ -518,11 +531,10 @@ impl ProjectPresentation {
                 )));
             }
             tokens.push(dynamic(format!("Tab/⇧Tab:{}", words.screens)));
-            let mut leave = facts.motions.left.clone();
-            leave.extend(facts.motions.back.iter().copied());
-            if !facts.home {
-                leave.push(KeyPress::key(KeyCode::Esc));
-            }
+            let esc = [KeyPress::key(KeyCode::Esc)];
+            let leave = facts
+                .motions
+                .leave_keys(true, if facts.home { &[] } else { &esc });
             if !leave.is_empty() {
                 let word = if facts.home { words.close } else { words.back };
                 tokens.push(dynamic(format!("{}:{}", write_keys(&leave), word)));
@@ -798,8 +810,9 @@ fn text_controls(
     if !facts.pushed {
         hints.push(ProjectControl::new(Id::Screens, tabs(), words.cycle).shared());
     }
-    let mut leave = facts.motions.back.clone();
-    leave.push(KeyPress::key(KeyCode::Esc));
+    let leave = facts
+        .motions
+        .leave_keys(false, &[KeyPress::key(KeyCode::Esc)]);
     hints.push(ProjectControl::new(Id::Back, leave, words.pop).shared());
     if !facts.motions.help.is_empty() {
         hints.push(ProjectControl::new(Id::Help, facts.motions.help.clone(), words.help).shared());
