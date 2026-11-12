@@ -193,7 +193,10 @@ impl ProjectPresentationFacts {
         current: &str,
         lang: &str,
     ) -> Self {
-        self.home = screens.iter().find(|s| !s.pushed).is_some_and(|s| s.id == current);
+        self.home = screens
+            .iter()
+            .find(|s| !s.pushed)
+            .is_some_and(|s| s.id == current);
         self.new_tab_footer = screens
             .iter()
             .find(|s| s.id == current)
@@ -468,7 +471,7 @@ impl ProjectPresentation {
             }
             if let Some(priority) = facts
                 .new_tab_footer
-                .filter(|_| capabilities.can_open_tab)
+                .filter(|_| capabilities.can_open_tab && facts.row_target)
             {
                 entries.push((
                     priority,

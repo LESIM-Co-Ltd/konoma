@@ -102,7 +102,7 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
         "src/e2e_tests/vcs_log.rs",
         &[
             "e2e_vcs_log_jj_and_both_colocated_backends_match_the_selected_legacy_backend",
-            "e2e_vcs_log_exit_returns_to_origin_and_h_does_nothing",
+            "e2e_vcs_log_exit_returns_to_origin_and_h_goes_back_like_q",
             "e2e_vcs_copy_log_and_detail_clipboard_and_flash_match_old_hub_for_all_six_items",
             "e2e_vcs_copy_menu_cells_help_footer_and_space_membership_match_the_declaration",
             "e2e_vcs_copy_empty_log_and_screen_without_copy_acts_do_nothing_without_hints",

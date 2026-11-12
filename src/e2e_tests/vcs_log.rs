@@ -1031,7 +1031,7 @@ fn e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order() {
 }
 
 #[test]
-fn e2e_vcs_log_exit_returns_to_origin_and_h_does_nothing() {
+fn e2e_vcs_log_exit_returns_to_origin_and_h_goes_back_like_q() {
     let dir = repo(3);
     // The footer names `h/q/Esc:back`, and the old hub's Left key went back like `q`.
     for code in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Char('h')] {

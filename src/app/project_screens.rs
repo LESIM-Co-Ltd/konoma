@@ -1710,7 +1710,12 @@ impl App {
         };
         let facts = match self.tab.project_navigation.as_ref().and_then(|nav| {
             let screen = nav.stack.last()?.key.screen.clone();
-            let screens = &self.project_runtimes.get(&nav.project)?.project.declaration.screens;
+            let screens = &self
+                .project_runtimes
+                .get(&nav.project)?
+                .project
+                .declaration
+                .screens;
             Some((screens, screen))
         }) {
             Some((screens, screen)) => {

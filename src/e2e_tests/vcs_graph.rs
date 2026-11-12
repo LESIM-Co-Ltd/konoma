@@ -789,7 +789,7 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
         actual_help, expected_help,
         "graph help must have neither missing nor extra rows"
     );
-    // The v0.31.2 graph help, key by key and in order: the graph section, then its movement.
+    // The old hub's graph help, key by key and in order: the graph section, then its movement.
     let rows_of =
         |sections: &[crate::ui::help::HelpSection]| -> Vec<(String, Vec<(String, String)>)> {
             sections

@@ -633,7 +633,7 @@ fn graph_help_literals(sim: &Sim, jj: bool) {
         assert!(!footer.contains("base"), "jj graph footer has no base token: {footer}");
         assert!(!help_text.contains("base"), "jj graph help has no base row");
     }
-    // As in the v0.31.2 frame: the graph section, then Movement, then the leader sections.
+    // As in the old hub's frame: the graph section, then Movement, then the leader sections.
     let mut titles = vec![title.to_owned(), tr(sim.app.lang, Msg::HelpMove).to_owned()];
     for (leader, key) in [(LeaderId::Copy, "y"), (LeaderId::Actions, "Space")] {
         if let Some(section) =
@@ -1858,9 +1858,9 @@ fn vcs_port_moved_key_taken_from_a_plugin_action_follows_the_screen_table() {
     assert_eq!(press_x(&mut sim), XOutcome::Confirm, "git.log's table");
 }
 
-/// In the released hub `worktree_close` on a key of another screen reset the worktree list's
+/// In the old hub `worktree_close` on a key of another screen reset the worktree list's
 /// state and re-opened the hub underneath whatever list was in front (`close_git_worktrees`; the
-/// frontmost layer kept the log / branch list on screen, `App::frontmost_layer` in v0.31.2), so
+/// frontmost layer kept the log / branch list on screen, `App::frontmost_layer` in the old hub), so
 /// nothing changed on screen there; on the change list it read the entries again and put the
 /// cursor on the first row. The canvas has no hub behind it: on the change list it refreshes
 /// as `r` does and starts at row 0, elsewhere it does nothing, and it leaves no legacy hub state

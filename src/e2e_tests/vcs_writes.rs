@@ -678,6 +678,7 @@ fn assert_hints(p: &WritePair, jj: bool, empty: bool) {
         Action::GitDiscard,
         Action::GitCommit,
         Action::JjSync,
+        Action::GitWorktreeDiff,
     ];
     let mut help: Vec<_> = crate::ops::help::rows_for(&p.old.app, ctx)
         .into_iter()
@@ -694,7 +695,12 @@ fn assert_hints(p: &WritePair, jj: bool, empty: bool) {
         expected[0] = expected[0].replacen("s/S:", "S:", 1);
         expected[1] = expected[1].replacen("u/U:", "U:", 1);
         expected.remove(2);
-        assert_eq!(help.len(), 4);
+        assert_eq!(
+            help.len(),
+            5,
+            "s/S, u/U, x, c and the diff-all row: {help:?}"
+        );
+        assert_eq!(help[4].0, "d");
         assert_eq!(help[0].0, "s / S");
         assert_eq!(help[1].0, "u / U");
         assert_eq!(help[2].0, "x");
@@ -708,17 +714,6 @@ fn assert_hints(p: &WritePair, jj: bool, empty: bool) {
         .filter(|section| section.title == if jj { "jj" } else { "Git" })
         .flat_map(|section| section.rows)
         .filter(|(keys, _)| keys != "Enter")
-        .collect();
-    // The old hub's `d` (diff of all changes) is a row of this section too; it is not a write
-    // key, so it leaves the comparison after being asserted to be there exactly once.
-    assert_eq!(
-        actual_help.iter().filter(|(keys, _)| keys == "d").count(),
-        1,
-        "the diff-all help row: {actual_help:?}"
-    );
-    let actual_help: Vec<_> = actual_help
-        .into_iter()
-        .filter(|(keys, _)| keys != "d")
         .collect();
     assert_eq!(actual_help, help);
 }

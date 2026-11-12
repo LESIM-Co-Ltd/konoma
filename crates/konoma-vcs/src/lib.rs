@@ -59,7 +59,11 @@ macro_rules! plugin {
                         t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")))
                     .setting(SettingDecl::new("commit_meta_align", Value::Str("right".into()),
                         t!(en: "Commit author and date: right or inline", ja: "コミットの作者と日付: right・inline")));
-                let manifest = actions::declare(worktrees::declare(manifest, $id == "git"), $id == "git")
+                // The help lists rows in declaration order, and the old hub's order is: git's
+                // write keys, the diffs, then jj's `s` (sync).
+                let manifest = worktrees::declare(manifest, $id == "git");
+                let manifest = if $id == "git" { actions::declare(manifest, true) } else { manifest };
+                let manifest = manifest
                     .action(Act::new("diff").key("Enter")
                         .label(t!(en: "diff", ja: "差分"))
                         .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
@@ -67,12 +71,17 @@ macro_rules! plugin {
                         .project_context(ActContext::screen("changes", ["file"])))
                     .action(Act::new("diff_all").key("d")
                         .label(t!(en: "diff-all", ja: "全差分"))
-                        .help(t!(en: "diff of all changes", ja: "すべての変更をまとめて表示"))
+                        .help(if $id == "git" {
+                            t!(en: "diff of all changes (worktree)", ja: "全変更まとめ diff (作業ツリー)")
+                        } else {
+                            t!(en: "diff of everything against @-", ja: "@- との差分をまとめて表示")
+                        })
                         .footer(5)
                         .project_context(ActContext::screen("changes", Vec::<String>::new())))
                     .action(Act::new("detail").key("Enter")
                         .label(t!(en: "detail", ja: "詳細"))
                         .project_context(ActContext::screen("log", ["commit"])));
+                let manifest = if $id == "git" { manifest } else { actions::declare(manifest, false) };
                 branches::declare(log::copy_declarations(graph::declare(manifest, $id == "jj"), $id == "jj"), $id == "git")
             }
             fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
@@ -438,14 +447,16 @@ impl Session for Changes {
         };
         if action == "diff_all" {
             // The old hub's `d`: the uncommitted changes as one detail diff, or "no changes".
-            return Ok(if detail::uncommitted(&self.backend, &self.root).is_empty() {
-                Outcome::Flash(t!(en: "no changes", ja: "変更なし"))
-            } else {
-                Outcome::PushScreen {
-                    screen: "detail".into(),
-                    selection: Some(detail::UNCOMMITTED.into()),
-                }
-            });
+            return Ok(
+                if detail::uncommitted(&self.backend, &self.root).is_empty() {
+                    Outcome::Flash(t!(en: "no changes", ja: "変更なし"))
+                } else {
+                    Outcome::PushScreen {
+                        screen: "detail".into(),
+                        selection: Some(detail::UNCOMMITTED.into()),
+                    }
+                },
+            );
         }
         if action == "sync" {
             #[cfg(feature = "git")]

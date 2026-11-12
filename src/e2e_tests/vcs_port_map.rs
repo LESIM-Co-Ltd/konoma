@@ -1008,10 +1008,10 @@ const GROUPS: &[Group] = &[
         "vcs_port_jj_bookmark_cells_copy_and_full_tab_cycle",
     ),
     (
-        "e2e_vcs_log_exit_returns_to_origin_and_h_does_nothing",
-        &["h:log-remains", "h:no-leader", "q-or-escape:origin"],
-        &["q", "escape"],
-        "vcs_host_log_q_and_escape_return_to_the_origin",
+        "e2e_vcs_log_exit_returns_to_origin_and_h_goes_back_like_q",
+        &["h:goes-back-like-q", "h:no-leader", "q-or-escape:origin"],
+        &["q", "escape", "h"],
+        "vcs_host_log_q_escape_and_h_return_to_the_origin",
     ),
     (
         "e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub",
@@ -1785,8 +1785,9 @@ fn every_ported_assertion_names_an_existing_new_test() {
         // token), the 4 help rows (screen-cycle label and descriptions, graph key order) that
         // are now ordinary assertions, the 8 rows (6 mode-chip, 2 filter input-line) that are
         // now ordinary assertions, and the pending rows. (The 2 `help:context:changes` rows are
-        // dropped: their facts are asserted in place, with no old test name to map.)
-        1593 + 11 + 4 + 8 - CONTEXT_ROWS_MOVED
+        // dropped: their facts are asserted in place, with no old test name to map.) The log
+        // exit test lists `h` as a third key beside `q` and `Esc`: 3 more rows (one per id).
+        1593 + 11 + 4 + 8 + 3 - CONTEXT_ROWS_MOVED
             + 21
             + GAP_ROWS
             + PENDING_TITLES.len()

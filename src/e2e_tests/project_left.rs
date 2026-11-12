@@ -82,7 +82,10 @@ fn list_left_goes_back(screen: &str) {
             "{screen} {key:?}"
         );
         drain(&mut sim);
-        assert!(!sim.app.project_active(), "{screen} {key:?} leaves the project");
+        assert!(
+            !sim.app.project_active(),
+            "{screen} {key:?} leaves the project"
+        );
     }
     // `q` is the reference: same end state.
     let mut sim = left_sim(screen, &[]);
@@ -112,10 +115,16 @@ fn e2e_project_left_follows_the_keymap() {
         let mut sim = left_sim(screen, &[("h", "noop"), ("Z", "navigate:left")]);
         sim.key('h');
         drain(&mut sim);
-        assert!(sim.app.project_active(), "{screen}: unbound h left the project");
+        assert!(
+            sim.app.project_active(),
+            "{screen}: unbound h left the project"
+        );
         sim.key('Z');
         drain(&mut sim);
-        assert!(!sim.app.project_active(), "{screen}: rebound Left key stays");
+        assert!(
+            !sim.app.project_active(),
+            "{screen}: rebound Left key stays"
+        );
         let mut sim = left_sim(screen, &[("h", "noop")]);
         sim.press(KeyCode::Char('h'), KeyModifiers::NONE);
         drain(&mut sim);
@@ -124,7 +133,10 @@ fn e2e_project_left_follows_the_keymap() {
         // The arrow is a fixed key (never in the keymap), so it keeps going back.
         sim.press(KeyCode::Left, KeyModifiers::NONE);
         drain(&mut sim);
-        assert!(!sim.app.project_active(), "{screen}: the Left arrow is fixed");
+        assert!(
+            !sim.app.project_active(),
+            "{screen}: the Left arrow is fixed"
+        );
     }
 }
 

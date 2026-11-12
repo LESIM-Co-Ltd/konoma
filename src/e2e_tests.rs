@@ -21481,3 +21481,5 @@ mod vcs_log;
 mod vcs_port_map;
 #[cfg(feature = "git")]
 mod vcs_project_port;
+#[cfg(feature = "git")]
+mod vcs_standalone_tool;

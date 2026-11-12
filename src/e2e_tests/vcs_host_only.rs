@@ -414,13 +414,9 @@ fn vcs_host_unborn_log_fixed_tabs_and_q_origin() {
             drain(&mut sim);
             assert_eq!(sim.app.project_frame().unwrap().key.screen, "log");
         }
-        for code in [KeyCode::Char('h'), KeyCode::Left] {
-            sim.press(code, KeyModifiers::NONE);
-            drain(&mut sim);
-            assert_eq!(sim.app.project_frame().unwrap().key.screen, "log");
-            assert!(sim.app.pending_leader.is_none());
-        }
-        keys(&mut sim, "q");
+        // `h` goes back like `q` (the old hub), so it ends the visit here.
+        assert!(sim.app.pending_leader.is_none());
+        keys(&mut sim, "h");
         assert!(!sim.app.project_active());
         assert_eq!(sim.app.tab.mode, origin);
     }
@@ -468,14 +464,15 @@ fn vcs_host_jj_all_range_is_per_tab() {
 }
 
 #[test]
-fn vcs_host_log_q_and_escape_return_to_the_origin() {
-    if isolated("vcs_host_log_q_and_escape_return_to_the_origin") {
+fn vcs_host_log_q_escape_and_h_return_to_the_origin() {
+    if isolated("vcs_host_log_q_escape_and_h_return_to_the_origin") {
         return;
     }
     let root = super::vcs_log::repo(3);
     std::fs::write(root.join("origin.txt"), "origin\n").unwrap();
     for preview in [false, true] {
-        for code in [KeyCode::Char('q'), KeyCode::Esc] {
+        // `h` (the scheme's Left key) goes back exactly like `q`, as in the old hub.
+        for code in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Char('h')] {
             let mut sim = open(&root, "git", 12, false);
             keys(&mut sim, "q");
             if preview {
@@ -488,11 +485,11 @@ fn vcs_host_log_q_and_escape_return_to_the_origin() {
             enter(&mut sim);
             sim.press(KeyCode::Tab, KeyModifiers::NONE);
             drain(&mut sim);
-            keys(&mut sim, "h");
             assert_eq!(sim.app.project_frame().unwrap().key.screen, "log");
             assert!(sim.app.pending_leader.is_none());
             sim.press(code, KeyModifiers::NONE);
             drain(&mut sim);
+            assert!(sim.app.pending_leader.is_none());
             assert!(!sim.app.project_active());
             assert_eq!(sim.app.tab.mode, origin);
             assert_eq!(sim.app.tab.preview_path, path);

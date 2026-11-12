@@ -215,7 +215,7 @@ fn project_help_cells_preserve_graph_and_picker_sections() {
             w.graph = "jj graph";
             w.screens = "cycle changes/log/graph/bookmarks";
         }
-        // The v0.31.2 graph help: the graph keys in the legacy order, the leave row `h / Esc  ·  q`,
+        // The old hub's graph help: the graph keys in the legacy order, the leave row `h / Esc  ·  q`,
         // then the move row in its own Movement section.
         cells(
             &presentation(&facts, &[]).help_sections(&w, &[]),

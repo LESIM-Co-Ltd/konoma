@@ -86,13 +86,15 @@ pub fn content(
                     text: line.text,
                 })
                 .collect();
-            ProjectContent::Diff(ProjectDiff::new(
-                lines,
-                diff.header.into_iter().map(into_line).collect(),
-                theme.into(),
-                messages.no_changes.as_str().into(),
+            ProjectContent::Diff(
+                ProjectDiff::new(
+                    lines,
+                    diff.header.into_iter().map(into_line).collect(),
+                    theme.into(),
+                    messages.no_changes.as_str().into(),
+                )
+                .with_title(diff.title.map(into_line)),
             )
-            .with_title(diff.title.map(into_line)))
         }
         View::Document(doc) => {
             let (lines, _, _) = md::render_markdown_with_images_aligned(

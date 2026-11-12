@@ -432,7 +432,7 @@ fn vcs_port_original_git_and_jj_cycles_and_contexts() {
             .into_iter()
             .flat_map(|s| s.rows)
             .collect::<Vec<_>>();
-        // The v0.31.2 help row of the screen cycle: the label `Tab / ⇧Tab` and the backend's own
+        // The old hub's help row of the screen cycle: the label `Tab / ⇧Tab` and the backend's own
         // list of the screens it cycles (jj has no worktrees).
         let tab_rows: Vec<_> = rows.iter().filter(|(keys, _)| keys.contains("Tab")).collect();
         let screens = if id == "git" {
