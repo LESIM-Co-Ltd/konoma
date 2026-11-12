@@ -28,11 +28,11 @@ pub struct ProjectKeyFacts {
     pub layout: DiffLayout,
     /// The keys that leave the screen (the canvas's back) on this screen: `q` while the host's
     /// effective keymap leaves it as the fixed key, plus any key the keymap binds to the screen's
-    /// own back operation. The footer's controls read the same keys.
-    pub back_keys: Vec<KeyCode>,
+    /// own back operation (a Ctrl chord included). The footer's controls read the same keys.
+    pub back_keys: Vec<KeyPress>,
     /// The keys that start the list filter on this screen, decided the same way as `back_keys`
     /// (`/` is the fixed key).
-    pub filter_keys: Vec<KeyCode>,
+    pub filter_keys: Vec<KeyPress>,
 }
 
 impl Default for ProjectKeyFacts {
@@ -51,8 +51,8 @@ impl Default for ProjectKeyFacts {
             policy: ProjectWritePolicy::default(),
             viewport: ProjectViewport::default(),
             layout: DiffLayout::Unified,
-            back_keys: vec![KeyCode::Char('q')],
-            filter_keys: vec![KeyCode::Char('/')],
+            back_keys: vec![KeyPress::ch('q')],
+            filter_keys: vec![KeyPress::ch('/')],
         }
     }
 }
@@ -116,8 +116,10 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             .runtimes
             .get(&nav.project)
             .map(|r| &r.project.declaration);
-        let back_key = facts.back_keys.contains(&key.code);
-        let filter_key = facts.filter_keys.contains(&key.code);
+        // The press as the keymap sees it (code and Ctrl). An Alt chord is never one of these.
+        let pressed = (!key.modifiers.contains(KeyModifiers::ALT)).then(|| KeyPress::norm(&key));
+        let back_key = pressed.is_some_and(|k| facts.back_keys.contains(&k));
+        let filter_key = pressed.is_some_and(|k| facts.filter_keys.contains(&k));
         let navigation = !interaction
             && !facts.leader
             && (matches!(key.code, KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab)
@@ -235,6 +237,19 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             update.commands.push(ProjectCommand::NewTab);
             return update;
         }
+        // The keys the host decided are this screen's back and filter operations
+        // (`ProjectKeyFacts`) win over the fixed letters below, as a key the config bound to an
+        // operation wins on any screen. They come before the Ctrl/Alt return because a screen
+        // table may bind a Ctrl chord to one of them.
+        if back_key {
+            let mut update = ProjectUpdate::handled();
+            update.dispatch = ProjectDispatch::LeaveProject;
+            return update;
+        }
+        if filter_key && list && nav.filter_enabled(declaration) {
+            nav.start_filter(content.as_deref());
+            return ProjectUpdate::handled();
+        }
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -243,13 +258,6 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
         let mut update = ProjectUpdate::handled();
         match key.code {
-            // The keys the host decided are this screen's back and filter operations
-            // (`ProjectKeyFacts`) win over the fixed letters below, as a key the config bound to
-            // an operation wins on any screen.
-            _ if back_key => update.dispatch = ProjectDispatch::LeaveProject,
-            _ if filter_key && list && nav.filter_enabled(declaration) => {
-                nav.start_filter(content.as_deref())
-            }
             KeyCode::Char('r') => {
                 if let Some(runtime) = self.runtimes.get_mut(&nav.project) {
                     if let Some(frame) = nav.frame() {

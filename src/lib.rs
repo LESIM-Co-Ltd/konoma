@@ -2147,7 +2147,14 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         #[cfg(feature = "git")]
         Action::WorktreeGotoNewTab => app.worktree_goto_new_tab()?,
         #[cfg(feature = "git")]
-        Action::WorktreeClose => app.close_git_worktrees(),
+        // The worktree list's close returns to the hub underneath it. A project canvas has no such
+        // hub (its own back is the project key handler's), so the operation bound to another key
+        // there must not open one behind it: leaving the canvas would show the hub over the tree.
+        Action::WorktreeClose => {
+            if sfc != Surface::PreviewCanvas {
+                app.close_git_worktrees()
+            }
+        }
         #[cfg(feature = "git")]
         Action::WorktreeShowChanges => app.worktree_show_changes(),
         #[cfg(feature = "git")]

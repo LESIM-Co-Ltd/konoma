@@ -1115,16 +1115,8 @@ impl App {
             })
             .unwrap_or_default();
         let facts = ProjectKeyFacts {
-            back_keys: self
-                .project_back_keys()
-                .into_iter()
-                .map(|k| k.code)
-                .collect(),
-            filter_keys: self
-                .project_filter_keys()
-                .into_iter()
-                .map(|k| k.code)
-                .collect(),
+            back_keys: self.project_back_keys(),
+            filter_keys: self.project_filter_keys(),
             blocked: self.show_help
                 || self.dialog.is_some()
                 || self.is_tab_list()
@@ -1550,7 +1542,7 @@ impl App {
     /// The plain keys that run one of the canvas operations `ops` on the screen the canvas shows:
     /// the fixed key `fixed` (it is not in the keymap) unless the config gave it another meaning
     /// (see [`KeyMap::fixed_key_acts_on`]), then every key the effective keymap resolves to one of
-    /// `ops`. A chord is left out: the canvas's key handling takes plain keys here.
+    /// `ops`, Ctrl chords included (a screen table may bind `ctrl-x`).
     fn project_operation_keys(&self, fixed: char, ops: &[crate::keymap::Action]) -> Vec<KeyPress> {
         let screen = self.screen_keys_for(Context::Canvas);
         let mut keys = Vec::new();
@@ -1562,7 +1554,7 @@ impl App {
         }
         for op in ops {
             for key in self.keymaps.keys_of_on(Context::Canvas, screen, *op) {
-                if !key.ctrl && !keys.contains(&key) {
+                if !keys.contains(&key) {
                     keys.push(key);
                 }
             }

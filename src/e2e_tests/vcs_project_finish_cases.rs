@@ -1600,3 +1600,336 @@ fn vcs_port_moved_back_and_filter_keys_follow_the_operations() {
     keys(&mut sim, "Z");
     assert!(sim.app.project_active(), "git: the jj table's x left the project");
 }
+
+/// What `x` did on the changes screen (the plugin's discard has `x` by default): nothing / the
+/// confirmation dialog / left the project.
+#[derive(Debug, PartialEq)]
+enum XOutcome {
+    Left,
+    Confirm,
+    Nothing,
+}
+
+fn press_x(sim: &mut Sim) -> XOutcome {
+    keys(sim, "x");
+    if !sim.app.project_active() {
+        XOutcome::Left
+    } else if sim.app.project_dialog.is_some() {
+        XOutcome::Confirm
+    } else {
+        XOutcome::Nothing
+    }
+}
+
+/// A plugin action's key stays the action's only while the screen's effective keys do not give
+/// that key to another operation (or unbind it): the key handling and the footer / help read one
+/// answer. In the released hub the screen table's `x = "git_close"` replaced GitDiscard.
+#[test]
+fn vcs_port_moved_key_taken_from_a_plugin_action_follows_the_screen_table() {
+    if isolated("vcs_port_moved_key_taken_from_a_plugin_action_follows_the_screen_table") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_taken_key", true);
+    // Baseline: with no config `x:discard` is shown and `x` opens its confirmation.
+    let mut sim = open(&root, config("git", "en"), (180, 24));
+    let (footer, help) = shown_hints(&sim);
+    assert!(footer.contains("x:discard"), "baseline footer: {footer}");
+    assert!(help.contains("discard file"), "baseline help: {help}");
+    assert_eq!(press_x(&mut sim), XOutcome::Confirm, "baseline: x");
+    for table in ["git.changes", "git_changes"] {
+        for (entries, outcome, note) in [
+            (&[("x", "git_close")][..], XOutcome::Left, "x = git_close"),
+            (&[("x", "noop")][..], XOutcome::Nothing, "x = noop"),
+            (&[("x", "toggle_help")][..], XOutcome::Nothing, "x = toggle_help"),
+        ] {
+            let mut sim = open(&root, screen_cfg("git", table, entries), (180, 24));
+            let (footer, help) = shown_hints(&sim);
+            assert!(!footer.contains("x:discard"), "{table} {note}: {footer}");
+            assert!(!help.contains("discard file"), "{table} {note}: {help}");
+            let discard = sim
+                .app
+                .plugin_context_bindings(Context::Canvas)
+                .into_iter()
+                .find(|b| b.act.act() == "discard")
+                .expect("the discard action is declared on the changes screen");
+            assert_eq!(discard.key, None, "{table} {note}: discard keeps a key");
+            assert_eq!(press_x(&mut sim), outcome, "{table} {note}");
+        }
+        // An entry for another key leaves the discard alone.
+        let mut sim = open(&root, screen_cfg("git", table, &[("Z", "git_close")]), (180, 24));
+        let footer = shown_hints(&sim).0;
+        assert!(footer.contains("x:discard"), "{table}: {footer}");
+        assert_eq!(press_x(&mut sim), XOutcome::Confirm, "{table}: other key");
+    }
+    // Another screen's table does not take the key.
+    let mut sim = open(&root, screen_cfg("git", "git.log", &[("x", "git_close")]), (180, 24));
+    assert!(shown_hints(&sim).0.contains("x:discard"));
+    assert_eq!(press_x(&mut sim), XOutcome::Confirm, "git.log's table");
+}
+
+/// In the released hub `worktree_close` on a key of another screen reset the worktree list's
+/// state and re-opened the hub underneath whatever list was in front (`close_git_worktrees`; the
+/// frontmost layer kept the log / branch list on screen, `App::frontmost_layer` in v0.31.2), so
+/// nothing changed on screen there. The canvas has no hub behind it: the key does nothing and
+/// leaves no legacy hub state behind (leaving the project must show the tree, not the hub).
+#[test]
+fn vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind() {
+    if isolated("vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_wt_close", true);
+    for table in ["git", "git_"] {
+        let sep = if table == "git" { "." } else { "" };
+        let mut cfg = config("git", "en");
+        for name in ["changes", "log", "branches", "worktrees"] {
+            cfg.keys.surfaces.insert(
+                format!("{table}{sep}{name}"),
+                [("Z".into(), "worktree_close".into())].into(),
+            );
+        }
+        for name in ["changes", "log", "branches"] {
+            let mut sim = open(&root, cfg.clone(), (180, 24));
+            screen(&mut sim, name);
+            keys(&mut sim, "j");
+            let cursor = sim.app.project_frame().unwrap().cursor;
+            keys(&mut sim, "Z");
+            assert!(sim.app.project_active(), "{table} {name}: Z left");
+            let frame = sim.app.project_frame().unwrap();
+            assert_eq!((frame.key.screen.as_str(), frame.cursor), (name, cursor), "{table} {name}");
+            assert!(!sim.app.is_git_view(), "{table} {name}: the hub opened behind the canvas");
+            keys(&mut sim, "q");
+            assert!(!sim.app.project_active(), "{table} {name}: q");
+            assert!(!sim.app.is_git_view(), "{table} {name}: the hub shows after the canvas");
+            assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree, "{table} {name}");
+        }
+        // The worktree list's own close is that operation: it leaves.
+        let mut sim = open(&root, cfg.clone(), (180, 24));
+        screen(&mut sim, "worktrees");
+        keys(&mut sim, "Z");
+        assert!(!sim.app.project_active(), "{table}: Z on worktrees");
+        assert!(!sim.app.is_git_view(), "{table}: Z on worktrees opened the hub");
+    }
+}
+
+fn press_ctrl(sim: &mut Sim, c: char) {
+    sim.press(KeyCode::Char(c), KeyModifiers::CONTROL);
+    drain(sim);
+}
+
+/// In the released hub a screen table's `ctrl-x = "git_close"` resolved to GitClose and closed.
+/// The canvas matches the press with its Ctrl state: the Ctrl chord leaves (and filters), the
+/// footer and help name it, and the same letter plain or with Alt is not the key.
+#[test]
+fn vcs_port_moved_ctrl_keys_follow_the_screen_operations() {
+    if isolated("vcs_port_moved_ctrl_keys_follow_the_screen_operations") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_ctrl_keys", true);
+    for table in ["git.changes", "git_changes"] {
+        let entries = [("q", "noop"), ("ctrl-x", "git_close")];
+        let mut sim = open(&root, screen_cfg("git", table, &entries), (180, 24));
+        let (footer, help) = shown_hints(&sim);
+        assert!(footer.contains("Ctrl-x:back") && !footer.contains("q:back"), "{table}: {footer}");
+        assert!(help.contains("Ctrl-x / Esc") && !help.contains("q / Esc"), "{table}: {help}");
+        keys(&mut sim, "q");
+        assert!(sim.app.project_active(), "{table}: the unbound q left");
+        // The plain letter is not the chord (it is the discard's key here).
+        assert_eq!(press_x(&mut sim), XOutcome::Confirm, "{table}: plain x");
+        let mut sim = open(&root, screen_cfg("git", table, &entries), (180, 24));
+        press_ctrl(&mut sim, 'x');
+        assert!(!sim.app.project_active(), "{table}: Ctrl-x does not leave");
+        // Another Ctrl chord is not it.
+        let mut sim = open(&root, screen_cfg("git", table, &[("ctrl-x", "git_close")]), (180, 24));
+        press_ctrl(&mut sim, 'y');
+        assert!(sim.app.project_active(), "{table}: Ctrl-y left");
+        let footer = shown_hints(&sim).0;
+        assert!(footer.contains("q/Ctrl-x:back"), "{table}: {footer}");
+        press_ctrl(&mut sim, 'x');
+        assert!(!sim.app.project_active(), "{table}: Ctrl-x beside q does not leave");
+    }
+    // The list screens' filter on a Ctrl chord, the fixed `/` unbound.
+    for (table, name, word, own) in [
+        ("git.branches", "branches", "filter", "branch_filter_start"),
+        ("git_branches", "branches", "filter", "branch_filter_start"),
+        ("git.worktrees", "worktrees", "search", "worktree_filter_start"),
+        ("git.log", "log", "filter", "list_filter_start"),
+    ] {
+        let mut sim = open(
+            &root,
+            screen_cfg("git", table, &[("/", "noop"), ("ctrl-x", own)]),
+            (180, 24),
+        );
+        screen(&mut sim, name);
+        let footer = shown_hints(&sim).0;
+        assert!(
+            footer.contains(&format!("Ctrl-x:{word}")) && !footer.contains(&format!("/:{word}")),
+            "{table}: {footer}"
+        );
+        keys(&mut sim, "/");
+        assert!(!sim.app.project_frame().is_some_and(|f| f.filtering), "{table}: unbound /");
+        sim.press(KeyCode::Char('x'), KeyModifiers::ALT);
+        drain(&mut sim);
+        assert!(!sim.app.project_frame().is_some_and(|f| f.filtering), "{table}: Alt-x filters");
+        press_ctrl(&mut sim, 'x');
+        assert!(sim.app.project_frame().is_some_and(|f| f.filtering), "{table}: Ctrl-x");
+    }
+    // jj when available.
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let jjroot = super::vcs_log::jj_repo(false);
+    std::fs::write(jjroot.join("changed.txt"), "new\n").unwrap();
+    let entries = [("q", "noop"), ("ctrl-x", "git_close")];
+    let mut sim = open(&jjroot, screen_cfg("jj", "jj.changes", &entries), (180, 24));
+    let footer = shown_hints(&sim).0;
+    assert!(footer.contains("Ctrl-x:back") && !footer.contains("q:back"), "jj: {footer}");
+    press_ctrl(&mut sim, 'x');
+    assert!(!sim.app.project_active(), "jj: Ctrl-x does not leave");
+    // And a key the jj table takes from a jj action: x is jj's discard? (see the declared keys)
+    let mut sim = open(&jjroot, screen_cfg("jj", "jj.changes", &[("x", "git_close")]), (180, 24));
+    keys(&mut sim, "x");
+    assert!(!sim.app.project_active(), "jj: x = git_close does not leave");
+}
+
+/// While a job holds the session the canvas queues presses, except the ones that move or navigate
+/// (`navigation` and `local_movement` in the project host). Which keys those are follows the
+/// screen's operations: a moved back or filter key acts at once, and the fixed `q` / `/` that no
+/// longer mean back / filter wait in line like any other key.
+#[test]
+fn vcs_port_moved_back_and_filter_keys_act_at_once_while_busy() {
+    use konoma_plugin::{Failure, Input, Manifest, OpenCx, Plugin, Session, View, ViewCx, ViewReq};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    if isolated("vcs_port_moved_back_and_filter_keys_act_at_once_while_busy") {
+        return;
+    }
+    struct Held {
+        armed: Arc<AtomicBool>,
+        latch: Arc<crate::plugins::test_plugins::Latch>,
+    }
+    impl Plugin for Held {
+        fn manifest(&self) -> Manifest {
+            konoma_vcs::Git.manifest()
+        }
+        fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(HeldSession {
+                inner: konoma_vcs::Git.open(input, cx)?,
+                armed: self.armed.clone(),
+                latch: self.latch.clone(),
+            }))
+        }
+    }
+    struct HeldSession {
+        inner: Box<dyn Session>,
+        armed: Arc<AtomicBool>,
+        latch: Arc<crate::plugins::test_plugins::Latch>,
+    }
+    impl Session for HeldSession {
+        fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+            let view = self.inner.view(req, cx);
+            if req.project.as_ref().is_some_and(|p| p.screen == "changes")
+                && self.armed.swap(false, Ordering::SeqCst)
+            {
+                self.latch.wait();
+            }
+            view
+        }
+        fn act(
+            &mut self,
+            action: &str,
+            cx: &konoma_plugin::ActCx,
+        ) -> Result<konoma_plugin::Outcome, Failure> {
+            self.inner.act(action, cx)
+        }
+        fn enabled(&self, action: &str) -> bool {
+            self.inner.enabled(action)
+        }
+        fn chip(&mut self, cx: &ViewCx) -> Result<Option<konoma_plugin::Chip>, Failure> {
+            self.inner.chip(cx)
+        }
+        fn watch_paths(&mut self, cx: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
+            self.inner.watch_paths(cx)
+        }
+        fn tab_closed(&mut self, tab: u64) {
+            self.inner.tab_closed(tab);
+        }
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_busy_keys", true);
+    static ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    for table in ["git.changes", "git_changes"] {
+        for (moved, own, fixed, want_leave) in [
+            ("Z", "git_close", "q", true),
+            ("Z", "list_filter_start", "/", false),
+        ] {
+            let armed = Arc::new(AtomicBool::new(false));
+            let latch = Arc::new(crate::plugins::test_plugins::Latch::default());
+            let marker = crate::plugins::test_plugins::register_replacement(
+                &format!(
+                    "vcs_port_busy_keys_{}",
+                    ID.fetch_add(1, Ordering::Relaxed)
+                ),
+                Arc::new(Held {
+                    armed: armed.clone(),
+                    latch: latch.clone(),
+                }),
+            );
+            let mut cfg = screen_cfg("git", table, &[(fixed, "noop"), (moved, own)]);
+            cfg.plugins
+                .extend(crate::plugins::test_plugins::marker_config(&marker).plugins);
+            let mut sim = open(&root, cfg, (180, 24));
+            let queued = sim.app.project_frame().unwrap().pending.len();
+            armed.store(true, Ordering::SeqCst);
+            sim.press(KeyCode::Char('r'), KeyModifiers::NONE);
+            assert!(
+                sim.app.project_jobs_pending(),
+                "{table} {own}: r did not start a job"
+            );
+            // The fixed key no longer means the operation: it waits in line behind the job.
+            let before = sim.app.project_frame().unwrap().pending.len();
+            sim.press(KeyCode::Char(fixed.chars().next().unwrap()), KeyModifiers::NONE);
+            let frame = sim.app.project_frame().unwrap();
+            assert_eq!(
+                frame.pending.len(),
+                before + 1,
+                "{table} {own}: {fixed} did not wait in line (queued before r: {queued})"
+            );
+            assert!(sim.app.project_active(), "{table} {own}: {fixed} left");
+            assert!(!frame.filtering, "{table} {own}: {fixed} filtered");
+            // The moved key acts at once, not behind the job.
+            let before = sim.app.project_frame().unwrap().pending.len();
+            sim.press(KeyCode::Char('Z'), KeyModifiers::NONE);
+            if want_leave {
+                assert!(!sim.app.project_active(), "{table} {own}: Z waited in line");
+            } else {
+                let frame = sim.app.project_frame().unwrap();
+                assert!(frame.filtering, "{table} {own}: Z waited in line");
+                assert_eq!(frame.pending.len(), before, "{table} {own}: Z was queued");
+            }
+            latch.open();
+            drain(&mut sim);
+        }
+    }
+}
+
+/// An Alt chord is never the back or filter key: `Alt-q` and `Alt-/` do not leave or filter.
+#[test]
+fn vcs_port_alt_chords_are_not_the_back_or_filter_key() {
+    if isolated("vcs_port_alt_chords_are_not_the_back_or_filter_key") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_alt_chords", true);
+    let mut sim = open(&root, config("git", "en"), (180, 24));
+    sim.press(KeyCode::Char('q'), KeyModifiers::ALT);
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "Alt-q left the project");
+    sim.press(KeyCode::Char('/'), KeyModifiers::ALT);
+    drain(&mut sim);
+    assert!(
+        !sim.app.project_frame().is_some_and(|f| f.filtering),
+        "Alt-/ started the filter"
+    );
+    press_ctrl(&mut sim, 'q');
+    assert!(sim.app.project_active(), "Ctrl-q (not bound) left the project");
+    keys(&mut sim, "q");
+    assert!(!sim.app.project_active(), "plain q does not leave");
+}
