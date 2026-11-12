@@ -51,8 +51,9 @@ mod input_tests;
 mod presentation_help_tests;
 #[cfg(test)]
 mod presentation_tests;
-#[cfg(test)]
-mod test_facts;
+// Public under `test-hooks` so the host's tests can pin its default keys against these.
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod test_facts;
 
 pub use prompt::{
     ProjectActionId, ProjectDialog, ProjectInvocation, ProjectOrigin, ProjectPrompt,

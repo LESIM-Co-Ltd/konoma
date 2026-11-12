@@ -39,9 +39,13 @@ fn fixture() -> (Sim, crate::test_support::TmpDir, Arc<Mutex<plugin::Log>>) {
 }
 
 fn presentation(sim: &Sim) -> ProjectPresentation {
+    let (host, _) = sim.app.project_presentation().unwrap();
+    presentation_from(sim, host.facts_for_test())
+}
+
+fn presentation_from(sim: &Sim, facts: &ProjectPresentationFacts) -> ProjectPresentation {
     use crate::keymap::{Action, Context};
     let app = &sim.app;
-    let (host, _) = app.project_presentation().unwrap();
     let bindings = app
         .plugin_context_bindings(Context::Canvas)
         .into_iter()
@@ -70,7 +74,7 @@ fn presentation(sim: &Sim) -> ProjectPresentation {
     };
     // These two operation facts are deliberately different: no NewTab executor, and root exits.
     ProjectPresentation::build(
-        host.facts_for_test(),
+        facts,
         ProjectCapabilities {
             can_open_tab: false,
         },
@@ -303,4 +307,49 @@ fn project_presentation_matches_frozen_host_cells_with_standalone_capabilities()
         .join("snapshots/project_presentation.json");
     let expected: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(actual, expected);
+}
+
+/// The presentation tests of konoma-plugin start from `default_keymap_motions()`, a hand copy of
+/// what this host passes with no config. Pin the copy against the real host so a changed default
+/// key fails here instead of leaving those tests green on stale keys.
+#[test]
+fn project_default_motion_keys_equal_the_plugin_test_helper_copy() {
+    let (sim, _dir, _log) = fixture();
+    let (host, _) = sim.app.project_presentation().unwrap();
+    let facts = host.facts_for_test();
+    assert!(
+        matches!(facts.content, Some(ProjectPresentationContent::List)),
+        "the helper copy models a list screen"
+    );
+    let helper = konoma_plugin::host::project::test_facts::default_keymap_motions();
+    // The host also lists arrows and uppercase aliases for scrolling; the plain keys are the
+    // ones the canvas hints show.
+    assert_eq!(facts.motions.plain_scroll(), helper.scroll);
+    assert_eq!(facts.motions.back, helper.back);
+    assert_eq!(facts.motions.filter, helper.filter);
+    assert_eq!(facts.motions.help, helper.help);
+    // The groups the helper leaves empty (horizontal scroll, ends, half page, page, line ends,
+    // diff layout) must not matter on a list screen: with only the helper's motions, the
+    // controls and the footer are the same as with the host's full set.
+    let mut helper_facts = facts.clone();
+    helper_facts.motions = helper;
+    let from_host = presentation_from(&sim, facts);
+    let from_helper = presentation_from(&sim, &helper_facts);
+    assert!(!from_host.controls().is_empty());
+    assert_eq!(
+        format!("{:?}", from_host.controls()),
+        format!("{:?}", from_helper.controls())
+    );
+    assert_eq!(
+        from_host
+            .footer_tokens()
+            .iter()
+            .map(|t| t.text.clone())
+            .collect::<Vec<_>>(),
+        from_helper
+            .footer_tokens()
+            .iter()
+            .map(|t| t.text.clone())
+            .collect::<Vec<_>>()
+    );
 }

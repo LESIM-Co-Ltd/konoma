@@ -8,7 +8,7 @@ use konoma_host_core::keymap::KeyPress;
 /// The scroll, back, filter and help keys of the default keymap. The other groups (horizontal
 /// scroll, ends, half page, page, line ends, diff layout) stay empty: each test sets the ones it
 /// shows.
-pub(super) fn default_keymap_motions() -> ProjectMotionKeys {
+pub fn default_keymap_motions() -> ProjectMotionKeys {
     ProjectMotionKeys {
         scroll: vec![KeyPress::ch('j'), KeyPress::ch('k')],
         back: vec![KeyPress::ch('q')],
@@ -19,7 +19,7 @@ pub(super) fn default_keymap_motions() -> ProjectMotionKeys {
 }
 
 /// Default facts carrying [`default_keymap_motions`].
-pub(super) fn default_keymap_facts() -> ProjectPresentationFacts {
+pub fn default_keymap_facts() -> ProjectPresentationFacts {
     ProjectPresentationFacts {
         motions: default_keymap_motions(),
         ..Default::default()
