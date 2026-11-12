@@ -629,3 +629,206 @@ fn refresh_named_and_all_screens_keep_each_context_paths() {
     let req = effects::request(&info(19), &key).unwrap();
     assert_eq!(req.project.unwrap().selection.as_deref(), Some("selected"));
 }
+
+fn rows_view(values: &[&str]) -> Arc<ProjectContent> {
+    Arc::new(ProjectContent::List(ListView {
+        rows: values
+            .iter()
+            .map(|v| ListRow::new("file", vec![]).value(*v))
+            .collect(),
+        ..Default::default()
+    }))
+}
+
+/// Arm a start-over on the fixture's screen with the cursor on its second row.
+fn armed_fixture() -> Fixture {
+    let mut f = Fixture::new();
+    f.state.as_mut().unwrap().stack[0].cursor = 1;
+    let (mut host, mut context) = f.parts();
+    host.reload_screen_from_top(&mut context);
+    f
+}
+
+fn reply_with(view: Option<Arc<ProjectContent>>, error: bool) -> ProjectReply<()> {
+    let mut r = reply();
+    if let Some(view) = view {
+        r.views.push((ScreenKey::new("list", 7), view));
+    }
+    if error {
+        r.error = Some(crate::Failure::external(crate::Tr::new("view failed")));
+    }
+    r
+}
+
+fn cursor(f: &Fixture) -> usize {
+    f.state.as_ref().unwrap().stack[0].cursor
+}
+
+fn ensure(f: &mut Fixture) {
+    // The job channel holds one job: take the previous one before the next send.
+    while f.jobs.try_recv().is_ok() {}
+    let (mut host, mut context) = f.parts();
+    host.ensure_view(&mut context, &info(7));
+}
+
+fn poll_one(f: &mut Fixture, r: ProjectReply<()>) {
+    f.runtimes.get_mut(&project()).unwrap().pending = Some(r);
+    let (mut host, context) = f.parts();
+    let mut contexts = [context];
+    host.poll(&mut contexts, &[info(7)], &[project()]);
+}
+
+#[test]
+fn a_start_over_is_carried_by_the_view_job_that_sends_and_ended_by_its_reply() {
+    let mut f = armed_fixture();
+    let key = ScreenKey::new("list", 7);
+    let top = &f.runtimes[&project()].top;
+    assert_eq!(
+        (top.armed.as_ref(), top.inflight.as_ref()),
+        (Some(&key), None)
+    );
+    ensure(&mut f);
+    assert!(matches!(
+        f.jobs.try_recv().unwrap(),
+        ProjectJob::View { .. }
+    ));
+    let top = &f.runtimes[&project()].top;
+    assert_eq!(
+        (top.armed.as_ref(), top.inflight.as_ref()),
+        (None, Some(&key))
+    );
+    // A row inserted above the selection would move the cursor down; the start-over wins.
+    poll_one(&mut f, reply_with(Some(rows_view(&["0", "a", "b"])), false));
+    assert_eq!(cursor(&f), 0);
+    assert!(f.runtimes[&project()].top.inflight.is_none());
+    // The next reload is an ordinary one: it follows the selected row.
+    f.state.as_mut().unwrap().stack[0].cursor = 2;
+    f.runtimes
+        .get_mut(&project())
+        .unwrap()
+        .dirty
+        .insert(key.clone());
+    ensure(&mut f);
+    poll_one(
+        &mut f,
+        reply_with(Some(rows_view(&["x", "0", "a", "b"])), false),
+    );
+    assert_eq!(cursor(&f), 3, "an ordinary reload follows the selection");
+}
+
+#[test]
+fn a_failed_reply_ends_the_start_over_so_a_later_reload_follows_the_selection() {
+    let mut f = armed_fixture();
+    ensure(&mut f);
+    assert!(f.runtimes[&project()].top.inflight.is_some());
+    poll_one(&mut f, reply_with(None, true));
+    let top = &f.runtimes[&project()].top;
+    assert!(
+        top.armed.is_none() && top.inflight.is_none(),
+        "the error ended it"
+    );
+    assert_eq!(cursor(&f), 1, "no rows, no move");
+    // The user reads again (as `r`): a plain reload.
+    let key = ScreenKey::new("list", 7);
+    let runtime = f.runtimes.get_mut(&project()).unwrap();
+    runtime.error = None;
+    runtime.dirty.insert(key);
+    ensure(&mut f);
+    poll_one(&mut f, reply_with(Some(rows_view(&["0", "a", "b"])), false));
+    assert_eq!(
+        cursor(&f),
+        2,
+        "the selected row moved down by one and the cursor followed"
+    );
+}
+
+#[test]
+fn a_start_over_nothing_sends_for_is_dropped_not_kept_for_a_later_reload() {
+    for condition in ["not ready", "standing error"] {
+        let mut f = armed_fixture();
+        let runtime = f.runtimes.get_mut(&project()).unwrap();
+        runtime.ready = condition != "not ready";
+        if condition == "standing error" {
+            runtime.error = Some(crate::Failure::external(crate::Tr::new("standing")));
+        }
+        ensure(&mut f);
+        assert!(f.jobs.try_recv().is_err(), "{condition}: nothing was sent");
+        let top = &f.runtimes[&project()].top;
+        assert!(
+            top.armed.is_none() && top.inflight.is_none(),
+            "{condition}: dropped"
+        );
+        // Once the session can read again, the reload is an ordinary one.
+        let runtime = f.runtimes.get_mut(&project()).unwrap();
+        runtime.ready = true;
+        runtime.error = None;
+        runtime.dirty.insert(ScreenKey::new("list", 7));
+        ensure(&mut f);
+        assert!(matches!(
+            f.jobs.try_recv().unwrap(),
+            ProjectJob::View { .. }
+        ));
+        assert!(f.runtimes[&project()].top.inflight.is_none(), "{condition}");
+        poll_one(&mut f, reply_with(Some(rows_view(&["0", "a", "b"])), false));
+        assert_eq!(
+            cursor(&f),
+            2,
+            "{condition}: a later reload follows the selection"
+        );
+    }
+}
+
+#[test]
+fn a_start_over_job_whose_reply_is_discarded_as_stale_hands_it_to_the_reload_that_follows() {
+    let mut f = armed_fixture();
+    let key = ScreenKey::new("list", 7);
+    ensure(&mut f);
+    assert_eq!(f.runtimes[&project()].top.inflight.as_ref(), Some(&key));
+    // A change under the project lands while that job reads: its rows are stale when they come.
+    {
+        let (mut host, _) = f.parts();
+        host.invalidate(&project(), ProjectInvalidation::Resize);
+    }
+    poll_one(&mut f, reply_with(Some(rows_view(&["0", "a", "b"])), false));
+    assert_eq!(cursor(&f), 1, "the stale rows are not adopted");
+    let top = &f.runtimes[&project()].top;
+    assert_eq!(
+        (top.armed.as_ref(), top.inflight.as_ref()),
+        (Some(&key), None)
+    );
+    ensure(&mut f);
+    poll_one(&mut f, reply_with(Some(rows_view(&["0", "a", "b"])), false));
+    assert_eq!(
+        cursor(&f),
+        0,
+        "the re-read is the reload the start-over was asked for"
+    );
+}
+
+#[test]
+fn a_start_over_waits_for_a_busy_session_and_survives_the_stale_reply_it_waited_for() {
+    let mut f = armed_fixture();
+    let key = ScreenKey::new("list", 7);
+    f.runtimes.get_mut(&project()).unwrap().busy = true;
+    ensure(&mut f);
+    assert_eq!(
+        f.runtimes[&project()].top.armed.as_ref(),
+        Some(&key),
+        "busy: kept"
+    );
+    // The reply of the job that held the session is stale (the screen was marked meanwhile).
+    f.runtimes.get_mut(&project()).unwrap().invalidated = true;
+    poll_one(&mut f, reply_with(Some(rows_view(&["0", "a", "b"])), false));
+    assert_eq!(cursor(&f), 1, "the stale reply is not adopted");
+    ensure(&mut f);
+    assert!(matches!(
+        f.jobs.try_recv().unwrap(),
+        ProjectJob::View { .. }
+    ));
+    poll_one(&mut f, reply_with(Some(rows_view(&["0", "a", "b"])), false));
+    assert_eq!(
+        cursor(&f),
+        0,
+        "the reload that follows is the one asked for"
+    );
+}

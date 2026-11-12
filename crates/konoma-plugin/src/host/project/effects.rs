@@ -125,6 +125,10 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         let Some(runtime) = self.runtimes.get_mut(&nav.project) else {
             return;
         };
+        // An armed start-over is carried by the next view job this call sends. It waits only for
+        // a busy session (the dirty screen is read as soon as the session is free); every other
+        // way out of this call drops it, so it cannot reach a reload nobody asked it for.
+        let armed = runtime.top.armed.take();
         if let Some(view) = nav.frame().and_then(|frame| runtime.views.get(&frame.key)) {
             nav.initialize_frame(view, &runtime.project.declaration);
         }
@@ -134,8 +138,11 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         let Some(req) = request(info, &frame.key).filter(|_| context.id == info.id) else {
             return;
         };
-        if runtime.busy
-            || !runtime.ready
+        if runtime.busy {
+            runtime.top.armed = armed;
+            return;
+        }
+        if !runtime.ready
             || runtime.error.is_some()
             || (runtime.views.contains_key(&frame.key)
                 && !runtime.dirty.contains(&frame.key)
@@ -152,6 +159,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             .is_ok()
         {
             runtime.busy = true;
+            runtime.top.inflight = armed.filter(|key| key == &frame.key);
             #[cfg(any(test, feature = "test-hooks"))]
             {
                 runtime.view_request = Some(frame.key.clone());
@@ -174,10 +182,16 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
 
     /// A reload of the current screen that starts the list over: the same reading as `r`, and
     /// the cursor is on the first row when the new rows arrive.
+    ///
+    /// The start-over is armed on the runtime and moves onto the view job that the next
+    /// [`ProjectHost::ensure_view`] sends; that job's reply ends it (see `TopRequest`).
     pub fn reload_screen_from_top(&mut self, context: &mut ProjectContextMut<'_, I>) {
-        if let Some(nav) = context.active.as_mut() {
-            nav.top_on_next_reload();
+        if let Some(nav) = context.active.as_ref() {
             self.mark_screen_stale(nav);
+            if let (Some(runtime), Some(frame)) = (self.runtimes.get_mut(&nav.project), nav.frame())
+            {
+                runtime.top.armed = Some(frame.key.clone());
+            }
         }
     }
 
@@ -377,6 +391,8 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                 update.changed = true;
                 runtime.busy = false;
                 runtime.acting = false;
+                // The reply ends the job that carried the start-over, whatever it holds.
+                let top = runtime.top.inflight.take();
                 if let Some(invocation) = runtime.pending_retry.take().filter(|_| reply.act_failed)
                 {
                     retries.push(ProjectEvent::Retry(*invocation));
@@ -413,7 +429,12 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                                 .flatten()
                             {
                                 if &state.project == key {
-                                    state.remap_rows(&screen, old, &view);
+                                    state.remap_rows(
+                                        &screen,
+                                        old,
+                                        &view,
+                                        top.as_ref() == Some(&screen),
+                                    );
                                 }
                             }
                         }
@@ -436,6 +457,9 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                 if runtime.invalidated {
                     runtime.dirty.extend(runtime.views.keys().cloned());
                     runtime.invalidated = false;
+                    // This reply was discarded as stale; the reload that follows is the one
+                    // the start-over was asked for.
+                    runtime.top.armed = top.or(runtime.top.armed.take());
                 }
                 if let Some(effect) = reply.effect {
                     effects.push(ProjectEvent::Effect(effect));

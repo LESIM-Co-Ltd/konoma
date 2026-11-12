@@ -37,14 +37,14 @@ fn rows_remap_by_project_row_identity() {
     state.stack[0].cursor = 1;
     state.stack[0].marked.extend([0, 1]);
     let new = list(vec![row("c"), row("a"), row("b").name("Bee")]);
-    state.remap_rows(&key, Some(&old), &new);
+    state.remap_rows(&key, Some(&old), &new, false);
     assert_eq!(state.stack[0].cursor, 2);
     assert_eq!(
         state.stack[0].marked.iter().copied().collect::<Vec<_>>(),
         vec![1, 2]
     );
     let renamed = list(vec![row("a"), row("b").name("Other")]);
-    state.remap_rows(&key, Some(&new), &renamed);
+    state.remap_rows(&key, Some(&new), &renamed, false);
     assert_eq!(state.stack[0].cursor, 0);
     assert_eq!(
         state.stack[0].marked.iter().copied().collect::<Vec<_>>(),
@@ -54,28 +54,33 @@ fn rows_remap_by_project_row_identity() {
         row("b").name("Other"),
         ListRow::new("directory", vec![]).value("a"),
     ]);
-    state.remap_rows(&key, Some(&renamed), &changed_kind);
+    state.remap_rows(&key, Some(&renamed), &changed_kind, false);
     assert_eq!(state.stack[0].cursor, 0);
     assert!(state.stack[0].marked.is_empty());
 }
 
 #[test]
-fn top_on_next_reload_starts_the_list_over_once() {
+fn a_start_over_replacement_puts_the_cursor_on_the_first_row_only_for_its_own_rows() {
     let mut state = state();
     let key = state.stack[0].key.clone();
     let old = list(vec![row("a"), row("b")]);
     state.stack[0].cursor = 1;
-    state.top_on_next_reload();
-    // A row sorted above the selection would move the cursor down; the flag wins, once.
+    state.stack[0].pending.extend([
+        ProjectInput::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)),
+        ProjectInput::Act(Box::new("invocation")),
+    ]);
+    // A row sorted above the selection would move the cursor down; start-over wins.
     let new = list(vec![row("0"), row("a"), row("b")]);
-    state.remap_rows(&key, Some(&old), &new);
+    state.remap_rows(&key, Some(&old), &new, true);
     assert_eq!(state.stack[0].cursor, 0);
+    assert_eq!(state.stack[0].pending.len(), 1, "motion dropped, act kept");
+    // The next replacement is an ordinary one and follows the selection.
     state.stack[0].cursor = 2;
-    state.remap_rows(&key, Some(&new), &new);
-    assert_eq!(
-        state.stack[0].cursor, 2,
-        "the flag is taken by the first replacement"
-    );
+    state.remap_rows(&key, Some(&new), &new, false);
+    assert_eq!(state.stack[0].cursor, 2);
+    // Without a previous list (nothing to follow) the start-over still applies.
+    state.remap_rows(&key, None, &new, true);
+    assert_eq!(state.stack[0].cursor, 0);
 }
 
 #[test]
@@ -90,7 +95,7 @@ fn removed_selection_discards_keys_but_keeps_invocations() {
         ProjectInput::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
         ProjectInput::Act(Box::new("second snapshot")),
     ]);
-    state.remap_rows(&key, Some(&old), &list(vec![row("a")]));
+    state.remap_rows(&key, Some(&old), &list(vec![row("a")]), false);
     assert_eq!(state.stack[0].cursor, 0);
     let pending = &state.stack[0].pending;
     assert_eq!(pending.len(), 2);

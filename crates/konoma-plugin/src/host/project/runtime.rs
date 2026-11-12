@@ -102,7 +102,21 @@ impl<E> ProjectReply<E> {
     }
 }
 
+/// The "start the list over" half of a reload the host asked for. It belongs to one view job:
+/// armed by the request, moved onto the job when it is sent, and ended by that job's reply
+/// whatever the reply holds (rows, an error, or a result discarded as stale). No other reload
+/// can see it.
+#[derive(Default)]
+pub struct TopRequest {
+    /// Asked for, not sent yet. Dropped by the first send attempt that cannot wait for a busy
+    /// session (not ready, no request, a standing error).
+    pub armed: Option<ScreenKey>,
+    /// Carried by the job in flight.
+    pub inflight: Option<ScreenKey>,
+}
+
 pub struct ProjectRuntime<E: Send + 'static, I = ()> {
+    pub top: TopRequest,
     pub closed_tabs: std::collections::BTreeSet<u64>,
     pub watch_paths: Option<Vec<PathBuf>>,
     pub refresh_watch: bool,
@@ -377,6 +391,7 @@ impl<E: Send + 'static, I> ProjectRuntime<E, I> {
             closed_tabs: Default::default(),
             refresh_watch: false,
             project,
+            top: TopRequest::default(),
             views: HashMap::new(),
             launch_targets: HashMap::new(),
             contexts: HashMap::new(),

@@ -146,6 +146,7 @@ fn app() -> (App, crate::test_support::TmpDir) {
                     .screen(ProjectScreen::new("other", "Other"))
                     .screen(ProjectScreen::new("hidden", "Hidden").pushed()),
             },
+            top: Default::default(),
             closed_tabs: Default::default(),
             watch_paths: None,
             refresh_watch: false,

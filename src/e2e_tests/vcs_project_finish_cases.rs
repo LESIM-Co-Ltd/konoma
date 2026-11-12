@@ -1735,6 +1735,254 @@ fn vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind() {
     }
 }
 
+/// The VCS plugin with two switches on its changes view: `fail` makes the next one return an
+/// error, `hold` makes the next one wait on the latch after it has read (the session stays busy
+/// until the test opens it). Both are ordered by the test, not by the clock.
+struct WtFlaky {
+    fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    hold: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    latch: std::sync::Arc<crate::plugins::test_plugins::Latch>,
+    backend: &'static str,
+}
+
+struct WtFlakySession {
+    inner: Box<dyn konoma_plugin::Session>,
+    fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    hold: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    latch: std::sync::Arc<crate::plugins::test_plugins::Latch>,
+}
+
+impl konoma_plugin::Plugin for WtFlaky {
+    fn manifest(&self) -> konoma_plugin::Manifest {
+        if self.backend == "jj" {
+            konoma_vcs::Jj.manifest()
+        } else {
+            konoma_vcs::Git.manifest()
+        }
+    }
+    fn open(
+        &self,
+        input: konoma_plugin::Input,
+        cx: &konoma_plugin::OpenCx,
+    ) -> Result<Box<dyn konoma_plugin::Session>, konoma_plugin::Failure> {
+        let inner = if self.backend == "jj" {
+            konoma_vcs::Jj.open(input, cx)?
+        } else {
+            konoma_vcs::Git.open(input, cx)?
+        };
+        Ok(Box::new(WtFlakySession {
+            inner,
+            fail: self.fail.clone(),
+            hold: self.hold.clone(),
+            latch: self.latch.clone(),
+        }))
+    }
+}
+
+impl konoma_plugin::Session for WtFlakySession {
+    fn view(
+        &mut self,
+        req: &konoma_plugin::ViewReq,
+        cx: &konoma_plugin::ViewCx,
+    ) -> Result<konoma_plugin::View, konoma_plugin::Failure> {
+        use std::sync::atomic::Ordering;
+        let on_changes = req.project.as_ref().is_some_and(|p| p.screen == "changes");
+        if on_changes && self.fail.swap(false, Ordering::SeqCst) {
+            return Err(konoma_plugin::Failure::external(konoma_plugin::Tr::new(
+                "the repository is locked",
+            )));
+        }
+        let view = self.inner.view(req, cx);
+        if on_changes && self.hold.swap(false, Ordering::SeqCst) {
+            self.latch.wait();
+        }
+        view
+    }
+    fn act(
+        &mut self,
+        action: &str,
+        cx: &konoma_plugin::ActCx,
+    ) -> Result<konoma_plugin::Outcome, konoma_plugin::Failure> {
+        self.inner.act(action, cx)
+    }
+    fn enabled(&self, action: &str) -> bool {
+        self.inner.enabled(action)
+    }
+    fn chip(
+        &mut self,
+        cx: &konoma_plugin::ViewCx,
+    ) -> Result<Option<konoma_plugin::Chip>, konoma_plugin::Failure> {
+        self.inner.chip(cx)
+    }
+    fn watch_paths(
+        &mut self,
+        cx: &konoma_plugin::ViewCx,
+    ) -> Result<Option<Vec<std::path::PathBuf>>, konoma_plugin::Failure> {
+        self.inner.watch_paths(cx)
+    }
+    fn tab_closed(&mut self, tab: u64) {
+        self.inner.tab_closed(tab);
+    }
+}
+
+struct WtFlakyHandles {
+    fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    hold: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    latch: std::sync::Arc<crate::plugins::test_plugins::Latch>,
+}
+
+/// A config where `Z` is `worktree_close` on `table`, over [`WtFlaky`].
+fn wt_flaky_cfg(backend: &'static str, table: &str) -> (Config, WtFlakyHandles) {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    static ID: AtomicUsize = AtomicUsize::new(0);
+    let handles = WtFlakyHandles {
+        fail: Arc::new(AtomicBool::new(false)),
+        hold: Arc::new(AtomicBool::new(false)),
+        latch: Arc::new(crate::plugins::test_plugins::Latch::default()),
+    };
+    let marker = crate::plugins::test_plugins::register_replacement(
+        &format!("vcs_port_wt_flaky_{}", ID.fetch_add(1, Ordering::Relaxed)),
+        Arc::new(WtFlaky {
+            fail: handles.fail.clone(),
+            hold: handles.hold.clone(),
+            latch: handles.latch.clone(),
+            backend,
+        }),
+    );
+    let mut cfg = screen_cfg(backend, table, &[("Z", "worktree_close")]);
+    cfg.plugins
+        .extend(crate::plugins::test_plugins::marker_config(&marker).plugins);
+    (cfg, handles)
+}
+
+/// Whether the project's session holds a standing error (the last view failed).
+fn project_view_error(sim: &Sim) -> bool {
+    sim.app
+        .project_runtimes
+        .values()
+        .any(|runtime| runtime.error.is_some())
+}
+
+/// The start-over a `worktree_close` asks for belongs to that one reload. When the reload fails
+/// the request is over: a later reload (here `r`, with a motion waiting in line) follows the
+/// selected row and keeps the key waiting in line instead of jumping to row 0 and dropping it.
+#[test]
+fn vcs_port_moved_worktree_close_start_over_does_not_outlive_a_failed_reload() {
+    use std::sync::atomic::Ordering;
+    if isolated("vcs_port_moved_worktree_close_start_over_does_not_outlive_a_failed_reload") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_wt_close_failed", true);
+    for table in ["git.changes", "git_changes"] {
+        let (cfg, h) = wt_flaky_cfg("git", table);
+        let mut sim = open(&root, cfg, (180, 24));
+        screen(&mut sim, "changes");
+        keys(&mut sim, "jj");
+        let rows = real_list(&sim).rows.len();
+        assert!(rows >= 4, "{table}: the fixture needs rows below the cursor");
+        assert_eq!(sim.app.project_frame().unwrap().cursor, 2, "{table}: moved");
+        let third = real_list(&sim).rows[2].value.clone();
+        // Z while the next read fails: no rows arrive, the cursor stays where it was.
+        h.fail.store(true, Ordering::SeqCst);
+        keys(&mut sim, "Z");
+        assert!(project_view_error(&sim), "{table}: the reload did not fail");
+        assert_eq!(sim.app.project_frame().unwrap().cursor, 2, "{table}: failed Z moved");
+        // A plain reload now. While it reads, a motion waits in line; the rows then arrive.
+        h.hold.store(true, Ordering::SeqCst);
+        sim.press(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(sim.app.project_jobs_pending(), "{table}: r did not start a job");
+        let before = sim.app.project_frame().unwrap().pending.len();
+        // `x` (discard) asks for a confirmation when it runs.
+        sim.press(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(
+            sim.app.project_frame().unwrap().pending.len(),
+            before + 1,
+            "{table}: the key did not wait in line"
+        );
+        assert!(sim.app.project_dialog.is_none(), "{table}: x ran before the rows arrived");
+        h.latch.open();
+        drain(&mut sim);
+        let frame = sim.app.project_frame().unwrap();
+        assert!(frame.pending.is_empty(), "{table}: the waiting key is left over");
+        assert!(sim.app.project_dialog.is_some(), "{table}: the waiting key was dropped");
+        assert_eq!(frame.cursor, 2, "{table}: the reload after a failed Z followed the selection");
+        assert_eq!(
+            real_list(&sim).rows[frame.cursor].value,
+            third,
+            "{table}: the cursor is on the row it was on"
+        );
+    }
+}
+
+/// `worktree_close` while the session is reading: the start-over waits for the read the dirty
+/// screen needs next (the one in flight is discarded as stale) and applies to that one.
+#[test]
+fn vcs_port_moved_worktree_close_start_over_waits_for_a_busy_session() {
+    use std::sync::atomic::Ordering;
+    if isolated("vcs_port_moved_worktree_close_start_over_waits_for_a_busy_session") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_wt_close_busy", true);
+    for table in ["git.changes", "git_changes"] {
+        let (cfg, h) = wt_flaky_cfg("git", table);
+        let mut sim = open(&root, cfg, (180, 24));
+        screen(&mut sim, "changes");
+        keys(&mut sim, "jj");
+        assert_eq!(sim.app.project_frame().unwrap().cursor, 2, "{table}: moved");
+        h.hold.store(true, Ordering::SeqCst);
+        sim.press(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(sim.app.project_jobs_pending(), "{table}: r did not start a job");
+        sim.press(KeyCode::Char('Z'), KeyModifiers::NONE);
+        assert_eq!(sim.app.project_frame().unwrap().cursor, 2, "{table}: nothing read yet");
+        h.latch.open();
+        drain(&mut sim);
+        assert_eq!(
+            sim.app.project_frame().unwrap().cursor,
+            0,
+            "{table}: the reload Z asked for did not start over"
+        );
+    }
+}
+
+/// jj's change list answers `worktree_close` on another key the same way as git's: it reads
+/// again and starts at the first row.
+#[test]
+fn vcs_port_moved_jj_worktree_close_reloads_the_changes_from_the_top() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    if isolated("vcs_port_moved_jj_worktree_close_reloads_the_changes_from_the_top") {
+        return;
+    }
+    let jjroot = super::vcs_log::jj_repo(false);
+    for name in ["b.txt", "c.txt", "d.txt", "e.txt"] {
+        std::fs::write(jjroot.join(name), "new\n").unwrap();
+    }
+    let added = "00-added.txt";
+    let mut cfg = config("jj", "en");
+    cfg.keys.surfaces.insert(
+        "jj.changes".into(),
+        [("Z".to_string(), "worktree_close".to_string())].into(),
+    );
+    let mut sim = open(&jjroot, cfg, (180, 24));
+    screen(&mut sim, "changes");
+    keys(&mut sim, "jj");
+    assert_eq!(sim.app.project_frame().unwrap().cursor, 2, "jj: moved");
+    std::fs::write(jjroot.join(added), "new\n").unwrap();
+    sim.dont_see(added);
+    keys(&mut sim, "Z");
+    assert!(sim.app.project_active(), "jj: Z left");
+    sim.see(added);
+    let frame = sim.app.project_frame().unwrap();
+    assert_eq!(
+        (frame.key.screen.as_str(), frame.cursor),
+        ("changes", 0),
+        "jj: the cursor does not start over"
+    );
+    assert!(!sim.app.is_git_view(), "jj: the hub opened behind the canvas");
+}
+
 fn press_ctrl(sim: &mut Sim, c: char) {
     sim.press(KeyCode::Char(c), KeyModifiers::CONTROL);
     drain(sim);

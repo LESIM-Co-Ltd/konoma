@@ -46,9 +46,6 @@ pub struct ProjectFrame<I> {
     pub filtering: bool,
     filter_anchor: usize,
     initialized: bool,
-    /// Set when the host asked for a reload that ends with the cursor on the first row; the next
-    /// replacement of this screen's rows ([`ProjectScreenState::remap_rows`]) takes it.
-    top_on_reload: bool,
     pub pending: VecDeque<ProjectInput<I>>,
 }
 
@@ -56,6 +53,15 @@ impl<I> ProjectFrame<I> {
     pub fn start_filter(&mut self) {
         self.filtering = true;
         self.query.clear();
+    }
+
+    /// The cursor goes to the first row; queued motion keys were meant for the old position.
+    fn start_over(&mut self) {
+        if self.cursor != 0 {
+            self.cursor = 0;
+            self.pending
+                .retain(|input| matches!(input, ProjectInput::Act(_)));
+        }
     }
 
     pub fn new(key: ScreenKey) -> Self {
@@ -69,7 +75,6 @@ impl<I> ProjectFrame<I> {
             filtering: false,
             filter_anchor: 0,
             initialized: false,
-            top_on_reload: false,
             pending: VecDeque::new(),
         }
     }
@@ -109,14 +114,6 @@ impl<I> ProjectScreenState<I> {
 
     pub fn frame_mut(&mut self) -> Option<&mut ProjectFrame<I>> {
         self.stack.last_mut()
-    }
-
-    /// The current screen's next row replacement puts the cursor on the first row instead of
-    /// following the selected row to its new place (a reload that starts the list over).
-    pub fn top_on_next_reload(&mut self) {
-        if let Some(frame) = self.frame_mut() {
-            frame.top_on_reload = true;
-        }
     }
 
     fn screen<'a>(&self, declaration: Option<&'a ProjectDecl>) -> Option<&'a ProjectScreen> {
@@ -494,16 +491,25 @@ impl<I> ProjectScreenState<I> {
     }
 
     /// Preserve whole ProjectRow identities across replacement, rather than clamping indices.
+    /// `from_top` is true for the rows of a reload that starts the list over (the view job the
+    /// host armed for it): the cursor is on the first row instead of following its selection.
     pub fn remap_rows(
         &mut self,
         screen: &ScreenKey,
         old: Option<&ProjectContent>,
         new: &ProjectContent,
+        from_top: bool,
     ) {
-        let (Some(ProjectContent::List(old)), ProjectContent::List(new)) = (old, new) else {
+        let ProjectContent::List(new) = new else {
             return;
         };
         for frame in self.stack.iter_mut().filter(|frame| &frame.key == screen) {
+            let Some(ProjectContent::List(old)) = old else {
+                if from_top {
+                    frame.start_over();
+                }
+                continue;
+            };
             let selected = old
                 .visible_rows(&frame.query)
                 .get(frame.cursor)
@@ -529,11 +535,8 @@ impl<I> ProjectScreenState<I> {
                         .retain(|input| matches!(input, ProjectInput::Act(_)));
                 }
             }
-            if std::mem::take(&mut frame.top_on_reload) && frame.cursor != 0 {
-                frame.cursor = 0;
-                frame
-                    .pending
-                    .retain(|input| matches!(input, ProjectInput::Act(_)));
+            if from_top {
+                frame.start_over();
             }
             frame.marked = new
                 .rows

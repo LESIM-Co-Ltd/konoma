@@ -46,6 +46,7 @@ impl Fixture {
         let key = ScreenKey::new("list", 7);
         let view = ProjectView::new("list").tab(7);
         let runtime = ProjectRuntime {
+            top: Default::default(),
             closed_tabs: Default::default(),
             watch_paths: None,
             refresh_watch: false,

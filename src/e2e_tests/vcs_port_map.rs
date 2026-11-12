@@ -1942,6 +1942,7 @@ fn jj_guarded_tests() -> Vec<(&'static str, Vec<&'static str>)> {
                 "vcs_port_renderer_normal_rows_markers_and_base_selection",
                 "vcs_port_backend_contexts_and_bindings_real_repositories",
                 "vcs_port_backend_display_words_copy_labels_and_project_origin",
+                "vcs_port_moved_jj_worktree_close_reloads_the_changes_from_the_top",
             ],
         ),
         (
