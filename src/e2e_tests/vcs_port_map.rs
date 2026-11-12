@@ -1988,6 +1988,7 @@ fn jj_guarded_tests() -> Vec<(&'static str, Vec<&'static str>)> {
                 "vcs_port_backend_contexts_and_bindings_real_repositories",
                 "vcs_port_backend_display_words_copy_labels_and_project_origin",
                 "vcs_port_mode_chips_follow_the_backend_and_the_screen",
+                "vcs_port_mode_chips_do_not_leak_across_tabs",
                 "vcs_port_moved_jj_worktree_close_reloads_the_changes_from_the_top",
             ],
         ),

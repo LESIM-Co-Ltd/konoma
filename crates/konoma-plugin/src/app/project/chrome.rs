@@ -93,13 +93,42 @@ impl ProjectLoopState {
         use konoma_host_core::help_msg::CoreMsg;
         use konoma_widgets::{footer_line, help_panel};
         let t = |en, ja| if prepared.lang == "ja" { ja } else { en };
-        let mut header = vec![Span::styled(
-            format!(" {} ", CoreMsg::ProjectTitle.tr(prepared.keys.lang())),
-            Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
-        )];
-        if self.diff.as_ref().is_some_and(|d| d.closed)
-            || (self.preview_project && self.file_preview.is_none())
+        // A git or jj project names its backend and screen, as the host's status bar does (the
+        // same derivation); any other provider keeps the generic project chip.
+        let vcs = self
+            .screen
+            .as_ref()
+            .and_then(|screen| screen.vcs_chips(prepared.lang == "ja"));
+        let vcs_chip = |chip: &crate::host::project::vcs_chips::VcsChip| {
+            let fg = if chip.dark {
+                Color::White
+            } else {
+                Color::Black
+            };
+            Span::styled(
+                format!(" {} ", chip.text),
+                Style::new().fg(fg).bg(chip.bg).bold(),
+            )
+        };
+        let mut header = vec![match &vcs {
+            Some(chips) => vcs_chip(&chips.backend),
+            None => Span::styled(
+                format!(" {} ", CoreMsg::ProjectTitle.tr(prepared.keys.lang())),
+                Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
+            ),
+        }];
+        let diff_open = self.diff.as_ref().is_some_and(|d| d.closed)
+            || (self.preview_project && self.file_preview.is_none());
+        // Help and the diff view are modes in front of the screen, and take its place as the
+        // inner chip (the host shows the mode in front, not the screen behind it).
+        if let Some(screen) = vcs
+            .as_ref()
+            .and_then(|chips| chips.screen.as_ref())
+            .filter(|_| self.help.is_none() && !diff_open)
         {
+            header.extend([Span::raw(" "), vcs_chip(screen)]);
+        }
+        if diff_open {
             header.extend([
                 Span::raw(" "),
                 Span::styled(

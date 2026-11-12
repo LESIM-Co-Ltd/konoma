@@ -1215,7 +1215,9 @@ fn mode_chips(sim: &Sim) -> Vec<String> {
         .collect()
 }
 
-fn assert_mode_chips(sim: &mut Sim, id: &str, lang: &str, ctx: &str) {
+/// Returns how many screens it checked, so the caller can prove every case ran.
+fn assert_mode_chips(sim: &mut Sim, id: &str, lang: &str, ctx: &str) -> usize {
+    let mut checked = 0;
     let l = sim.app.lang;
     let display = tr(l, if id == "jj" { Msg::StJj } else { Msg::StGit });
     let other = tr(l, if id == "jj" { Msg::StGit } else { Msg::StJj });
@@ -1239,11 +1241,12 @@ fn assert_mode_chips(sim: &mut Sim, id: &str, lang: &str, ctx: &str) {
         let here = format!("{ctx}/{id}/{lang}/{name}: {chips:?}");
         assert!(chips.iter().any(|c| c == display), "{here}: display chip");
         assert!(chips.iter().all(|c| c != other), "{here}: no other backend's chip");
-        assert!(chips.iter().any(|c| *c == word), "{here}: internal chip {word:?}");
+        assert!(chips.contains(&word), "{here}: internal chip {word:?}");
         assert!(
             chips.iter().all(|c| c != tr(l, Msg::ProjectTitle)),
             "{here}: no generic project chip on a git/jj canvas"
         );
+        checked += 1;
     }
     // Detail (opened from the log) and the graph's branch panel.
     screen(sim, "log");
@@ -1251,13 +1254,16 @@ fn assert_mode_chips(sim: &mut Sim, id: &str, lang: &str, ctx: &str) {
     let chips = mode_chips(sim);
     assert!(chips.iter().any(|c| *c == tr(l, Msg::StCommitDiff)), "{ctx}/{id}/{lang}: {chips:?}");
     assert!(chips.iter().any(|c| c == display), "{ctx}/{id}/{lang}: detail display chip");
+    checked += 1;
     keys(sim, "q");
     screen(sim, "graph");
     keys(sim, "b");
     let picker = format!("{} - {}", tr(l, Msg::StGraph), tr(l, Msg::StBranch));
     let chips = mode_chips(sim);
-    assert!(chips.iter().any(|c| *c == picker), "{ctx}/{id}/{lang}: picker {chips:?}");
+    assert!(chips.contains(&picker),"{ctx}/{id}/{lang}: picker {chips:?}");
+    checked += 1;
     keys(sim, "q");
+    checked
 }
 
 #[test]
@@ -1266,10 +1272,13 @@ fn vcs_port_mode_chips_follow_the_backend_and_the_screen() {
         return;
     }
     let git = super::vcs_log::repo(3);
+    let mut git_cases = 0;
     for lang in ["en", "ja"] {
         let mut sim = open(&git, config("git", lang), (160, 20));
-        assert_mode_chips(&mut sim, "git", lang, "chips");
+        git_cases += assert_mode_chips(&mut sim, "git", lang, "chips");
     }
+    // Git: changes, log, graph, branches, worktrees, detail and the picker, in two languages.
+    assert_eq!(git_cases, 14, "every git case ran");
     // Only the jj half needs the jj binary; the Git half above has already run.
     if !crate::vcs::jj::available() {
         return;
@@ -1277,9 +1286,63 @@ fn vcs_port_mode_chips_follow_the_backend_and_the_screen() {
     let jj = super::vcs_log::jj_repo(false);
     super::vcs_log::jj(&jj, &["bookmark", "create", "-r", "@", "main"]);
     std::fs::write(jj.join("changed.txt"), "new\n").unwrap();
+    let mut jj_cases = 0;
     for lang in ["en", "ja"] {
         let mut sim = open(&jj, config("jj", lang), (160, 20));
-        assert_mode_chips(&mut sim, "jj", lang, "chips");
+        jj_cases += assert_mode_chips(&mut sim, "jj", lang, "chips");
+    }
+    // jj: no worktrees screen, so one fewer per language.
+    assert_eq!(jj_cases, 12, "every jj case ran");
+}
+
+/// A git project in one tab and a jj project in another: each tab's chips come from its own
+/// canvas, and switching tabs back and forth never carries the other tab's backend or screen.
+#[test]
+fn vcs_port_mode_chips_do_not_leak_across_tabs() {
+    if isolated("vcs_port_mode_chips_do_not_leak_across_tabs") {
+        return;
+    }
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let parent = crate::test_support::unique_tmp("vcs_chips_tabs");
+    let (git, jj) = (parent.join("g"), parent.join("j"));
+    std::fs::create_dir_all(&git).unwrap();
+    std::fs::create_dir_all(&jj).unwrap();
+    crate::test_support::init_git_repo(&git);
+    super::vcs_log::jj(&jj, &["git", "init", "--no-colocate", "."]);
+    let mut cfg = config("git", "en");
+    cfg.plugins.remove("jj");
+    let mut sim = Sim::with_config_sized(&parent, cfg, 160, 20);
+    let enter_project = |sim: &mut Sim, dir: &str| {
+        sim.select(dir);
+        sim.key('l');
+        sim.app.tab.projects.wait_for_result();
+        sim.app.poll_projects();
+        sim.key('p');
+        drain(sim);
+        assert!(sim.app.project_active(), "{dir}: project opened");
+    };
+    enter_project(&mut sim, "/g");
+    let git_chips = mode_chips(&sim);
+    assert!(git_chips.iter().any(|c| c == "GIT"), "{git_chips:?}");
+    assert!(git_chips.iter().all(|c| c != "JJ"), "{git_chips:?}");
+    // The second tab starts as a tree at the git root; go up, into the jj repository.
+    sim.app.tab_new().unwrap();
+    sim.key('h');
+    enter_project(&mut sim, "/j");
+    screen(&mut sim, "branches");
+    let jj_chips = mode_chips(&sim);
+    assert!(jj_chips.iter().any(|c| c == "JJ"), "{jj_chips:?}");
+    assert!(jj_chips.iter().any(|c| c == "BOOKMARK"), "{jj_chips:?}");
+    assert!(jj_chips.iter().all(|c| c != "GIT"), "{jj_chips:?}");
+    for _ in 0..2 {
+        sim.app.tab_goto(0);
+        drain(&mut sim);
+        assert_eq!(mode_chips(&sim), git_chips, "back on the git tab");
+        sim.app.tab_goto(1);
+        drain(&mut sim);
+        assert_eq!(mode_chips(&sim), jj_chips, "back on the jj tab");
     }
 }
 

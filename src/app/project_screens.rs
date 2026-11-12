@@ -593,39 +593,16 @@ impl App {
         self.tab.project_navigation.is_some()
     }
 
-    /// The version-control backend of the open project canvas (`git` or `jj` plugin); `None` when
-    /// no project is open or the project belongs to another provider.
-    #[cfg(feature = "git")]
-    pub(crate) fn project_vcs(&self) -> Option<crate::vcs::VcsKind> {
-        let jj = self.tab.project_navigation.as_ref()?.vcs_jj()?;
-        Some(if jj {
-            crate::vcs::VcsKind::Jj
-        } else {
-            crate::vcs::VcsKind::Git
-        })
-    }
-
-    #[cfg(not(feature = "git"))]
-    pub(crate) fn project_vcs(&self) -> Option<crate::vcs::VcsKind> {
-        None
-    }
-
-    /// The mode a version-control project canvas shows in the status bar's inner chip, from the
-    /// plugin screen on top of its navigation stack (the same names the released hub's views
-    /// had). `None` for a canvas of another provider and for a screen with no such name.
-    pub(crate) fn project_internal_mode(&self) -> Option<InternalMode> {
-        self.project_vcs()?;
-        match self.project_frame()?.key.screen.as_str() {
-            "changes" => Some(InternalMode::GitChanges),
-            "log" => Some(InternalMode::GitLog),
-            "graph" => Some(InternalMode::GitGraph),
-            "graph_picker" => Some(InternalMode::GitGraphPicker),
-            "branches" => Some(InternalMode::GitBranch),
-            "worktrees" => Some(InternalMode::GitWorktrees),
-            // The released hub showed a worktree's changes in the commit-detail view.
-            "detail" | "worktree_diff" => Some(InternalMode::GitDetail),
-            _ => None,
-        }
+    /// The status-bar chips of a git or jj project canvas (backend, and the screen on top of its
+    /// navigation stack), from the one derivation the standalone program's chrome also draws.
+    /// `None` for no project and for a canvas of another provider.
+    pub(crate) fn project_vcs_chips(
+        &self,
+    ) -> Option<konoma_plugin::host::project::vcs_chips::VcsChips> {
+        self.tab
+            .project_navigation
+            .as_ref()?
+            .vcs_chips(self.lang == crate::i18n::Lang::Jp)
     }
 
     #[cfg(test)]

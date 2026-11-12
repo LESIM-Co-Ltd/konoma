@@ -66,14 +66,16 @@ fn chip_str(text: String, bg: Color, dark_bg: bool) -> Span<'static> {
 fn display_chip(app: &App) -> Span<'static> {
     // A version-control project canvas names the backend answering, as the released git views did;
     // a canvas of any other provider keeps the generic project chip.
-    let vcs = app.project_vcs();
-    if app.project_active() && vcs.is_none() {
+    if let Some(chips) = app.project_vcs_chips() {
+        return chip_str(chips.backend.text, chips.backend.bg, chips.backend.dark);
+    }
+    if app.project_active() {
         return chip(app.lang, Msg::ProjectTitle, Color::Cyan, false);
     }
-    if vcs.is_some() || app.in_git_view() {
+    if app.in_git_view() {
         // Which backend is answering has to be visible: a colocated repository has both, and a diff
         // taken against `@-` is not the same thing as one taken against HEAD.
-        return match vcs.unwrap_or_else(|| app.diff_vcs()) {
+        return match app.diff_vcs() {
             crate::vcs::VcsKind::Git => chip(app.lang, Msg::StGit, Color::Yellow, false),
             #[cfg(feature = "git")]
             crate::vcs::VcsKind::Jj => chip(app.lang, Msg::StJj, Color::Magenta, false),
@@ -98,9 +100,10 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
     // The graph's branch panel is a sub-state of GRAPH, so it's shown as a breadcrumb.
     // An overlay in front of a version-control canvas (help, a dialog) shows its own mode; the
     // canvas's screen names the chip when nothing is in front of it.
-    let mode = app
-        .internal_mode()
-        .or_else(|| app.project_internal_mode())?;
+    let Some(mode) = app.internal_mode() else {
+        let screen = app.project_vcs_chips()?.screen?;
+        return Some(chip_str(screen.text, screen.bg, screen.dark));
+    };
     if matches!(mode, InternalMode::GitGraphPicker) {
         let text = format!(
             "{} - {}",
@@ -157,7 +160,7 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         // Branch operations are also part of the Git family's yellow.
         InternalMode::GitBranch => {
             // jj's list holds bookmarks; the word is not a synonym for branch there.
-            match app.project_vcs().unwrap_or(app.git_vcs) {
+            match app.git_vcs {
                 crate::vcs::VcsKind::Git => (Msg::StBranch, Color::Yellow, false),
                 #[cfg(feature = "git")]
                 crate::vcs::VcsKind::Jj => (Msg::StBookmark, Color::Yellow, false),

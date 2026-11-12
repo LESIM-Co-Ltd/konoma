@@ -34,6 +34,7 @@ pub mod preview_presentation;
 pub mod prompt;
 pub mod runtime;
 pub mod state;
+pub mod vcs_chips;
 pub use actions::{
     ProjectActFacts, ProjectAction, ProjectActionInvocation, ProjectActionScope, ProjectCommand,
     ProjectDispatch, ProjectHost, ProjectNotice, ProjectUpdate, ProjectWritePolicy,
