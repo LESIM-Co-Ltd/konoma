@@ -248,12 +248,25 @@ fn e2e_vcs_copy_menu_cells_help_footer_and_space_membership_match_the_declaratio
             assert!(crate::ops::help::sections_for(&new.app, Context::Canvas)
                 .iter()
                 .any(|s| s.title == expected_help.title && s.rows == expected_help.rows));
-            assert!(crate::ops::footer::tokens(&new.app, Context::Canvas)
-                .join(" ")
-                .contains(&format!(
-                    "y:{}",
-                    crate::i18n::tr(new.app.lang, crate::i18n::Msg::CopyHint)
-                )));
+            // The old hub's list footers never showed the copy key; the pushed detail's still does.
+            let copy_token = format!(
+                "y:{}",
+                crate::i18n::tr(new.app.lang, crate::i18n::Msg::CopyHint)
+            );
+            assert_eq!(
+                crate::ops::footer::tokens(&new.app, Context::Canvas)
+                    .join(" ")
+                    .contains(&copy_token),
+                detail,
+                "{lang} detail={detail}: ops footer"
+            );
+            assert_eq!(
+                crate::ui::status::hint_tokens(&new.app)
+                    .join(" ")
+                    .contains(&copy_token),
+                detail,
+                "{lang} detail={detail}: status footer"
+            );
             let space = menu(&new.app, Context::Canvas, LeaderId::Actions, View::Open).unwrap();
             assert!(space
                 .items
@@ -1020,14 +1033,9 @@ fn e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order() {
 #[test]
 fn e2e_vcs_log_exit_returns_to_origin_and_h_does_nothing() {
     let dir = repo(3);
-    for code in [KeyCode::Char('q'), KeyCode::Esc] {
+    // The footer names `h/q/Esc:back`, and the old hub's Left key went back like `q`.
+    for code in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Char('h')] {
         let (mut old, mut new) = pair(&dir, "git", "en", "right", 80, 8);
-        {
-            new.press(KeyCode::Char('h'), KeyModifiers::NONE);
-            drain(&mut new);
-            assert_eq!(new.app.project_frame().unwrap().key.screen, "log");
-            assert!(new.app.pending_leader.is_none());
-        }
         old.press(code, KeyModifiers::NONE);
         new.press(code, KeyModifiers::NONE);
         drain(&mut new);

@@ -709,6 +709,17 @@ fn assert_hints(p: &WritePair, jj: bool, empty: bool) {
         .flat_map(|section| section.rows)
         .filter(|(keys, _)| keys != "Enter")
         .collect();
+    // The old hub's `d` (diff of all changes) is a row of this section too; it is not a write
+    // key, so it leaves the comparison after being asserted to be there exactly once.
+    assert_eq!(
+        actual_help.iter().filter(|(keys, _)| keys == "d").count(),
+        1,
+        "the diff-all help row: {actual_help:?}"
+    );
+    let actual_help: Vec<_> = actual_help
+        .into_iter()
+        .filter(|(keys, _)| keys != "d")
+        .collect();
     assert_eq!(actual_help, help);
 }
 

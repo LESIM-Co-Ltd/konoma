@@ -489,17 +489,15 @@ fn vcs_port_branch_footer_enter_token_per_row() {
         let tokens = crate::ui::status::hint_tokens(&sim.app);
         assert_eq!(
             tokens,
+            // The old hub's branches footer (`vcs_port_every_screen_footer_equals_old_hub`).
             [
-                "Tab/Shift-Tab:screens",
-                "j/k:move",
-                "/:filter",
-                "q:back",
-                "?:help",
-                "↵/l/→:checkout",
-                "y:copy",
-                "Space:Actions",
+                "j/k:nav",
+                "l/Enter:checkout",
                 "c:new",
-                "d:delete"
+                "d:delete",
+                "/:search",
+                "Tab/⇧Tab:screens",
+                "h/q/Esc:back"
             ],
             "branches footer, other row = {other}"
         );

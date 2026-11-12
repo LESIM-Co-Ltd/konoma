@@ -148,8 +148,18 @@ fn vcs_port_copy_menu_literal_labels_help_footer_and_space_membership() {
             assert!(crate::ops::help::sections_for(&sim.app, Context::Canvas)
                 .iter()
                 .any(|s| s.title == expected.title && s.rows == expected.rows));
-            assert!(crate::ops::footer::tokens(&sim.app, Context::Canvas)
-                .contains(&format!("y:{}", tr(sim.app.lang, Msg::CopyHint))));
+            // The old hub's list footers never showed the copy key; the pushed detail's still does.
+            let copy_token = format!("y:{}", tr(sim.app.lang, Msg::CopyHint));
+            assert_eq!(
+                crate::ops::footer::tokens(&sim.app, Context::Canvas).contains(&copy_token),
+                detail,
+                "{lang} detail={detail}: ops footer"
+            );
+            assert_eq!(
+                crate::ui::status::hint_tokens(&sim.app).contains(&copy_token),
+                detail,
+                "{lang} detail={detail}: status footer"
+            );
             let space = menu(&sim.app, Context::Canvas, LeaderId::Actions, View::Open).unwrap();
             assert!(space
                 .items
@@ -198,44 +208,17 @@ fn vcs_port_log_and_changes_help_filter_marks_and_footer_priority() {
         let mut sim = open(&root, config("git", lang), (160, 20));
         for (name, query) in [("changes", "FILE.TXT"), ("log", "SEED")] {
             screen(&mut sim, name);
-            let prefix = if lang == "en" {
-                "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help"
-            } else {
-                "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ"
+            // The old hub's footers of these two screens (`vcs_port_every_screen_footer_equals_old_hub`).
+            let expected = match (lang, name) {
+                ("en", "changes") => "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+                ("ja", "changes") => "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+                ("en", _) => "j/k:nav  l/Enter:detail  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+                _ => "j/k:移動  l/Enter:詳細  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
             };
-            let label = if name == "changes" {
-                if lang == "en" {
-                    "diff"
-                } else {
-                    "差分"
-                }
-            } else if lang == "en" {
-                "detail"
-            } else {
-                "詳細"
-            };
-            let target = if name == "changes" {
-                format!("  Ctrl-t:{}", tr(sim.app.lang, Msg::HintNewTab))
-            } else {
-                String::new()
-            };
-            let copy = if name == "log" {
-                format!("  y:{}", tr(sim.app.lang, Msg::CopyHint))
-            } else {
-                String::new()
-            };
-            let expected = format!(
-                "{prefix}  ↵/l/→:{label}{target}{copy}  Space:{}",
-                tr(sim.app.lang, Msg::WkActionsTitle).trim()
-            );
             let expected: Vec<_> = expected.split("  ").collect();
             let tokens = crate::ui::status::hint_tokens(&sim.app);
             assert_eq!(
-                tokens
-                    .iter()
-                    .take(expected.len())
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
+                tokens.iter().map(String::as_str).collect::<Vec<_>>(),
                 expected
             );
             let rows: Vec<_> = crate::ops::help::sections(&sim.app)
@@ -300,7 +283,12 @@ fn vcs_port_log_and_changes_help_filter_marks_and_footer_priority() {
             }
         }
         if name == "changes" {
-            assert_eq!(&tokens[..2], ["Tab/Shift-Tab:screens", "j/k:move"]);
+            // The old hub's tail: search, screens, close (no nav hint on the first screen).
+            assert_eq!(
+                &tokens[tokens.len() - 3..],
+                ["/:search", "Tab/⇧Tab:screens", "h/q:close"]
+            );
+            assert!(!tokens.iter().any(|t| t.starts_with("j/k:")), "{tokens:?}");
             assert_eq!(
                 tokens
                     .iter()

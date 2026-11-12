@@ -568,13 +568,9 @@ fn e2e_vcs_worktrees_footer_preserves_legacy_action_priority_and_labels() {
         };
         let old_tokens =
             crate::ops::footer::tokens(&old.app, Context::Screen(Backend::Git, Screen::Worktrees));
-        let mut expected = operations(old_tokens.clone());
+        // The project canvas draws the old hub's order unchanged.
+        let expected = operations(old_tokens.clone());
         assert_eq!(expected.len(), 5, "{old_tokens:?}");
-        let filter = expected.pop().unwrap();
-        expected.insert(0, filter);
-        // Shared open/new-tab hints keep the same position on every project screen.
-        let target = expected.remove(3);
-        expected.insert(2, target);
         let actual = operations(crate::ui::status::hint_tokens(&new.app));
         assert_eq!(actual, expected);
     }
@@ -618,10 +614,16 @@ fn e2e_vcs_project_footer_log_changes_and_worktrees_have_one_entry_per_key() {
         }
         if screen == "changes" {
             // The existing shared controls and write order stay in place.
+            // The old hub's tail: search, screens, close (the nav hint is not shown on the first
+            // screen).
             assert_eq!(
-                &tokens[..2],
-                ["Tab/Shift-Tab:screens", "j/k:move"],
+                &tokens[tokens.len() - 3..],
+                ["/:search", "Tab/⇧Tab:screens", "h/q:close"],
                 "one token per shared control"
+            );
+            assert!(
+                !tokens.iter().any(|t| t.starts_with("j/k:")),
+                "no nav hint on the first screen: {tokens:?}"
             );
             let writes: Vec<_> = tokens
                 .iter()
@@ -659,36 +661,17 @@ fn e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior() {
                 drain(&mut new);
             }
             assert_eq!(new.app.project_frame().unwrap().key.screen, screen);
-            let prefix = if lang == "en" {
-                "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help"
-            } else {
-                "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ"
+            // The old hub's footers of these two screens (`vcs_port_every_screen_footer_equals_old_hub`).
+            let expected = match (lang, screen) {
+                ("en", "changes") => "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+                ("ja", "changes") => "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+                ("en", _) => "j/k:nav  l/Enter:detail  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+                _ => "j/k:移動  l/Enter:詳細  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
             };
-            let open_label = if screen == "changes" {
-                konoma_plugin::t!(en: "diff", ja: "差分")
-            } else {
-                konoma_plugin::t!(en: "detail", ja: "詳細")
-            };
-            let target = if screen == "changes" {
-                format!("  Ctrl-t:{}", tr(new.app.lang, Msg::HintNewTab))
-            } else {
-                String::new()
-            };
-            let copy = if screen == "log" {
-                format!("  y:{}", tr(new.app.lang, Msg::CopyHint))
-            } else {
-                String::new()
-            };
-            let expected = format!(
-                "{prefix}  ↵/l/→:{}{target}{copy}  Space:{}",
-                open_label.get(lang),
-                tr(new.app.lang, Msg::WkActionsTitle).trim()
-            );
             let expected: Vec<_> = expected.split("  ").collect();
             assert_eq!(
                 crate::ui::status::hint_tokens(&new.app)
                     .iter()
-                    .take(expected.len())
                     .map(String::as_str)
                     .collect::<Vec<_>>(),
                 expected,
