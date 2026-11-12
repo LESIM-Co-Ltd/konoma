@@ -1115,10 +1115,15 @@ impl App {
             })
             .unwrap_or_default();
         let facts = ProjectKeyFacts {
-            unbound: ['q', '/']
+            back_keys: self
+                .project_back_keys()
                 .into_iter()
-                .filter(|c| !self.project_fixed_key_acts(*c))
-                .map(KeyCode::Char)
+                .map(|k| k.code)
+                .collect(),
+            filter_keys: self
+                .project_filter_keys()
+                .into_iter()
+                .map(|k| k.code)
                 .collect(),
             blocked: self.show_help
                 || self.dialog.is_some()
@@ -1490,36 +1495,79 @@ impl App {
         Some(self.project_presentation()?.0.controls().to_vec())
     }
 
-    /// The canvas's own fixed keys among `keys` that the effective keymap leaves bound on this
-    /// screen (a `noop` on the screen's table unbinds one). The one answer for the key handling
-    /// ([`ProjectKeyFacts::unbound`]) and the footer and help hints.
-    fn project_fixed_keys<const N: usize>(&self, keys: [char; N]) -> Vec<KeyPress> {
-        keys.into_iter()
-            .filter(|c| self.project_fixed_key_acts(*c))
-            .map(KeyPress::ch)
-            .collect()
-    }
-
-    /// Whether the canvas's fixed key `c` (`q` or `/`) still acts as its fixed operation on the
-    /// screen the canvas shows (see [`KeyMap::fixed_key_acts_on`]).
-    fn project_fixed_key_acts(&self, c: char) -> bool {
+    /// The keys that leave the project canvas: the fixed `q` while the effective keymap leaves it
+    /// bound to the screen's back operation, plus every key the keymap binds to that operation.
+    /// The one answer for the key handling ([`ProjectKeyFacts::back_keys`]) and the footer and
+    /// help hints.
+    fn project_back_keys(&self) -> Vec<KeyPress> {
         use crate::keymap::Action;
-        // The released hub bound these by default, so an entry naming the same operation does
-        // not displace the fixed key.
+        // The released hub's `q` was the screen table's close: `git_close` everywhere but on the
+        // worktree list, whose close is `worktree_close` (the other did nothing there).
         #[cfg(feature = "git")]
-        let own: &[Action] = match c {
-            'q' => &[Action::GitClose, Action::WorktreeClose],
-            '/' => &[
-                Action::ListFilterStart,
-                Action::BranchFilterStart,
-                Action::WorktreeFilterStart,
-            ],
-            _ => &[],
+        let ops: &[Action] = if self.canvas_is_worktrees() {
+            &[Action::WorktreeClose]
+        } else {
+            &[Action::GitClose]
         };
         #[cfg(not(feature = "git"))]
-        let own: &[Action] = &[];
-        self.keymaps
-            .fixed_key_acts_on(self.screen_keys_for(Context::Canvas), KeyPress::ch(c), own)
+        let ops: &[Action] = &[];
+        self.project_operation_keys('q', ops)
+    }
+
+    /// The keys that start the list filter on the project canvas, decided like
+    /// [`App::project_back_keys`] for the fixed `/`. The branch and worktree lists also take their
+    /// own released operation (`branch_filter_start`, `worktree_filter_start`); on any other
+    /// screen those did nothing visible and still do not.
+    fn project_filter_keys(&self) -> Vec<KeyPress> {
+        use crate::keymap::Action;
+        #[cfg(feature = "git")]
+        let ops: &[Action] = {
+            use crate::keymap::{Context, Screen};
+            match self.canvas_screen() {
+                Some(Context::Screen(_, Screen::Branches)) => {
+                    &[Action::ListFilterStart, Action::BranchFilterStart]
+                }
+                Some(Context::Screen(_, Screen::Worktrees)) => {
+                    &[Action::ListFilterStart, Action::WorktreeFilterStart]
+                }
+                _ => &[Action::ListFilterStart],
+            }
+        };
+        #[cfg(not(feature = "git"))]
+        let ops: &[Action] = &[];
+        self.project_operation_keys('/', ops)
+    }
+
+    #[cfg(feature = "git")]
+    fn canvas_is_worktrees(&self) -> bool {
+        use crate::keymap::{Context, Screen};
+        matches!(
+            self.canvas_screen(),
+            Some(Context::Screen(_, Screen::Worktrees))
+        )
+    }
+
+    /// The plain keys that run one of the canvas operations `ops` on the screen the canvas shows:
+    /// the fixed key `fixed` (it is not in the keymap) unless the config gave it another meaning
+    /// (see [`KeyMap::fixed_key_acts_on`]), then every key the effective keymap resolves to one of
+    /// `ops`. A chord is left out: the canvas's key handling takes plain keys here.
+    fn project_operation_keys(&self, fixed: char, ops: &[crate::keymap::Action]) -> Vec<KeyPress> {
+        let screen = self.screen_keys_for(Context::Canvas);
+        let mut keys = Vec::new();
+        if self
+            .keymaps
+            .fixed_key_acts_on(screen, KeyPress::ch(fixed), ops)
+        {
+            keys.push(KeyPress::ch(fixed));
+        }
+        for op in ops {
+            for key in self.keymaps.keys_of_on(Context::Canvas, screen, *op) {
+                if !key.ctrl && !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        keys
     }
 
     pub(crate) fn project_presentation(&self) -> Option<(ProjectPresentation, Vec<PluginAct>)> {
@@ -1591,8 +1639,8 @@ impl App {
                 half_page: motion_keys(&[Motion::HalfDown, Motion::HalfUp]),
                 page: motion_keys(&[Motion::PageDown, Motion::PageUp]),
                 line_ends: motion_keys(&[Motion::LineHome, Motion::LineEnd]),
-                back: self.project_fixed_keys(['q']),
-                filter: self.project_fixed_keys(['/']),
+                back: self.project_back_keys(),
+                filter: self.project_filter_keys(),
                 help: self.keymaps.keys_of_on(
                     Context::Canvas,
                     self.screen_keys_for(Context::Canvas),

@@ -26,11 +26,13 @@ pub struct ProjectKeyFacts {
     pub policy: ProjectWritePolicy,
     pub viewport: ProjectViewport,
     pub layout: DiffLayout,
-    /// The canvas's own fixed keys (`q` leaves, `/` filters) that the host's effective keymap has
-    /// taken away on this screen (unbound, or bound to another action). Such a key does not act
-    /// as its fixed operation and is not shown as one; the footer's controls read the same
-    /// effective keys.
-    pub unbound: Vec<KeyCode>,
+    /// The keys that leave the screen (the canvas's back) on this screen: `q` while the host's
+    /// effective keymap leaves it as the fixed key, plus any key the keymap binds to the screen's
+    /// own back operation. The footer's controls read the same keys.
+    pub back_keys: Vec<KeyCode>,
+    /// The keys that start the list filter on this screen, decided the same way as `back_keys`
+    /// (`/` is the fixed key).
+    pub filter_keys: Vec<KeyCode>,
 }
 
 impl Default for ProjectKeyFacts {
@@ -49,7 +51,8 @@ impl Default for ProjectKeyFacts {
             policy: ProjectWritePolicy::default(),
             viewport: ProjectViewport::default(),
             layout: DiffLayout::Unified,
-            unbound: Vec::new(),
+            back_keys: vec![KeyCode::Char('q')],
+            filter_keys: vec![KeyCode::Char('/')],
         }
     }
 }
@@ -113,11 +116,12 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             .runtimes
             .get(&nav.project)
             .map(|r| &r.project.declaration);
-        let off = |c: char| facts.unbound.contains(&KeyCode::Char(c));
+        let back_key = facts.back_keys.contains(&key.code);
+        let filter_key = facts.filter_keys.contains(&key.code);
         let navigation = !interaction
             && !facts.leader
             && (matches!(key.code, KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab)
-                || key.code == KeyCode::Char('q') && !off('q')
+                || back_key
                 || declaration.is_some_and(|d| {
                     d.screens
                         .iter()
@@ -140,7 +144,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                     | KeyCode::End
                     | KeyCode::PageUp
                     | KeyCode::PageDown
-            ) || key.code == KeyCode::Char('/') && !off('/'));
+            ) || filter_key);
         if !navigation
             && !global
             && !local_movement
@@ -239,6 +243,13 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
         let mut update = ProjectUpdate::handled();
         match key.code {
+            // The keys the host decided are this screen's back and filter operations
+            // (`ProjectKeyFacts`) win over the fixed letters below, as a key the config bound to
+            // an operation wins on any screen.
+            _ if back_key => update.dispatch = ProjectDispatch::LeaveProject,
+            _ if filter_key && list && nav.filter_enabled(declaration) => {
+                nav.start_filter(content.as_deref())
+            }
             KeyCode::Char('r') => {
                 if let Some(runtime) = self.runtimes.get_mut(&nav.project) {
                     if let Some(frame) = nav.frame() {
@@ -252,7 +263,6 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             KeyCode::Esc if nav.frame().is_some_and(|f| !f.query.is_empty()) => {
                 nav.clear_filter(content.as_deref())
             }
-            KeyCode::Char('q') if !off('q') => update.dispatch = ProjectDispatch::LeaveProject,
             KeyCode::Esc => update.dispatch = ProjectDispatch::LeaveProject,
             KeyCode::Tab | KeyCode::BackTab => {
                 let Some(runtime) = self.runtimes.get(&nav.project) else {
@@ -280,9 +290,6 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                 };
                 *frame = ProjectFrame::new(ScreenKey::new(&screens[next].id, context.id));
                 update.commands.push(ProjectCommand::EnsureView);
-            }
-            KeyCode::Char('/') if list && !off('/') && nav.filter_enabled(declaration) => {
-                nav.start_filter(content.as_deref())
             }
             KeyCode::Char('V') if list => {
                 if let (Some(content), Some(declaration)) = (&content, declaration) {
