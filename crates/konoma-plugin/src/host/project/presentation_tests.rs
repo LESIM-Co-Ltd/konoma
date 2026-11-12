@@ -543,18 +543,18 @@ fn picker_and_graph_footer_cells_match_reference() {
             &p,
             160,
             if ja {
-                "j/k:移動  ↵/l/→:詳細  s:基準  x:基準解除  b:ブランチ  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る"
+                "j/k:移動  l/Enter:詳細  s:基準  x:基準解除  b:ブランチ  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る"
             } else {
-                "j/k:nav  ↵/l/→:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
+                "j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
             },
         );
         cells(
             &p,
             28,
             if ja {
-                "j/k:移動  ↵/l/→:詳細 …"
+                "j/k:移動  l/Enter:詳細 …"
             } else {
-                "j/k:nav  ↵/l/→:detail …"
+                "j/k:nav  l/Enter:detail …"
             },
         );
         facts.graph_jj = Some(true);

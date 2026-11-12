@@ -177,8 +177,13 @@ impl ProjectLoopState {
             prepared.lang,
         );
         // `!` launches the tool on every standalone screen; the footer shows it where the host
-        // does (the changes screen), and only when this program can launch at all.
-        if self.launch_enabled && facts.home {
+        // does (the version-control changes screen only — not the home screen of another
+        // project kind or of a contract plugin), and only when this program can launch at all.
+        if self.launch_enabled
+            && declaration.version_control
+            && facts.home
+            && nav.frame().is_some_and(|f| f.key.screen == "changes")
+        {
             use konoma_host_core::keymap::{CoreBinding, HostOp};
             facts.tool_keys = crate::host::project::diff_keys::file_diff_keys(
                 scheme_from_str(&prepared.config.ui.keys),
@@ -192,10 +197,9 @@ impl ProjectLoopState {
         }
         let t = |en, ja| if prepared.lang == "ja" { ja } else { en };
         let msg = |m: CoreMsg| m.tr(prepared.keys.lang());
-        let back = if nav.stack.len() > 1
-            || self.preview_project
-            || (declaration.version_control && !facts.home)
-        {
+        // `q` (and `h`) on a root screen leaves the project, which ends this program: only a
+        // pushed screen or a project opened over a preview goes back.
+        let back = if nav.stack.len() > 1 || self.preview_project {
             t("back", "戻る")
         } else {
             t("quit", "終了")

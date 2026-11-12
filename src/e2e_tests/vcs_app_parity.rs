@@ -255,6 +255,32 @@ fn cells(frame: &Buffer, y: u16) -> Buffer {
     row
 }
 
+/// The footer's list-navigation chip follows the configured `navigate:down` aliases of the
+/// text context: `D` or `J` when bound, else the default `j/k`.
+fn nav_chip(config: &str) -> &'static str {
+    if config.contains("D='navigate:down'") {
+        "D/k/j"
+    } else if config.contains("J='navigate:down'") {
+        "J/k/j"
+    } else {
+        "j/k"
+    }
+}
+
+/// Replace `{nav}` in every string of a snapshot value.
+fn expand_nav(value: &serde_json::Value, nav: &str) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => s.replace("{nav}", nav).into(),
+        serde_json::Value::Array(items) => items.iter().map(|v| expand_nav(v, nav)).collect(),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| (k.clone(), expand_nav(v, nav)))
+            .collect::<serde_json::Map<_, _>>()
+            .into(),
+        other => other.clone(),
+    }
+}
+
 fn frames(
     host: &Buffer,
     app: &Buffer,
@@ -264,6 +290,9 @@ fn frames(
     graph_fixture: &serde_json::Value,
     help_open: bool,
 ) {
+    let nav = graph_fixture["_nav"].as_str().unwrap_or("j/k").to_owned();
+    let fixture = &expand_nav(fixture, &nav);
+    let graph_fixture = &expand_nav(graph_fixture, &nav);
     let (state, host_state) = states;
     assert_eq!(host.area, app.area);
     let normal_root = state.stack.len() == 1
@@ -362,7 +391,11 @@ fn frames(
             screen
         };
         let kind = if state.return_to_preview {
-            "preview_project".into()
+            if screen == "jj_changes" {
+                "preview_jj_project".into()
+            } else {
+                "preview_project".into()
+            }
         } else if screen == "graph" {
             format!(
                 "{}graph_{}",
@@ -415,36 +448,70 @@ fn frames(
                     ));
             }
         }
-        let fixture = &graph_chrome;
-        if fixture[lang][&kind]["host"][footer_width.to_string()].is_null()
-            && fixture[lang][&kind]["host"]["180"].is_null()
-        {
-            let plain = |frame: &Buffer| -> String {
-                (0..frame.area.width)
-                    .map(|x| frame[(x, y)].symbol())
-                    .collect()
-            };
-            panic!(
-                "missing explicit footer {lang}/{kind}/{}\nhost: {:?}\napp: {:?}",
-                host.area.width,
-                plain(host),
-                plain(app)
-            );
-        }
-        for (side, frame) in [("host", host), ("app", app)] {
-            let mut actual = Buffer::empty(Rect::new(0, 0, footer_width, 1));
-            for x in 0..footer_width {
-                actual[(x, 0)] = frame[(footer_start + x, y)].clone();
+        if let Some(path) = std::env::var_os("KONOMA_VCS_APP_PARITY_DUMP_FOOTERS") {
+            // Opt-in regeneration aid: append the drawn footer of each side as
+            // `lang<TAB>kind<TAB>side<TAB>width<TAB>text` to the named file and skip the
+            // frozen-footer assertion, so a changed footer can be reviewed against the
+            // reference text before the snapshot JSON is edited.
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("open footer dump");
+            for (side, frame) in [("host", host), ("app", app)] {
+                let mut text = String::new();
+                let mut x = footer_start;
+                while x < footer_start + footer_width {
+                    let symbol = frame[(x, y)].symbol();
+                    text.push_str(symbol);
+                    x += unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16;
+                }
+                // One write per line: scenarios run in parallel processes.
+                file.write_all(
+                    format!(
+                        "{lang}\t{kind}\t{side}\t{footer_width}\t{}\n",
+                        text.trim_end()
+                    )
+                    .as_bytes(),
+                )
+                .expect("write footer dump");
             }
-            compare_frames(
-                &expected_footer(fixture, lang, &kind, side, footer_width),
-                &actual,
-            )
-            .unwrap_or_else(|e| panic!("explicit {side} footer {kind}: {e}"));
-        }
-        let wanted = expected_footer(fixture, lang, &kind, "app", footer_width);
-        for x in 0..footer_width {
-            expected[(footer_start + x, y)] = wanted[(x, 0)].clone();
+            for x in 0..footer_width {
+                expected[(footer_start + x, y)] = app[(footer_start + x, y)].clone();
+            }
+        } else {
+            let fixture = &graph_chrome;
+            if fixture[lang][&kind]["host"][footer_width.to_string()].is_null()
+                && fixture[lang][&kind]["host"]["180"].is_null()
+            {
+                let plain = |frame: &Buffer| -> String {
+                    (0..frame.area.width)
+                        .map(|x| frame[(x, y)].symbol())
+                        .collect()
+                };
+                panic!(
+                    "missing explicit footer {lang}/{kind}/{}\nhost: {:?}\napp: {:?}",
+                    host.area.width,
+                    plain(host),
+                    plain(app)
+                );
+            }
+            for (side, frame) in [("host", host), ("app", app)] {
+                let mut actual = Buffer::empty(Rect::new(0, 0, footer_width, 1));
+                for x in 0..footer_width {
+                    actual[(x, 0)] = frame[(footer_start + x, y)].clone();
+                }
+                compare_frames(
+                    &expected_footer(fixture, lang, &kind, side, footer_width),
+                    &actual,
+                )
+                .unwrap_or_else(|e| panic!("explicit {side} footer {kind}: {e}"));
+            }
+            let wanted = expected_footer(fixture, lang, &kind, "app", footer_width);
+            for x in 0..footer_width {
+                expected[(footer_start + x, y)] = wanted[(x, 0)].clone();
+            }
         }
     }
     if state.diff.as_ref().is_some_and(|d| {
@@ -820,9 +887,9 @@ fn run_roots_with(
                 let source = format!("{prefix}graph_commit");
                 let target = format!("{prefix}graph_empty");
                 let detail = if lang == "en" {
-                    "  ↵/l/→:detail"
+                    "  l/Enter:detail"
                 } else {
-                    "  ↵/l/→:詳細"
+                    "  l/Enter:詳細"
                 };
                 graph_fixture[lang][&target][side] = graph_fixture[lang][&source][side]
                     .as_str()
@@ -836,7 +903,13 @@ fn run_roots_with(
         let contract = read_snapshot_for_test("vcs_app_diff");
         for lang in ["en", "ja"] {
             for screen in CONTRACT_ROOTS {
-                graph_fixture[lang][screen] = contract[lang]["contract"].clone();
+                // The first root is the home screen (it closes); the others are pushed screens.
+                let key = if screen == "one" {
+                    "contract_home"
+                } else {
+                    "contract"
+                };
+                graph_fixture[lang][screen] = contract[lang][key].clone();
             }
         }
     }
@@ -869,7 +942,10 @@ fn run_roots_with(
     let mut host_launches = Vec::new();
     let app_launches = Arc::new(Mutex::new(Vec::new()));
     let launch_backend = Arc::new(Mutex::new(id.to_owned()));
-    let launch = options.launches.as_ref().map(|_| {
+    // Every scenario gives the standalone app its launch seam: the host footer always offers
+    // `!:tool`, and the standalone footer offers it exactly when this seam exists. Launches are
+    // only compared in the scenarios that set `options.launches`.
+    let launch = Some({
         let sink = app_launches.clone();
         let backend = launch_backend.clone();
         konoma_plugin::app::LaunchCx::new(app.config.editor.clone(), &app.config.external, vec![])
@@ -1226,6 +1302,7 @@ fn run_roots_with(
                 graph_fixture[&lang]["worktrees"] = fixture[&lang][kind][row].clone();
                 graph_fixture[&lang]["empty_worktrees"] = fixture[&lang][kind]["empty"].clone();
             }
+            graph_fixture["_nav"] = serde_json::json!(nav_chip(text));
             graph_fixture["_footer_start"] =
                 serde_json::json!(if host.app.cfg.ui.statusbar == "bottom" {
                     crate::ui::status::context_width(&host.app)

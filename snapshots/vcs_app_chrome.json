@@ -11,148 +11,148 @@
   "en": {
     "empty_changes": {
       "host": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  Space:Actions  S:stage(all) …",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  Space:Actions  S:stage(all)  U:unstage(all)  c:commit"
+        "48": "S:stage(all)  U:unstage(all)  c:commit …",
+        "90": "S:stage(all)  U:unstage(all)  c:commit  d:diff-all  b:branch  w:worktrees  !:tool …",
+        "180": "S:stage(all)  U:unstage(all)  c:commit  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
       },
       "app": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  Space:Actions  S:stage(all) …",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  Space:Actions  S:stage(all)  U:unstage(all)  c:commit"
+        "48": "S:stage(all)  U:unstage(all)  c:commit …",
+        "90": "S:stage(all)  U:unstage(all)  c:commit  d:diff-all  b:branch  w:worktrees  !:tool …",
+        "180": "S:stage(all)  U:unstage(all)  c:commit  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
       }
     },
     "changes": {
       "host": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab …",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab  Space:Actions  s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit"
+        "48": "s/S:stage(all)  u/U:unstage(all)  x:discard …",
+        "90": "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all …",
+        "180": "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
       },
       "app": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:diff  Space:Actions …",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:diff  Space:Actions  s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit"
+        "48": "s/S:stage(all)  u/U:unstage(all)  x:discard …",
+        "90": "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all …",
+        "180": "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
       }
     },
     "log": {
       "host": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:detail  y:copy …",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:detail  y:copy  Space:Actions"
+        "48": "{nav}:nav  l/Enter:detail  /:search …",
+        "90": "{nav}:nav  l/Enter:detail  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+        "180": "{nav}:nav  l/Enter:detail  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
       },
       "app": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:detail  y:copy …",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:detail  y:copy  Space:Actions"
+        "48": "{nav}:nav  l/Enter:detail  /:search …",
+        "90": "{nav}:nav  l/Enter:detail  /:search  Tab/⇧Tab:screens  h/q/Esc:quit",
+        "180": "{nav}:nav  l/Enter:detail  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
       }
     },
     "empty_log": {
       "host": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help"
+        "48": "{nav}:nav  /:search  Tab/⇧Tab:screens …",
+        "90": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+        "180": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
       },
       "app": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help"
+        "48": "{nav}:nav  /:search  Tab/⇧Tab:screens …",
+        "90": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:quit",
+        "180": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
       }
     },
     "jj_changes": {
       "host": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab …",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab  Space:Actions  s:sync"
+        "48": "l/Enter:diff  d:diff-all  b:bookmarks …",
+        "90": "l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens …",
+        "180": "l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
       },
       "app": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:diff  Space:Actions …",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  ↵/l/→:diff  Space:Actions  s:sync"
+        "48": "l/Enter:diff  d:diff-all  b:bookmarks …",
+        "90": "l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens …",
+        "180": "l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
       }
     },
     "empty_jj_changes": {
       "host": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  Space:Actions  s:sync",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  Space:Actions  s:sync"
+        "48": "d:diff-all  b:bookmarks  s:sync  !:tool …",
+        "90": "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+        "180": "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
       },
       "app": {
-        "48": "Tab/Shift-Tab:screens  j/k:move  /:filter …",
-        "90": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  Space:Actions  s:sync",
-        "180": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help  Space:Actions  s:sync"
+        "48": "d:diff-all  b:bookmarks  s:sync  !:tool …",
+        "90": "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+        "180": "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
       }
     }
   },
   "ja": {
     "empty_changes": {
       "host": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  Space:操作  S:ステージ(全) …",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  Space:操作  S:ステージ(全)  U:解除(全)  c:コミット"
+        "48": "S:ステージ(全)  U:解除(全)  c:コミット …",
+        "90": "S:ステージ(全)  U:解除(全)  c:コミット  d:全差分  b:ブランチ  w:ワークツリー  !:ツール …",
+        "180": "S:ステージ(全)  U:解除(全)  c:コミット  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
       },
       "app": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  Space:操作  S:ステージ(全) …",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  Space:操作  S:ステージ(全)  U:解除(全)  c:コミット"
+        "48": "S:ステージ(全)  U:解除(全)  c:コミット …",
+        "90": "S:ステージ(全)  U:解除(全)  c:コミット  d:全差分  b:ブランチ  w:ワークツリー  !:ツール …",
+        "180": "S:ステージ(全)  U:解除(全)  c:コミット  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
       }
     },
     "changes": {
       "host": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ …",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ  Space:操作  s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット"
+        "48": "s/S:ステージ(全)  u/U:解除(全)  x:破棄 …",
+        "90": "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ …",
+        "180": "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
       },
       "app": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:差分  Space:操作 …",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:差分  Space:操作  s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット"
+        "48": "s/S:ステージ(全)  u/U:解除(全)  x:破棄 …",
+        "90": "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ …",
+        "180": "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
       }
     },
     "log": {
       "host": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:詳細  y:コピー …",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:詳細  y:コピー  Space:操作"
+        "48": "{nav}:移動  l/Enter:詳細  /:検索 …",
+        "90": "{nav}:移動  l/Enter:詳細  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+        "180": "{nav}:移動  l/Enter:詳細  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る"
       },
       "app": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:詳細  y:コピー …",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:詳細  y:コピー  Space:操作"
+        "48": "{nav}:移動  l/Enter:詳細  /:検索 …",
+        "90": "{nav}:移動  l/Enter:詳細  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了",
+        "180": "{nav}:移動  l/Enter:詳細  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
       }
     },
     "empty_log": {
       "host": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ"
+        "48": "{nav}:移動  /:検索  Tab/⇧Tab:画面 …",
+        "90": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+        "180": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る"
       },
       "app": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ"
+        "48": "{nav}:移動  /:検索  Tab/⇧Tab:画面 …",
+        "90": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了",
+        "180": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
       }
     },
     "jj_changes": {
       "host": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ …",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ  Space:操作  s:同期"
+        "48": "l/Enter:差分  d:全差分  b:ブックマーク …",
+        "90": "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面 …",
+        "180": "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
       },
       "app": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:差分  Space:操作  s:同期",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  ↵/l/→:差分  Space:操作  s:同期"
+        "48": "l/Enter:差分  d:全差分  b:ブックマーク …",
+        "90": "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面 …",
+        "180": "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
       }
     },
     "empty_jj_changes": {
       "host": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  Space:操作  s:同期",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  Space:操作  s:同期"
+        "48": "d:全差分  b:ブックマーク  s:同期  !:ツール …",
+        "90": "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+        "180": "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
       },
       "app": {
-        "48": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み …",
-        "90": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  Space:操作  s:同期",
-        "180": "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:終了  ?:ヘルプ  Space:操作  s:同期"
+        "48": "d:全差分  b:ブックマーク  s:同期  !:ツール …",
+        "90": "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+        "180": "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
       }
     }
   },

@@ -1,69 +1,69 @@
 {
   "en": {
     "busy_branches": {
-      "host": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help",
-      "app": "Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit  ?:help"
+      "host": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
     },
     "busy_worktrees": {
-      "host": "Tab/Shift-Tab:screens  j/k:move  /:search  q:back  ?:help  Ctrl-t:new tab",
-      "app": "Tab/Shift-Tab:screens  j/k:move  /:search  q:quit  ?:help"
+      "host": "{nav}:nav  C-t:new tab  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
     },
     "write": {
       "plain": {
-        "host": "Tab/Shift-Tab:screens  j/k:move  /:search  q:back  ?:help  ↵/l/→:switch  Space:Actions  c:new  d:diff",
-        "app": "Tab/Shift-Tab:screens  j/k:move  /:search  q:quit  ?:help  ↵/l/→:switch  Space:Actions  c:new  d:diff"
+        "host": "{nav}:nav  l/Enter:switch  c:new  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+        "app": "{nav}:nav  l/Enter:switch  c:new  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
       },
       "target": {
-        "host": "Tab/Shift-Tab:screens  j/k:move  /:search  q:back  ?:help  ↵/l/→:switch  Ctrl-t:new tab  Space:Actions  c:new  d:diff",
-        "app": "Tab/Shift-Tab:screens  j/k:move  /:search  q:quit  ?:help  ↵/l/→:switch  Space:Actions  c:new  d:diff"
+        "host": "{nav}:nav  l/Enter:switch  c:new  C-t:new tab  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+        "app": "{nav}:nav  l/Enter:switch  c:new  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
       },
       "empty": {
-        "host": "Tab/Shift-Tab:screens  j/k:move  /:search  q:back  ?:help  Space:Actions  c:new",
-        "app": "Tab/Shift-Tab:screens  j/k:move  /:search  q:quit  ?:help  Space:Actions  c:new"
+        "host": "{nav}:nav  c:new  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+        "app": "{nav}:nav  c:new  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
       }
     },
     "readonly": {
       "plain": {
-        "host": "Tab/Shift-Tab:screens  j/k:move  /:search  q:back  ?:help  ↵/l/→:switch  Space:Actions  d:diff",
-        "app": "Tab/Shift-Tab:screens  j/k:move  /:search  q:quit  ?:help  ↵/l/→:switch  Space:Actions  d:diff"
+        "host": "{nav}:nav  l/Enter:switch  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+        "app": "{nav}:nav  l/Enter:switch  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
       },
       "target": {
-        "host": "Tab/Shift-Tab:screens  j/k:move  /:search  q:back  ?:help  ↵/l/→:switch  Ctrl-t:new tab  Space:Actions  d:diff",
-        "app": "Tab/Shift-Tab:screens  j/k:move  /:search  q:quit  ?:help  ↵/l/→:switch  Space:Actions  d:diff"
+        "host": "{nav}:nav  l/Enter:switch  C-t:new tab  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+        "app": "{nav}:nav  l/Enter:switch  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
       },
       "empty": {
-        "host": "Tab/Shift-Tab:screens  j/k:move  /:search  q:back  ?:help",
-        "app": "Tab/Shift-Tab:screens  j/k:move  /:search  q:quit  ?:help"
+        "host": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+        "app": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
       }
     }
   },
   "ja": {
     "write": {
       "plain": {
-        "host": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:戻る  ?:ヘルプ  ↵/l/→:切替  Space:操作  c:新規  d:差分",
-        "app": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:終了  ?:ヘルプ  ↵/l/→:切替  Space:操作  c:新規  d:差分"
+        "host": "{nav}:移動  l/Enter:切替  c:新規  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+        "app": "{nav}:移動  l/Enter:切替  c:新規  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
       },
       "target": {
-        "host": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:戻る  ?:ヘルプ  ↵/l/→:切替  Ctrl-t:別タブ  Space:操作  c:新規  d:差分",
-        "app": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:終了  ?:ヘルプ  ↵/l/→:切替  Space:操作  c:新規  d:差分"
+        "host": "{nav}:移動  l/Enter:切替  c:新規  C-t:別タブ  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+        "app": "{nav}:移動  l/Enter:切替  c:新規  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
       },
       "empty": {
-        "host": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:戻る  ?:ヘルプ  Space:操作  c:新規",
-        "app": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:終了  ?:ヘルプ  Space:操作  c:新規"
+        "host": "{nav}:移動  c:新規  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+        "app": "{nav}:移動  c:新規  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
       }
     },
     "readonly": {
       "plain": {
-        "host": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:戻る  ?:ヘルプ  ↵/l/→:切替  Space:操作  d:差分",
-        "app": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:終了  ?:ヘルプ  ↵/l/→:切替  Space:操作  d:差分"
+        "host": "{nav}:移動  l/Enter:切替  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+        "app": "{nav}:移動  l/Enter:切替  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
       },
       "target": {
-        "host": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:戻る  ?:ヘルプ  ↵/l/→:切替  Ctrl-t:別タブ  Space:操作  d:差分",
-        "app": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:終了  ?:ヘルプ  ↵/l/→:切替  Space:操作  d:差分"
+        "host": "{nav}:移動  l/Enter:切替  C-t:別タブ  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+        "app": "{nav}:移動  l/Enter:切替  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
       },
       "empty": {
-        "host": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:戻る  ?:ヘルプ",
-        "app": "Tab/Shift-Tab:画面  j/k:移動  /:検索  q:終了  ?:ヘルプ"
+        "host": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+        "app": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
       }
     }
   }
