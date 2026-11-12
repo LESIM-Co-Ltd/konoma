@@ -1087,11 +1087,7 @@ fn vcs_screen_words(app: &App, jj: bool) -> (Msg, Msg, Msg) {
             Msg::GitFilterByName,
             Msg::WkBranchCopyTitle,
         ),
-        Screen::Worktrees => (
-            Msg::GitWorktreesLabel,
-            Msg::GitFilterByName,
-            Msg::CopyHint,
-        ),
+        Screen::Worktrees => (Msg::GitWorktreesLabel, Msg::GitFilterByName, Msg::CopyHint),
         Screen::GraphPicker | Screen::Detail => {
             (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint)
         }

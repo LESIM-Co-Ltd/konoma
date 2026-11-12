@@ -1381,7 +1381,13 @@ fn vcs_port_screen_keys_decide_the_keys_and_the_footer_hint_together() {
         assert!(!footer.contains("k:nav") && !footer.contains("j/k"), "{table}: {footer}");
         // The help body's scroll row reads the same keys (the list screen's row is the arrows
         // plus what is still bound).
-        assert!(help.contains("k / ↑/↓") && !help.contains("j/k / ↑/↓"), "{table}: {help}");
+        assert!(
+            !help.contains("j / k")
+                && help
+                    .lines()
+                    .any(|l| l.trim_start().starts_with("k ") && l.ends_with("move")),
+            "{table}: {help}"
+        );
         screen(&mut sim, "log");
         let (footer, _) = shown_hints(&sim);
         assert!(footer.contains("j/k:nav"), "{table} on log: {footer}");
@@ -1446,7 +1452,13 @@ fn vcs_port_screen_keys_decide_the_keys_and_the_footer_hint_together() {
     keys(&mut sim, "k");
     let (footer, help) = shown_hints(&sim);
     assert!(!footer.contains("j/k"), "jj: {footer}");
-    assert!(help.contains("k / ↑/↓") && !help.contains("j/k / ↑/↓"), "jj: {help}");
+    assert!(
+        !help.contains("j / k")
+            && help
+                .lines()
+                .any(|l| l.trim_start().starts_with("k ") && l.ends_with("move")),
+        "jj: {help}"
+    );
     // On the second screen the nav hint is shown; its own table moves it.
     let mut cfg = config("jj", "en");
     cfg.keys
@@ -1473,7 +1485,7 @@ fn vcs_port_screen_keys_back_filter_help_follow_the_effective_keys() {
             assert!(footer.contains(word), "default footer {word}: {footer}");
         }
         assert!(!footer.contains("?:help"), "default footer: {footer}");
-        assert!(help.contains("j/k / ↑/↓"), "default help: {help}");
+        assert!(help.contains("j / k") && help.contains("h / Esc  ·  q"), "default help: {help}");
     }
     // `q` and `/` unbound on git.changes (both spellings of the table): the keys do nothing and
     // their controls and help rows go; git log keeps them.
@@ -1496,7 +1508,7 @@ fn vcs_port_screen_keys_back_filter_help_follow_the_effective_keys() {
         assert!(!footer.contains("q:close") && !footer.contains("h/q"), "{table}: {footer}");
         assert!(footer.contains("h:close"), "{table}: {footer}");
         assert!(!footer.contains("/:search"), "{table}: {footer}");
-        assert!(!help.contains("q / Esc"), "{table}: {help}");
+        assert!(!help.contains("Esc  ·  q") && help.contains("h / Esc"), "{table}: {help}");
         // The global `?` is not touched by the screen's table.
         keys(&mut sim, "?");
         assert_eq!(sim.app.key_context(), Some(Context::Help), "{table}: ? opens help");
@@ -1639,7 +1651,10 @@ fn vcs_port_moved_back_and_filter_keys_follow_the_operations() {
         );
         let (footer, help) = shown_hints(&sim);
         assert!(footer.contains("h/Z:close") && !footer.contains("q:close"), "{table}: {footer}");
-        assert!(help.contains("Z / Esc") && !help.contains("q / Esc"), "{table}: {help}");
+        assert!(
+            help.contains("h / Esc  ·  Z") && !help.contains("Esc  ·  q"),
+            "{table}: {help}"
+        );
         let mut sim = sim;
         keys(&mut sim, "q");
         assert!(sim.app.project_active(), "{table}: the unbound q left the project");
@@ -2193,7 +2208,10 @@ fn vcs_port_moved_ctrl_keys_follow_the_screen_operations() {
         let mut sim = open(&root, screen_cfg("git", table, &entries), (180, 24));
         let (footer, help) = shown_hints(&sim);
         assert!(footer.contains("h/C-x:close") && !footer.contains("q:close"), "{table}: {footer}");
-        assert!(help.contains("Ctrl-x / Esc") && !help.contains("q / Esc"), "{table}: {help}");
+        assert!(
+            help.contains("h / Esc  ·  Ctrl-x") && !help.contains("Esc  ·  q"),
+            "{table}: {help}"
+        );
         keys(&mut sim, "q");
         assert!(sim.app.project_active(), "{table}: the unbound q left");
         // The plain letter is not the chord (it is the discard's key here).
