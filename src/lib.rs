@@ -2151,7 +2151,9 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         // hub (its own back is the project key handler's), so the operation bound to another key
         // there must not open one behind it: leaving the canvas would show the hub over the tree.
         Action::WorktreeClose => {
-            if sfc != Surface::PreviewCanvas {
+            if sfc == Surface::PreviewCanvas {
+                app.project_worktree_close_elsewhere()
+            } else {
                 app.close_git_worktrees()
             }
         }

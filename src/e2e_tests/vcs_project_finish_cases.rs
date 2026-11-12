@@ -1670,8 +1670,10 @@ fn vcs_port_moved_key_taken_from_a_plugin_action_follows_the_screen_table() {
 /// In the released hub `worktree_close` on a key of another screen reset the worktree list's
 /// state and re-opened the hub underneath whatever list was in front (`close_git_worktrees`; the
 /// frontmost layer kept the log / branch list on screen, `App::frontmost_layer` in v0.31.2), so
-/// nothing changed on screen there. The canvas has no hub behind it: the key does nothing and
-/// leaves no legacy hub state behind (leaving the project must show the tree, not the hub).
+/// nothing changed on screen there; on the change list it read the entries again and put the
+/// cursor on the first row. The canvas has no hub behind it: on the change list it refreshes
+/// as `r` does and starts at row 0, elsewhere it does nothing, and it leaves no legacy hub state
+/// behind (leaving the project must show the tree, not the hub).
 #[test]
 fn vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind() {
     if isolated("vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind") {
@@ -1687,7 +1689,29 @@ fn vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind() {
                 [("Z".into(), "worktree_close".into())].into(),
             );
         }
-        for name in ["changes", "log", "branches"] {
+        // On the change list the key reads the changes again (as `r`) and starts at row 0.
+        let added = format!("00-added-{table}.txt");
+        let mut sim = open(&root, cfg.clone(), (180, 24));
+        screen(&mut sim, "changes");
+        keys(&mut sim, "jj");
+        assert_eq!(sim.app.project_frame().unwrap().cursor, 2, "{table}: moved");
+        std::fs::write(root.join(&added), "new\n").unwrap();
+        sim.dont_see(&added);
+        keys(&mut sim, "Z");
+        assert!(sim.app.project_active(), "{table} changes: Z left");
+        sim.see(&added);
+        let frame = sim.app.project_frame().unwrap();
+        assert_eq!(
+            (frame.key.screen.as_str(), frame.cursor),
+            ("changes", 0),
+            "{table}: the cursor does not start over"
+        );
+        assert!(!sim.app.is_git_view(), "{table} changes: the hub opened behind the canvas");
+        keys(&mut sim, "q");
+        assert!(!sim.app.project_active(), "{table} changes: q");
+        assert!(!sim.app.is_git_view(), "{table} changes: the hub shows after the canvas");
+        std::fs::remove_file(root.join(&added)).unwrap();
+        for name in ["log", "branches"] {
             let mut sim = open(&root, cfg.clone(), (180, 24));
             screen(&mut sim, name);
             keys(&mut sim, "j");
@@ -1785,10 +1809,11 @@ fn vcs_port_moved_ctrl_keys_follow_the_screen_operations() {
     assert!(footer.contains("Ctrl-x:back") && !footer.contains("q:back"), "jj: {footer}");
     press_ctrl(&mut sim, 'x');
     assert!(!sim.app.project_active(), "jj: Ctrl-x does not leave");
-    // And a key the jj table takes from a jj action: x is jj's discard? (see the declared keys)
+    // jj declares one action key on the changes screen (`s` = sync) and no `x` (discard is git's),
+    // so the screen table's `x = git_close` is the back key there.
     let mut sim = open(&jjroot, screen_cfg("jj", "jj.changes", &[("x", "git_close")]), (180, 24));
     keys(&mut sim, "x");
-    assert!(!sim.app.project_active(), "jj: x = git_close does not leave");
+    assert!(!sim.app.project_active(), "jj: x = git_close leaves the project");
 }
 
 /// While a job holds the session the canvas queues presses, except the ones that move or navigate

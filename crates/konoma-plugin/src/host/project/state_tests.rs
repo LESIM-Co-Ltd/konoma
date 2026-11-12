@@ -60,6 +60,25 @@ fn rows_remap_by_project_row_identity() {
 }
 
 #[test]
+fn top_on_next_reload_starts_the_list_over_once() {
+    let mut state = state();
+    let key = state.stack[0].key.clone();
+    let old = list(vec![row("a"), row("b")]);
+    state.stack[0].cursor = 1;
+    state.top_on_next_reload();
+    // A row sorted above the selection would move the cursor down; the flag wins, once.
+    let new = list(vec![row("0"), row("a"), row("b")]);
+    state.remap_rows(&key, Some(&old), &new);
+    assert_eq!(state.stack[0].cursor, 0);
+    state.stack[0].cursor = 2;
+    state.remap_rows(&key, Some(&new), &new);
+    assert_eq!(
+        state.stack[0].cursor, 2,
+        "the flag is taken by the first replacement"
+    );
+}
+
+#[test]
 fn removed_selection_discards_keys_but_keeps_invocations() {
     let mut state = state();
     let key = state.stack[0].key.clone();

@@ -159,6 +159,28 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
     }
 
+    /// The user's reload of the current screen: its rows are read again (the next
+    /// [`ProjectHost::ensure_view`] sends the job). The cursor follows the selected row, like a
+    /// reload from the screen's own `r`.
+    pub(super) fn mark_screen_stale(&mut self, nav: &ProjectScreenState<I>) {
+        if let Some(runtime) = self.runtimes.get_mut(&nav.project) {
+            if let Some(frame) = nav.frame() {
+                runtime.dirty.insert(frame.key.clone());
+            }
+            runtime.invalidated |= runtime.busy;
+            runtime.error = None;
+        }
+    }
+
+    /// A reload of the current screen that starts the list over: the same reading as `r`, and
+    /// the cursor is on the first row when the new rows arrive.
+    pub fn reload_screen_from_top(&mut self, context: &mut ProjectContextMut<'_, I>) {
+        if let Some(nav) = context.active.as_mut() {
+            nav.top_on_next_reload();
+            self.mark_screen_stale(nav);
+        }
+    }
+
     /// Viewport storage belongs to the host; pass both measurements rather than mirror it here.
     pub fn resize(
         &mut self,

@@ -1530,6 +1530,23 @@ impl App {
         self.project_operation_keys('/', ops)
     }
 
+    /// `worktree_close` bound to another screen's key. The released hub reopened itself
+    /// (`open_git_view`): on its change list that read the entries again and put the cursor on
+    /// the first row; over any other list nothing visible changed. The canvas reads the changes
+    /// as its own `r` does, and the list starts over at its first row when the new rows arrive.
+    /// It never raises the legacy hub's flag, which would outlive the project.
+    #[cfg(feature = "git")]
+    pub(crate) fn project_worktree_close_elsewhere(&mut self) {
+        use crate::keymap::{Context, Screen};
+        if matches!(
+            self.canvas_screen(),
+            Some(Context::Screen(_, Screen::Changes))
+        ) {
+            self.with_project_host(|host, context| host.reload_screen_from_top(context));
+            self.ensure_project_view();
+        }
+    }
+
     #[cfg(feature = "git")]
     fn canvas_is_worktrees(&self) -> bool {
         use crate::keymap::{Context, Screen};

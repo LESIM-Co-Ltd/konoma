@@ -46,6 +46,9 @@ pub struct ProjectFrame<I> {
     pub filtering: bool,
     filter_anchor: usize,
     initialized: bool,
+    /// Set when the host asked for a reload that ends with the cursor on the first row; the next
+    /// replacement of this screen's rows ([`ProjectScreenState::remap_rows`]) takes it.
+    top_on_reload: bool,
     pub pending: VecDeque<ProjectInput<I>>,
 }
 
@@ -66,6 +69,7 @@ impl<I> ProjectFrame<I> {
             filtering: false,
             filter_anchor: 0,
             initialized: false,
+            top_on_reload: false,
             pending: VecDeque::new(),
         }
     }
@@ -105,6 +109,14 @@ impl<I> ProjectScreenState<I> {
 
     pub fn frame_mut(&mut self) -> Option<&mut ProjectFrame<I>> {
         self.stack.last_mut()
+    }
+
+    /// The current screen's next row replacement puts the cursor on the first row instead of
+    /// following the selected row to its new place (a reload that starts the list over).
+    pub fn top_on_next_reload(&mut self) {
+        if let Some(frame) = self.frame_mut() {
+            frame.top_on_reload = true;
+        }
     }
 
     fn screen<'a>(&self, declaration: Option<&'a ProjectDecl>) -> Option<&'a ProjectScreen> {
@@ -516,6 +528,12 @@ impl<I> ProjectScreenState<I> {
                         .pending
                         .retain(|input| matches!(input, ProjectInput::Act(_)));
                 }
+            }
+            if std::mem::take(&mut frame.top_on_reload) && frame.cursor != 0 {
+                frame.cursor = 0;
+                frame
+                    .pending
+                    .retain(|input| matches!(input, ProjectInput::Act(_)));
             }
             frame.marked = new
                 .rows

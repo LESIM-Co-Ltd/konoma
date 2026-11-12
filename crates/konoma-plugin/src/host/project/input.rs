@@ -259,13 +259,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         let mut update = ProjectUpdate::handled();
         match key.code {
             KeyCode::Char('r') => {
-                if let Some(runtime) = self.runtimes.get_mut(&nav.project) {
-                    if let Some(frame) = nav.frame() {
-                        runtime.dirty.insert(frame.key.clone());
-                    }
-                    runtime.invalidated |= runtime.busy;
-                    runtime.error = None;
-                }
+                self.mark_screen_stale(nav);
                 update.commands.push(ProjectCommand::EnsureView);
             }
             KeyCode::Esc if nav.frame().is_some_and(|f| !f.query.is_empty()) => {
