@@ -18,7 +18,7 @@
       "app": {
         "48": "S:stage(all)  U:unstage(all)  c:commit …",
         "90": "S:stage(all)  U:unstage(all)  c:commit  d:diff-all  b:branch  w:worktrees  !:tool …",
-        "180": "S:stage(all)  U:unstage(all)  c:commit  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
+        "180": "S:stage(all)  U:unstage(all)  c:commit  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
       }
     },
     "changes": {
@@ -30,7 +30,7 @@
       "app": {
         "48": "s/S:stage(all)  u/U:unstage(all)  x:discard …",
         "90": "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all …",
-        "180": "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
+        "180": "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
       }
     },
     "log": {
@@ -66,7 +66,7 @@
       "app": {
         "48": "l/Enter:diff  d:diff-all  b:bookmarks …",
         "90": "l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens …",
-        "180": "l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
+        "180": "l/Enter:diff  d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
       }
     },
     "empty_jj_changes": {
@@ -77,8 +77,8 @@
       },
       "app": {
         "48": "d:diff-all  b:bookmarks  s:sync  !:tool …",
-        "90": "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
-        "180": "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
+        "90": "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit",
+        "180": "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
       }
     }
   },
@@ -92,7 +92,7 @@
       "app": {
         "48": "S:ステージ(全)  U:解除(全)  c:コミット …",
         "90": "S:ステージ(全)  U:解除(全)  c:コミット  d:全差分  b:ブランチ  w:ワークツリー  !:ツール …",
-        "180": "S:ステージ(全)  U:解除(全)  c:コミット  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
+        "180": "S:ステージ(全)  U:解除(全)  c:コミット  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
       }
     },
     "changes": {
@@ -104,7 +104,7 @@
       "app": {
         "48": "s/S:ステージ(全)  u/U:解除(全)  x:破棄 …",
         "90": "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ …",
-        "180": "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
+        "180": "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
       }
     },
     "log": {
@@ -139,8 +139,8 @@
       },
       "app": {
         "48": "l/Enter:差分  d:全差分  b:ブックマーク …",
-        "90": "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面 …",
-        "180": "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
+        "90": "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了",
+        "180": "l/Enter:差分  d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
       }
     },
     "empty_jj_changes": {
@@ -151,8 +151,8 @@
       },
       "app": {
         "48": "d:全差分  b:ブックマーク  s:同期  !:ツール …",
-        "90": "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
-        "180": "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
+        "90": "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了",
+        "180": "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
       }
     }
   },

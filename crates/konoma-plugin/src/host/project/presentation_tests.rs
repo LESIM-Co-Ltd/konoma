@@ -233,11 +233,11 @@ fn project_footer_cells_preserve_tokens_order_and_spacing() {
         bindings.push(binding(7, Some(KeyPress::ch('x')), "capture", 1));
         let p = build(&facts, &bindings, ja, true);
         if ja {
-            cells(&p, 160, "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:開く  対象  Ctrl-t:別タブ  Space:操作  C-F7:retry-refresh  C-F5:retry-input …");
-            cells(&p, 240, "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:開く  対象  Ctrl-t:別タブ  Space:操作  C-F7:retry-refresh  C-F5:retry-input  C-F6:retry-confirmed  C-F2:row-prompt  C-F3:conditional  C-F4:conditional-input …");
+            cells(&p, 160, "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  h/q:戻る  ?:ヘルプ  ↵/l/→:開く  対象  Ctrl-t:別タブ  Space:操作  C-F7:retry-refresh  C-F5:retry-input …");
+            cells(&p, 240, "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  h/q:戻る  ?:ヘルプ  ↵/l/→:開く  対象  Ctrl-t:別タブ  Space:操作  C-F7:retry-refresh  C-F5:retry-input  C-F6:retry-confirmed  C-F2:row-prompt  C-F3:conditional  C-F4:conditional-input …");
         } else {
-            cells(&p, 160, "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  q:back  ?:help  ↵/l/→:open  entry  Ctrl-t:new tab  Space:Actions  C-F7:retry-refresh  C-F5:retry-input …");
-            cells(&p, 240, "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  q:back  ?:help  ↵/l/→:open  entry  Ctrl-t:new tab  Space:Actions  C-F7:retry-refresh  C-F5:retry-input  C-F6:retry-confirmed  C-F2:row-prompt  C-F3:conditional  C-F4:conditional-input …");
+            cells(&p, 160, "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  h/q:back  ?:help  ↵/l/→:open  entry  Ctrl-t:new tab  Space:Actions  C-F7:retry-refresh  C-F5:retry-input …");
+            cells(&p, 240, "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  h/q:back  ?:help  ↵/l/→:open  entry  Ctrl-t:new tab  Space:Actions  C-F7:retry-refresh  C-F5:retry-input  C-F6:retry-confirmed  C-F2:row-prompt  C-F3:conditional  C-F4:conditional-input …");
         }
         cells(
             &p,
@@ -252,9 +252,9 @@ fn project_footer_cells_preserve_tokens_order_and_spacing() {
             &p,
             80,
             if ja {
-                "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  q:戻る  ?:ヘルプ …"
+                "Tab/Shift-Tab:画面  j/k:移動  V:マーク  /:絞り込み  h/q:戻る  ?:ヘルプ …"
             } else {
-                "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  q:back  ?:help …"
+                "Tab/Shift-Tab:screens  j/k:move  V:mark  /:filter  h/q:back  ?:help …"
             },
         );
         let open = p
@@ -460,9 +460,9 @@ fn project_footer_capability_follows_selected_target() {
             &p,
             160,
             if ja {
-                "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ  Space:操作  s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット"
+                "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  h/q:戻る  ?:ヘルプ  ↵/l/→:差分  Ctrl-t:別タブ  Space:操作  s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット"
             } else {
-                "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab  Space:Actions  s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit"
+                "Tab/Shift-Tab:screens  j/k:move  /:filter  h/q:back  ?:help  ↵/l/→:diff  Ctrl-t:new tab  Space:Actions  s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit"
             },
         );
     }
@@ -588,9 +588,9 @@ fn project_footer_back_filter_and_help_follow_the_hosts_keys() {
     cells(
         &build(&list(default_keymap_motions()), &[], false, true),
         80,
-        "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help",
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  h/q:back  ?:help",
     );
-    // Back moved to `x`: the footer shows `x:back` and no `q:back`.
+    // Back moved to `x`: the footer shows `h/x:back` (the list's `Left` key stays) and no `q:back`.
     let mut moved = default_keymap_motions();
     moved.back = vec![KeyPress::ch('x')];
     moved.filter = vec![KeyPress::ch('f')];
@@ -598,7 +598,7 @@ fn project_footer_back_filter_and_help_follow_the_hosts_keys() {
     cells(
         &build(&list(moved), &[], false, true),
         80,
-        "Tab/Shift-Tab:screens  j/k:move  f:filter  x:back  H:help",
+        "Tab/Shift-Tab:screens  j/k:move  f:filter  h/x:back  H:help",
     );
     // Each control is hidden when its key is unbound.
     let mut no_back = default_keymap_motions();
@@ -606,21 +606,22 @@ fn project_footer_back_filter_and_help_follow_the_hosts_keys() {
     cells(
         &build(&list(no_back), &[], false, true),
         80,
-        "Tab/Shift-Tab:screens  j/k:move  /:filter  ?:help",
+        // `Left` still goes back on a list, so its token stays when only `back` is cleared.
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  h:back  ?:help",
     );
     let mut no_filter = default_keymap_motions();
     no_filter.filter.clear();
     cells(
         &build(&list(no_filter), &[], false, true),
         80,
-        "Tab/Shift-Tab:screens  j/k:move  q:back  ?:help",
+        "Tab/Shift-Tab:screens  j/k:move  h/q:back  ?:help",
     );
     let mut no_help = default_keymap_motions();
     no_help.help.clear();
     cells(
         &build(&list(no_help), &[], false, true),
         80,
-        "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back",
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  h/q:back",
     );
 }
 

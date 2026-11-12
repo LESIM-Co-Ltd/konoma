@@ -352,7 +352,9 @@ fn project_launch_cases() {
                 .iter()
                 .filter(|r| r.program == "fixture-tool")
                 .count(),
-            3
+            // Old hub: `!` is bound only in the changes screen's table, so of the three `!`
+            // presses (changes, a pushed detail, worktrees) only the first launches the tool.
+            1
         );
         assert!(launches.iter().all(|r| r.backend == "git"));
     }

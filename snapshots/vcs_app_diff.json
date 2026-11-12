@@ -6,11 +6,11 @@
     },
     "preview_project": {
       "host": "l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
-      "app": "l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
+      "app": "l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:back"
     },
     "preview_jj_project": {
       "host": "l/Enter:diff  d:diff-all  b:bookmarks  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
-      "app": "l/Enter:diff  d:diff-all  b:bookmarks  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
+      "app": "l/Enter:diff  d:diff-all  b:bookmarks  !:tool  /:search  Tab/⇧Tab:screens  h/q:back"
     },
     "preview_image": {
       "host": "+/-:zoom  =:fit  h/j/k/l:pan  R:back to diff  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  [/]:tab  ,:view",
@@ -22,11 +22,11 @@
     },
     "changes_remap": {
       "host": "Z/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
-      "app": "Z/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
+      "app": "Z/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
     },
     "contract_home": {
       "host": "D:diff  l/Enter:push  /:search  Tab/⇧Tab:screens  h/q:close",
-      "app": "D:diff  l/Enter:push  /:search  Tab/⇧Tab:screens  h/q:close"
+      "app": "D:diff  l/Enter:push  /:search  Tab/⇧Tab:screens  h/q:quit"
     },
     "contract": {
       "host": "{nav}:nav  D:diff  l/Enter:push  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
@@ -40,11 +40,11 @@
     },
     "preview_project": {
       "host": "l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
-      "app": "l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
+      "app": "l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:戻る"
     },
     "preview_jj_project": {
       "host": "l/Enter:差分  d:全差分  b:ブックマーク  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
-      "app": "l/Enter:差分  d:全差分  b:ブックマーク  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
+      "app": "l/Enter:差分  d:全差分  b:ブックマーク  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:戻る"
     },
     "preview_image": {
       "host": "+/-:ズーム  =:フィット  h/j/k/l:パン  R:diff に戻る  C-n/C-p:次/前ファイル  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  [/]:タブ  ,:表示",
@@ -56,11 +56,11 @@
     },
     "changes_remap": {
       "host": "Z/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
-      "app": "Z/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
+      "app": "Z/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
     },
     "contract_home": {
       "host": "D:差分  l/Enter:重ねる  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
-      "app": "D:差分  l/Enter:重ねる  /:検索  Tab/⇧Tab:画面  h/q:閉じる"
+      "app": "D:差分  l/Enter:重ねる  /:検索  Tab/⇧Tab:画面  h/q:終了"
     },
     "contract": {
       "host": "{nav}:移動  D:差分  l/Enter:重ねる  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",

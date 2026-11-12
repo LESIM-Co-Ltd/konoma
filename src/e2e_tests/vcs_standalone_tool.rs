@@ -144,4 +144,19 @@ fn vcs_standalone_bang_acts_only_on_the_changes_screen() {
     // The same keys without the Tabs do launch (changes), so the empty results above are not a
     // harness that never launches.
     assert_eq!(run_keys(&root, config, "!jjj").len(), 1);
+    // jj has changes, log, graph and bookmarks (no worktrees screen): three Tabs reach them all.
+    // The guard lives to the end of the test: dropping it would delete the fixture.
+    if crate::vcs::jj::available() {
+        let jj = crate::test_support::jj_scratch_seeded("vcs_standalone_bang_screens_jj")
+            .expect("a jj fixture");
+        let jj_root = jj.canonicalize().unwrap();
+        for tabs in 1..=3 {
+            let keys = format!("{}!jjj", "\t".repeat(tabs));
+            assert!(
+                run_keys(&jj_root, config, &keys).is_empty(),
+                "jj: `!` {tabs} screen(s) after changes launched the tool"
+            );
+        }
+        assert_eq!(run_keys(&jj_root, config, "!jjj").len(), 1);
+    }
 }
