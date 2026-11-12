@@ -1,4 +1,5 @@
 use super::presentation::*;
+use super::test_facts::{default_keymap_facts, default_keymap_motions};
 use crate::host::acts::ActBinding;
 use crate::{HintGroup, Tr};
 use crossterm::event::KeyCode;
@@ -200,7 +201,7 @@ fn project_footer_cells_preserve_tokens_order_and_spacing() {
             filter: true,
             row_target: true,
             open: Some(open(label)),
-            ..Default::default()
+            ..default_keymap_facts()
         };
         let mut bindings: Vec<_> = [
             (7, "retry-refresh"),
@@ -271,7 +272,7 @@ fn project_footer_cells_preserve_tokens_order_and_spacing() {
         );
     }
     let p = build(
-        &ProjectPresentationFacts::default(),
+        &default_keymap_facts(),
         &group_bindings(false, false, false),
         false,
         true,
@@ -279,12 +280,7 @@ fn project_footer_cells_preserve_tokens_order_and_spacing() {
     cells(&p, 240, "Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help  Space:Actions  C-F2:row-prompt  a:screen  z:screen-shortcut  C-F8:hint-before  s/S:stage(all)  C-F9:hint-between  u/U:unstage(all)  C-F10:hint-after");
     let mut duplicate = group_bindings(false, false, false);
     duplicate[6].binding.key = duplicate[4].binding.key;
-    let p = build(
-        &ProjectPresentationFacts::default(),
-        &duplicate,
-        false,
-        true,
-    );
+    let p = build(&default_keymap_facts(), &duplicate, false, true);
     cells(&p,240,"Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help  Space:Actions  C-F2:row-prompt  a:screen  z:screen-shortcut  C-F8:hint-before  s:stage(all)  C-F9:hint-between  u/U:unstage(all)  C-F10:hint-after");
     let grouped = p
         .footer_tokens()
@@ -365,11 +361,11 @@ fn project_footer_uses_resolved_keys_and_enabled_members() {
         (false,true,false,"Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help  Space:Actions  C-F2:row-prompt  a:screen  z:screen-shortcut  C-F8:hint-before  C-F9:hint-between  u/U:unstage(all)  C-F10:hint-after"),
         (false,false,true,"Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help  Space:Actions  C-F2:row-prompt  a:screen  z:screen-shortcut  C-F8:hint-before  s/W:stage(all)  C-F9:hint-between  u/U:unstage(all)  C-F10:hint-after"),
     ] {
-        cells(&build(&ProjectPresentationFacts::default(), &group_bindings(disabled,empty,remap), false, true), 240, expected);
+        cells(&build(&default_keymap_facts(), &group_bindings(disabled,empty,remap), false, true), 240, expected);
     }
     let mut unbound = group_bindings(false, false, false);
     unbound[4].binding.key = None;
-    cells(&build(&ProjectPresentationFacts::default(),&unbound,false,true),240,"Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help  Space:Actions  C-F2:row-prompt  a:screen  z:screen-shortcut  C-F8:hint-before  S:stage(all)  C-F9:hint-between  u/U:unstage(all)  C-F10:hint-after");
+    cells(&build(&default_keymap_facts(),&unbound,false,true),240,"Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help  Space:Actions  C-F2:row-prompt  a:screen  z:screen-shortcut  C-F8:hint-before  S:stage(all)  C-F9:hint-between  u/U:unstage(all)  C-F10:hint-after");
     // Both schemes resolve the footer's three motion groups to these keys. Their half/page
     // controls differ, remain in help, and are supplied by the host rather than inferred here.
     for less in [false, true] {
@@ -384,7 +380,7 @@ fn project_footer_uses_resolved_keys_and_enabled_members() {
                 } else {
                     KeyPress::ctrl_ch('d')
                 }],
-                ..Default::default()
+                ..default_keymap_motions()
             },
             ..Default::default()
         };
@@ -414,7 +410,7 @@ fn project_footer_capability_follows_selected_target() {
         for (target, tabs) in [(false, true), (true, false), (false, false)] {
             let facts = ProjectPresentationFacts {
                 row_target: target,
-                ..Default::default()
+                ..default_keymap_facts()
             };
             let p = build(&facts, &[], ja, tabs);
             assert!(p.new_tab_control().is_none());
@@ -433,7 +429,7 @@ fn project_footer_capability_follows_selected_target() {
             filter: true,
             open: Some(open(if ja { "差分" } else { "diff" })),
             row_target: true,
-            ..Default::default()
+            ..default_keymap_facts()
         };
         let mut bindings = vec![
             binding(0, Some(KeyPress::ch('s')), "stage", 1),
@@ -569,4 +565,57 @@ fn picker_and_graph_footer_cells_match_reference() {
             },
         );
     }
+}
+
+#[test]
+fn project_footer_back_filter_and_help_follow_the_hosts_keys() {
+    let list = |motions: ProjectMotionKeys| ProjectPresentationFacts {
+        content: Some(ProjectPresentationContent::List),
+        filter: true,
+        motions,
+        ..Default::default()
+    };
+    // Default keymap, loading screen and list.
+    cells(
+        &build(&default_keymap_facts(), &[], false, true),
+        80,
+        "Tab/Shift-Tab:screens  j/k:scroll  q:back  ?:help",
+    );
+    cells(
+        &build(&list(default_keymap_motions()), &[], false, true),
+        80,
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help",
+    );
+    // Back moved to `x`: the footer shows `x:back` and no `q:back`.
+    let mut moved = default_keymap_motions();
+    moved.back = vec![KeyPress::ch('x')];
+    moved.filter = vec![KeyPress::ch('f')];
+    moved.help = vec![KeyPress::ch('H')];
+    cells(
+        &build(&list(moved), &[], false, true),
+        80,
+        "Tab/Shift-Tab:screens  j/k:move  f:filter  x:back  H:help",
+    );
+    // Each control is hidden when its key is unbound.
+    let mut no_back = default_keymap_motions();
+    no_back.back.clear();
+    cells(
+        &build(&list(no_back), &[], false, true),
+        80,
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  ?:help",
+    );
+    let mut no_filter = default_keymap_motions();
+    no_filter.filter.clear();
+    cells(
+        &build(&list(no_filter), &[], false, true),
+        80,
+        "Tab/Shift-Tab:screens  j/k:move  q:back  ?:help",
+    );
+    let mut no_help = default_keymap_motions();
+    no_help.help.clear();
+    cells(
+        &build(&list(no_help), &[], false, true),
+        80,
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back",
+    );
 }

@@ -1,4 +1,5 @@
 use super::presentation::*;
+use super::test_facts::default_keymap_facts;
 use crate::host::acts::ActBinding;
 use crate::Tr;
 use crossterm::event::KeyCode;
@@ -148,7 +149,7 @@ fn project_help_cells_preserve_uncovered_aliases() {
                 label: "open".into(),
                 right_aliases: vec![KeyPress::ch('l'), KeyPress::key(KeyCode::Right)],
             }),
-            ..Default::default()
+            ..default_keymap_facts()
         };
         let mut bindings = vec![binding(0, Some(KeyPress::key(KeyCode::Enter)), None, true)];
         if both {
@@ -264,4 +265,43 @@ fn project_menus_preserve_order_keys_and_gates() {
     assert_eq!(actions, [(KeyPress::ch('b'), 3, "item 3")]);
     assert_eq!(p.copy_action(KeyPress::ch('q')), None);
     assert_eq!(p.copy_action(KeyPress::ch('z')), Some(0));
+}
+
+#[test]
+fn project_help_back_and_filter_rows_follow_the_hosts_keys() {
+    let navigation_rows = |facts: &ProjectPresentationFacts| -> Vec<String> {
+        let sections = presentation(facts, &[]).help_sections(&words(), &[]);
+        let project = sections.iter().find(|s| s.title == "Project").unwrap();
+        project.rows.iter().map(|(k, _)| k.clone()).collect()
+    };
+    let list = |motions: ProjectMotionKeys| ProjectPresentationFacts {
+        content: Some(ProjectPresentationContent::List),
+        filter: true,
+        pushed: true,
+        motions,
+        ..Default::default()
+    };
+    // The default keymap: `q / Esc` leaves and `/` filters.
+    let default = navigation_rows(&list(default_keymap_facts().motions));
+    assert!(default.contains(&"q / Esc".to_string()), "{default:?}");
+    assert!(default.contains(&"/".to_string()), "{default:?}");
+    // Moved: the rows show the new keys and no stale `q` / `/`.
+    let mut moved = default_keymap_facts().motions;
+    moved.back = vec![KeyPress::ch('x')];
+    moved.filter = vec![KeyPress::ch('f')];
+    let rows = navigation_rows(&list(moved));
+    assert!(rows.contains(&"x / Esc".to_string()), "{rows:?}");
+    assert!(rows.contains(&"f".to_string()), "{rows:?}");
+    assert!(!rows.contains(&"q / Esc".to_string()), "{rows:?}");
+    assert!(!rows.contains(&"/".to_string()), "{rows:?}");
+    // Unbound: only Esc is left for back, and the filter row is gone.
+    let mut unbound = default_keymap_facts().motions;
+    unbound.back.clear();
+    unbound.filter.clear();
+    let rows = navigation_rows(&list(unbound));
+    assert!(rows.contains(&"Esc".to_string()), "{rows:?}");
+    assert!(
+        !rows.iter().any(|r| r == "/" || r.starts_with("q")),
+        "{rows:?}"
+    );
 }

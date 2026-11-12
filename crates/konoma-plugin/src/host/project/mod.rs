@@ -51,6 +51,8 @@ mod input_tests;
 mod presentation_help_tests;
 #[cfg(test)]
 mod presentation_tests;
+#[cfg(test)]
+mod test_facts;
 
 pub use prompt::{
     ProjectActionId, ProjectDialog, ProjectInvocation, ProjectOrigin, ProjectPrompt,
