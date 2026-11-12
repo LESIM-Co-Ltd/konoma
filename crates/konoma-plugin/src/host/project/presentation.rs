@@ -166,6 +166,8 @@ impl ProjectMotionKeys {
 /// A screen's jump key shown in the footer of the project's first screen.
 #[derive(Clone, Debug)]
 pub struct ProjectJumpHint {
+    /// The id of the screen the key jumps to.
+    pub screen: String,
     pub footer: u8,
     pub key: KeyPress,
     pub label: String,
@@ -231,6 +233,7 @@ impl ProjectPresentationFacts {
                 .filter_map(|s| {
                     let (footer, label) = s.jump_hint.as_ref()?;
                     Some(ProjectJumpHint {
+                        screen: s.id.clone(),
                         footer: *footer,
                         key: KeyPress::ch(s.key?),
                         label: label.get(lang).to_string(),
@@ -304,6 +307,8 @@ pub struct ProjectPresentationWords<'a> {
 pub struct ProjectPresentation {
     facts: ProjectPresentationFacts,
     plugin_rows: Vec<(String, String)>,
+    /// The footer priority of each plugin row, in the same order (`u8::MAX` without one).
+    plugin_row_footers: Vec<u8>,
     covered: Vec<KeyPress>,
     copy_menu: Vec<Item<usize, String>>,
     actions_menu: Vec<Item<usize, String>>,
@@ -648,12 +653,19 @@ impl ProjectPresentation {
             .iter()
             .flat_map(|(keys, _, _)| keys.iter().copied())
             .collect();
+        let plugin_row_footers = rows
+            .iter()
+            .map(|(_, _, binding)| binding.footer.unwrap_or(u8::MAX))
+            .collect();
         let plugin_rows = rows
             .into_iter()
             .map(|(mut keys, description, binding)| {
-                // On the graph the Enter action's row also lists the keys that open the row like
-                // Enter does (`l`), ahead of Enter; the arrow stays an unlisted alias.
-                if facts.graph_jj.is_some() && binding.key == Some(KeyPress::key(KeyCode::Enter)) {
+                // On a version-control screen the Enter action's row also lists the keys that
+                // open the row like Enter does (`l`), ahead of Enter; the arrow stays an
+                // unlisted alias.
+                if (facts.graph_jj.is_some() || facts.vcs_jj.is_some())
+                    && binding.key == Some(KeyPress::key(KeyCode::Enter))
+                {
                     if let Some(open) = &facts.open {
                         let mut aliases: Vec<_> = open
                             .right_aliases
@@ -704,6 +716,7 @@ impl ProjectPresentation {
         Self {
             facts: facts.clone(),
             plugin_rows,
+            plugin_row_footers,
             covered,
             copy_menu,
             actions_menu,

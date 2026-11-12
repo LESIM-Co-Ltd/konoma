@@ -35,6 +35,7 @@ fn words() -> ProjectHelpWords<'static> {
         scroll: "scroll",
         copy: "copy",
         actions: "Actions",
+        ..Default::default()
     }
 }
 

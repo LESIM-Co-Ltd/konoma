@@ -948,7 +948,41 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
         .map(|name| name.get(app.plugin_lang()))
         .unwrap_or_default();
     let jj = app.project_vcs_jj() == Some(true);
+    let (screen_title, screen_filter, copy_title) = vcs_screen_words(app, jj);
+    let jumps = [
+        (
+            "branches",
+            tr(
+                app.lang,
+                if jj {
+                    Msg::JjBookmarksRow
+                } else {
+                    Msg::GitBranches
+                },
+            ),
+        ),
+        ("worktrees", tr(app.lang, Msg::GitWorktreesRow)),
+    ];
     let words = ProjectHelpWords {
+        screen_title: tr(app.lang, screen_title),
+        screen_filter: tr(app.lang, screen_filter),
+        close_view: tr(
+            app.lang,
+            if jj {
+                Msg::JjCloseView
+            } else {
+                Msg::GitCloseView
+            },
+        ),
+        tool: tr(
+            app.lang,
+            if jj {
+                Msg::JjExternalTool
+            } else {
+                Msg::GitExternalTool
+            },
+        ),
+        jumps: &jumps,
         movement: tr(app.lang, Msg::HelpMove),
         plugin,
         project: tr(app.lang, Msg::ProjectTitle),
@@ -983,7 +1017,7 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
         cycle: tr(app.lang, Msg::ProjectCycle),
         back: tr(app.lang, Msg::ProjectBack),
         scroll: tr(app.lang, Msg::Scroll),
-        copy: tr(app.lang, Msg::CopyHint),
+        copy: tr(app.lang, copy_title),
         actions: tr(app.lang, Msg::WkActionsTitle),
     };
     let screens = app
@@ -1006,14 +1040,109 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    presentation
+    let mut sections: Vec<HelpSection> = presentation
         .help_sections(&words, &screens)
         .into_iter()
         .map(|section| HelpSection {
             title: section.title,
             rows: section.rows,
         })
-        .collect()
+        .collect();
+    if app.project_vcs_jj().is_some() && !app.project_picker() {
+        add_host_rows(app, &mut sections);
+    }
+    sections
+}
+
+/// The words of a version-control screen that differ per screen, read from the old hub's
+/// catalog: the main section's title, the filter row's wording and the title of the `y` menu.
+#[cfg(feature = "git")]
+fn vcs_screen_words(app: &App, jj: bool) -> (Msg, Msg, Msg) {
+    use crate::keymap::{Context, Screen};
+    let Some(Context::Screen(_, screen)) = app.canvas_screen() else {
+        return (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint);
+    };
+    match screen {
+        Screen::Changes => (
+            if jj {
+                Msg::JjChangesLabel
+            } else {
+                Msg::GitChangesLabel
+            },
+            Msg::ListFilterHelp,
+            Msg::WkCopyPathTitle,
+        ),
+        Screen::Log => (Msg::GitLogLabel, Msg::ListFilterHelp, Msg::WkGitCopyTitle),
+        Screen::Graph => (
+            if jj {
+                Msg::JjGraphLabel
+            } else {
+                Msg::GitGraphLabel
+            },
+            Msg::ListFilterHelp,
+            Msg::WkGitCopyTitle,
+        ),
+        Screen::Branches => (
+            Msg::GitBranchesLabel,
+            Msg::GitFilterByName,
+            Msg::WkBranchCopyTitle,
+        ),
+        Screen::Worktrees => (
+            Msg::GitWorktreesLabel,
+            Msg::GitFilterByName,
+            Msg::CopyHint,
+        ),
+        Screen::GraphPicker | Screen::Detail => {
+            (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint)
+        }
+    }
+}
+
+#[cfg(not(feature = "git"))]
+fn vcs_screen_words(_: &App, _: bool) -> (Msg, Msg, Msg) {
+    (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint)
+}
+
+/// The rows the host adds to a version-control canvas's help, as the old hub listed them: the
+/// launch verbs (`e`, `o`) after the movement section, the tab and global rows at the end. A row
+/// is there only while its key acts on this screen, like every other row.
+fn add_host_rows(app: &App, sections: &mut Vec<HelpSection>) {
+    // The screen's own context: its rows are worded and gated as the old hub's were.
+    let ctx = app.canvas_screen().unwrap_or(Context::Canvas);
+    let facts = core_help::facts_for(app, ctx);
+    let mut rows = vec![r(&[Action::RequestEdit]), r(&[Action::OpenExternal])];
+    rows.extend(global_rows());
+    let mut by: Vec<(Sec, Vec<(String, String)>)> = Vec::new();
+    for row in &rows {
+        let Some(out) = render_row(app, ctx, row, &facts) else {
+            continue;
+        };
+        let pair = (out.keys_text, out.desc);
+        match by.iter_mut().find(|(s, _)| *s == out.sec) {
+            Some((_, v)) => v.push(pair),
+            None => by.push((out.sec, vec![pair])),
+        }
+    }
+    let mut take = |sec: Sec, title: Msg| -> Option<HelpSection> {
+        let i = by.iter().position(|(s, _)| *s == sec)?;
+        Some(HelpSection {
+            title: tr(app.lang, title).to_string(),
+            rows: by.remove(i).1,
+        })
+    };
+    let launch = take(Sec::Launch, Msg::HelpLaunch);
+    let tabs = take(Sec::Tabs, Msg::HelpTabs);
+    let global = take(Sec::Global, Msg::HelpGlobal);
+    if let Some(launch) = launch {
+        let movement = tr(app.lang, Msg::HelpMove);
+        let at = sections
+            .iter()
+            .position(|s| s.title == movement)
+            .map_or(1, |i| i + 1);
+        sections.insert(at.min(sections.len()), launch);
+    }
+    sections.extend(tabs);
+    sections.extend(global);
 }
 
 pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {

@@ -1,7 +1,18 @@
 use super::*;
 
 /// Translated section headings and descriptions; the SDK owns no message catalog.
+#[derive(Default)]
 pub struct ProjectHelpWords<'a> {
+    /// Title of a version-control screen's main section (empty: the graph's `graph`).
+    pub screen_title: &'a str,
+    /// This screen's filter wording (`/`).
+    pub screen_filter: &'a str,
+    /// What the home screen's leave row says (`q` closes the project view).
+    pub close_view: &'a str,
+    /// What the project's tool key (`!`) launches.
+    pub tool: &'a str,
+    /// The help word of each jump key, by the screen it jumps to.
+    pub jumps: &'a [(&'a str, &'a str)],
     pub plugin: &'a str,
     pub project: &'a str,
     pub picker: &'a str,
@@ -67,30 +78,88 @@ impl ProjectPresentation {
                 .push(("h/Esc  ·  q".into(), words.cancel.into()));
             return vec![plugin];
         }
-        if self.facts.graph_jj.is_some() {
-            plugin.title = words.graph.into();
+        if self.facts.graph_jj.is_some() || self.facts.vcs_jj.is_some() {
+            // A version-control screen, in the old hub's order: its own rows (the plugin's
+            // declarations, with the jump keys and the new-tab key merged by footer priority
+            // where the old hub listed them), then filter, refresh, the screen cycle, the
+            // tool and the leave row; the movement keys form a section of their own.
+            let graph = self.facts.graph_jj.is_some();
+            plugin.title = if words.screen_title.is_empty() {
+                words.graph.into()
+            } else {
+                words.screen_title.into()
+            };
             let motions = &self.facts.motions;
+            let mut rows: Vec<(u8, (String, String))> = self
+                .plugin_row_footers
+                .iter()
+                .copied()
+                .zip(plugin.rows.drain(..))
+                .collect();
+            if !graph {
+                for jump in &self.facts.jump_hints {
+                    if self.covered.contains(&jump.key) {
+                        continue;
+                    }
+                    let Some((_, word)) = words.jumps.iter().find(|(id, _)| *id == jump.screen)
+                    else {
+                        continue;
+                    };
+                    rows.push((jump.footer, (help_key(jump.key), (*word).into())));
+                }
+                if let Some(control) = self.new_tab_control() {
+                    rows.push((
+                        self.facts.new_tab_footer.unwrap_or(u8::MAX),
+                        (control.rendered_keys(), words.new_tab.into()),
+                    ));
+                }
+                rows.sort_by_key(|(priority, _)| *priority);
+            }
+            plugin.rows = rows.into_iter().map(|(_, row)| row).collect();
             if !motions.ends.is_empty() {
                 plugin
                     .rows
                     .insert(0, (joined(&motions.ends, " / "), words.ends.into()));
             }
             if self.facts.filter && !motions.filter.is_empty() {
+                let word = if words.screen_filter.is_empty() {
+                    words.search
+                } else {
+                    words.screen_filter
+                };
                 plugin
                     .rows
-                    .push((joined(&motions.filter, " / "), words.search.into()));
+                    .push((joined(&motions.filter, " / "), word.into()));
             }
             plugin.rows.extend([
                 ("r".into(), words.refresh.into()),
                 (cycle_keys(), words.screens.into()),
-                (self.leave_keys(), words.back_to_changes.into()),
             ]);
+            if !self.facts.tool_keys.is_empty() {
+                plugin
+                    .rows
+                    .push((joined(&self.facts.tool_keys, " / "), words.tool.into()));
+            }
+            let leave = if self.facts.home && !words.close_view.is_empty() {
+                words.close_view
+            } else {
+                words.back_to_changes
+            };
+            plugin.rows.push((self.leave_keys(), leave.into()));
             sections.push(plugin);
             let scroll = motions.plain_scroll();
             if !scroll.is_empty() {
                 sections.push(CoreSection {
                     title: words.movement.into(),
-                    rows: vec![(joined(&scroll, " / "), words.move_commit.into())],
+                    rows: vec![(
+                        joined(&scroll, " / "),
+                        if graph {
+                            words.move_commit
+                        } else {
+                            words.move_list
+                        }
+                        .into(),
+                    )],
                 });
             }
         } else {

@@ -187,6 +187,7 @@ fn cells(sim: &mut Sim, names: &[&str]) -> Value {
                 scroll: "scroll",
                 copy: "copy",
                 actions: "Actions",
+                ..Default::default()
             },
             &[("i".into(), "Items".into())],
         );

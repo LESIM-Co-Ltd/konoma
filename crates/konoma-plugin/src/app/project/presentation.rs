@@ -275,8 +275,75 @@ impl ProjectLoopState {
             .iter()
             .filter_map(|s| Some((s.key?.to_string(), s.title.get(prepared.lang).into())))
             .collect::<Vec<_>>();
+        // The words of a version-control screen are the old hub's, screen by screen.
+        let jj = facts.vcs_jj == Some(true);
+        let screen_id = nav.frame().unwrap().key.screen.clone();
+        let (screen_title, screen_filter, copy_title) = match screen_id.as_str() {
+            "changes" => (
+                if jj {
+                    t("jj changes (p)", "jj 変更ハブ (p)")
+                } else {
+                    t("Git changes (p)", "Git 変更ハブ (p)")
+                },
+                t(
+                    "filter the rows by the text they show",
+                    "行の表示文字列で絞り込み",
+                ),
+                msg(CoreMsg::WkCopyPathTitle),
+            ),
+            "log" => (
+                t("Git log", "Git ログ"),
+                t(
+                    "filter the rows by the text they show",
+                    "行の表示文字列で絞り込み",
+                ),
+                t("Copy commit", "コミットをコピー"),
+            ),
+            "branches" => (
+                t("Git branches (b)", "Git ブランチ (b)"),
+                t("filter by name", "名前で絞り込み"),
+                t("Copy branch", "ブランチをコピー"),
+            ),
+            "worktrees" => (
+                t("Git worktrees (w)", "Git ワークツリー (w)"),
+                t("filter by name", "名前で絞り込み"),
+                words.copy,
+            ),
+            _ => (
+                "",
+                t(
+                    "filter the rows by the text they show",
+                    "行の表示文字列で絞り込み",
+                ),
+                if screen_id == "graph" {
+                    t("Copy commit", "コミットをコピー")
+                } else {
+                    words.copy
+                },
+            ),
+        };
+        let jumps = [
+            (
+                "branches",
+                if jj {
+                    t("bookmarks", "ブックマーク")
+                } else {
+                    t("branches", "ブランチ")
+                },
+            ),
+            ("worktrees", t("worktrees", "ワークツリー")),
+        ];
         let help = project.help_sections(
             &ProjectHelpWords {
+                screen_title,
+                screen_filter,
+                close_view: back,
+                tool: if jj {
+                    t("external jj tool (lazyjj)", "外部 jj ツール (lazyjj)")
+                } else {
+                    t("external git tool (lazygit)", "外部 git ツール (lazygit)")
+                },
+                jumps: &jumps,
                 plugin: manifest.name.get(prepared.lang),
                 project: msg(CoreMsg::ProjectTitle),
                 picker: t("Graph branches", "グラフのブランチ"),
@@ -320,7 +387,7 @@ impl ProjectLoopState {
                 cycle: words.cycle,
                 back,
                 scroll: words.scroll,
-                copy: words.copy,
+                copy: copy_title,
                 actions: words.actions,
             },
             &screens,

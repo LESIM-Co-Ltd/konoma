@@ -66,7 +66,7 @@ macro_rules! plugin {
                 let manifest = manifest
                     .action(Act::new("diff").key("Enter")
                         .label(t!(en: "diff", ja: "差分"))
-                        .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
+                        .help(t!(en: "file diff", ja: "ファイル差分"))
                         .footer(4)
                         .project_context(ActContext::screen("changes", ["file"])))
                     .action(Act::new("diff_all").key("d")
@@ -80,6 +80,7 @@ macro_rules! plugin {
                         .project_context(ActContext::screen("changes", Vec::<String>::new())))
                     .action(Act::new("detail").key("Enter")
                         .label(t!(en: "detail", ja: "詳細"))
+                        .help(t!(en: "commit detail (diff)", ja: "コミット詳細 (差分)"))
                         .project_context(ActContext::screen("log", ["commit"])));
                 let manifest = if $id == "git" { manifest } else { actions::declare(manifest, false) };
                 branches::declare(log::copy_declarations(graph::declare(manifest, $id == "jj"), $id == "jj"), $id == "git")
