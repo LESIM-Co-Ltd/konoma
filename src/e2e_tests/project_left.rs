@@ -107,6 +107,41 @@ left_back!(e2e_project_log_left_goes_back, "log");
 left_back!(e2e_project_worktrees_left_goes_back, "worktrees");
 left_back!(e2e_project_generic_list_left_goes_back, "items");
 
+fn left_footer(sim: &Sim) -> String {
+    crate::ui::status::footer_spans(&sim.app, 100)
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect()
+}
+
+/// A generic (non-VCS) list screen names the keys that go back in its footer: `Left` goes back
+/// like `q`, so `h/q:back` shows; a rebound `Left` moves the token, a cleared one drops it, and a
+/// detail screen (where `h` pans) never shows `h` as a way back.
+#[test]
+fn e2e_project_generic_list_footer_names_the_left_key() {
+    let sim = left_sim("items", &[]);
+    assert!(
+        left_footer(&sim).contains("h/q:back"),
+        "{}",
+        left_footer(&sim)
+    );
+    let sim = left_sim("items", &[("h", "noop"), ("Z", "navigate:left")]);
+    let footer = left_footer(&sim);
+    assert!(
+        footer.contains("Z/q:back") && !footer.contains("h/q"),
+        "{footer}"
+    );
+    let sim = left_sim("items", &[("h", "noop")]);
+    let footer = left_footer(&sim);
+    assert!(
+        footer.contains("q:back") && !footer.contains("h/q"),
+        "{footer}"
+    );
+    let sim = left_sim("detail", &[]);
+    let footer = left_footer(&sim);
+    assert!(!footer.contains("h/q"), "{footer}");
+}
+
 /// A rebound `Left` moves the key: the new key goes back, the old `h` no longer does. A cleared
 /// `Left` (`h` and the arrow unbound) does nothing.
 #[test]

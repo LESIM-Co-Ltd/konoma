@@ -24,8 +24,8 @@ fn cells(sim: &Sim) -> Value {
             row.set_string(0, 0, text, Style::default().add_modifier(Modifier::DIM));
             row
         };
-        let host = row("Tab/Shift-Tab:screens  j/k:move  /:filter  q:back …");
-        let standalone = row("Tab/Shift-Tab:screens  j/k:move  /:filter  q:quit …");
+        let host = row("Tab/Shift-Tab:screens  j/k:move  /:filter  h/q:back …");
+        let standalone = row("Tab/Shift-Tab:screens  j/k:move  /:filter  h/q:quit …");
         for x in 0..54 {
             assert_eq!(
                 &buffer[(x, 13)],

@@ -33,7 +33,12 @@ impl EventSource for Keys {
             self.gap = 0;
             return Next::Event(AppEvent::Key(
                 key_from_crossterm(&crossterm::event::KeyEvent::new(
-                    crossterm::event::KeyCode::Char(c),
+                    // `\t` stands for the Tab key, which cycles the project's screens.
+                    if c == '\t' {
+                        crossterm::event::KeyCode::Tab
+                    } else {
+                        crossterm::event::KeyCode::Char(c)
+                    },
                     crossterm::event::KeyModifiers::NONE,
                 ))
                 .expect("a key"),
@@ -120,4 +125,23 @@ fn vcs_standalone_bang_without_the_key_launches_nothing_and_a_disabled_tool_stay
     assert!(run_keys(&root, config, "jjj").is_empty());
     let off = "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool'\n[external]\ngit_tool=false\n";
     assert!(run_keys(&root, off, "!jjj").is_empty());
+}
+
+/// Old hub: `!` is bound only in the changes screen's table, so the standalone program's `!`
+/// launches nothing on the log, graph, branches and worktrees screens either (Tab cycles to them).
+#[test]
+fn vcs_standalone_bang_acts_only_on_the_changes_screen() {
+    let repo = git_repo("vcs_standalone_bang_screens", true);
+    let root = repo.canonicalize().unwrap();
+    let config = "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool'\n";
+    for tabs in 1..=4 {
+        let keys = format!("{}!jjj", "\t".repeat(tabs));
+        assert!(
+            run_keys(&root, config, &keys).is_empty(),
+            "`!` {tabs} screen(s) after changes launched the tool"
+        );
+    }
+    // The same keys without the Tabs do launch (changes), so the empty results above are not a
+    // harness that never launches.
+    assert_eq!(run_keys(&root, config, "!jjj").len(), 1);
 }

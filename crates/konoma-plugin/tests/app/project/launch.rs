@@ -47,12 +47,14 @@ impl Plugin for Project {
             .project(
                 ProjectDecl::new()
                     .marker(DetectionMarker::new("project.marker", MarkerKind::File))
-                    .screen(ProjectScreen::new("items", "Items").row_kind("file")),
+                    // `!` acts on a version-control project's changes screen only.
+                    .version_control()
+                    .screen(ProjectScreen::new("changes", "Changes").row_kind("file")),
             )
             .action(
                 Act::new("diff")
                     .key("Enter")
-                    .project_context(ActContext::screen("items", ["file"])),
+                    .project_context(ActContext::screen("changes", ["file"])),
             )
     }
     fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {

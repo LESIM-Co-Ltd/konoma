@@ -338,7 +338,7 @@ impl ProjectLoopState {
                             prepared.notice = Some(message.tr(prepared.keys.lang()).into());
                         }
                     }
-                    Some(DiffUiOp::Tool) => {
+                    Some(DiffUiOp::Tool) if self.tool_screen() => {
                         if let Some(info) = self
                             .screen
                             .as_ref()

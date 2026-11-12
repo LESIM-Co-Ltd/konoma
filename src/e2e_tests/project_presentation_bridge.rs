@@ -329,6 +329,7 @@ fn project_default_motion_keys_equal_the_plugin_test_helper_copy() {
     // ones the canvas hints show.
     assert_eq!(facts.motions.plain_scroll(), helper.scroll);
     assert_eq!(facts.motions.back, helper.back);
+    assert_eq!(facts.motions.left, helper.left);
     assert_eq!(facts.motions.filter, helper.filter);
     assert_eq!(facts.motions.help, helper.help);
     // The groups the helper leaves empty (horizontal scroll, ends, half page, page, line ends,

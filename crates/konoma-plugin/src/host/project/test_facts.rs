@@ -11,6 +11,7 @@ use konoma_host_core::keymap::KeyPress;
 pub fn default_keymap_motions() -> ProjectMotionKeys {
     ProjectMotionKeys {
         scroll: vec![KeyPress::ch('j'), KeyPress::ch('k')],
+        left: vec![KeyPress::ch('h')],
         back: vec![KeyPress::ch('q')],
         filter: vec![KeyPress::ch('/')],
         help: vec![KeyPress::ch('?')],

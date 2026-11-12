@@ -623,3 +623,50 @@ fn project_footer_back_filter_and_help_follow_the_hosts_keys() {
         "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back",
     );
 }
+
+/// On a list the scheme's `Left` key goes back like `q`, so the back token names it; a rebound
+/// `Left` moves it, a cleared one drops it, and a text or diff screen (where it pans) never names
+/// it in the back token.
+#[test]
+fn project_footer_generic_list_back_token_names_the_left_key() {
+    let facts = |content, left: Vec<KeyPress>| {
+        let mut motions = default_keymap_motions();
+        motions.left = left;
+        ProjectPresentationFacts {
+            content: Some(content),
+            filter: true,
+            motions,
+            ..Default::default()
+        }
+    };
+    let list = ProjectPresentationContent::List;
+    cells(
+        &build(&facts(list, vec![KeyPress::ch('h')]), &[], false, true),
+        80,
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  h/q:back  ?:help",
+    );
+    cells(
+        &build(&facts(list, vec![KeyPress::ch('Z')]), &[], true, true),
+        80,
+        "Tab/Shift-Tab:画面  j/k:移動  /:絞り込み  Z/q:戻る  ?:ヘルプ",
+    );
+    cells(
+        &build(&facts(list, Vec::new()), &[], false, true),
+        80,
+        "Tab/Shift-Tab:screens  j/k:move  /:filter  q:back  ?:help",
+    );
+    // `h` pans a text or diff screen: it is not a way back there.
+    for content in [
+        ProjectPresentationContent::Lines,
+        ProjectPresentationContent::Diff,
+    ] {
+        let presentation = build(&facts(content, vec![KeyPress::ch('h')]), &[], false, true);
+        let footer: String = presentation
+            .footer_tokens()
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+            .join("  ");
+        assert!(!footer.contains("h/q"), "{footer}");
+    }
+}

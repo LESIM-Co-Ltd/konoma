@@ -14,6 +14,26 @@ pub(super) struct Presentation {
 }
 
 impl ProjectLoopState {
+    /// Whether `!` (the project's tool) acts on the screen shown: only the version-control
+    /// project's changes screen, as the old hub's screen table bound it, and only when this
+    /// program can launch at all. The footer's `!:tool` token and the key use this one rule.
+    pub(super) fn tool_screen(&self) -> bool {
+        let Some(nav) = self.screen.as_ref() else {
+            return false;
+        };
+        let Some(runtime) = self.runtimes.get(&nav.project) else {
+            return false;
+        };
+        let declaration = &runtime.project.declaration;
+        let Some(frame) = nav.frame() else {
+            return false;
+        };
+        self.launch_enabled
+            && declaration.version_control
+            && frame.key.screen == "changes"
+            && is_home_screen(&declaration.screens, &frame.key.screen)
+    }
+
     pub(super) fn presentation(
         &self,
         prepared: &PreparedProjects,
@@ -179,11 +199,7 @@ impl ProjectLoopState {
         // `!` launches the tool on every standalone screen; the footer shows it where the host
         // does (the version-control changes screen only — not the home screen of another
         // project kind or of a contract plugin), and only when this program can launch at all.
-        if self.launch_enabled
-            && declaration.version_control
-            && facts.home
-            && nav.frame().is_some_and(|f| f.key.screen == "changes")
-        {
+        if self.tool_screen() {
             use konoma_host_core::keymap::{CoreBinding, HostOp};
             facts.tool_keys = crate::host::project::diff_keys::file_diff_keys(
                 scheme_from_str(&prepared.config.ui.keys),
@@ -241,7 +257,9 @@ impl ProjectLoopState {
             half_page: msg(CoreMsg::HelpHalfPage),
             page: msg(CoreMsg::HintPage),
             line_ends: msg(CoreMsg::HintLineEnds),
-            close: msg(CoreMsg::FtClose),
+            // The word of the home screen's leave token says what `q` does here: it ends this
+            // program on a root screen (`quit`) and goes back over a preview (`back`).
+            close: back,
             tool: t("tool", "ツール"),
         };
         let project = ProjectPresentation::build(

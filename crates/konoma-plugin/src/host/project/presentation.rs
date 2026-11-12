@@ -183,6 +183,14 @@ pub struct ProjectPresentationFacts {
     pub filter_label: Option<String>,
 }
 
+/// Whether `current` is the project's home screen: the first declared screen that is not pushed.
+pub fn is_home_screen(screens: &[crate::project::ProjectScreen], current: &str) -> bool {
+    screens
+        .iter()
+        .find(|s| !s.pushed)
+        .is_some_and(|s| s.id == current)
+}
+
 impl ProjectPresentationFacts {
     /// Fills `home`, `jump_hints` and `new_tab_footer` from the project's declared screens, as
     /// shown on the screen `current`: the home screen (the first one that is not pushed) lists
@@ -193,10 +201,7 @@ impl ProjectPresentationFacts {
         current: &str,
         lang: &str,
     ) -> Self {
-        self.home = screens
-            .iter()
-            .find(|s| !s.pushed)
-            .is_some_and(|s| s.id == current);
+        self.home = is_home_screen(screens, current);
         self.new_tab_footer = screens
             .iter()
             .find(|s| s.id == current)
@@ -350,10 +355,16 @@ impl ProjectPresentation {
                         .shared(),
                 );
             }
-            if !facts.motions.back.is_empty() {
-                controls.push(
-                    ProjectControl::new(Id::Back, facts.motions.back.clone(), words.back).shared(),
-                );
+            // On a list the scheme's `Left` key goes back like `q` (state.rs `apply_motion`);
+            // on a text or diff screen it pans, so only a list names it.
+            let mut leave = if list {
+                facts.motions.left.clone()
+            } else {
+                Vec::new()
+            };
+            leave.extend(facts.motions.back.iter().copied());
+            if !leave.is_empty() {
+                controls.push(ProjectControl::new(Id::Back, leave, words.back).shared());
             }
             if !facts.motions.help.is_empty() {
                 controls.push(

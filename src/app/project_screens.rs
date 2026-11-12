@@ -1596,19 +1596,26 @@ impl App {
     fn project_tool_keys(&self) -> Vec<KeyPress> {
         #[cfg(feature = "git")]
         {
-            use crate::keymap::{Action, Screen};
-            if matches!(
-                self.canvas_screen(),
-                Some(Context::Screen(_, Screen::Changes))
-            ) {
+            if self.project_tool_screen() {
                 return self.keymaps.keys_of_on(
                     Context::Canvas,
                     self.screen_keys_for(Context::Canvas),
-                    Action::GitLaunchTool,
+                    crate::keymap::Action::GitLaunchTool,
                 );
             }
         }
         Vec::new()
+    }
+
+    /// Whether the project canvas shows the version-control changes screen, the only canvas
+    /// screen where `!` (the project's tool) acts, as in the old hub whose screen table bound it
+    /// there alone. The footer's `!:tool` token and the key's gate both ask this.
+    #[cfg(feature = "git")]
+    pub(crate) fn project_tool_screen(&self) -> bool {
+        matches!(
+            self.canvas_screen(),
+            Some(Context::Screen(_, crate::keymap::Screen::Changes))
+        )
     }
 
     pub(crate) fn project_presentation(&self) -> Option<(ProjectPresentation, Vec<PluginAct>)> {

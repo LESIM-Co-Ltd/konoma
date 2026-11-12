@@ -194,6 +194,16 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         }
 
         // --- `!`: the project's tool. The version-control screens always have a repository. ---
+        // On a project canvas the base table's `!` is reachable from every screen, but the old
+        // hub bound it on the changes screen alone: the other screens do nothing, silently.
+        #[cfg(feature = "git")]
+        A::GitLaunchTool
+            if matches!(ctx, Context::Canvas)
+                && app.project_active()
+                && !app.project_tool_screen() =>
+        {
+            Gate::Off(None)
+        }
         #[cfg(feature = "git")]
         A::GitLaunchTool if !matches!(ctx, Context::Screen(..)) => {
             if !app.cfg.external.git_tool {

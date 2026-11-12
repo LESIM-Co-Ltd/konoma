@@ -73,23 +73,40 @@ fn vcs_port_worktrees_footer_shows_new_tab_iff_ctrl_t_acts() {
     let rows = crate::git::worktrees(&root).len();
     assert!(rows >= 4, "{rows}");
     let (mut acting, mut inert) = (0, 0);
+    // Old hub `src/ops/footer.rs` `Screen::Worktrees` plan: nav, goto, create, new tab, changes,
+    // search, screens, back; the new-tab token sits between `c:new` and `d:diff`.
+    let with_tab = [
+        ("en", "j/k:nav  l/Enter:switch  c:new  C-t:new tab  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:back"),
+        ("ja", "j/k:移動  l/Enter:切替  c:新規  C-t:別タブ  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る"),
+    ];
+    let without_tab = [
+        ("en", "j/k:nav  l/Enter:switch  c:new  d:diff  /:search  Tab/⇧Tab:screens  h/q/Esc:back"),
+        ("ja", "j/k:移動  l/Enter:切替  c:新規  d:差分  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る"),
+    ];
     for index in 0..rows {
-        let mut sim = open(&root, config("git", "en"), (220, 30));
-        screen(&mut sim, "worktrees");
-        for _ in 0..index {
-            keys(&mut sim, "j");
-        }
-        assert_eq!(sim.app.project_frame().unwrap().cursor, index);
-        let shown = footer_line(&sim).contains("C-t:new tab");
-        let (tabs, tab_root) = (sim.app.tab_count(), sim.app.tab.root.clone());
-        sim.press(KeyCode::Char('t'), KeyModifiers::CONTROL);
-        drain(&mut sim);
-        let acted = sim.app.tab_count() != tabs || sim.app.tab.root != tab_root;
-        assert_eq!(shown, acted, "row {index}: footer {}", footer_line(&sim));
-        if acted {
-            acting += 1;
-        } else {
-            inert += 1;
+        for (k, (lang, _)) in with_tab.iter().enumerate() {
+            let mut sim = open(&root, config("git", lang), (220, 30));
+            screen(&mut sim, "worktrees");
+            for _ in 0..index {
+                keys(&mut sim, "j");
+            }
+            assert_eq!(sim.app.project_frame().unwrap().cursor, index);
+            let footer = footer_line(&sim);
+            let shown = footer.contains("C-t:");
+            let (tabs, tab_root) = (sim.app.tab_count(), sim.app.tab.root.clone());
+            sim.press(KeyCode::Char('t'), KeyModifiers::CONTROL);
+            drain(&mut sim);
+            let acted = sim.app.tab_count() != tabs || sim.app.tab.root != tab_root;
+            assert_eq!(shown, acted, "{lang} row {index}: footer {footer}");
+            let want = if acted { with_tab[k].1 } else { without_tab[k].1 };
+            assert_eq!(footer, want, "{lang} row {index}: the whole old-hub footer");
+            if *lang == "en" {
+                if acted {
+                    acting += 1;
+                } else {
+                    inert += 1;
+                }
+            }
         }
     }
     // Both kinds of rows exist in the fixture, so neither branch can pass vacuously.
@@ -126,12 +143,17 @@ fn vcs_port_every_screen_footer_equals_old_hub() {
         assert_eq!(&footer, want, "git {lang} {name}");
         // Old hub `jj_changes_hub_footer_uses_jj_words_never_git_write_words`, git half: the
         // write words and the worktree hint show, none of jj's words do.
-        if *name == "changes" && *lang == "en" {
-            for word in ["stage", "unstage", "commit", "worktree"] {
-                assert!(footer.contains(word), "git footer lacks {word:?}: {footer}");
+        if *name == "changes" {
+            let (write_words, jj_words): (&[&str], &[&str]) = if *lang == "en" {
+                (&["stage", "unstage", "commit", "worktree"], &["sync", "bookmarks"])
+            } else {
+                (&["ステージ", "解除", "コミット", "ワークツリー"], &["同期", "ブックマーク"])
+            };
+            for word in write_words {
+                assert!(footer.contains(word), "git {lang} footer lacks {word:?}: {footer}");
             }
-            for word in ["sync", "bookmarks"] {
-                assert!(!footer.contains(word), "git footer shows jj word {word:?}: {footer}");
+            for word in jj_words {
+                assert!(!footer.contains(word), "git {lang} footer shows jj word {word:?}: {footer}");
             }
         }
     }
@@ -156,14 +178,20 @@ fn vcs_port_every_screen_footer_equals_old_hub() {
         // Old hub `jj_changes_hub_footer_uses_jj_words_never_git_write_words` (both languages)
         // and `jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops`: a read-only
         // backend shows none of git's write words or branch operations.
+        // The words of git's own footer in the same language (the git literals above).
+        let (git_write_words, git_branch_words): (&[&str], &[&str]) = if *lang == "en" {
+            (&["stage", "unstage", "commit", "worktree"], &["checkout", "new", "delete"])
+        } else {
+            (&["ステージ", "解除", "コミット", "ワークツリー"], &["切替", "新規", "削除"])
+        };
         if *name == "changes" {
-            for word in ["stage", "unstage", "commit", "worktree"] {
+            for word in git_write_words {
                 assert!(!footer.contains(word), "jj {lang} footer shows git word {word:?}: {footer}");
             }
         }
-        if *name == "branches" && *lang == "en" {
-            for word in ["checkout", "new", "delete"] {
-                assert!(!footer.contains(word), "jj bookmarks footer shows {word:?}: {footer}");
+        if *name == "branches" {
+            for word in git_branch_words {
+                assert!(!footer.contains(word), "jj {lang} bookmarks footer shows {word:?}: {footer}");
             }
         }
     }
@@ -337,4 +365,39 @@ fn vcs_port_graph_footer_equals_old_hub() {
         screen_footer(&mut sim, "graph"),
         "j/k:移動  l/Enter:詳細  a:全リビジョン  b:ブックマーク  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る"
     );
+}
+
+/// Old hub: `!` (`GitLaunchTool`) is bound only in the changes screen's table (`src/keymap.rs`),
+/// so on the log, graph, branches/bookmarks and worktrees screens it launches nothing and the
+/// footer shows no `!:tool`. Git and jj.
+#[test]
+fn vcs_port_bang_acts_only_on_the_changes_screen() {
+    if isolated("vcs_port_bang_acts_only_on_the_changes_screen") {
+        return;
+    }
+    let git = super::vcs_changes::git_repo("vcs_footer_bang_screens_git", true);
+    let mut roots = vec![("git", git.to_path_buf())];
+    // The guard lives to the end of the test: dropping it would delete the fixture.
+    let jj = if crate::vcs::jj::available() {
+        crate::test_support::jj_scratch_seeded("vcs_footer_bang_screens_jj")
+    } else {
+        None
+    };
+    if let Some(jj) = &jj {
+        roots.push(("jj", jj.to_path_buf()));
+    }
+    for (id, root) in &roots {
+        let mut sim = open(root, config(id, "en"), (220, 30));
+        for name in ["changes", "log", "graph", "branches", "worktrees"] {
+            if *id == "jj" && name == "worktrees" {
+                continue;
+            }
+            screen(&mut sim, name);
+            let footer = footer_line(&sim);
+            keys(&mut sim, "!");
+            let launched = sim.app.take_launch_git_tool();
+            assert_eq!(launched, name == "changes", "{id} {name}: `!` launch");
+            assert_eq!(footer.contains("!:tool"), name == "changes", "{id} {name}: {footer}");
+        }
+    }
 }
