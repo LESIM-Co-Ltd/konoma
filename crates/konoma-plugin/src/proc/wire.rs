@@ -1709,6 +1709,8 @@ pub struct WDiffHunk {
 pub struct WDiffView {
     pub hunks: Vec<WDiffHunk>,
     pub header: Vec<WLine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<WLine>,
 }
 
 #[derive(Deserialize)]
@@ -1718,6 +1720,8 @@ enum WDiffCompat {
         hunks: Vec<WDiffHunk>,
         #[serde(default)]
         header: Vec<WLine>,
+        #[serde(default)]
+        title: Option<WLine>,
     },
     Legacy(Vec<Vec<WDiffLine>>),
 }
@@ -1725,13 +1729,22 @@ enum WDiffCompat {
 impl From<WDiffCompat> for WDiffView {
     fn from(value: WDiffCompat) -> Self {
         match value {
-            WDiffCompat::Current { hunks, header } => Self { hunks, header },
+            WDiffCompat::Current {
+                hunks,
+                header,
+                title,
+            } => Self {
+                hunks,
+                header,
+                title,
+            },
             WDiffCompat::Legacy(hunks) => Self {
                 hunks: hunks
                     .into_iter()
                     .map(|lines| WDiffHunk { lines, path: None })
                     .collect(),
                 header: Vec::new(),
+                title: None,
             },
         }
     }
@@ -2292,6 +2305,7 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
         }
         View::Diff(d) => WView::Diff(WDiffView {
             header: lines_to_wire(&d.header),
+            title: d.title.as_ref().map(line_to_wire),
             hunks: d
                 .hunks
                 .iter()
@@ -2493,6 +2507,7 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             View::Diff(DiffView {
                 hunks: out,
                 header: lines_from_wire(diff.header),
+                title: diff.title.map(line_from_wire),
             })
         }
         WView::Canvas(c) => View::Canvas(canvas_from_wire(c, dec)?),

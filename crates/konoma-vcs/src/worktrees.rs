@@ -344,6 +344,8 @@ pub(super) fn declare(mut manifest: Manifest, git: bool) -> Manifest {
             ProjectScreen::new("worktrees", t!(en: "Worktrees", ja: "ワークツリー"))
                 .filter_label(t!(en: "search", ja: "検索"))
                 .key('w')
+                .jump_hint(7, t!(en: "worktrees", ja: "ワークツリー"))
+                .new_tab_hint(2)
                 .row_kind("worktree")
                 .row_kind("current")
                 .row_kind("bare")

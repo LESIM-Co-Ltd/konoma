@@ -7,6 +7,8 @@ use std::sync::Arc;
 pub struct ProjectDiff {
     pub lines: Vec<konoma_vcs_core::git::DiffLine>,
     pub header: Vec<Line<'static>>,
+    /// Drawn beside the project tabs, like a list's title.
+    pub title: Option<Line<'static>>,
     pub theme: String,
     pub no_changes: String,
     split_rows: usize,
@@ -40,6 +42,7 @@ impl ProjectDiff {
         Self {
             lines,
             header,
+            title: None,
             theme,
             no_changes,
             split_rows,
@@ -48,6 +51,11 @@ impl ProjectDiff {
             #[cfg(any(test, feature = "test-hooks"))]
             layouts: Default::default(),
         }
+    }
+
+    pub fn with_title(mut self, title: Option<Line<'static>>) -> Self {
+        self.title = title;
+        self
     }
 
     fn header_rows(&self) -> usize {

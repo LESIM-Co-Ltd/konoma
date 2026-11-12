@@ -6,17 +6,43 @@ use konoma_vcs_core::git::{CommitMeta, DiffLine as CoreLine, DiffLineKind};
 use konoma_vcs_core::vcs::Vcs;
 use std::path::Path;
 
+/// The detail selection that stands for "all uncommitted changes" (the graph's working-copy row
+/// and the changes screen's diff-all).
+pub(super) const UNCOMMITTED: &str = "worktree";
+
+/// The uncommitted changes as one diff: git's HEAD to the index and working tree, jj's `@`
+/// against its parent (`@-`).
+pub(super) fn uncommitted(backend: &super::Backend, root: &Path) -> Vec<CoreLine> {
+    match backend {
+        super::Backend::Git => konoma_vcs_core::git::worktree_diff(root),
+        #[cfg(feature = "git")]
+        super::Backend::Jj => konoma_vcs_core::vcs::Jj.commit_diff(root, "@"),
+        #[cfg(not(feature = "git"))]
+        super::Backend::Jj => Vec::new(),
+    }
+}
+
 pub(super) fn read(
     backend: &super::Backend,
     root: &Path,
     id: Option<&str>,
+    lang: &str,
 ) -> (DiffView, Option<CommitMeta>) {
     let Some(id) = id else {
         return (DiffView::default(), None);
     };
-    if id == "worktree" && matches!(backend, super::Backend::Git) {
+    if id == UNCOMMITTED {
+        // The old hub titled this diff "Uncommitted changes" (it has no commit header).
         return (
-            build(None, konoma_vcs_core::git::worktree_diff(root), false),
+            build(
+                None,
+                uncommitted(backend, root),
+                matches!(backend, super::Backend::Jj),
+            )
+            .title(Line::raw(format!(
+                " {} ",
+                konoma_plugin::t!(en: "Uncommitted changes", ja: "未コミットの変更").get(lang)
+            ))),
             None,
         );
     }
@@ -94,6 +120,81 @@ fn build(meta: Option<CommitMeta>, lines: Vec<CoreLine>, jj: bool) -> DiffView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git(root: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    #[test]
+    fn the_uncommitted_selection_is_titled_in_both_languages_and_a_commit_is_not() {
+        let dir = konoma_test_support::unique_tmp("vcs_detail_title");
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.as_path();
+        git(root, &["init", "-q"]);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "seed"]);
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        for (lang, want) in [
+            ("en", " Uncommitted changes "),
+            ("ja", " 未コミットの変更 "),
+        ] {
+            let (view, meta) = read(&super::super::Backend::Git, root, Some(UNCOMMITTED), lang);
+            assert_eq!(view.title.as_ref().map(Line::plain).as_deref(), Some(want));
+            assert!(meta.is_none() && view.header.is_empty());
+            assert!(!view.hunks.is_empty(), "{lang}: the diff is there");
+        }
+        let (view, _) = read(&super::super::Backend::Git, root, Some("HEAD"), "en");
+        assert!(view.title.is_none(), "a commit keeps its own header");
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn jj_uncommitted_in_a_non_colocated_repo_is_the_working_copy_against_its_parent() {
+        fn jj(root: &Path, args: &[&str]) -> bool {
+            std::process::Command::new("jj")
+                .args(args)
+                .current_dir(root)
+                .env("JJ_CONFIG", "")
+                .env("JJ_USER", "t")
+                .env("JJ_EMAIL", "t@t.invalid")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+        let dir = konoma_test_support::unique_tmp("vcs_detail_jj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.as_path();
+        if !jj(root, &["git", "init", "--no-colocate", "."]) {
+            return; // no jj on this machine
+        }
+        assert!(!root.join(".git").exists());
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        assert!(jj(root, &["commit", "-m", "seed"]));
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        // konoma itself never snapshots (every call carries --ignore-working-copy), so the edit
+        // reaches `@` only once some jj command has run, as it does in real use.
+        assert!(jj(root, &["status"]));
+        let (view, meta) = read(&super::super::Backend::Jj, root, Some(UNCOMMITTED), "en");
+        assert!(meta.is_none());
+        assert_eq!(
+            view.title.as_ref().map(Line::plain).as_deref(),
+            Some(" Uncommitted changes ")
+        );
+        let texts: Vec<_> = view
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter().map(|l| (l.kind, l.text.as_str())))
+            .collect();
+        assert!(texts.contains(&(DiffKind::Removed, "one")), "{texts:?}");
+        assert!(texts.contains(&(DiffKind::Added, "two")), "{texts:?}");
+    }
 
     #[test]
     fn detail_core_metadata_keeps_jj_word_styles_blank_lines_and_file_paths() {

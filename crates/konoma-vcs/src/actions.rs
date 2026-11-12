@@ -34,7 +34,7 @@ pub(super) fn declare(manifest: Manifest, git: bool) -> Manifest {
                 action(
                     "sync", "s", t!(en: "sync", ja: "同期"),
                     t!(en: "let jj snapshot the working copy (confirm)", ja: "jj に作業コピーを取り込ませる (確認)"),
-                    0, false,
+                    7, false,
                 )
                 .confirmation(Confirmation::new(
                     t!(en: "Let jj snapshot the working copy? (jj undo reverses it)", ja: "jj に作業コピーを取り込ませますか?(jj undo で戻せます)"),

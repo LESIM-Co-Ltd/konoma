@@ -700,6 +700,8 @@ pub struct DiffView {
     /// Styled lines above the diff. When nonempty, the host follows them with a dim,
     /// full-width `─` divider.
     pub header: Vec<Line>,
+    /// Styled title the host draws beside the project tabs, like a list's title.
+    pub title: Option<Line>,
 }
 
 impl DiffView {
@@ -708,6 +710,10 @@ impl DiffView {
             hunks,
             ..Self::default()
         }
+    }
+    pub fn title(mut self, title: Line) -> Self {
+        self.title = Some(title);
+        self
     }
     pub fn header(mut self, header: Vec<Line>) -> Self {
         self.header = header;

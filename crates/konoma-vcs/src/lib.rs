@@ -46,7 +46,10 @@ macro_rules! plugin {
                             .screen(ProjectScreen::new("branches", if $id == "git" {
                                 t!(en: "Branches", ja: "ブランチ")
                             } else { t!(en: "Bookmarks", ja: "ブックマーク") })
-                                .key('b').row_kind("branch").row_kind("current").row_kind("empty"))
+                                .key('b')
+                                .jump_hint(6, if $id == "git" {
+                                    t!(en: "branch", ja: "ブランチ")
+                                } else { t!(en: "bookmarks", ja: "ブックマーク") }).row_kind("branch").row_kind("current").row_kind("empty"))
                             .screen(ProjectScreen::new("detail", t!(en: "Detail", ja: "詳細")).pushed())
                             .screen(ProjectScreen::new("graph_picker", t!(en: "Graph branches", ja: "グラフのブランチ")).pushed().filter(false).transient()
                                 .row_kind("branch").row_kind("current").row_kind("empty")),
@@ -62,6 +65,11 @@ macro_rules! plugin {
                         .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
                         .footer(4)
                         .project_context(ActContext::screen("changes", ["file"])))
+                    .action(Act::new("diff_all").key("d")
+                        .label(t!(en: "diff-all", ja: "全差分"))
+                        .help(t!(en: "diff of all changes", ja: "すべての変更をまとめて表示"))
+                        .footer(5)
+                        .project_context(ActContext::screen("changes", Vec::<String>::new())))
                     .action(Act::new("detail").key("Enter")
                         .label(t!(en: "detail", ja: "詳細"))
                         .project_context(ActContext::screen("log", ["commit"])));
@@ -224,8 +232,12 @@ impl Session for Changes {
             }
         }
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "detail") {
-            let (view, meta) =
-                detail::read(&self.backend, &self.root, project.selection.as_deref());
+            let (view, meta) = detail::read(
+                &self.backend,
+                &self.root,
+                project.selection.as_deref(),
+                cx.lang,
+            );
             if let Some(id) = &project.selection {
                 if let Some(meta) = meta {
                     self.detail_meta.insert(id.clone(), meta);
@@ -424,6 +436,17 @@ impl Session for Changes {
         else {
             return Ok(Outcome::Unhandled);
         };
+        if action == "diff_all" {
+            // The old hub's `d`: the uncommitted changes as one detail diff, or "no changes".
+            return Ok(if detail::uncommitted(&self.backend, &self.root).is_empty() {
+                Outcome::Flash(t!(en: "no changes", ja: "変更なし"))
+            } else {
+                Outcome::PushScreen {
+                    screen: "detail".into(),
+                    selection: Some(detail::UNCOMMITTED.into()),
+                }
+            });
+        }
         if action == "sync" {
             #[cfg(feature = "git")]
             let ok = konoma_vcs_core::vcs::jj::snapshot(&self.root);
@@ -532,6 +555,7 @@ impl Session for Changes {
                 matches!(self.backend, Backend::Git)
             }
             "diff" => !self.files.is_empty(),
+            "diff_all" => true,
             "stage" | "unstage" | "discard" => {
                 matches!(self.backend, Backend::Git) && !self.files.is_empty()
             }

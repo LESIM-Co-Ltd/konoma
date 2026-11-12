@@ -90,18 +90,27 @@ pub fn draw_project(
         draw(Paragraph::new(values.unavailable), body);
         return ProjectDrawUpdate::default();
     };
+    // A list's or a diff's title sits beside the tabs.
+    let beside_tabs = match content {
+        ProjectContent::List(list) => list
+            .title
+            .as_ref()
+            .map(|title| crate::ratatui_draw::into_line(title.clone())),
+        ProjectContent::Diff(diff) => diff.title.clone(),
+        ProjectContent::Lines(_) => None,
+    };
+    if let Some(title) = beside_tabs {
+        draw(
+            Paragraph::new(title),
+            Rect {
+                x: area.x + tab_width,
+                width: area.width.saturating_sub(tab_width),
+                height: area.height.min(1),
+                ..area
+            },
+        );
+    }
     if let ProjectContent::List(list) = content {
-        if let Some(title) = &list.title {
-            draw(
-                Paragraph::new(crate::ratatui_draw::into_line(title.clone())),
-                Rect {
-                    x: area.x + tab_width,
-                    width: area.width.saturating_sub(tab_width),
-                    height: area.height.min(1),
-                    ..area
-                },
-            );
-        }
         if let Some(strip) = &list.bottom {
             let chip_lines = if strip.estimated_width <= usize::from(body.width.max(1)) {
                 1

@@ -99,6 +99,7 @@ impl Session for ScrollPlugin {
             ),
             "diff" => View::Diff(PluginDiffView {
                 header: vec![],
+                title: None,
                 hunks: vec![DiffHunk {
                     path: None,
                     lines: (0..ROWS)

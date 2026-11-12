@@ -694,6 +694,7 @@ fn list_diff_message_reopen_round_trip() {
 
     let diff = View::Diff(DiffView {
         header: vec![],
+        title: None,
         hunks: vec![
             DiffHunk {
                 path: None,

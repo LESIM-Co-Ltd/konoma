@@ -530,6 +530,7 @@ impl Session for ScreenSession {
             )]),
             "diff" => View::Diff(DiffView {
                 header: vec![],
+                title: None,
                 hunks: vec![DiffHunk {
                     path: None,
                     lines: vec![

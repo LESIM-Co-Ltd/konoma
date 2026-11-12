@@ -266,9 +266,10 @@ fn motion_steps_and_caps_match_each_content_kind() {
             layout,
             None
         ),
-        Unhandled
+        Back,
+        "Left goes back on any list screen, like q"
     );
-    let pushed = ProjectDecl::new().screen(ProjectScreen::new("changes", "Changes").pushed());
+    let pushed =ProjectDecl::new().screen(ProjectScreen::new("changes", "Changes").pushed());
     assert_eq!(
         state.apply_motion(
             &content,

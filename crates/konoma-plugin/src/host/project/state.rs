@@ -240,7 +240,7 @@ impl<I> ProjectScreenState<I> {
         physical_key: KeyCode,
         viewport: ProjectViewport,
         layout: DiffLayout,
-        declaration: Option<&ProjectDecl>,
+        _declaration: Option<&ProjectDecl>,
     ) -> ProjectMotionResult {
         if let ProjectContent::List(list) = content {
             if motion == Motion::Right {
@@ -255,12 +255,10 @@ impl<I> ProjectScreenState<I> {
             {
                 return ProjectMotionResult::Handled;
             }
+            // The scheme's `Left` key goes back on every list screen, exactly like `q`
+            // (the old hub's `h`): one level when pushed, out of the project from a root screen.
             if motion == Motion::Left {
-                return if self.graph_jj().is_some() || self.pushed(declaration) {
-                    ProjectMotionResult::Back
-                } else {
-                    ProjectMotionResult::Unhandled
-                };
+                return ProjectMotionResult::Back;
             }
             let selectable: Vec<_> = self
                 .visible_rows(content, viewport, layout)

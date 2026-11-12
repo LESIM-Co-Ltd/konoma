@@ -10,6 +10,8 @@ include!("vcs_project_style_cases.rs");
 include!("vcs_project_remaining_cases.rs");
 include!("vcs_project_finish_cases.rs");
 include!("vcs_project_gap_cases.rs");
+include!("vcs_project_footer_cases.rs");
+include!("vcs_project_keys_cases.rs");
 
 fn isolated(name: &str) -> bool {
     super::vcs_host_only::isolate_test("vcs_project_port", name)

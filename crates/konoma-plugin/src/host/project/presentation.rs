@@ -363,7 +363,7 @@ impl ProjectPresentation {
                     controls
                         .iter()
                         .find(|c| c.id == Id::Open)
-                        .map(|c| dynamic(c.render())),
+                        .map(old_hub_open_token),
                 );
             }
             for hint in hints {
@@ -635,6 +635,29 @@ fn dynamic(text: String) -> PresentationToken {
         keys: vec![],
         ops: vec![],
     }
+}
+
+/// The open token as the old hub wrote it: the keys that open the row like Enter (`l`) ahead of
+/// `Enter`, spelled out (`l/Enter:detail`); the arrow stays an unlisted alias.
+fn old_hub_open_token(control: &ProjectControl) -> PresentationToken {
+    let enter = KeyPress::key(KeyCode::Enter);
+    let mut keys: Vec<KeyPress> = control
+        .keys
+        .iter()
+        .copied()
+        .filter(|key| *key != enter && key.code != KeyCode::Right)
+        .collect();
+    if control.keys.contains(&enter) {
+        keys.push(enter);
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for key in keys {
+        let text = footer_key(key, false);
+        if !parts.contains(&text) {
+            parts.push(text);
+        }
+    }
+    dynamic(format!("{}:{}", parts.join("/"), control.label))
 }
 
 fn write_keys(keys: &[KeyPress]) -> String {
