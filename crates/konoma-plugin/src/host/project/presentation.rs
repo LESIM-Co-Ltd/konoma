@@ -119,6 +119,62 @@ pub struct ProjectMotionKeys {
     pub back: Vec<KeyPress>,
     pub filter: Vec<KeyPress>,
     pub help: Vec<KeyPress>,
+    /// The same motions as `scroll`, `hscroll`, `line_ends`, `page` and `half_page`, split by
+    /// direction so a help row can write them as the old hub did (`Ctrl-f / Ctrl-b  ·  PageDown /
+    /// PageUp`).
+    pub pairs: MotionPairs,
+}
+
+/// The keys of one motion pair, `(forward, backward)`: `(Down, Up)`, `(Left, Right)`, ...
+pub type MotionPair = (Vec<KeyPress>, Vec<KeyPress>);
+
+/// The direction-split keys of the motion pairs a detail screen's help writes.
+#[derive(Clone, Debug, Default)]
+pub struct MotionPairs {
+    /// `(Down, Up)`.
+    pub scroll: MotionPair,
+    /// `(Left, Right)`: the horizontal scroll.
+    pub hscroll: MotionPair,
+    /// `(LineHome, LineEnd)`.
+    pub line_ends: MotionPair,
+    /// `(PageDown, PageUp)`.
+    pub page: MotionPair,
+    /// `(HalfDown, HalfUp)`.
+    pub half_page: MotionPair,
+}
+
+impl MotionPairs {
+    /// A pair as a help row writes its keys: the two directions zipped into columns when both
+    /// have keys (`h / l`, `Ctrl-f / Ctrl-b  ·  PageDown / PageUp`), the plain list when only one
+    /// does, and nothing (a key that does not act has no row) when neither does.
+    pub fn text(pair: &MotionPair) -> String {
+        let (first, second) = pair;
+        if first.is_empty() || second.is_empty() {
+            return joined_keys(first.iter().chain(second), " / ");
+        }
+        let columns: Vec<Vec<KeyPress>> = (0..first.len().max(second.len()))
+            .map(|i| {
+                first
+                    .get(i)
+                    .into_iter()
+                    .chain(second.get(i))
+                    .copied()
+                    .collect()
+            })
+            .collect();
+        project_help::write_columns(&columns, true)
+    }
+}
+
+fn joined_keys<'a>(keys: impl Iterator<Item = &'a KeyPress>, separator: &str) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    for key in keys {
+        let text = help_key(*key);
+        if !seen.contains(&text) {
+            seen.push(text);
+        }
+    }
+    seen.join(separator)
 }
 
 impl ProjectMotionKeys {

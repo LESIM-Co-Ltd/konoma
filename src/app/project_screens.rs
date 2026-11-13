@@ -316,7 +316,7 @@ pub(crate) use konoma_plugin::host::project::presentation::ProjectControl;
 #[cfg(test)]
 pub(crate) use konoma_plugin::host::project::presentation::ProjectControlId;
 use konoma_plugin::host::project::presentation::{
-    ProjectCapabilities, ProjectMotionKeys, ProjectOpenFacts, ProjectPresentation,
+    MotionPairs, ProjectCapabilities, ProjectMotionKeys, ProjectOpenFacts, ProjectPresentation,
     ProjectPresentationBinding, ProjectPresentationContent, ProjectPresentationFacts,
     ProjectPresentationWords,
 };
@@ -1696,6 +1696,18 @@ impl App {
                     self.screen_keys_for(Context::Canvas),
                     Action::ToggleHelp,
                 ),
+                pairs: {
+                    let pair = |a: Motion, b: Motion| -> (Vec<KeyPress>, Vec<KeyPress>) {
+                        (motion_keys(&[a]), motion_keys(&[b]))
+                    };
+                    MotionPairs {
+                        scroll: pair(Motion::Down, Motion::Up),
+                        hscroll: pair(Motion::Left, Motion::Right),
+                        line_ends: pair(Motion::LineHome, Motion::LineEnd),
+                        page: pair(Motion::PageDown, Motion::PageUp),
+                        half_page: pair(Motion::HalfDown, Motion::HalfUp),
+                    }
+                },
             },
             graph_scroll,
             copy_keys: if bindings

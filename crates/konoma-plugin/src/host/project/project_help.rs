@@ -36,6 +36,13 @@ pub struct ProjectHelpWords<'a> {
     pub scroll: &'a str,
     pub copy: &'a str,
     pub actions: &'a str,
+    /// A pushed version-control detail's own rows: the horizontal scroll and line ends, the
+    /// pages, the half pages, the diff layout and the back key.
+    pub detail_hscroll: &'a str,
+    pub detail_page: &'a str,
+    pub detail_half_page: &'a str,
+    pub detail_layout: &'a str,
+    pub detail_back: &'a str,
 }
 
 /// Subtract explained aliases individually, retaining every uncovered key.
@@ -78,7 +85,56 @@ impl ProjectPresentation {
                 .push(("h/Esc  ·  q".into(), words.cancel.into()));
             return vec![plugin];
         }
-        if self.facts.graph_jj.is_some() || self.facts.vcs_jj.is_some() {
+        if self.facts.pushed
+            && self.facts.vcs_jj.is_some()
+            && self.facts.content == Some(ProjectPresentationContent::Diff)
+        {
+            // A pushed version-control detail is a diff, not a list: it has no filter, refresh
+            // or screen cycle (none of them act on it), only the old hub's detail rows. `h` and
+            // `l` pan here (the Left key leaves lists only), so the leave row is `q / Esc`.
+            let motions = &self.facts.motions;
+            plugin.title = words.screen_title.into();
+            // Rows the plugin itself declares for this screen follow the host's rows.
+            let declared = std::mem::take(&mut plugin.rows);
+            let hscroll: Vec<String> = [&motions.pairs.hscroll, &motions.pairs.line_ends]
+                .into_iter()
+                .map(MotionPairs::text)
+                .filter(|text| !text.is_empty())
+                .collect();
+            let pages = [
+                (&motions.pairs.page, words.detail_page),
+                (&motions.pairs.half_page, words.detail_half_page),
+            ];
+            let mut rows: Vec<(String, &str)> = vec![(hscroll.join("  "), words.detail_hscroll)];
+            rows.extend(
+                pages
+                    .into_iter()
+                    .map(|(pair, word)| (MotionPairs::text(pair), word)),
+            );
+            rows.push((joined(&motions.diff_layout, " / "), words.detail_layout));
+            rows.push((joined(&motions.ends, " / "), words.ends));
+            rows.push((
+                joined(
+                    &motions.leave_keys(false, &[KeyPress::key(KeyCode::Esc)]),
+                    " / ",
+                ),
+                words.detail_back,
+            ));
+            plugin.rows = rows
+                .into_iter()
+                .filter(|(keys, _)| !keys.is_empty())
+                .map(|(keys, word)| (keys, word.into()))
+                .chain(declared)
+                .collect();
+            sections.push(plugin);
+            let scroll = MotionPairs::text(&motions.pairs.scroll);
+            if !scroll.is_empty() {
+                sections.push(CoreSection {
+                    title: words.movement.into(),
+                    rows: vec![(format!("{scroll} / ↑ ↓"), words.scroll.into())],
+                });
+            }
+        } else if self.facts.graph_jj.is_some() || self.facts.vcs_jj.is_some() {
             // A version-control screen, in the old hub's order: its own rows (the plugin's
             // declarations, with the jump keys and the new-tab key merged by footer priority
             // where the old hub listed them), then filter, refresh, the screen cycle, the
@@ -131,6 +187,8 @@ impl ProjectPresentation {
                     .rows
                     .push((joined(&motions.filter, " / "), word.into()));
             }
+            // A screen that declares marks names the mark key too (the old hub had none).
+            plugin.rows.extend(self.mark_row(words));
             plugin.rows.extend([
                 ("r".into(), words.refresh.into()),
                 (cycle_keys(), words.screens.into()),
@@ -230,9 +288,7 @@ impl ProjectPresentation {
                         words.filter.into(),
                     ));
                 }
-                if self.facts.marks {
-                    navigation.rows.push(("V".into(), words.mark.into()));
-                }
+                navigation.rows.extend(self.mark_row(words));
             }
             if !self.facts.pushed {
                 navigation.rows.extend_from_slice(screens);
@@ -282,6 +338,19 @@ fn cycle_keys() -> String {
 }
 
 impl ProjectPresentation {
+    /// The `V` row of a list screen that declares marks, from the mark control the footer and
+    /// the key handling share (so the help names the key that acts).
+    fn mark_row(&self, words: &ProjectHelpWords<'_>) -> Option<(String, String)> {
+        if self.facts.content != Some(ProjectPresentationContent::List) || !self.facts.marks {
+            return None;
+        }
+        let control = self
+            .controls
+            .iter()
+            .find(|c| c.id == ProjectControlId::Mark)?;
+        Some((control.rendered_keys(), words.mark.into()))
+    }
+
     /// The graph's leave row: the Left keys and Esc zipped against the back keys, as the old
     /// hub wrote it (`h / Esc  ·  q`).
     fn leave_keys(&self) -> String {

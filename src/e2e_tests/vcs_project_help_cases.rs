@@ -43,6 +43,10 @@ fn old_hub_help(
         "graph" => old.open_git_graph(),
         "branches" => old.open_git_branches(),
         "worktrees" => old.open_git_worktrees(),
+        "detail" => {
+            old.open_git_log();
+            old.open_git_commit_detail();
+        }
         other => panic!("unknown screen {other}"),
     }
     help_lines_without_actions(crate::ops::help::sections(&old), lang, screen != "changes")
@@ -59,9 +63,18 @@ fn help_oracle_screens(id: &str) -> Vec<(&'static str, usize)> {
             ("branches", 23),
             // Compared per row in `vcs_port_worktrees_help_equals_old_hub_per_row`.
             ("worktrees", 0),
+            // The pushed commit detail (log, Enter): the old hub's `Screen::Detail`
+            // (measured: 26 lines, the Space menu excluded).
+            ("detail", 26),
         ]
     } else {
-        vec![("changes", 27), ("log", 26), ("graph", 28), ("branches", 20)]
+        vec![
+            ("changes", 27),
+            ("log", 26),
+            ("graph", 28),
+            ("branches", 20),
+            ("detail", 26),
+        ]
     }
 }
 
@@ -100,7 +113,13 @@ fn vcs_port_help_equals_old_hub_on_every_screen() {
                     continue;
                 }
                 let old = old_hub_help(root, lang, screen_name);
-                screen(&mut sim, screen_name);
+                if screen_name == "detail" {
+                    screen(&mut sim, "log");
+                    press(&mut sim, KeyCode::Enter);
+                    assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");
+                } else {
+                    screen(&mut sim, screen_name);
+                }
                 if screen_name == "graph" {
                     // The graph opens on its uncommitted row, where no commit can be copied;
                     // the old hub listed its `y` menu there regardless. Compare on a commit row.
@@ -352,5 +371,135 @@ fn vcs_port_esc_on_home_closes_the_view_like_the_old_hub() {
         assert_eq!(new.app.project_frame().unwrap().key.screen, "changes");
         press(&mut new, KeyCode::Esc);
         assert!(!new.app.project_active(), "{id}: Esc leaves the project");
+    }
+}
+
+/// A pushed detail's help follows the effective keys: the layout key moves with `[keys.diff]`
+/// and is dropped when cleared, the horizontal-scroll row names the moved `Left` key, and
+/// the detail lists no row for a key that does not act on it (no filter, refresh or screen
+/// cycle: pushed screens ignore `/`, `r` and `Tab`).
+#[test]
+fn vcs_port_detail_help_follows_effective_keys_and_lists_only_acting_keys() {
+    use crate::i18n::Lang;
+    if isolated("vcs_port_detail_help_follows_effective_keys_and_lists_only_acting_keys") {
+        return;
+    }
+    let root = super::vcs_log::detail_repo();
+    let detail = |entries: &[(&str, &[(&str, &str)])]| -> Sim {
+        let mut cfg = config("git", "en");
+        for (surface, keys) in entries {
+            cfg.keys.surfaces.insert(
+                (*surface).into(),
+                keys.iter().map(|(k, a)| (k.to_string(), a.to_string())).collect(),
+            );
+        }
+        let mut sim = open(&root, cfg, (180, 20));
+        screen(&mut sim, "log");
+        press(&mut sim, KeyCode::Enter);
+        assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");
+        sim
+    };
+    let layout = tr(Lang::En, Msg::GitLayout);
+    let row = |sim: &Sim, word: &str| -> Option<String> {
+        all_help_rows(sim)
+            .into_iter()
+            .find(|(_, d)| d == word)
+            .map(|(k, _)| k)
+    };
+    let default = detail(&[]);
+    assert_eq!(row(&default, layout).as_deref(), Some("s"));
+    assert_eq!(
+        row(&default, tr(Lang::En, Msg::GitHScrollEnds)).as_deref(),
+        Some("h / l  0 / $")
+    );
+    // The rows that do not act on a pushed screen are not listed.
+    let rows = all_help_rows(&default);
+    for word in [
+        tr(Lang::En, Msg::GitFilterByName),
+        tr(Lang::En, Msg::ListFilterHelp),
+        tr(Lang::En, Msg::Refresh),
+        tr(Lang::En, Msg::GitScreensHelp),
+        tr(Lang::En, Msg::BackToChanges),
+    ] {
+        assert!(!rows.iter().any(|(_, d)| d == word), "{word}: {rows:?}");
+    }
+    for key in ["/", "r", "Tab / ⇧Tab"] {
+        assert!(!rows.iter().any(|(k, _)| k == key), "{key}: {rows:?}");
+    }
+    // The keys really do nothing on the detail (the rows' absence is true).
+    for key in ['/', 'r'] {
+        let mut sim = detail(&[]);
+        keys(&mut sim, &key.to_string());
+        assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail", "{key}");
+        assert!(sim.app.pending_leader.is_none(), "{key}");
+    }
+    let mut sim = detail(&[]);
+    press(&mut sim, KeyCode::Tab);
+    assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail", "Tab");
+    // `h` pans on the detail, it does not leave it (the row says so).
+    let mut sim = detail(&[]);
+    keys(&mut sim, "h");
+    assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail", "h");
+
+    let moved = detail(&[("diff", &[("s", "noop"), ("Z", "cycle_diff_layout")])]);
+    assert_eq!(row(&moved, layout).as_deref(), Some("Z"));
+    let cleared = detail(&[("diff", &[("s", "noop")])]);
+    assert_eq!(row(&cleared, layout), None);
+    let panned = detail(&[("text", &[("h", "noop"), ("Z", "navigate:left")])]);
+    assert_eq!(
+        row(&panned, tr(Lang::En, Msg::GitHScrollEnds)).as_deref(),
+        Some("Z / l  0 / $")
+    );
+    // The back row names `q / Esc`, and the moved back key.
+    let back = tr(Lang::En, Msg::GitBack);
+    assert_eq!(row(&default, back).as_deref(), Some("q / Esc"));
+}
+
+/// Old hub: `src/ops/help.rs` `screen_rows` (changes). An empty git changes list differs from the
+/// old hub's help by the decided difference only (no `s`/`u`/`x` rows: the keys do not act on an
+/// empty list); every other line is the old hub's.
+#[test]
+fn vcs_port_empty_changes_help_is_the_old_help_without_the_write_rows() {
+    use crate::i18n::Lang;
+    if isolated("vcs_port_empty_changes_help_is_the_old_help_without_the_write_rows") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_help_empty_changes", false);
+    for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
+        let old = old_hub_help(&root, lang, "changes");
+        // Measured: 27 lines on a clean repository (the changes list is empty).
+        assert!(old.len() >= 27, "only {} old lines compared", old.len());
+        let sim = open(&root, config("git", name), (220, 60));
+        let new = help_lines_without_actions(crate::ops::help::sections(&sim.app), lang, false);
+        // On an empty list the per-row keys do not act: `s`, `u` and `x` and the open key
+        // `l / Enter` have no row; `S` and `U` (the all-rows variants) keep theirs, named by the
+        // key that is left. Rows are `   <keys, 16 wide> <description>`.
+        let row = |keys: &str, rest: &str| format!("   {keys:16} {rest}");
+        let mut dropped = 0;
+        let kept: Vec<String> = old
+            .iter()
+            .filter_map(|line| {
+                let (Some(keys), Some(rest)) = (line.get(3..19), line.get(20..)) else {
+                    return Some(line.clone());
+                };
+                match keys.trim_end() {
+                    "s / S" => {
+                        dropped += 1;
+                        Some(row("S", rest))
+                    }
+                    "u / U" => {
+                        dropped += 1;
+                        Some(row("U", rest))
+                    }
+                    "x" | "l / Enter" => {
+                        dropped += 1;
+                        None
+                    }
+                    _ => Some(line.clone()),
+                }
+            })
+            .collect();
+        assert_eq!(dropped, 4, "{name}: four per-row write/open rows in the old help");
+        assert_eq!(new, kept, "{name}\nNEW:\n{}\nOLD:\n{}", new.join("\n"), old.join("\n"));
     }
 }

@@ -246,9 +246,26 @@ fn e2e_vcs_copy_menu_cells_help_footer_and_space_membership_match_the_declaratio
             let expected_help =
                 crate::ui::help::leader_section(&old.app, legacy_context, LeaderId::GitCopy, "y")
                     .unwrap();
-            assert!(crate::ops::help::sections_for(&new.app, Context::Canvas)
-                .iter()
-                .any(|s| s.title == expected_help.title && s.rows == expected_help.rows));
+            // The pushed detail's help overlay names its copy section like the old hub's detail
+            // help (`[Copy commit]`, pinned by the all-screens help oracle), not like the
+            // leader's own menu title.
+            let want_title = if detail {
+                crate::i18n::tr(new.app.lang, crate::i18n::Msg::WkGitCopyTitle).to_string()
+            } else {
+                expected_help.title.to_string()
+            };
+            assert!(
+                crate::ops::help::sections_for(&new.app, Context::Canvas)
+                    .iter()
+                    .any(|s| s.title == want_title && s.rows == expected_help.rows),
+                "{lang} detail={detail}: want {:?} {:?}; got {:?}",
+                want_title,
+                expected_help.rows,
+                crate::ops::help::sections_for(&new.app, Context::Canvas)
+                    .iter()
+                    .map(|s| (s.title.clone(), s.rows.clone()))
+                    .collect::<Vec<_>>()
+            );
             // The old hub's list footers never showed the copy key; the pushed detail's still does.
             let copy_token = format!(
                 "y:{}",

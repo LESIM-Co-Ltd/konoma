@@ -158,6 +158,16 @@ impl ProjectLoopState {
                 help: self
                     .keys
                     .keys_of(CoreContext::Canvas, CoreAction::ToggleHelp),
+                pairs: {
+                    let pair = |a: Motion, b: Motion| (motion_keys(&[a]), motion_keys(&[b]));
+                    MotionPairs {
+                        scroll: pair(Motion::Down, Motion::Up),
+                        hscroll: pair(Motion::Left, Motion::Right),
+                        line_ends: pair(Motion::LineHome, Motion::LineEnd),
+                        page: pair(Motion::PageDown, Motion::PageUp),
+                        half_page: pair(Motion::HalfDown, Motion::HalfUp),
+                    }
+                },
             },
             graph_scroll: {
                 let (columns, _) =
@@ -309,6 +319,12 @@ impl ProjectLoopState {
                 t("filter by name", "名前で絞り込み"),
                 words.copy,
             ),
+            // The pushed detail: the old hub's `Screen::Detail` heading, the commit's `y` menu.
+            "detail" => (
+                t("Commit / worktree detail", "コミット / 作業ツリー詳細"),
+                "",
+                t("Copy commit", "コミットをコピー"),
+            ),
             _ => (
                 "",
                 t(
@@ -389,6 +405,13 @@ impl ProjectLoopState {
                 scroll: words.scroll,
                 copy: copy_title,
                 actions: words.actions,
+                detail_hscroll: konoma_host_core::help_msg::DiffMsg::GitHScrollEnds
+                    .tr(prepared.keys.lang()),
+                detail_page: msg(CoreMsg::HintPage),
+                detail_half_page: t("scroll 10 lines", "10 行スクロール"),
+                detail_layout: konoma_host_core::help_msg::DiffMsg::GitLayout
+                    .tr(prepared.keys.lang()),
+                detail_back: msg(CoreMsg::GitBack),
             },
             &screens,
         );

@@ -1019,6 +1019,11 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
         scroll: tr(app.lang, Msg::Scroll),
         copy: tr(app.lang, copy_title),
         actions: tr(app.lang, Msg::WkActionsTitle),
+        detail_hscroll: tr(app.lang, Msg::GitHScrollEnds),
+        detail_page: tr(app.lang, Msg::HintPage),
+        detail_half_page: tr(app.lang, Msg::Scroll10Lines),
+        detail_layout: tr(app.lang, Msg::GitLayout),
+        detail_back: tr(app.lang, Msg::GitBack),
     };
     let screens = app
         .tab
@@ -1088,9 +1093,14 @@ fn vcs_screen_words(app: &App, jj: bool) -> (Msg, Msg, Msg) {
             Msg::WkBranchCopyTitle,
         ),
         Screen::Worktrees => (Msg::GitWorktreesLabel, Msg::GitFilterByName, Msg::CopyHint),
-        Screen::GraphPicker | Screen::Detail => {
-            (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint)
-        }
+        // The old hub's `Screen::Detail` heading; the pushed detail lists no filter row, and its
+        // `y` menu is titled as the log's (the commit it shows).
+        Screen::Detail => (
+            Msg::GitCommitWorktreeDetail,
+            Msg::GitFilterByName,
+            Msg::WkGitCopyTitle,
+        ),
+        Screen::GraphPicker => (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint),
     }
 }
 
