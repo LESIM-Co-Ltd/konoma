@@ -1120,9 +1120,9 @@ fn vcs_port_backend_display_words_copy_labels_and_project_origin() {
                 }
             }
             if id == "git" {
-                // Paired Git help: the write keys are documented (the "worktree" word is the
-                // PENDING_DECISION:project-help-wording row) and no jj section or heading
-                // appears, in either language.
+                // Paired Git help: the write keys are documented and no jj section or heading
+                // appears, in either language (the "worktree" word and every screen are
+                // asserted in `vcs_port_jj_help_has_no_git_write_words_and_git_help_has_them`).
                 if lang == "en" {
                     for word in ["stage", "unstage", "commit"] {
                         assert!(help.contains(word), "Git help lacks {word:?}: {help}");

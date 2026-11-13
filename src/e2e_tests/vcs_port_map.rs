@@ -272,6 +272,19 @@ const GROUPS: &[Group] = &[
         "vcs_port_backend_display_words_copy_labels_and_project_origin",
     ),
     (
+        "changes_hub_help_shows_jj_section_and_hides_git_write_keys",
+        &[
+            "help:jj:changes-label",
+            "help:jj:close-view",
+            "help:jj:diff-all",
+            "help:jj:bookmarks",
+            "help:jj:external-tool",
+            "help:git:worktree",
+        ],
+        &["en", "ja"],
+        "vcs_port_jj_help_has_no_git_write_words_and_git_help_has_them",
+    ),
+    (
         "graph_help_shows_jj_section_and_all_revisions_row",
         &[
             "help:graph:exact-section-label",
@@ -1812,8 +1825,10 @@ fn every_ported_assertion_names_an_existing_new_test() {
         // dropped: their facts are asserted in place, with no old test name to map.) The log
         // exit test lists `h` as a third key beside `q` and `Esc`: 3 more rows (one per id).
         // The 8 project-footer rows (3 + 1 changes, 2 graph, 2 bookmarks/branches) are now
-        // ordinary assertions too.
-        1593 + 11 + 4 + 8 + 8 + 3 - CONTEXT_ROWS_MOVED
+        // ordinary assertions too. The 6 project-help rows (jj changes-label, close-view,
+        // diff-all, bookmarks, external-tool; git worktree) are ordinary assertions in both
+        // languages: 6 assertions x 2 = 12 rows replace the 6 pending rows.
+        1593 + 11 + 4 + 8 + 8 + 12 + 3 - CONTEXT_ROWS_MOVED
             + 21
             + GAP_ROWS
             + PENDING_TITLES.len()

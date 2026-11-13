@@ -402,10 +402,13 @@ fn vcs_port_help_follows_rebound_and_cleared_keys() {
     }
 }
 
-/// Old test `changes_hub_help_shows_jj_section_and_hides_git_write_keys`, on every screen kind
-/// that has a changes list: the jj changes help (the whole `?` text, Space menu included) names
-/// none of git's write words (stage, unstage, commit, worktree and their ja words) and the git
-/// changes help names all of them; en and ja.
+/// Old test `changes_hub_help_shows_jj_section_and_hides_git_write_keys` (old hub help text:
+/// `src/ops/help.rs` `screen_rows`, labels `src/i18n.rs` `Jj*`), through the real project canvas
+/// on every screen, en and ja: the jj changes help shows its six old rows; no jj help (changes,
+/// log, graph, bookmarks, detail) names git's write words (stage, unstage, commit, worktree and
+/// their ja words); the git changes help names all of them; no git help (changes, log, graph,
+/// branches, worktrees, detail) shows a jj label; the git changes and worktrees helps name
+/// worktrees.
 #[test]
 fn vcs_port_jj_help_has_no_git_write_words_and_git_help_has_them() {
     use crate::i18n::Lang;
@@ -416,7 +419,52 @@ fn vcs_port_jj_help_has_no_git_write_words_and_git_help_has_them() {
     let Some(jj) = crate::test_support::jj_scratch_seeded("vcs_help_words_jj") else {
         return;
     };
-    for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
+    // The old hub's labels, as literals (`src/i18n.rs`; the old test read them through `tr`).
+    // The `Msg` check below ties the literals to the old catalog entries.
+    let jj_rows: [(&str, Msg, [&str; 2]); 6] = [
+        ("help:jj:changes-label", Msg::JjChangesLabel, ["jj changes (p)", "jj 変更ハブ (p)"]),
+        ("help:jj:close-view", Msg::JjCloseView, ["close jj view", "jj ビューを閉じる"]),
+        (
+            "help:jj:diff-all",
+            Msg::JjDiffAll,
+            ["diff of everything against @-", "@- との差分をまとめて表示"],
+        ),
+        ("help:jj:bookmarks", Msg::JjBookmarksRow, ["bookmarks", "ブックマーク"]),
+        (
+            "help:jj:external-tool",
+            Msg::JjExternalTool,
+            ["external jj tool (lazyjj)", "外部 jj ツール (lazyjj)"],
+        ),
+        (
+            "help:jj:sync-literal",
+            Msg::JjSyncRow,
+            ["let jj snapshot the working copy (confirm)", "jj に作業コピーを取り込ませる (確認)"],
+        ),
+    ];
+    let help_text = |sim: &Sim| -> String {
+        crate::ops::help::sections(&sim.app)
+            .iter()
+            .flat_map(|s| {
+                std::iter::once(s.title.clone())
+                    .chain(s.rows.iter().map(|(k, d)| format!("{k} {d}")))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let git_screens = ["changes", "log", "graph", "branches", "worktrees", "detail"];
+    let jj_screens = ["changes", "log", "graph", "branches", "detail"];
+    let at = |sim: &mut Sim, name: &str| {
+        if name == "detail" {
+            screen(sim, "log");
+            press(sim, KeyCode::Enter);
+            assert_eq!(sim.app.project_frame().unwrap().key.screen, "detail");
+        } else {
+            screen(sim, name);
+        }
+    };
+    let (mut jj_checked, mut git_checked) = (0, 0);
+    for (lang, name, idx) in [(Lang::En, "en", 0), (Lang::Jp, "ja", 1)] {
+        // Git's write words (the old test's four, plus the Space-menu rows' own words).
         let words = [
             tr(lang, Msg::StageHint),
             tr(lang, Msg::UnstageHint),
@@ -424,40 +472,85 @@ fn vcs_port_jj_help_has_no_git_write_words_and_git_help_has_them() {
             tr(lang, Msg::GitWorktreesRow),
         ];
         assert!(words.iter().all(|w| !w.is_empty()));
-        let text = |root: &std::path::Path, id: &str| -> String {
-            let sim = open(root, config(id, name), (220, 60));
-            crate::ops::help::sections(&sim.app)
-                .iter()
-                .flat_map(|s| {
-                    std::iter::once(s.title.clone())
-                        .chain(s.rows.iter().map(|(k, d)| format!("{k} {d}")))
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+        let plain: &[&str] = if lang == Lang::En {
+            &["stage", "unstage", "commit", "worktree"]
+        } else {
+            &["ステージ", "アンステージ", "コミット", "ワークツリー"]
         };
-        let jj_help = text(&jj, "jj");
-        let git_help = text(&git, "git");
-        for word in words {
-            assert!(!jj_help.contains(word), "{name}: jj help names {word:?}:\n{jj_help}");
-            assert!(git_help.contains(word), "{name}: git help lacks {word:?}:\n{git_help}");
+        // The literals are the old hub's catalog entries.
+        for (id, m, literals) in &jj_rows {
+            assert_eq!(tr(lang, *m), literals[idx], "{name} {id}: the old hub's label");
         }
-        if lang == Lang::En {
-            for word in ["stage", "unstage", "commit", "worktree"] {
-                assert!(!jj_help.contains(word), "jj help names {word:?}:\n{jj_help}");
-                assert!(git_help.contains(word), "git help lacks {word:?}:\n{git_help}");
+        // jj: every screen names none of git's write words; the changes screen shows the six
+        // jj rows (label, close, diff-all, bookmarks, external tool, sync).
+        for screen_name in jj_screens {
+            let mut sim = open(&jj, config("jj", name), (220, 60));
+            at(&mut sim, screen_name);
+            let help = help_text(&sim);
+            // The changes screen is the old test's: all four words. On the other screens
+            // `commit` and `worktree` are words of the lists themselves (old hub: "commit
+            // detail", `Copy commit`, "commit diff / worktree diff"), so only the write-only
+            // words (stage, unstage) are checked there.
+            let changes = screen_name == "changes";
+            for word in words.iter().chain(plain) {
+                let list_word = ["commit", "worktree", "コミット", "ワークツリー"]
+                    .iter()
+                    .any(|w| word.contains(w));
+                if !changes && list_word {
+                    continue;
+                }
+                assert!(
+                    !help.contains(word),
+                    "{name} jj {screen_name}: help names {word:?}:\n{help}"
+                );
+            }
+            if changes {
+                for (id, _, literals) in &jj_rows {
+                    assert!(
+                        help.contains(literals[idx]),
+                        "{name} {id}: jj changes help lacks {:?}:\n{help}",
+                        literals[idx]
+                    );
+                    jj_checked += 1;
+                }
             }
         }
-        for m in [
-            Msg::JjChangesLabel,
-            Msg::JjCloseView,
-            Msg::JjDiffAll,
-            Msg::JjBookmarksRow,
-            Msg::JjExternalTool,
-            Msg::JjSyncRow,
-        ] {
-            assert!(jj_help.contains(tr(lang, m)), "{name}: jj help lacks {m:?}:\n{jj_help}");
+        // git: the write words show on the changes help; no screen shows a jj label; the
+        // changes and worktrees helps name worktrees.
+        let jj_labels: [&str; 4] = if lang == Lang::En {
+            ["jj changes", "close jj view", "lazyjj", "bookmarks"]
+        } else {
+            ["jj 変更ハブ", "jj ビューを閉じる", "lazyjj", "ブックマーク"]
+        };
+        for screen_name in git_screens {
+            let mut sim = open(&git, config("git", name), (220, 60));
+            at(&mut sim, screen_name);
+            let help = help_text(&sim);
+            for label in jj_labels {
+                assert!(
+                    !help.contains(label),
+                    "{name} git {screen_name}: help shows the jj label {label:?}:\n{help}"
+                );
+            }
+            if screen_name == "changes" {
+                for word in words.iter().chain(plain) {
+                    assert!(
+                        help.contains(word),
+                        "{name} git changes: help lacks {word:?}:\n{help}"
+                    );
+                }
+            }
+            if screen_name == "changes" || screen_name == "worktrees" {
+                assert!(
+                    help.contains(tr(lang, Msg::GitWorktreesRow)),
+                    "{name} git {screen_name}: help does not name worktrees:\n{help}"
+                );
+            }
+            git_checked += 1;
         }
     }
+    assert_eq!(jj_checked, 2 * 6, "every jj row, both languages");
+    assert_eq!(git_checked, 2 * 6, "every git screen, both languages");
 }
 
 /// Old hub: `src/ops/help.rs` `screen_rows` (changes: `h / Esc  ·  q` closes the view). `Esc` on
