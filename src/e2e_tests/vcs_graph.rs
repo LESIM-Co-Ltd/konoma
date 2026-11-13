@@ -1295,11 +1295,64 @@ fn e2e_vcs_graph_tab_close_discards_only_closed_tabs_cached_views() {
     }
 }
 
+/// The graph's branch picker for `check_tab_keys_listed_and_act`: the picker is open, with a
+/// second tab beside it when `two` (the second tab is made before the picker opens, since
+/// switching tabs closes a modal).
+fn picker_screen(new: &mut Sim, two: bool, open_graph: impl Fn(&mut Sim)) {
+    open_graph(new);
+    if two {
+        new.app.tab_new().unwrap();
+        new.app.tab.projects.wait_for_result();
+        new.app.poll_projects();
+        new.app.tab_goto(0);
+        drain(new);
+    }
+    new.key('b');
+    drain(new);
+    assert_eq!(new.app.project_frame().unwrap().key.screen, "graph_picker");
+}
+
+#[test]
+fn e2e_vcs_graph_picker_tab_keys_are_listed_where_they_act_git() {
+    let dir = picker_fixture();
+    super::project_screens::check_tab_keys_listed_and_act("git picker", false, &|two| {
+        let (_old, mut new) = graph_pair(&dir, "en", "right", (160, 40), 12, false, false);
+        picker_screen(&mut new, two, |_| {});
+        (new, Box::new(()))
+    });
+}
+
+#[test]
+fn e2e_vcs_graph_picker_tab_keys_are_listed_where_they_act_jj() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let dir = crate::test_support::unique_tmp("vcs_picker_tab_keys_jj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.into_canonical().unwrap();
+    jj(&dir, &["git", "init", "--colocate", "."]);
+    jj(&dir, &["commit", "-m", "Graph 日本語"]);
+    jj(&dir, &["bookmark", "create", "-r", "@-", "日本語"]);
+    let _preference = Preference::pin("jj");
+    super::project_screens::check_tab_keys_listed_and_act("jj picker", false, &|two| {
+        let cfg = plugin_config("jj", "vcs_picker_tab_keys_jj", "en");
+        let (_old, mut new) = pair_config(&dir, "jj", cfg, 160, 16);
+        picker_screen(&mut new, two, |new| {
+            for _ in 0..2 {
+                new.press(KeyCode::Tab, KeyModifiers::NONE);
+                drain(new);
+            }
+        });
+        (new, Box::new(()))
+    });
+}
+
 #[test]
 fn e2e_vcs_graph_picker_help_lists_the_global_rows_and_the_keys_act() {
     // The branch picker is a modal list, but `?`, `F`, `Q` (and `P`) act there as on every project
-    // screen, so its help lists the Global section; the tab keys do not act there (no tab opens),
-    // so no Tabs section is listed.
+    // screen, so its help lists the Global section, and the Tabs section as well (its keys are
+    // pressed by the `..._picker_tab_keys_are_listed_where_they_act_*` tests); `Ctrl-t` does not
+    // act there (no tab opens) and is listed nowhere.
     let dir = picker_fixture();
     let rows_of = |new: &Sim, title: &str| -> Vec<(String, String)> {
         crate::ops::help::sections(&new.app)
@@ -1318,12 +1371,14 @@ fn e2e_vcs_graph_picker_help_lists_the_global_rows_and_the_keys_act() {
             .map(|s| s.title)
             .collect();
         let global = crate::i18n::tr(new.app.lang, crate::i18n::Msg::HelpGlobal);
+        let tabs_title = crate::i18n::tr(new.app.lang, crate::i18n::Msg::HelpTabs);
         assert_eq!(
             titles.len(),
-            2,
-            "{lang}: the picker's own section and Global: {titles:?}"
+            3,
+            "{lang}: the picker's own section, Tabs and Global: {titles:?}"
         );
-        assert_eq!(titles[1], global, "{lang}");
+        assert_eq!(titles[1], tabs_title, "{lang}");
+        assert_eq!(titles[2], global, "{lang}");
         let keys: Vec<_> = rows_of(&new, global).into_iter().map(|(k, _)| k).collect();
         assert_eq!(keys, ["P", "?", "F", "Q"], "{lang}");
         // The keys listed act on the picker.

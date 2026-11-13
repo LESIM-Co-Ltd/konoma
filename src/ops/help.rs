@@ -1053,9 +1053,9 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
             rows: section.rows,
         })
         .collect();
-    // The Global rows (`?`, `Q`, `P`, `F`) act on every project screen, the graph's branch picker
-    // included, so every screen lists them; only the launch verbs and the tab rows of the old
-    // hub stay with the version-control screens.
+    // The Tabs and Global rows (`t`, `[`, `]`, `1 - 9`, `T`, `?`, `Q`, `P`, `F`) act on every
+    // project screen, the graph's branch picker included, so every screen lists them; only the
+    // launch verbs of the old hub stay with the version-control screens.
     add_host_rows(
         app,
         &mut sections,
@@ -1114,10 +1114,11 @@ fn vcs_screen_words(_: &App, _: bool) -> (Msg, Msg, Msg) {
     (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint)
 }
 
-/// The rows the host adds to a project canvas's help. Every project screen lists the Global rows
-/// at the end. On a version-control screen (`vcs`) the help also has, as the old hub listed them,
-/// the launch verbs (`e`, `o`) after the movement section and the tab rows. A row is there only
-/// while its key acts on this screen, like every other row.
+/// The rows the host adds to a project canvas's help. Every project screen lists the Tabs and
+/// Global rows at the end: those keys sit in the core Global layer, which a project screen hands
+/// back to the host (the graph's branch picker included). On a version-control screen (`vcs`) the
+/// help also has, as the old hub listed them, the launch verbs (`e`, `o`) after the movement
+/// section. A row is there only while its key acts on this screen, like every other row.
 fn add_host_rows(app: &App, sections: &mut Vec<HelpSection>, vcs: bool) {
     // The screen's own context: its rows are worded and gated as the old hub's were.
     let ctx = app.canvas_screen().unwrap_or(Context::Canvas);
@@ -1127,11 +1128,7 @@ fn add_host_rows(app: &App, sections: &mut Vec<HelpSection>, vcs: bool) {
     } else {
         Vec::new()
     };
-    rows.extend(
-        global_rows()
-            .into_iter()
-            .filter(|row| vcs || row.sec != Some(Sec::Tabs)),
-    );
+    rows.extend(global_rows());
     let mut by: Vec<(Sec, Vec<(String, String)>)> = Vec::new();
     for row in &rows {
         let Some(out) = render_row(app, ctx, row, &facts) else {

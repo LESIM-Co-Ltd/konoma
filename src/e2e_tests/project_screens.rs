@@ -2416,7 +2416,7 @@ refresh!(
 refresh!(
     e2e_project_refresh_all_screens_exactly,
     8,
-    vec!["diff", "doc", "items", "text"],
+    vec!["diff", "doc", "items", "pushed", "text"],
     false,
     0,
     1
@@ -2754,7 +2754,7 @@ fn e2e_project_help_of_another_provider_lists_the_global_rows_and_the_keys_act()
         let mut f = fixture("project_global_help", false, 1, None, None, None);
         open(&mut f);
         f.sim.app.lang = lang;
-        f.sim.resize(160, 70);
+        f.sim.resize(160, 100);
         // Through the real `?` key: the Global section lists the four layer-0 rows that act.
         f.sim.key('?');
         assert!(f.sim.app.show_help);
@@ -2787,12 +2787,13 @@ fn e2e_project_help_of_another_provider_lists_the_global_rows_and_the_keys_act()
                 "{lang:?}: the Global section lists {keys}: {rows:?}"
             );
         }
-        // No Tabs section on another provider's screen (the plugin's own `Ctrl-t` row stays).
+        // The Tabs section is listed too; every key in it is pressed by
+        // `e2e_project_tab_keys_of_another_provider_are_listed_where_they_act`.
         assert!(
             crate::ops::help::sections(&f.sim.app)
                 .iter()
-                .all(|s| s.title != tr(lang, Msg::HelpTabs)),
-            "{lang:?}: tab rows stay with the version-control screens"
+                .any(|s| s.title == tr(lang, Msg::HelpTabs)),
+            "{lang:?}: the Tabs rows are listed on another provider's screen"
         );
         // The listed keys act: `?` closes the help, `F` turns following on, `Q` asks and quits.
         f.sim.key('?');
@@ -2805,4 +2806,128 @@ fn e2e_project_help_of_another_provider_lists_the_global_rows_and_the_keys_act()
         f.sim.key('y');
         assert!(f.sim.quit, "{lang:?}: Q then y quits");
     }
+}
+
+/// The key texts of every help row (all sections) and of the `[Tabs]` section alone, in the
+/// host's language.
+fn help_key_texts(sim: &Sim) -> (Vec<String>, Vec<String>) {
+    let title = crate::i18n::tr(sim.app.lang, crate::i18n::Msg::HelpTabs);
+    let sections = crate::ops::help::sections(&sim.app);
+    let all = sections
+        .iter()
+        .flat_map(|s| s.rows.iter().map(|(k, _)| k.clone()))
+        .collect();
+    let tabs = sections
+        .iter()
+        .filter(|s| s.title == title)
+        .flat_map(|s| s.rows.iter().map(|(k, _)| k.clone()))
+        .collect();
+    (all, tabs)
+}
+
+/// A help row lists `key` when the key text is that key or one of a `/`-separated group of keys
+/// (the literal `1 - 9` row is compared whole).
+fn row_lists(rows: &[String], key: &str) -> bool {
+    rows.iter()
+        .any(|row| row == key || (key != "1 - 9" && row.split([' ', '/']).any(|part| part == key)))
+}
+
+/// The host's tab keys on the project screen `make` builds (`make(true)` has a second tab, the
+/// active one still the first, on the same screen): each key the `[Tabs]` help section lists acts
+/// there, and a key that does not act (`Ctrl-t`, the plugin's own "open the row in a new tab",
+/// needs a row) is listed nowhere. `[`, `]` and `1 - 9` change the active tab only with two tabs
+/// open; like every other screen's help, the section lists them regardless of the count.
+pub(in crate::e2e_tests) fn check_tab_keys_listed_and_act(
+    label: &str,
+    ctrl_t_acts: bool,
+    make: &dyn Fn(bool) -> (Sim, Box<dyn std::any::Any>),
+) {
+    use crate::i18n::Lang;
+    for lang in [Lang::En, Lang::Jp] {
+        let (mut sim, _keep) = make(false);
+        sim.app.lang = lang;
+        let (all, tabs) = help_key_texts(&sim);
+        assert!(
+            !tabs.is_empty(),
+            "{label} {lang:?}: a Tabs section is listed"
+        );
+        for (key, token) in [
+            ('t', "t"),
+            ('[', "["),
+            (']', "]"),
+            ('2', "1 - 9"),
+            ('T', "T"),
+        ] {
+            assert!(
+                row_lists(&tabs, token),
+                "{label} {lang:?}: the Tabs section lists {key}: {tabs:?}"
+            );
+        }
+        assert_eq!(
+            row_lists(&all, "Ctrl-t"),
+            ctrl_t_acts,
+            "{label} {lang:?}: Ctrl-t is listed iff it acts: {all:?}"
+        );
+    }
+    // The listed keys act, one fresh screen per key.
+    let (mut sim, _keep) = make(false);
+    assert!(sim.app.project_active(), "{label}");
+    let tabs = sim.app.tab_count();
+    sim.key('t');
+    assert_eq!(sim.app.tab_count(), tabs + 1, "{label}: t opens a tab");
+    assert_eq!(sim.app.active_tab_index(), tabs, "{label}: t shows it");
+    let (mut sim, _keep) = make(false);
+    sim.key('T');
+    assert!(sim.app.is_tab_list(), "{label}: T lists the tabs");
+    for key in ['[', ']', '2'] {
+        let (mut sim, _keep) = make(true);
+        assert_eq!(sim.app.tab_count(), 2, "{label}");
+        assert_eq!(sim.app.active_tab_index(), 0, "{label}");
+        assert!(sim.app.project_active(), "{label}");
+        sim.key(key);
+        assert_eq!(sim.app.active_tab_index(), 1, "{label}: {key} changes tab");
+    }
+    let (mut sim, _keep) = make(false);
+    let tabs = sim.app.tab_count();
+    sim.ctrl('t');
+    assert_eq!(
+        sim.app.tab_count(),
+        tabs + usize::from(ctrl_t_acts),
+        "{label}: Ctrl-t acts iff it is listed"
+    );
+}
+
+/// The other provider's screens for `check_tab_keys_listed_and_act`: the root list screen (a row
+/// is selected, so `Ctrl-t` acts) and a pushed screen (no row).
+fn another_provider_screen(pushed: bool, two: bool) -> (Sim, Box<dyn std::any::Any>) {
+    let mut f = if pushed {
+        navigate("project_tab_keys_pushed", |_| Outcome::PushScreen {
+            screen: "pushed".into(),
+            selection: None,
+        })
+    } else {
+        let mut f = fixture("project_tab_keys_root", false, 1, None, None, None);
+        open(&mut f);
+        f
+    };
+    assert_eq!(f.sim.app.project_pushed(), pushed);
+    if two {
+        f.sim.app.tab_new().unwrap();
+        f.sim.app.tab.projects.wait_for_result();
+        f.sim.app.poll_projects();
+        f.sim.app.tab_goto(0);
+        drain(&mut f.sim);
+    }
+    let Fixture { sim, _dir, .. } = f;
+    (sim, Box::new(_dir))
+}
+
+#[test]
+fn e2e_project_tab_keys_of_another_provider_are_listed_where_they_act() {
+    check_tab_keys_listed_and_act("root screen", true, &|two| {
+        another_provider_screen(false, two)
+    });
+    check_tab_keys_listed_and_act("pushed screen", false, &|two| {
+        another_provider_screen(true, two)
+    });
 }
