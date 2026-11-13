@@ -63,8 +63,6 @@ const COPY: Target =
     Target::None("the copy operations take their keys from the `y` menu, not from a table");
 const NO_BASE: Target = Target::None("jj has no graph base to pin");
 const NO_WORKTREES: Target = Target::None("jj has no worktrees screen");
-const NO_JUMP: Target =
-    Target::None("no screen jump exists for it (only Changes, Branches and Worktrees have one)");
 
 /// Every old hub action that an old screen table accepts (`keymap::action_from_str`'s git
 /// arms), with what the git and the jj plugin do with it now. A test enumerates the arms from
@@ -137,13 +135,13 @@ pub(crate) const ROWS: &[Row] = &[
     },
     Row {
         old: "git_open_log",
-        git: NO_JUMP,
-        jj: NO_JUMP,
+        git: Target::Op(&["goto_log"]),
+        jj: Target::Op(&["goto_log"]),
     },
     Row {
         old: "git_open_graph",
-        git: NO_JUMP,
-        jj: NO_JUMP,
+        git: Target::Op(&["goto_graph"]),
+        jj: Target::Op(&["goto_graph"]),
     },
     Row {
         old: "git_open_branches",
@@ -787,10 +785,11 @@ mod tests {
         assert_eq!(entry(&t, "jj", "z"), Some("sync"));
         assert_eq!(entry(&t, "git", "z"), None);
         assert!(!t.contains_key("git_changes"));
-        assert_eq!(out.renames.len(), 2, "{:?}", out.renames);
-        assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
-        assert!(out.warnings[0].contains("git_open_log"));
-        assert!(out.warnings[0].contains("no screen jump exists"));
+        // `git_open_log` is the jump `goto_log` of both backends.
+        assert_eq!(entry(&t, "git", "w"), Some("goto_log"));
+        assert_eq!(entry(&t, "jj", "w"), Some("goto_log"));
+        assert_eq!(out.renames.len(), 4, "{:?}", out.renames);
+        assert_eq!(out.warnings.len(), 0, "{:?}", out.warnings);
     }
 
     #[test]

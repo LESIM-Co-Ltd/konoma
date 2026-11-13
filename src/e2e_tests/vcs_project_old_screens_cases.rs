@@ -59,7 +59,10 @@ fn old_repo(id: &str, tag: &str) -> Option<std::path::PathBuf> {
         std::mem::forget(repo);
         Some(path)
     } else {
-        let repo = crate::test_support::jj_scratch_seeded(&name)?;
+        let Some(repo) = crate::test_support::jj_scratch_seeded(&name) else {
+            eprintln!("SKIPPED: jj is not installed, so the jj cases of `{name}` did not run");
+            return None;
+        };
         let path = repo.to_path_buf();
         std::mem::forget(repo);
         Some(path)
@@ -97,7 +100,7 @@ fn vcs_old_names_every_mapped_name_reaches_its_operation_and_is_noted() {
     if isolated("vcs_old_names_every_mapped_name_reaches_its_operation_and_is_noted") {
         return;
     }
-    let (mut checked, mut moved_something) = (0usize, 0usize);
+    let (mut checked, mut moved_something, mut checked_jj) = (0usize, 0usize, 0usize);
     for id in ["git", "jj"] {
         for row in ROWS {
             let target = if id == "git" { &row.git } else { &row.jj };
@@ -157,9 +160,16 @@ fn vcs_old_names_every_mapped_name_reaches_its_operation_and_is_noted() {
                     row.old
                 );
                 checked += 1;
+                checked_jj += usize::from(id == "jj");
             }
         }
     }
+    // With jj installed the jj operations must have run, not been skipped.
+    let jj = crate::test_support::jj_scratch_seeded("vcs_old_names_jj_probe").is_some();
+    assert!(
+        !jj || checked_jj >= 10,
+        "jj is installed but only {checked_jj} jj cases ran"
+    );
     assert!(checked >= 40, "the loop must cover the table, checked {checked}");
     assert!(
         moved_something >= 20,
@@ -252,12 +262,12 @@ fn vcs_old_names_the_unmapped_note_is_in_ja_too() {
     let repo = old_repo("git", "ja").unwrap();
     let sim = open(
         &repo,
-        old_config("git", "ja", "git.changes", OLD_KEY, "git_open_log"),
+        old_config("git", "ja", "git.changes", OLD_KEY, "git_graph_toggle_all"),
         (120, 30),
     );
     let report = old_report(&sim);
     assert!(report.starts_with("キーマップ"), "{report}");
-    assert!(report.contains("git_open_log"), "{report}");
+    assert!(report.contains("git_graph_toggle_all"), "{report}");
     assert!(report.contains("no effect"), "{report}");
 }
 
@@ -404,4 +414,106 @@ fn vcs_old_names_the_shared_old_table_reaches_both_backends() {
         // Only the first note of the entry is shown (`(+n more)`): the unit tests check each.
         assert!(report.contains("[keys.git_changes] Z = \"git_worktree_diff\""), "{report}");
     }
+}
+
+/// `goto_log` and `goto_graph` exist for every backend although the Log and Graph screens
+/// declare no jump key: a user can bind them in `[keys.<plugin>]`, and the old names
+/// `git_open_log` / `git_open_graph` under an old table are read as them. Returns how many
+/// backend and screen pairs ran, so a skipped backend is counted.
+fn old_jump_cases(via_old_name: bool) -> usize {
+    let mut ran = 0usize;
+    for id in ["git", "jj"] {
+        let Some(repo) = old_repo(id, if via_old_name { "jo" } else { "jn" }) else {
+            eprintln!("SKIPPED: {id} is not installed, so its goto_log / goto_graph case did not run");
+            continue;
+        };
+        for lang in ["en", "ja"] {
+            for (old, op, scr, en, ja) in [
+                ("git_open_log", "goto_log", "log", "log", "ログ"),
+                ("git_open_graph", "goto_graph", "graph", "graph", "グラフ"),
+            ] {
+                let cfg = if via_old_name {
+                    old_config(id, lang, &format!("{id}.changes"), OLD_KEY, old)
+                } else {
+                    config_with_keys(id, lang, &[(&OLD_KEY.to_string(), op)])
+                };
+                let mut sim = open(&repo, cfg, (160, 20));
+                screen(&mut sim, "changes");
+                let word = if lang == "en" { en } else { ja };
+                // Where the jump hints are listed (the home screen): the help and the footer.
+                assert!(
+                    help_rows(&sim)
+                        .iter()
+                        .any(|(k, d)| k == &OLD_KEY.to_string() && d == word),
+                    "{id} {lang} {op}: help lists {OLD_KEY}: {:?}",
+                    help_rows(&sim)
+                );
+                assert!(footer_has_key(&sim, OLD_KEY), "{id} {lang} {op}: footer");
+                if via_old_name {
+                    let report = old_report(&sim);
+                    assert!(
+                        report.contains(&format!("[keys.{id}] {OLD_KEY} = \"{op}\"")),
+                        "{id} {op}: {report}"
+                    );
+                    assert!(!report.contains("no effect"), "{id} {op}: {report}");
+                }
+                let (_, legacy) =
+                    App::count_legacy_hub_opens(|| press(&mut sim, KeyCode::Char(OLD_KEY)));
+                assert_eq!(legacy, 0);
+                assert_eq!(frame_screen(&sim), scr, "{id} {lang} {op}: the key jumps");
+                // From another screen too.
+                screen(&mut sim, "branches");
+                press(&mut sim, KeyCode::Char(OLD_KEY));
+                assert_eq!(frame_screen(&sim), scr, "{id} {lang} {op}: from branches");
+                ran += 1;
+            }
+        }
+    }
+    ran
+}
+
+#[test]
+fn vcs_old_names_open_log_and_open_graph_jump_like_goto_log_and_goto_graph() {
+    if isolated("vcs_old_names_open_log_and_open_graph_jump_like_goto_log_and_goto_graph") {
+        return;
+    }
+    let ran = old_jump_cases(true);
+    let jj = crate::test_support::jj_scratch_seeded("vcs_old_jump_probe").is_some();
+    assert_eq!(ran, if jj { 8 } else { 4 }, "git and jj, en and ja, log and graph");
+}
+
+#[test]
+fn vcs_jump_keys_goto_log_and_goto_graph_can_be_bound_in_the_plugin_table() {
+    if isolated("vcs_jump_keys_goto_log_and_goto_graph_can_be_bound_in_the_plugin_table") {
+        return;
+    }
+    let ran = old_jump_cases(false);
+    let jj = crate::test_support::jj_scratch_seeded("vcs_new_jump_probe").is_some();
+    assert_eq!(ran, if jj { 8 } else { 4 }, "git and jj, en and ja, log and graph");
+}
+
+#[test]
+fn vcs_jump_keys_log_and_graph_have_no_key_by_default() {
+    if isolated("vcs_jump_keys_log_and_graph_have_no_key_by_default") {
+        return;
+    }
+    // The default frames and the help have no key for them, and `[keys.<plugin>]` can move the
+    // jump or take its key away again.
+    let repo = super::vcs_changes::git_repo("vcs_jump_log_default", true);
+    let mut sim = open(&repo, config("git", "en"), (160, 20));
+    screen(&mut sim, "changes");
+    assert!(
+        !help_rows(&sim).iter().any(|(_, d)| d == "log" || d == "graph"),
+        "{:?}",
+        help_rows(&sim)
+    );
+    press(&mut sim, KeyCode::Char(OLD_KEY));
+    assert_eq!(frame_screen(&sim), "changes");
+    let cfg = config_with_keys("git", "en", &[("Z", "goto_log"), ("X", "goto_graph")]);
+    let mut sim = open(&repo, cfg, (160, 20));
+    screen(&mut sim, "changes");
+    press(&mut sim, KeyCode::Char('X'));
+    assert_eq!(frame_screen(&sim), "graph");
+    press(&mut sim, KeyCode::Char('Z'));
+    assert_eq!(frame_screen(&sim), "log");
 }

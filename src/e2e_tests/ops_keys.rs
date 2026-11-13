@@ -249,7 +249,7 @@ fn e2e_dump_footer_and_help_when_asked() {
     let mut cfg = cfg_en();
     #[cfg(feature = "git")]
     hub_screen_keys(&mut cfg);
-    let mut s = Sim::with_config_sized(&root, cfg, 200, 130)
+    let mut s = Sim::with_host_keys_as_written(&root, cfg, 200, 130)
         .with_picker()
         .with_media();
     shot("tree", &mut s);

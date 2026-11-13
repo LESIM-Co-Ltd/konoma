@@ -114,9 +114,29 @@ impl Sim {
     /// those screens bind them in `[keys]`, like a user who wants them back.
     #[cfg(feature = "git")]
     fn with_hub_screen_keys(root: &std::path::Path) -> Sim {
-        let mut cfg = Config::default();
+        Sim::with_hub_screen_keys_in(root, Config::default())
+    }
+
+    /// `with_hub_screen_keys` on top of the settings `cfg` already has.
+    #[cfg(feature = "git")]
+    fn with_hub_screen_keys_in(root: &std::path::Path, mut cfg: Config) -> Sim {
         hub_screen_keys(&mut cfg);
-        Sim::with_config(root, cfg)
+        Sim::with_host_keys_as_written(root, cfg, 90, 26)
+    }
+
+    /// A session whose host keymap holds `cfg`'s `[keys]` exactly as written. With the plugins on,
+    /// an old per-screen entry (`git_open_log`, `git_stage`, ...) is read as the plugins' operation
+    /// and leaves the host's table (`plugins::old_screens`); the host's own hub reads its tables as
+    /// written, so the tests of that hub put them into its keymap directly.
+    fn with_host_keys_as_written(root: &std::path::Path, cfg: Config, w: u16, h: u16) -> Sim {
+        let mut plain = cfg.clone();
+        plain.keys = Config::default().keys;
+        let mut sim = Sim::with_config_sized(root, plain, w, h);
+        sim.app.keymaps = crate::keymap::KeyMap::from_config(
+            crate::keymap::scheme_from_str(&cfg.ui.keys),
+            &cfg.keys.to_keymap_config(),
+        );
+        sim
     }
 
     /// Same as `with_config`, but with an explicit terminal size instead of the standard 90x26.
@@ -5716,7 +5736,13 @@ fn e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing() {
     seed_repo(&dir);
     // `jj_sync` has no key in a git hub by default (`s` stages there); a user who binds one still
     // gets the refusal.
-    let mut s = Sim::with_keys(&canon(&dir), &[("git.changes", &[("R", "jj_sync")])]);
+    let mut cfg = Config::default();
+    cfg.keys
+        .surfaces
+        .entry("git.changes".to_string())
+        .or_default()
+        .insert("R".into(), "jj_sync".into());
+    let mut s = Sim::with_host_keys_as_written(&canon(&dir), cfg, 90, 26);
     s.open_legacy_hub();
     s.key('R');
     assert!(
@@ -12993,16 +13019,14 @@ fn e2e_ui_graph_max_branches_caps_legend_entries() {
 
     let mut cfg = Config::default();
     cfg.ui.graph_max_branches = 2;
-    hub_screen_keys(&mut cfg);
-    let mut s = Sim::with_config(&dir, cfg);
+    let mut s = Sim::with_hub_screen_keys_in(&dir, cfg);
     s.open_legacy_hub();
     s.key('g');
     s.see("hidden)");
 
     let mut cfg2 = Config::default();
     cfg2.ui.graph_max_branches = 0; // 0 = unlimited
-    hub_screen_keys(&mut cfg2);
-    let mut s2 = Sim::with_config(&dir, cfg2);
+    let mut s2 = Sim::with_hub_screen_keys_in(&dir, cfg2);
     s2.open_legacy_hub();
     s2.key('g');
     s2.dont_see("hidden)");
@@ -13024,8 +13048,7 @@ fn e2e_ui_graph_base_branches_config_auto_selects_base() {
 
     let mut cfg = Config::default();
     cfg.ui.graph_base_branches = vec![base];
-    hub_screen_keys(&mut cfg);
-    let mut s_cfg = Sim::with_config(&root, cfg);
+    let mut s_cfg = Sim::with_hub_screen_keys_in(&root, cfg);
     s_cfg.open_legacy_hub();
     s_cfg.key('g');
     s_cfg.see("⌖ base:"); // auto-pinned without pressing `s`
@@ -13061,8 +13084,7 @@ fn e2e_ui_commit_meta_align_right_vs_inline_moves_author_column() {
 
     let mut cfg = Config::default();
     cfg.ui.commit_meta_align = "inline".into();
-    hub_screen_keys(&mut cfg);
-    let mut s_inline = Sim::with_config(&dir, cfg); // right after the (short) subject
+    let mut s_inline = Sim::with_hub_screen_keys_in(&dir, cfg); // right after the (short) subject
     s_inline.open_legacy_hub();
     s_inline.key('l');
     let (_, col_inline) = s_inline

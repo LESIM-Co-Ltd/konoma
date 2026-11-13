@@ -962,6 +962,9 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
             ),
         ),
         ("worktrees", tr(app.lang, Msg::GitWorktreesRow)),
+        // The log and graph jumps have no default key: a row shows only once the user binds one.
+        ("log", tr(app.lang, Msg::FtLog)),
+        ("graph", tr(app.lang, Msg::FtGraph)),
     ];
     let words = ProjectHelpWords {
         screen_title: tr(app.lang, screen_title),

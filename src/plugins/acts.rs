@@ -623,6 +623,8 @@ mod tests {
         assert_eq!(
             jump_keys(&k),
             vec![
+                // Every screen that is not pushed has a jump; one without a declared key has none.
+                ("goto_changes".to_string(), "changes".to_string(), None),
                 (
                     "goto_branches".to_string(),
                     "branches".to_string(),

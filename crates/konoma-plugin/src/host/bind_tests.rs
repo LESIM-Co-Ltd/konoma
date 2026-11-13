@@ -44,10 +44,11 @@ fn the_defaults_are_the_declared_keys_of_the_screens_that_have_one() {
     assert_eq!(
         keys_of(&jumps),
         vec![
+            ("goto_changes".to_string(), None),
             ("goto_branches".to_string(), Some(KeyPress::ch('b'))),
             ("goto_worktrees".to_string(), Some(KeyPress::ch('w'))),
         ],
-        "`changes` has no key and `detail` is pushed"
+        "`changes` declares no key (its jump has none by default) and `detail` is pushed (no jump)"
     );
     let (again, _) = bind_jumps("vcs", &manifest(), Some(&HashMap::new()));
     assert_eq!(jumps, again, "an empty table changes nothing");
@@ -182,12 +183,51 @@ fn a_second_key_for_one_jump_keeps_the_first() {
 }
 
 #[test]
-fn a_screen_without_a_default_key_has_no_jump_to_rebind() {
-    let user = table(&[("x", "goto_changes"), ("y", "goto_detail")]);
-    let (jumps, _) = bind_jumps("vcs", &manifest(), Some(&user));
+fn a_screen_without_a_default_key_has_a_jump_the_user_can_bind() {
+    let user = table(&[("x", "goto_changes")]);
+    let (jumps, notes) = bind_jumps("vcs", &manifest(), Some(&user));
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(jump_target(&jumps, KeyPress::ch('x')), Some("changes"));
+    assert_eq!(jump_key_of(&jumps, "changes"), Some(KeyPress::ch('x')));
+    assert_eq!(jumps.len(), 3);
+    // Without the entry it has no key, and nothing jumps on `x`.
+    let (jumps, _) = bind_jumps("vcs", &manifest(), None);
+    assert_eq!(jump_key_of(&jumps, "changes"), None);
     assert_eq!(jump_target(&jumps, KeyPress::ch('x')), None);
+}
+
+#[test]
+fn a_pushed_screen_has_no_jump_to_bind() {
+    let user = table(&[("y", "goto_detail")]);
+    let (jumps, _) = bind_jumps("vcs", &manifest(), Some(&user));
     assert_eq!(jump_target(&jumps, KeyPress::ch('y')), None);
-    assert_eq!(jumps.len(), 2);
+    assert!(jumps.iter().all(|j| j.screen != "detail"));
+    let (_, notes) = bind_actions("vcs", &manifest(), Some(&user), |a| a.to_string());
+    assert_eq!(
+        notes,
+        vec![KeyNote::UnknownAction {
+            plugin: "vcs".into(),
+            action: "goto_detail".into()
+        }],
+        "`goto_detail` is not an operation"
+    );
+}
+
+#[test]
+fn a_keyless_jump_refuses_a_host_key_and_stays_keyless() {
+    let user = table(&[("j", "goto_changes")]);
+    let (jumps, notes) = bind_jumps("vcs", &manifest(), Some(&user));
+    assert_eq!(jump_key_of(&jumps, "changes"), None);
+    assert_eq!(bad_key_notes(&notes), vec!["j".to_string()]);
+}
+
+#[test]
+fn a_keyless_jump_cannot_take_a_key_another_jump_has() {
+    let user = table(&[("b", "goto_changes")]);
+    let (jumps, notes) = bind_jumps("vcs", &manifest(), Some(&user));
+    assert_eq!(jump_key_of(&jumps, "changes"), None);
+    assert_eq!(jump_key_of(&jumps, "branches"), Some(KeyPress::ch('b')));
+    assert_eq!(bad_key_notes(&notes), vec!["b".to_string()]);
 }
 
 #[test]
@@ -230,13 +270,14 @@ fn an_unknown_operation_is_still_unknown() {
     );
 }
 
-/// Three jumps with the default keys `a`, `b`, `c`.
+/// Three jumps with the default keys `a`, `b`, `c`, and a fourth (`sd`) with no default key.
 fn three() -> Manifest {
     Manifest::new("vcs", "1").project(
         ProjectDecl::new()
             .screen(ProjectScreen::new("sa", "A").key('a'))
             .screen(ProjectScreen::new("sb", "B").key('b'))
-            .screen(ProjectScreen::new("sc", "C").key('c')),
+            .screen(ProjectScreen::new("sc", "C").key('c'))
+            .screen(ProjectScreen::new("sd", "D")),
     )
 }
 
@@ -309,9 +350,15 @@ fn a_jump_whose_rebinding_is_refused_keeps_its_default_even_when_another_jump_mo
 #[test]
 fn every_table_of_up_to_two_entries_keeps_the_jumps_keys_and_notes_each_refusal_once() {
     let m = three();
-    let defaults = [("goto_sa", 'a'), ("goto_sb", 'b'), ("goto_sc", 'c')];
+    // `goto_sd` has no default key: it ends keyless unless the table gives it one.
+    let defaults = [
+        ("goto_sa", Some('a')),
+        ("goto_sb", Some('b')),
+        ("goto_sc", Some('c')),
+        ("goto_sd", None),
+    ];
     let keys = ["a", "b", "c", "x", "j"];
-    let actions = ["goto_sa", "goto_sb", "goto_sc", "noop"];
+    let actions = ["goto_sa", "goto_sb", "goto_sc", "goto_sd", "noop"];
     let mut entries: Vec<(&str, &str)> = Vec::new();
     for k in keys {
         for a in actions {
@@ -327,7 +374,9 @@ fn every_table_of_up_to_two_entries_keeps_the_jumps_keys_and_notes_each_refusal_
             }
         }
     }
-    assert_eq!(tables.len(), 181, "the enumeration shrank or grew");
+    // The empty table, 5 keys x 5 actions single entries, and the pairs of entries with
+    // different keys: 1 + 25 + (C(25,2) - 5 * C(5,2)) = 276. (It was 181 with 4 actions.)
+    assert_eq!(tables.len(), 276, "the enumeration shrank or grew");
     for t in tables {
         let user = table(&t);
         let (jumps, notes) = bind_jumps("vcs", &m, Some(&user));
@@ -340,16 +389,22 @@ fn every_table_of_up_to_two_entries_keeps_the_jumps_keys_and_notes_each_refusal_
                 .filter(|(_, a)| *a == op)
                 .map(|(k, _)| k.chars().next().unwrap())
                 .collect();
-            let removed = t.iter().any(|(k, a)| *a == "noop" && *k == d.to_string());
+            let removed =
+                d.is_some_and(|d| t.iter().any(|(k, a)| *a == "noop" && *k == d.to_string()));
             match jump.key {
                 Some(k) => {
-                    let ok =
-                        k == KeyPress::ch(d) || user_keys.iter().any(|u| KeyPress::ch(*u) == k);
+                    let ok = d.map(KeyPress::ch) == Some(k)
+                        || user_keys.iter().any(|u| KeyPress::ch(*u) == k);
                     assert!(ok, "{case}");
                     assert!(!seen.contains(&k), "shared key: {case}");
                     seen.push(k);
                 }
-                None => assert!(removed, "keyless without noop: {case}"),
+                None => assert!(
+                    // A keyless default stays keyless when every key given for it was refused;
+                    // the note count below checks each refusal was reported.
+                    removed || d.is_none(),
+                    "keyless without noop or a keyless default: {case}"
+                ),
             }
         }
         // Each entry that is not what its jump ended with is noted exactly once.

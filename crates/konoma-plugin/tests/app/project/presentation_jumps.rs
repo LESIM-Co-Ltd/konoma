@@ -123,6 +123,37 @@ fn an_unrelated_table_changes_nothing() {
 }
 
 #[test]
+fn a_screen_with_no_declared_key_has_a_jump_the_table_can_bind() {
+    // The fixture's `graph` screen declares no key; with `graph` set the plugin id is `git`.
+    let git_config = |entries: &str| format!("[ui]\nlang='en'\n[keys.git]\n{entries}");
+    let log = || Log {
+        graph: true,
+        jumps: true,
+        ..Log::default()
+    };
+    // Without the entry `Z` does nothing: the second screen stays.
+    let (_d1, mut prepared, mut events, _l1) = setup_with(&git_config(""), log());
+    run(&mut prepared, &mut events, &[]);
+    let terminal = run(&mut prepared, &mut events, &["s", "Z"]);
+    assert_eq!(shown(&terminal), "second", "no key by default");
+    assert!(
+        !row(&terminal, 1).contains("Z:"),
+        "a keyless jump shows no key: {}",
+        row(&terminal, 1)
+    );
+    // With `goto_graph` it leaves the second screen for the graph, and the tab bar shows it.
+    let (_d2, mut prepared, mut events, _l2) = setup_with(&git_config("Z='goto_graph'\n"), log());
+    let terminal = run(&mut prepared, &mut events, &[]);
+    assert!(
+        row(&terminal, 1).contains("Z:Graph"),
+        "{}",
+        row(&terminal, 1)
+    );
+    assert_eq!(shown(&run(&mut prepared, &mut events, &["s"])), "second");
+    assert_ne!(shown(&run(&mut prepared, &mut events, &["Z"])), "second");
+}
+
+#[test]
 fn a_refused_key_keeps_the_default_jump() {
     // `j` moves the cursor: the host's key cannot be a jump.
     let (_dir, mut prepared, mut events, _log) =

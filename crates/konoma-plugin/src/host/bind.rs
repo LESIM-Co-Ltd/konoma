@@ -94,8 +94,9 @@ pub fn jump_op_id(screen: &str) -> String {
     format!("goto_{screen}")
 }
 
-/// One screen-jump operation of a plugin with the key it has now (`None` = removed). Only a
-/// screen that declares a default jump key has one.
+/// One screen-jump operation of a plugin with the key it has now (`None` = no key: the screen
+/// declares none and the user bound none, or the user removed it). Every screen that is not
+/// pushed has one, so each can be given a key with `[keys.<plugin id>]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpBinding {
     /// The operation id ([`jump_op_id`]).
@@ -120,15 +121,17 @@ pub fn jump_key_of(jumps: &[JumpBinding], screen: &str) -> Option<KeyPress> {
     jumps.iter().find(|j| j.screen == screen)?.key
 }
 
-/// The jump operations a manifest declares: its project's screens that are reached by a key
-/// (a pushed screen has none), as `(operation id, screen id, default key)`.
-fn jump_ops(manifest: &Manifest) -> Vec<(String, String, KeyPress)> {
+/// The jump operations a manifest declares: one for each of its project's screens that is not
+/// pushed (a pushed screen is entered from another screen, never by a key), as `(operation id,
+/// screen id, default key)`. A screen that declares no key has the jump without a default key,
+/// so the user can still bind one.
+fn jump_ops(manifest: &Manifest) -> Vec<(String, String, Option<KeyPress>)> {
     manifest
         .project
         .iter()
         .flat_map(|p| p.screens.iter())
         .filter(|s| !s.pushed)
-        .filter_map(|s| Some((jump_op_id(&s.id), s.id.clone(), KeyPress::ch(s.key?))))
+        .map(|s| (jump_op_id(&s.id), s.id.clone(), s.key.map(KeyPress::ch)))
         .collect()
 }
 
@@ -158,14 +161,16 @@ fn jump_key_refusal(key: &keys::KeySpec) -> Option<String> {
 /// [`bind_actions`] notes, as it reads the same entries):
 /// - Entries are read in the sorted order of their keys. Of several keys for one jump the first
 ///   acceptable one wins; a key the host acts on, or a later key for the same jump, is noted.
-/// - `noop`/`disabled` on a key removes the jump that has it by default; such a jump is the only
-///   one that may end without a key.
+/// - `noop`/`disabled` on a key removes the jump that has it by default; such a jump, and a jump
+///   whose screen declares no key (and the user gave none), are the only ones that end without a
+///   key.
 /// - The accepted rebindings are tried together (jumps may swap keys). A key wanted by two jumps
 ///   goes to the one that holds it: the rebinding that would take it is refused and noted, and its
 ///   jump keeps its default key, which stays reserved for it.
 ///
-/// After binding, every jump has its accepted key or its default key (or none if removed), and no
-/// two jumps share a key.
+/// After binding, every jump has its accepted key or its default key (or none if it has no
+/// default or was removed), and no two jumps share a key. Every non-pushed screen has a jump, so
+/// `goto_<screen>` is always accepted for such a screen.
 pub fn bind_jumps(
     id: &str,
     manifest: &Manifest,
@@ -174,11 +179,7 @@ pub fn bind_jumps(
     let mut notes = Vec::new();
     let mut jumps: Vec<JumpBinding> = jump_ops(manifest)
         .into_iter()
-        .map(|(op, screen, key)| JumpBinding {
-            op,
-            screen,
-            key: Some(key),
-        })
+        .map(|(op, screen, key)| JumpBinding { op, screen, key })
         .collect();
     let Some(user) = user else {
         return (jumps, notes);

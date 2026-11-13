@@ -540,6 +540,7 @@ code_theme = "TwoDark"
 # action stays in the `Space` menu.
 # The keys that jump between a plugin's project screens are operations named goto_<screen id>: B = "goto_branches"
 # in [keys.git] moves the branches jump from b to B; b = "noop" removes it (Tab still reaches the screen).
+# Every screen that is not pushed has its goto_<screen id>, also one with no default key: L = "goto_log" gives the log a key.
 # The old per-screen tables ([keys."git.changes"], [keys."jj.log"], [keys.git_changes]) are read as old names: x = "git_stage"
 # there is moved to [keys.git] x = "stage" and announced once at start; an old action with no counterpart is announced as
 # "no effect". [keys.git] / [keys.jj] win over an old entry for the same key or operation.
@@ -708,7 +709,7 @@ code_theme = "TwoDark"
 #                    worktrees screens) "list_filter_start" (/ on the changes list, the log and the graph)
 #                  "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard" "git_commit" (c)
 #                  "git_worktree_diff" "git_open_selected_diff" (l / Enter) "git_open_branches" (b)
-#                  "git_open_log" "git_open_graph" (no default keys: reach them with Tab)
+#                  "git_open_log" "git_open_graph" (no default keys: reach them with Tab; read as [keys.git] goto_log / goto_graph)
 #                  "cycle_diff_layout" (s) "cycle_diff_view" (R) "git_diff_discard"
 #                  "git_open_detail" (l / Enter on the log and graph) "git_close" (q / h) "git_diff_discard" (x in a diff)
 #                  "git_copy_short_hash" "git_copy_full_hash" "git_copy_subject" "git_copy_message" "git_copy_author"

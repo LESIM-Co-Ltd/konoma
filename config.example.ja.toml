@@ -500,9 +500,10 @@ code_theme = "TwoDark"
 # w = "noop" でキーを外す)。ホストが使うキーは断られて起動時のメッセージで知らせる(操作は `Space` のメニューに残る)。
 # プロジェクト画面へ移るキーは goto_<画面 id> という操作: [keys.git] の B = "goto_branches" でブランチ画面へ移るキーを b から B に、
 # b = "noop" で外す(Tab では引き続きその画面へ行ける)。
+# 固定されていない画面にはすべて goto_<画面 id> があり、既定のキーが無い画面にもある: L = "goto_log" でログ画面にキーを付けられる。
 # 古い画面別テーブル([keys."git.changes"]・[keys."jj.log"]・[keys.git_changes])は古い名前として読む: そこの x = "git_stage" は
-# [keys.git] の x = "stage" へ移して起動時に 1 回案内し、対応する操作が無い古い操作は「no effect」と案内する。
-# [keys.git] / [keys.jj] は同じキー・同じ操作の古いエントリより優先される。
+# プラグイン用の [keys.git] の x = "stage" へ移して起動時に 1 回案内し、対応する操作が無い古い操作は「no effect」と案内する。
+# プラグイン用の [keys.git] と [keys.jj] は、同じキー・同じ操作の古いエントリより優先される。
 # それ自身がプログラムであるプラグイン(言語は問わない。stdin/stdout で konoma のプラグインプロトコルを話す):
 #   command = "my-viewer"   プログラム。`/` の無い名前は PATH から探し、パスはそのまま使う。シェルは通さない。
 #                           id は表の名前で、プログラムが宣言する id と同じでなければならない。
@@ -662,7 +663,7 @@ code_theme = "TwoDark"
 #                    ワークツリーの画面を巡回) "list_filter_start"(変更一覧・ログ・グラフの /)
 #                  "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard" "git_commit"(c)
 #                  "git_worktree_diff" "git_open_selected_diff"(l / Enter) "git_open_branches"(b)
-#                  "git_open_log" "git_open_graph"(既定キー無し: Tab で届く)
+#                  "git_open_log" "git_open_graph"(既定キー無し: Tab で届く。[keys.git] の goto_log / goto_graph として読む)
 #                  "cycle_diff_layout"(s) "cycle_diff_view"(R) "git_diff_discard"
 #                  "git_open_detail"(ログとグラフの l / Enter) "git_close"(q / h) "git_diff_discard"(diff の x)
 #                  "git_copy_short_hash" "git_copy_full_hash" "git_copy_subject" "git_copy_message" "git_copy_author"

@@ -204,7 +204,7 @@ mod git {
         // The hub's `g` / `l` have no default key; bind them to reach the graph and the log.
         let mut cfg = cfg_en();
         hub_screen_keys(&mut cfg);
-        let mut s = Sim::with_config(&canon(&dir), cfg);
+        let mut s = Sim::with_host_keys_as_written(&canon(&dir), cfg, 90, 26);
         let ctx = |b, sc| Some(Context::Screen(b, sc));
         s.open_legacy_hub();
         assert_eq!(s.app.key_context(), ctx(Backend::Git, Screen::Changes));

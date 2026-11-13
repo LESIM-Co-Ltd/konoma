@@ -40,8 +40,10 @@ macro_rules! plugin {
                             .screen(ProjectScreen::new("changes", t!(en: "Changes", ja: "変更"))
                                 .key('p').row_kind("file").row_kind("empty"))
                             .screen(ProjectScreen::new("log", t!(en: "Log", ja: "ログ"))
+                                .jump_hint(8, t!(en: "log", ja: "ログ"))
                                 .row_kind("commit").row_kind("empty"))
                             .screen(ProjectScreen::new("graph", t!(en: "Graph", ja: "グラフ"))
+                                .jump_hint(9, t!(en: "graph", ja: "グラフ"))
                                 .row_kind("commit").row_kind("worktree").row_kind("connector").row_kind("empty"))
                             .screen(ProjectScreen::new("branches", if $id == "git" {
                                 t!(en: "Branches", ja: "ブランチ")
