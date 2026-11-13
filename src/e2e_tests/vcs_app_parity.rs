@@ -347,16 +347,21 @@ fn frames(
             let key_x = panel_x + 3;
             let desc_x = panel_x + 19;
             let width = panel_width - 20;
-            let ys: Vec<_> = (0..host.area.height)
-                .filter(|y| {
-                    keys.chars()
-                        .enumerate()
-                        .all(|(i, c)| host[(key_x + i as u16, *y)].symbol() == c.to_string())
-                })
-                .collect();
-            assert_eq!(ys.len(), 1, "exactly one explicit root return help row");
-            let y = ys[0];
             for (side, frame) in [("host", host), ("app", app)] {
+                // The two panels may differ in height, so each side finds its own row.
+                let ys: Vec<_> = (0..frame.area.height)
+                    .filter(|y| {
+                        keys.chars()
+                            .enumerate()
+                            .all(|(i, c)| frame[(key_x + i as u16, *y)].symbol() == c.to_string())
+                    })
+                    .collect();
+                assert_eq!(
+                    ys.len(),
+                    1,
+                    "exactly one explicit root return help row on the {side}"
+                );
+                let y = ys[0];
                 let mut wanted = Buffer::empty(Rect::new(0, 0, width, 1));
                 Paragraph::new(
                     Line::raw(row[side].as_str().unwrap())
@@ -376,6 +381,36 @@ fn frames(
                 }
             }
         }
+    }
+    if help_open && state.diff.is_none() {
+        let app_help = state
+            .canvas_help
+            .as_ref()
+            .expect("the standalone reports its open canvas help");
+        let host_help = host_state
+            .canvas_help
+            .as_ref()
+            .expect("the host reports its open canvas help");
+        // The root return row is the one explicit row difference besides the Tabs section
+        // (§4-1:220, §7-5:967); its text comes from the fixture.
+        let root_row = (state.stack.len() == 1)
+            .then(|| &graph_fixture["root_help"][lang][state.stack.last().unwrap()])
+            .filter(|row| row["key"].is_string())
+            .map(|row| {
+                (
+                    row["key"].as_str().unwrap().to_owned(),
+                    row["host"].as_str().unwrap().to_owned(),
+                    row["app"].as_str().unwrap().to_owned(),
+                )
+            });
+        compare_canvas_help(
+            &mut expected,
+            (host, app),
+            (host_help, app_help),
+            lang,
+            root_row.as_ref(),
+            state.stack.last().map(String::as_str) == Some("graph_picker"),
+        );
     }
     if normal_root {
         let footer_start = graph_fixture["_footer_start"].as_u64().unwrap_or(0) as u16;
@@ -639,8 +674,14 @@ fn compare_states(host: &ProjectStateSnapshot, app: &ProjectStateSnapshot) -> Re
     if has_help(host) != has_help(app) {
         return Err("Preview help visibility differs".into());
     }
+    if host.canvas_help.is_some() != app.canvas_help.is_some() {
+        return Err("canvas help visibility differs".into());
+    }
     let mut host = host.clone();
     let mut app = app.clone();
+    // The canvas help's sections and cells are checked by compare_canvas_help.
+    host.canvas_help = None;
+    app.canvas_help = None;
     if !host.diff_actions.is_empty() || !app.diff_actions.is_empty() {
         let lang = if host.diff_actions.iter().any(|(_, label)| label == "パス") {
             "ja"
@@ -1177,6 +1218,17 @@ fn run_roots_with(
             let mut frame = frame;
             let mut host_snapshot = host_state(&host);
             host_snapshot.diff = host_diff_snapshot(&mut host);
+            if host.app.show_help && host_snapshot.diff.is_none() {
+                host_snapshot.canvas_help =
+                    Some(konoma_plugin::app::project::ProjectHelpSnapshot {
+                        sections: crate::ops::help::sections(&host.app)
+                            .into_iter()
+                            .map(|s| (s.title, s.rows))
+                            .collect(),
+                        scroll: usize::from(host.app.help_scroll),
+                        title: crate::ops::core_help::help_title(&host.app),
+                    });
+            }
             if host_snapshot.diff.is_some() && host_snapshot.menu.as_deref() == Some("actions") {
                 host_snapshot.diff_actions = crate::ops::menu::menu(
                     &host.app,
@@ -2412,10 +2464,6 @@ fn jj_graph_and_bookmarks_offer_only_real_actions() {
                 key(KeyCode::Enter),
                 ch('c'),
                 ch('d'),
-                // The host's bookmarks help ends with its own [Tabs] section (the standalone has
-                // no tabs), so the two panels differ in height. A screen short enough to clip
-                // both panels at the same height shows the same rows on both sides.
-                Step::Resize(180, 15),
                 ch('?'),
                 ch('q'),
             ];

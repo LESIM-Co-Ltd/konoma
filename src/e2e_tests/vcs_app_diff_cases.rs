@@ -65,7 +65,142 @@ fn compare_preview_help(
         app_help.sections, wanted_sections,
         "every Preview help row, including off-screen rows; only the explicit design rows may differ"
     );
+    compare_help_popups(expected, host, app, host_help, app_help, "Preview");
+}
+
+/// Host-only sections of an open help on a project screen (canvas): (en title, ja title,
+/// design line). Every other difference between the two helps is a failure.
+const CANVAS_HELP_HOST_ONLY: [(&str, &str, u32); 1] = [
+    // Design :1266: tabs belong only to the host; the standalone has none.
+    ("Tabs", "タブ (Tabs)", 1266),
+];
+
+/// Host-only rows of the Global section: (keys, design line).
+const CANVAS_HELP_HOST_ONLY_GLOBAL_ROWS: [(&str, u32); 2] = [
+    // Design :1266: paste-jump and follow are absent from the standalone.
+    ("P", 1266),
+    ("F", 1266),
+];
+
+fn expected_canvas_help_sections(
+    sections: &HelpSections,
+    lang: &str,
+    root_row: Option<&(String, String, String)>,
+    picker: bool,
+) -> HelpSections {
+    let mut wanted = sections.clone();
+    if picker {
+        // The graph branch picker's help is its own single section; the host adds no Tabs or
+        // Global chrome there, so nothing is excluded (and nothing may be left over).
+        assert_eq!(sections.len(), 1, "picker help is one section: {sections:?}");
+        return wanted;
+    }
+    if let Some((keys, host_text, app_text)) = root_row {
+        // Design :220 / :967: the root screen's return key quits the standalone program.
+        let mut replaced = 0;
+        for (_, rows) in &mut wanted {
+            for row in rows.iter_mut() {
+                if row.0 == *keys && row.1 == *host_text {
+                    row.1 = app_text.clone();
+                    replaced += 1;
+                }
+            }
+        }
+        assert_eq!(replaced, 1, "exactly one root return row in the host help");
+    }
+    for (en, ja, line) in CANVAS_HELP_HOST_ONLY {
+        let title = if lang == "ja" { ja } else { en };
+        assert!(
+            wanted.iter().any(|(t, _)| t == title),
+            "the host help must have the host-only section {title:?} (design :{line}); \
+             otherwise the exclusion is not checked; host sections: {:?}",
+            sections.iter().map(|(t, _)| t).collect::<Vec<_>>()
+        );
+        wanted.retain(|(t, _)| t != title);
+    }
+    let global = if lang == "ja" {
+        konoma_host_core::help_msg::CoreMsg::HelpGlobal.ja()
+    } else {
+        konoma_host_core::help_msg::CoreMsg::HelpGlobal.en()
+    };
+    for (keys, line) in CANVAS_HELP_HOST_ONLY_GLOBAL_ROWS {
+        let section = wanted
+            .iter_mut()
+            .find(|(t, _)| t == global)
+            .unwrap_or_else(|| panic!("the host help must have a {global:?} section"));
+        let before = section.1.len();
+        section.1.retain(|(k, _)| k != keys);
+        assert_eq!(
+            before - section.1.len(),
+            1,
+            "the host help must have exactly one {keys:?} row (design :{line}); \
+             otherwise the exclusion is not checked"
+        );
+    }
+    wanted.retain(|(_, rows)| !rows.is_empty());
+    wanted
+}
+
+/// Open help on a project canvas screen: the standalone's sections equal the host's minus the
+/// explicit host-only sections, on every row (also off-screen ones); each side's panel is then
+/// rendered from its own sections and compared cell by cell inside its own popup.
+fn compare_canvas_help(
+    expected: &mut Buffer,
+    (host, app): (&Buffer, &Buffer),
+    (host_help, app_help): (
+        &konoma_plugin::app::project::ProjectHelpSnapshot,
+        &konoma_plugin::app::project::ProjectHelpSnapshot,
+    ),
+    lang: &str,
+    root_row: Option<&(String, String, String)>,
+    picker: bool,
+) {
+    let wanted_sections =
+        expected_canvas_help_sections(&host_help.sections, lang, root_row, picker);
+    if app_help.sections != wanted_sections {
+        dump_parity_frame("host canvas help rows differ", host);
+        dump_parity_frame("app canvas help rows differ", app);
+        let flat = |s: &HelpSections| -> Vec<String> {
+            s.iter()
+                .flat_map(|(t, rows)| rows.iter().map(move |r| format!("[{t}] {r:?}")))
+                .collect()
+        };
+        let (want, got) = (flat(&wanted_sections), flat(&app_help.sections));
+        for row in want.iter().filter(|r| !got.contains(r)) {
+            eprintln!("missing in the standalone help: {row}");
+        }
+        for row in got.iter().filter(|r| !want.contains(r)) {
+            eprintln!("extra in the standalone help: {row}");
+        }
+    }
+    assert_eq!(
+        app_help.sections, wanted_sections,
+        "every canvas help row, including off-screen rows; only the host-only sections may differ"
+    );
+    compare_help_popups(expected, host, app, host_help, app_help, "canvas");
+}
+
+fn compare_help_popups(
+    expected: &mut Buffer,
+    host: &Buffer,
+    app: &Buffer,
+    host_help: &konoma_plugin::app::project::ProjectHelpSnapshot,
+    app_help: &konoma_plugin::app::project::ProjectHelpSnapshot,
+    what: &str,
+) {
     assert_eq!(app_help.title, host_help.title);
+    let app_popup = {
+        let refs: Vec<_> = app_help
+            .sections
+            .iter()
+            .map(|(title, rows)| (title.as_str(), rows.as_slice()))
+            .collect();
+        konoma_widgets::help_panel::popup_layout(
+            konoma_widgets::help_panel::help_lines(&refs).len(),
+            app.area,
+        )
+        .0
+    };
     for (side, frame, help) in [("host", host, host_help), ("app", app, app_help)] {
         let refs: Vec<_> = help
             .sections
@@ -87,11 +222,16 @@ fn compare_preview_help(
                 assert_eq!(
                     frame[(x, y)],
                     wanted[(x, y)],
-                    "{side} Preview help cell ({x},{y}) at scroll {}",
+                    "{side} {what} help cell ({x},{y}) at scroll {}",
                     help.scroll
                 );
                 if side == "app" {
                     expected[(x, y)] = wanted[(x, y)].clone();
+                } else if !app_popup.contains((x, y).into()) {
+                    // The host's panel is taller (its extra design-only rows): where it covers the
+                    // screen and the standalone's panel does not, the standalone shows the screen
+                    // behind the panel. The host's own cells there were compared above.
+                    expected[(x, y)] = app[(x, y)].clone();
                 }
             }
         }

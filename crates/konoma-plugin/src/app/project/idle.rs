@@ -89,6 +89,20 @@ impl ProjectLoopState {
                     state.diff_actions = diff.actions_for_test();
                 }
             }
+            if let (Some(top), None) = (self.help, state.diff.as_ref()) {
+                state.canvas_help = Some(super::super::ProjectHelpSnapshot {
+                    sections: self
+                        .presentation
+                        .as_ref()
+                        .map(|p| p.help.as_slice())
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|s| (s.title.clone(), s.rows.clone()))
+                        .collect(),
+                    scroll: usize::from(top),
+                    title: prepared.keys.help_title(),
+                });
+            }
             state.root =
                 Some(nav.map_or_else(|| prepared.open_dir.clone(), |nav| nav.project.root.clone()));
             state.open_dir = Some(prepared.open_dir.clone());

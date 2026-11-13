@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 /// Owned, read-only facts at a fence. No host surface or action types cross this seam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectStateSnapshot {
+    /// The open `?` help of a project canvas (no diff open): its sections as drawn.
+    pub canvas_help: Option<ProjectHelpSnapshot>,
     pub diff_actions: Vec<(String, String)>,
     pub media: Option<super::media_test_hooks::MediaStateSnapshot>,
     pub return_to_preview: bool,
