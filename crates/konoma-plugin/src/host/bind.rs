@@ -86,6 +86,132 @@ pub fn keypress_of(spec: KeySpec) -> KeyPress {
     }
 }
 
+/// The id of the operation that jumps to the project screen `screen`: `goto_<screen id>`, written
+/// like the other operation ids (`diff_all`, `worktree_diff`) and bound in the same
+/// `[keys.<plugin id>]` table (`<key> = "goto_branches"` rebinds it, `<key> = "noop"` removes the
+/// key it has).
+pub fn jump_op_id(screen: &str) -> String {
+    format!("goto_{screen}")
+}
+
+/// One screen-jump operation of a plugin with the key it has now (`None` = removed). Only a
+/// screen that declares a default jump key has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpBinding {
+    /// The operation id ([`jump_op_id`]).
+    pub op: String,
+    /// The id of the screen it jumps to.
+    pub screen: String,
+    pub key: Option<KeyPress>,
+}
+
+/// The jump operations a manifest declares: its project's screens that are reached by a key
+/// (a pushed screen has none), as `(operation id, screen id, default key)`.
+fn jump_ops(manifest: &Manifest) -> Vec<(String, String, KeyPress)> {
+    manifest
+        .project
+        .iter()
+        .flat_map(|p| p.screens.iter())
+        .filter(|s| !s.pushed)
+        .filter_map(|s| Some((jump_op_id(&s.id), s.id.clone(), KeyPress::ch(s.key?))))
+        .collect()
+}
+
+/// Why `key` cannot be a screen's jump key, or `None` when it can: a jump takes one plain
+/// character, and not one the canvas or its lists already act on (those win over the jump, so the
+/// hint would show a key that does nothing). The project entry key `p` may be reused here, as for
+/// a declared jump key.
+fn jump_key_refusal(key: &keys::KeySpec) -> Option<String> {
+    let keys::KeyName::Char(c) = key.code else {
+        return Some("a screen jump takes one plain character".to_string());
+    };
+    if key.ctrl {
+        return Some("a screen jump takes one plain character".to_string());
+    }
+    let taken = ["canvas", "list"]
+        .into_iter()
+        .any(|ctx| keys::reserved(ctx).into_iter().any(|(k, _)| k == *key));
+    (taken && c != 'p').then(|| format!("`{c}` is the host's key on a project screen"))
+}
+
+/// The jump operations of a plugin with their keys: the manifest's defaults, replaced by `user`
+/// (the plugin's `[keys.<id>]` table). The same table [`bind_actions`] reads: `<key> =
+/// "noop"` takes the key from the jump that has it, `<key> = "goto_<screen>"` gives the jump
+/// that key. A rebinding that cannot be kept (a key the host acts on, a key another jump has)
+/// leaves the jump on its default key and is noted; the notes of an unparseable key and a second
+/// key for one operation are [`bind_actions`]'s, which reads the same entries.
+pub fn bind_jumps(
+    id: &str,
+    manifest: &Manifest,
+    user: Option<&HashMap<String, String>>,
+) -> (Vec<JumpBinding>, Vec<KeyNote>) {
+    let mut notes = Vec::new();
+    let mut jumps: Vec<JumpBinding> = jump_ops(manifest)
+        .into_iter()
+        .map(|(op, screen, key)| JumpBinding {
+            op,
+            screen,
+            key: Some(key),
+        })
+        .collect();
+    let Some(user) = user else {
+        return (jumps, notes);
+    };
+    let mut entries: Vec<(&String, &String)> = user.iter().collect();
+    entries.sort();
+    let mut chosen: Vec<(&str, KeyPress, &String)> = Vec::new();
+    for (key, action) in entries {
+        let Ok(spec) = keys::parse_key(key) else {
+            continue;
+        };
+        if action == "noop" || action == "disabled" {
+            for jump in jumps.iter_mut().filter(|j| j.key == Some(keypress_of(spec))) {
+                jump.key = None;
+            }
+        } else if jumps.iter().any(|j| j.op == *action) {
+            if chosen.iter().any(|(op, _, _)| op == action) {
+                continue;
+            }
+            if let Some(why) = jump_key_refusal(&spec) {
+                notes.push(KeyNote::BadKey {
+                    plugin: id.to_string(),
+                    key: key.clone(),
+                    why,
+                });
+                continue;
+            }
+            chosen.push((action, keypress_of(spec), key));
+        }
+    }
+    // The chosen jumps leave their defaults first, then each takes its key unless another jump
+    // has it; a jump that cannot gets its default back when that is free.
+    let defaults = jump_ops(manifest);
+    for (op, _, _) in &chosen {
+        if let Some(jump) = jumps.iter_mut().find(|j| j.op == *op) {
+            jump.key = None;
+        }
+    }
+    for (op, key, written) in &chosen {
+        let Some(slot) = jumps.iter().position(|j| j.op == *op) else {
+            continue;
+        };
+        if let Some(other) = jumps.iter().find(|j| j.key == Some(*key)) {
+            notes.push(KeyNote::BadKey {
+                plugin: id.to_string(),
+                key: (*written).clone(),
+                why: format!("`{}` already jumps on it", other.op),
+            });
+            let back = defaults.iter().find(|(d, _, _)| d == op).map(|(_, _, k)| *k);
+            if let Some(back) = back.filter(|b| !jumps.iter().any(|j| j.key == Some(*b))) {
+                jumps[slot].key = Some(back);
+            }
+            continue;
+        }
+        jumps[slot].key = Some(*key);
+    }
+    (jumps, notes)
+}
+
 /// The declared actions of plugin `id`, in declaration order, with their keys: the manifest's,
 /// replaced by `user` (the plugin's `[keys.<id>]` table, if the user wrote one). `handle` makes
 /// the host's handle of an action from its id.
@@ -175,7 +301,21 @@ fn apply_user_table(
             }
             continue;
         }
-        if !manifest.actions.iter().any(|a| a.id == *action) {
+        // A screen's jump is an operation of the same table ([`bind_jumps`] binds it).
+        let is_jump = jump_ops(manifest).iter().any(|(op, _, _)| op == action);
+        if is_jump && keys::parse_key(key).is_ok() {
+            if chosen.iter().any(|(a, _)| a == action) {
+                notes.push(KeyNote::BadKey {
+                    plugin: id.to_string(),
+                    key: key.clone(),
+                    why: format!("`{action}` already has a key here; one key per action"),
+                });
+            } else {
+                chosen.push((action.clone(), key.clone()));
+            }
+            continue;
+        }
+        if !is_jump && !manifest.actions.iter().any(|a| a.id == *action) {
             notes.push(KeyNote::UnknownAction {
                 plugin: id.to_string(),
                 action: action.clone(),
