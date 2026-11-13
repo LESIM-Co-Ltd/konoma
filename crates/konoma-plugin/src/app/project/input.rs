@@ -233,6 +233,16 @@ impl ProjectLoopState {
             return false;
         }
         let kp = KeyPress::norm(&key);
+        // `Q` is one of the two layer-0 keys the standalone keeps (design: the standalone's
+        // keys): it ends the program from any project screen, as the help's Global row says.
+        // A filter being typed or a dialog open takes the key as text first.
+        if self.dialog.is_none()
+            && !filtering
+            && self.keys.resolve(CoreContext::Canvas, kp)
+                == CoreResolution::Action(CoreAction::Quit)
+        {
+            return true;
+        }
         let resolution = self.keys.resolve(CoreContext::Text, kp);
         let motion = fixed_keys(CoreContext::Text)
             .into_iter()

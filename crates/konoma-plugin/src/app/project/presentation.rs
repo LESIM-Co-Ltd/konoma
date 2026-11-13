@@ -349,7 +349,7 @@ impl ProjectLoopState {
             ),
             ("worktrees", t("worktrees", "ワークツリー")),
         ];
-        let help = project.help_sections(
+        let mut help = project.help_sections(
             &ProjectHelpWords {
                 screen_title,
                 screen_filter,
@@ -415,6 +415,13 @@ impl ProjectLoopState {
             },
             &screens,
         );
+        // The standalone has no layer-0 keys except `?` and `Q`; the host lists them last.
+        // As the host's help does: the version-control screens list the Global rows (the
+        // graph's branch picker is a modal list with its own keys and lists none); another
+        // provider's project help stays what it was.
+        if facts.vcs_jj.is_some() && !facts.picker {
+            help.extend(prepared.keys.canvas_global_sections());
+        }
         Some(Presentation {
             project,
             actions: ids,

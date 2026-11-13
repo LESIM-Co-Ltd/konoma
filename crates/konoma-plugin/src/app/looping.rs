@@ -1448,6 +1448,24 @@ impl AppKeys {
         self.with_copy_section(CoreContext::Canvas, CoreMenu::Copy, secs)
     }
 
+    /// The Global section (`?`, `Q`) of the canvas help, for the project screens that draw
+    /// their own rows: the standalone has no layer-0 keys except these two.
+    pub(crate) fn canvas_global_sections(&self) -> Vec<CoreSection> {
+        // The `Q` row carries the same core text as the host's and the preview help's.
+        let mut facts = self.canvas_facts();
+        facts.help.retain(|(a, _)| *a != CoreAction::Quit);
+        facts.help.push((CoreAction::Quit, Some(CoreMsg::Quit)));
+        global_only(
+            core_sections(
+                CoreContext::Canvas,
+                &facts,
+                &self.canvas_lookup(),
+                self.lang,
+            ),
+            self.lang,
+        )
+    }
+
     /// Whether `key` opens the `Space` menu of `ctx`.
     fn opens_actions(&self, ctx: CoreContext, key: &Key) -> bool {
         key_press(key)
@@ -1666,6 +1684,13 @@ impl AppKeys {
 /// The shared keys' context of a text screen: the decorated document (`Frame::Document`) is
 /// `Document`, source and plain text (and a page that failed to draw) are `Text`. The one place
 /// that decides it, as konoma's `key_context` is for the host.
+/// Only the Global section of core help sections: the rows true on every screen. One filter
+/// for the project-owned diff help and the project-screen help.
+pub(crate) fn global_only(sections: Vec<CoreSection>, lang: Lang) -> Vec<CoreSection> {
+    let global = CoreMsg::HelpGlobal.tr(lang);
+    sections.into_iter().filter(|s| s.title == global).collect()
+}
+
 fn text_ctx(base: &Frame) -> CoreContext {
     if matches!(base, Frame::Document(_)) {
         CoreContext::Document

@@ -101,16 +101,15 @@ impl DiffScreenState {
         let mut sections = self.presentation().help_sections(&[], &menus);
         if self.project_owned {
             // General rows use the same core declaration as other project-owned previews.
-            sections.extend(
+            sections.extend(crate::app::looping::global_only(
                 konoma_host_core::help::core_sections(
                     CoreContext::Diff,
                     &konoma_host_core::help::HelpFacts::default(),
                     &lookup,
                     self.lang,
-                )
-                .into_iter()
-                .filter(|s| s.title == CoreMsg::HelpGlobal.tr(self.lang)),
-            );
+                ),
+                self.lang,
+            ));
         }
         sections
     }

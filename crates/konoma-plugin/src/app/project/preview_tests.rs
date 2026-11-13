@@ -12,6 +12,8 @@ use ratatui::{backend::TestBackend, buffer::Buffer};
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 
+#[path = "global_help_tests.rs"]
+mod global_help_tests;
 #[path = "idle_resize_tests.rs"]
 mod idle_resize_tests;
 
@@ -140,12 +142,41 @@ fn setup(
     PreparedProjects,
     Terminal<TestBackend>,
 ) {
+    setup_with(
+        table,
+        previews,
+        "[ui]\nlang='en'\ndiff_view='source'\nwrap=false\n",
+    )
+}
+
+fn setup_with(
+    table: bool,
+    previews: bool,
+    config: &str,
+) -> (
+    konoma_test_support::TmpDir,
+    PreparedProjects,
+    Terminal<TestBackend>,
+) {
+    setup_plugin(Arc::new(Project), table, previews, config)
+}
+
+fn setup_plugin(
+    plugin: Arc<dyn Plugin>,
+    table: bool,
+    previews: bool,
+    config: &str,
+) -> (
+    konoma_test_support::TmpDir,
+    PreparedProjects,
+    Terminal<TestBackend>,
+) {
     let dir = konoma_test_support::unique_tmp("project_preview");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("project.marker"), "").unwrap();
     std::fs::write(dir.join("file.txt"), "ordinary file 日本語\n".repeat(40)).unwrap();
     let prepared = super::super::prepare::prepare_projects_with_previews(
-        vec![Arc::new(Project)],
+        vec![plugin],
         if previews {
             vec![Arc::new(FilePlugin(table))]
         } else {
@@ -153,10 +184,7 @@ fn setup(
         },
         &dir,
         TermCaps::new(),
-        (
-            SharedConfig::parse("[ui]\nlang='en'\ndiff_view='source'\nwrap=false\n").unwrap(),
-            None,
-        ),
+        (SharedConfig::parse(config).unwrap(), None),
         Arc::new(Services),
     )
     .unwrap_or_else(|e| panic!("{}", e.error));
