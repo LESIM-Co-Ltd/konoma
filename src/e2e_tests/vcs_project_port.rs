@@ -14,6 +14,7 @@ include!("vcs_project_footer_cases.rs");
 include!("vcs_project_keys_cases.rs");
 include!("vcs_project_help_cases.rs");
 include!("vcs_project_old_screens_cases.rs");
+include!("vcs_project_space_cases.rs");
 
 fn isolated(name: &str) -> bool {
     super::vcs_host_only::isolate_test("vcs_project_port", name)

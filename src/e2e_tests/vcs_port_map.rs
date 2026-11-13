@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 include!("vcs_port_pending_titles.rs");
-include!("vcs_port_pending_behavior.rs");
 include!("vcs_port_inventory.rs");
 
 // Each group expands to (old_test, assertion_id, new_test). The case dimensions are part
@@ -402,6 +401,12 @@ const GROUPS: &[Group] = &[
         ],
         &["changes", "log", "graph", "branches", "file-diff"],
         "vcs_port_copy_contexts_and_space_footer_order",
+    ),
+    (
+        "e2e_space_menu_follows_the_footer_order_and_labels_in_git",
+        &["space:log:min-three"],
+        &["git", "jj"],
+        "vcs_port_project_space_shared_operations",
     ),
     (
         "e2e_diff_navigation_and_back_work_without_a_repository",
@@ -1687,11 +1692,6 @@ fn port_map() -> Vec<(&'static str, String, &'static str)> {
             .iter()
             .map(|(old, id, marker)| (*old, (*id).into(), *marker)),
     );
-    table.extend(
-        PENDING_BEHAVIORS
-            .iter()
-            .map(|p| (p.old, p.assertion.to_owned(), p.marker)),
-    );
     table
 }
 
@@ -1779,7 +1779,6 @@ fn every_ported_assertion_names_an_existing_new_test() {
         assert_ne!(old, new, "a port must not refer back to its old test");
         assert!(
             functions.contains(new)
-                || PENDING_BEHAVIORS.iter().any(|p| p.marker == *new)
                 || (matches!(
                     *new,
                     "PENDING_DECISION:title-count" | "PENDING_DECISION:title-label"
@@ -1810,7 +1809,6 @@ fn every_ported_assertion_names_an_existing_new_test() {
             .iter()
             .flat_map(|(_, tests)| tests.iter().copied())
             .chain(PENDING_TITLES.iter().map(|(old, _, _)| *old))
-            .chain(PENDING_BEHAVIORS.iter().map(|p| p.old))
             .collect::<BTreeSet<_>>()
     );
     assert_eq!(
@@ -1832,15 +1830,10 @@ fn every_ported_assertion_names_an_existing_new_test() {
             + 21
             + GAP_ROWS
             + PENDING_TITLES.len()
-            + PENDING_BEHAVIORS.len(),
+            // The Log Space minimum, now an ordinary assertion: git and jj.
+            + 2,
         "a ported assertion/case row was removed"
     );
-    for p in PENDING_BEHAVIORS {
-        eprintln!(
-            "{}: {}/{}; old literal: {}",
-            p.marker, p.old, p.assertion, p.literal
-        );
-    }
     for (old, id, marker) in PENDING_TITLES {
         eprintln!("{marker}: {old}/{id}");
     }

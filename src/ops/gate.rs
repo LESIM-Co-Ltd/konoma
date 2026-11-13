@@ -184,6 +184,17 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         // Wrapping is a property of the text and the decorated document.
         A::ToggleWrap => when(matches!(ctx, Context::Text | Context::Document)),
 
+        // On a project canvas `[` and `]` return at once with a single tab, so they do not act
+        // there (the menu and the help list a key only when it acts).
+        A::TabPrev | A::TabNext if matches!(ctx, Context::Canvas) && app.project_active() => {
+            when(app.tab_count() > 1)
+        }
+        // The help words a version-control screen by its own context.
+        #[cfg(feature = "git")]
+        A::TabPrev | A::TabNext if matches!(ctx, Context::Screen(..)) && app.project_active() => {
+            when(app.tab_count() > 1)
+        }
+
         // --- `e` and `o` ---
         A::RequestEdit => gate_edit(app),
         A::OpenExternal => gate_open_external(app),

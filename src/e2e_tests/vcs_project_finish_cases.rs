@@ -402,18 +402,20 @@ fn assert_space_contract(sim: &Sim) {
             want.push(action);
         }
     }
-    // The old minimum-three assertion on Log is pending as project-space-shared-operations.
-    if sim
-        .app
-        .project_frame()
-        .is_none_or(|f| f.key.screen != "log")
-    {
-        assert!(
-            want.len() >= 3,
-            "enough footer operations {ctx:?}: {want:?}; menu={declared:?}\n{}",
-            sim.screen()
-        );
+    // On a project canvas the host's shared operations follow the plugin's footer operations in
+    // the menu (the host adds them itself), so they count towards the minimum on every screen.
+    if ctx == Context::Canvas && sim.app.project_active() {
+        for item in &declared {
+            if !matches!(item.action, Action::Plugin(_)) && !want.contains(&item.action) {
+                want.push(item.action);
+            }
+        }
     }
+    assert!(
+        want.len() >= 3,
+        "enough footer operations {ctx:?}: {want:?}; menu={declared:?}\n{}",
+        sim.screen()
+    );
     assert_eq!(
         declared
             .iter()

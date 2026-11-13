@@ -498,6 +498,85 @@ fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
     build_actions_in(app, ctx, gated, None)
 }
 
+/// The host's shared operations a project canvas offers in its `Space` menu, in the order the
+/// legacy hub listed them. Each is listed iff its key acts there (the gate), like the plugin's own
+/// items; the canvas's other keys (`/`, `Tab`, `h`) are the project controls, not these.
+const PROJECT_SHARED_OPS: [Action; 10] = [
+    Action::GitLaunchTool,
+    Action::Refresh,
+    Action::TabNewAfter,
+    Action::TabPrev,
+    Action::TabNext,
+    Action::ToggleTabList,
+    Action::PasteJump,
+    Action::ToggleHelp,
+    Action::ToggleFollow,
+    Action::Quit,
+];
+
+/// The project canvas's `Space` menu: the plugin's declared operations (their letters as the
+/// presentation assigned them) followed by the host's shared operations, all through the one
+/// shared builder. Items are decided over every candidate, so a letter does not move when another
+/// operation happens not to act right now.
+fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
+    let ctx = Context::Canvas;
+    let Some((presentation, actions)) = app.project_presentation() else {
+        return vec![];
+    };
+    let declared = presentation.declared_actions_menu();
+    let acting = presentation.actions_menu();
+    let plugin = |index: usize| Action::Plugin(actions[index]);
+    let mut cands: Vec<(Action, Option<KeyPress>)> = declared
+        .iter()
+        .map(|item| (plugin(item.action), Some(item.key)))
+        .collect();
+    let own: Vec<Action> = cands.iter().map(|(a, _)| *a).collect();
+    let bound = app.keymaps.bound_actions_on(ctx, app.screen_keys_for(ctx));
+    let defaults = app
+        .keymaps
+        .default_ops
+        .get(&ctx)
+        .cloned()
+        .unwrap_or_default();
+    for a in PROJECT_SHARED_OPS {
+        let key = bound
+            .iter()
+            .find(|(_, b)| *b == a)
+            .and_then(|(k, _)| menu_core::plain_key(*k));
+        if key.is_some() || bound.iter().any(|(_, b)| *b == a) || defaults.contains(&a) {
+            menu_core::add_candidate(&mut cands, a, key);
+        }
+    }
+    menu_core::build_items(
+        cands,
+        &own,
+        &[],
+        &PROJECT_SHARED_OPS,
+        mnemonic,
+        |a| {
+            !gated
+                || match a {
+                    Action::Plugin(_) => acting.iter().any(|i| plugin(i.action) == a),
+                    _ => action_enabled(app, ctx, a),
+                }
+        },
+        |a| match a {
+            Action::Plugin(_) => declared
+                .iter()
+                .find(|i| plugin(i.action) == a)
+                .map(|i| i.label.clone()),
+            _ => label_of(app, ctx, a, &[]).map(|m| tr(app.lang, m).to_string()),
+        },
+    )
+    .into_iter()
+    .map(|i| MenuItem {
+        key: i.key,
+        action: i.action,
+        label: i.label,
+    })
+    .collect()
+}
+
 fn build_actions_in(
     app: &App,
     ctx: Context,
@@ -505,22 +584,7 @@ fn build_actions_in(
     diff: Option<&DiffPresentation>,
 ) -> Vec<MenuItem> {
     if app.project_active() && ctx == Context::Canvas {
-        let Some((presentation, actions)) = app.project_presentation() else {
-            return vec![];
-        };
-        let items = if gated {
-            presentation.actions_menu()
-        } else {
-            presentation.declared_actions_menu()
-        };
-        return items
-            .iter()
-            .map(|item| MenuItem {
-                key: item.key,
-                action: Action::Plugin(actions[item.action]),
-                label: item.label.clone(),
-            })
-            .collect();
+        return build_project_actions(app, gated);
     }
     let prio = diff
         .map(|p| footer::diff_priority(app, p))
