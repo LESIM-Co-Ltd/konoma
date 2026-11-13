@@ -237,13 +237,35 @@ fn vcs_port_worktree_detail_help_equals_old_hub() {
         old.open_git_worktrees();
         old.worktree_show_changes();
         assert!(old.is_git_detail(), "{name}: the old worktrees `d` did not open a detail");
-        let old_lines = help_lines_without_actions(crate::ops::help::sections(&old), lang, true);
+        // Excluded difference (rule: a key that does nothing gets no hint): the old hub listed a
+        // `[Copy commit]` section on this detail, but a worktree's changes have no commit, so the
+        // canvas declares no copy act on `worktree_diff` and the new help has no copy section.
+        // The exclusion is itself checked: the old section must exist, the new must have none.
+        let copy_title = tr(lang, Msg::WkGitCopyTitle);
+        let mut old_sections = crate::ops::help::sections(&old);
+        let before = old_sections.len();
+        old_sections.retain(|s| s.title != copy_title);
+        assert_eq!(
+            old_sections.len() + 1,
+            before,
+            "{name}: the old worktree detail help no longer has a [{copy_title}] section"
+        );
+        let old_lines = help_lines_without_actions(old_sections, lang, true);
         let mut sim = open(&root, config("git", name), (220, 60));
         screen(&mut sim, "worktrees");
         keys(&mut sim, "d");
         assert_eq!(sim.app.project_frame().unwrap().key.screen, "worktree_diff", "{name}");
-        let new = help_lines_without_actions(crate::ops::help::sections(&sim.app), lang, true);
-        assert!(old_lines.len() >= 20, "{name}: only {} lines", old_lines.len());
+        let new_sections = crate::ops::help::sections(&sim.app);
+        for title in [Msg::WkGitCopyTitle, Msg::WkBranchCopyTitle, Msg::WkCopyPathTitle] {
+            let title = tr(lang, title);
+            assert!(
+                new_sections.iter().all(|s| s.title != title),
+                "{name}: worktree detail help has a [{title}] section"
+            );
+        }
+        let new = help_lines_without_actions(new_sections, lang, true);
+        // Measured: 19 lines once the old `[Copy commit]` section is excluded.
+        assert!(old_lines.len() >= 15, "{name}: only {} lines", old_lines.len());
         assert_eq!(
             new,
             old_lines,

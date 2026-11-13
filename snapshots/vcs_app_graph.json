@@ -2,11 +2,11 @@
   "root_help": {
     "en": {
       "graph": {"key": "h / Esc  ·  q", "host": "back to changes", "app": "quit"},
-      "branches": {"key": "q", "host": "Pop this screen or return to the previous view", "app": "quit"}
+      "branches": {"key": "h / Esc  ·  q", "host": "back to changes", "app": "quit"}
     },
     "ja": {
       "graph": {"key": "h / Esc  ·  q", "host": "変更ハブへ戻る", "app": "終了"},
-      "branches": {"key": "q", "host": "画面を一つ戻るか元の表示に戻る", "app": "終了"}
+      "branches": {"key": "h / Esc  ·  q", "host": "変更ハブへ戻る", "app": "終了"}
     }
   },
   "en": {

@@ -5,14 +5,7 @@ use konoma_plugin::view::{ListRow, ListView};
 use konoma_vcs_core::git::CommitInfo;
 
 pub(super) fn copy_declarations(mut manifest: Manifest, jj: bool) -> Manifest {
-    // `worktree_diff` (a worktree's changes) is the old hub's detail screen too: its `y` menu was
-    // listed there and has no commit to copy.
-    let screens = if jj {
-        vec!["log", "graph", "detail"]
-    } else {
-        vec!["log", "graph", "detail", "worktree_diff"]
-    };
-    for screen in screens {
+    for screen in ["log", "graph", "detail"] {
         for (field, key, label) in [
             (
                 "short_hash",
@@ -44,7 +37,7 @@ pub(super) fn copy_declarations(mut manifest: Manifest, jj: bool) -> Manifest {
                     .label(label)
                     .project_context(ActContext::screen(
                         screen,
-                        if !matches!(screen, "detail" | "worktree_diff") {
+                        if screen != "detail" {
                             vec!["commit"]
                         } else {
                             vec![]

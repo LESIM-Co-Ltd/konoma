@@ -2412,6 +2412,10 @@ fn jj_graph_and_bookmarks_offer_only_real_actions() {
                 key(KeyCode::Enter),
                 ch('c'),
                 ch('d'),
+                // The host's bookmarks help ends with its own [Tabs] section (the standalone has
+                // no tabs), so the two panels differ in height. A screen short enough to clip
+                // both panels at the same height shows the same rows on both sides.
+                Step::Resize(180, 15),
                 ch('?'),
                 ch('q'),
             ];

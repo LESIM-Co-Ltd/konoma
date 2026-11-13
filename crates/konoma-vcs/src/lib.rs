@@ -384,12 +384,6 @@ impl Session for Changes {
             else {
                 return Ok(Outcome::Unhandled);
             };
-            if screen == "worktree_diff" {
-                // A worktree's changes have no commit to copy.
-                return Ok(Outcome::Flash(
-                    t!(en: "no commit to copy", ja: "コピーするコミットがありません"),
-                ));
-            }
             let Some(row) = context
                 .selected
                 .as_ref()
@@ -586,7 +580,7 @@ impl Session for Changes {
 
 fn copy_action(action: &str) -> Option<(&str, &str)> {
     let (screen, field) = action.split_once("_copy_")?;
-    (matches!(screen, "log" | "graph" | "detail" | "worktree_diff")
+    (matches!(screen, "log" | "graph" | "detail")
         && matches!(
             field,
             "short_hash" | "full_hash" | "subject" | "message" | "author" | "date"
