@@ -257,6 +257,13 @@ rainbow = false      # monochrome CSV / TSV columns
   in `[keys.git]` moves the jump to the branches screen from `b` to `B`, and `b = "noop"` removes it (Tab still reaches
   the screen). The footer, the `?` help and the tab bar follow. A key the host keeps for itself, or another jump's key, is refused
   and the jump keeps its default key.
+- The old per-screen tables (`[keys."git.changes"]`, `[keys."jj.log"]`, `[keys.git_changes]`, ...) are read as old names: an
+  entry whose action has a counterpart (`git_stage` -> `stage`, `git_open_branches` -> `goto_branches`, ...) is moved into
+  `[keys.git]` / `[keys.jj]` and announced once at start (`write [keys.git] x = "stage" instead`). An old action with no
+  counterpart (for example `git_open_log`, or `git_stage` on jj) does nothing and is announced as "no effect". `[keys.git]` /
+  `[keys.jj]` win over an old entry for the same key or operation, and a `"git.<screen>"` table wins over `git_<screen>`.
+  `noop` moves only when the key is that screen's operation (or a jump) and no other screen uses it; a key several screens
+  share (`s`, `d`, `c`) keeps its old meaning "this screen only". Standalone apps read only `[keys.<plugin id>]`.
 - **Old names are announced once, at start.** When the config still uses one of the `[ui]` names in the table
   below and the plugin's own key is not set, the footer says `config: [ui] md_alerts is an old name — write
   [plugins.markdown] alerts instead` (and `(+n more)` for the rest). The old name keeps working; the message goes

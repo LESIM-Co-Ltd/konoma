@@ -16,6 +16,8 @@ pub(crate) mod external_testkit;
 mod listing;
 #[cfg(test)]
 mod notify_tests;
+#[cfg(feature = "git")]
+pub(crate) mod old_screens;
 #[cfg(test)]
 mod preview_io_tests;
 mod profile;

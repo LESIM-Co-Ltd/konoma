@@ -540,6 +540,9 @@ code_theme = "TwoDark"
 # action stays in the `Space` menu.
 # The keys that jump between a plugin's project screens are operations named goto_<screen id>: B = "goto_branches"
 # in [keys.git] moves the branches jump from b to B; b = "noop" removes it (Tab still reaches the screen).
+# The old per-screen tables ([keys."git.changes"], [keys."jj.log"], [keys.git_changes]) are read as old names: x = "git_stage"
+# there is moved to [keys.git] x = "stage" and announced once at start; an old action with no counterpart is announced as
+# "no effect". [keys.git] / [keys.jj] win over an old entry for the same key or operation.
 # A plugin that is a program of its own (any language; it speaks konoma's plugin protocol on stdin/stdout):
 #   command = "my-viewer"   the program. A name without `/` is searched on PATH, a path is taken as it is. It is not run
 #                           through a shell. The id is the table's name and must be the id the program declares.

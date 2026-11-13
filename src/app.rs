@@ -2427,14 +2427,24 @@ impl App {
         // The `[keys.<plugin id>]` tables are the plugins', not the host's: they are taken out of
         // the host's keymap config and applied to the plugins' declared actions.
         let mut keys_config = cfg.keys.to_keymap_config();
-        let plugin_keys = crate::plugins::PluginKeys::build(
-            &crate::plugins::shared_registry(&cfg.plugin_disabled()),
-            &mut keys_config.surfaces,
-        );
-        let keymaps = crate::keymap::KeyMap::from_config(
+        let registry = crate::plugins::shared_registry(&cfg.plugin_disabled());
+        // The old per-screen tables are read as old names of the version-control plugins'
+        // operations: translated into `[keys.<plugin id>]` (the table the plugins' keys are
+        // bound from) and noted below through the keymap's own renames and warnings.
+        #[cfg(feature = "git")]
+        let old_screens =
+            crate::plugins::old_screens::translate(&registry, &mut keys_config.surfaces);
+        let plugin_keys = crate::plugins::PluginKeys::build(&registry, &mut keys_config.surfaces);
+        #[allow(unused_mut)]
+        let mut keymaps = crate::keymap::KeyMap::from_config(
             crate::keymap::scheme_from_str(&cfg.ui.keys),
             &keys_config,
         );
+        #[cfg(feature = "git")]
+        {
+            keymaps.renames.extend(old_screens.renames);
+            keymaps.warnings.extend(old_screens.warnings);
+        }
         let mut app = Self {
             project_runtimes: std::collections::HashMap::new(),
             project_dialog: None,
