@@ -241,7 +241,7 @@ rainbow = false      # CSV / TSV の列をモノクロに
 - プラグインのプロジェクト画面へ移るキーも操作で、名前は `goto_<画面 id>` です。`[keys.git]` の `B = "goto_branches"` でブランチ画面へ
   移るキーを `b` から `B` に付け替え、`b = "noop"` で外します(Tab では引き続きその画面へ行けます)。フッター・`?` ヘルプ・タブバーも追随します。
   ホストが使うキーや他のジャンプのキーは断られ、そのジャンプは既定のキーのままです。固定されていない画面にはすべて `goto_<画面 id>` があり、
-  既定のキーが無い画面にもあります(git・jj プラグインの `goto_log`・`goto_graph`・`goto_changes`): `L = "goto_log"` でログ画面にキー `L` を付けられます。
+  既定のキーが無い画面にもあります(git・jj プラグインの `goto_log`・`goto_graph`): `L = "goto_log"` でログ画面にキー `L` を付けられます。
 - 古い画面別テーブル(`[keys."git.changes"]`・`[keys."jj.log"]`・`[keys.git_changes]` など)は古い名前として読みます。対応する操作がある
   エントリ(`git_stage` -> `stage`、`git_open_branches` -> `goto_branches` など)は `[keys.git]` / `[keys.jj]` へ移し、起動時に 1 回案内します
   (`[keys.git] x = "stage" に書き換えてください`)。対応する操作が無い古い操作(jj の `git_stage` など)は何もせず、
