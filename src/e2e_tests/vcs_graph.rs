@@ -749,20 +749,31 @@ fn hints_match(old: &Sim, new: &Sim, jj: bool) {
         .iter()
         .find(|section| section.title == title)
         .unwrap();
-    let mut expected_titles = vec![
-        title.to_string(),
-        tr(old.app.lang, Msg::HelpMove).to_string(),
-    ];
-    for (leader, key) in [
-        (crate::keymap::LeaderId::Copy, "y"),
-        (crate::keymap::LeaderId::Actions, "Space"),
-    ] {
-        if let Some(section) =
-            crate::ui::help::leader_section(&new.app, Context::Canvas, leader, key)
-        {
-            expected_titles.push(section.title);
-        }
-    }
+    // The canvas help lists the old hub's sections, titles and order (Tabs and Global
+    // included). Only the Space menu (the shared-operations unit's) sits elsewhere in the
+    // old hub's order, so its title is placed where the canvas puts it.
+    // The old hub listed `[Copy commit]` even on the uncommitted row, where `y` copies nothing;
+    // a help row exists only while its key acts, so that section is expected only when the
+    // canvas's copy menu is open-able.
+    let actions_title = tr(old.app.lang, Msg::WkActionsTitle);
+    let copy_title = tr(old.app.lang, Msg::WkGitCopyTitle);
+    let copy_acts = crate::ui::help::leader_section(
+        &new.app,
+        Context::Canvas,
+        crate::keymap::LeaderId::Copy,
+        "y",
+    )
+    .is_some();
+    let mut expected_titles: Vec<String> = legacy
+        .iter()
+        .map(|section| section.title.clone())
+        .filter(|t| *t != actions_title && (copy_acts || *t != copy_title))
+        .collect();
+    let actions_at = actual
+        .iter()
+        .position(|section| section.title == actions_title)
+        .expect("the Space menu section");
+    expected_titles.insert(actions_at, actions_title.to_string());
     assert_eq!(
         actual
             .iter()

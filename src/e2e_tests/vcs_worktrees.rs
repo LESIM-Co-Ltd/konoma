@@ -684,9 +684,10 @@ fn e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior() {
             assert_eq!(
                 rows.iter()
                     .filter(|(keys, label)| keys == "/"
-                        && label == tr(new.app.lang, Msg::GitFilterByName))
+                        && label == tr(new.app.lang, Msg::ListFilterHelp))
                     .count(),
-                1
+                1,
+                "the old hub words the changes and log filter row `ListFilterHelp`"
             );
             assert!(!rows.iter().any(|(keys, _)| keys == "V"));
             assert!(!new.app.project_marks_enabled());
@@ -995,16 +996,7 @@ fn e2e_vcs_worktrees_help_matches_legacy_action_texts_in_both_languages_with_onl
             )
             .into_iter()
             .filter(|row| row.actions.iter().any(|a| actions.contains(a)))
-            .map(|row| {
-                (
-                    if row.keys_text.contains("Enter") {
-                        "Enter".into()
-                    } else {
-                        row.keys_text
-                    },
-                    row.desc,
-                )
-            })
+            .map(|row| (row.keys_text, row.desc))
             .collect();
             if path == &repo.root {
                 expected.retain(|(key, _)| key != "Ctrl-t");
@@ -1014,7 +1006,7 @@ fn e2e_vcs_worktrees_help_matches_legacy_action_texts_in_both_languages_with_onl
             let mut actual: Vec<_> = sections
                 .iter()
                 .flat_map(|s| &s.rows)
-                .filter(|(keys, _)| ["Enter", "c", "Ctrl-t", "d", "/"].contains(&keys.as_str()))
+                .filter(|(keys, _)| ["l / Enter", "c", "Ctrl-t", "d", "/"].contains(&keys.as_str()))
                 .cloned()
                 .collect();
             actual.sort();

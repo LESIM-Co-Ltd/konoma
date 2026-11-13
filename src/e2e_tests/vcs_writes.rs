@@ -685,6 +685,7 @@ fn assert_hints(p: &WritePair, jj: bool, empty: bool) {
         .filter(|row| row.actions.iter().any(|a| actions.contains(a)))
         .map(|row| (row.keys_text, row.desc))
         .collect();
+    let old_keys: Vec<String> = help.iter().map(|(keys, _)| keys.clone()).collect();
     if empty && !jj {
         // User decision (2026-11-05): only the inert s/u/x hints on an empty list differ.
         // Assert the exact legacy shape before applying this narrow exception.
@@ -709,11 +710,21 @@ fn assert_hints(p: &WritePair, jj: bool, empty: bool) {
         help.remove(2);
     }
     assert_eq!(actual, expected);
+    // The canvas help is the old hub's: one section named like the old one (`screen_rows` in
+    // src/ops/help.rs), whose write rows are picked out by the keys of the old write rows.
+    let label = tr(
+        p.new.app.lang,
+        if jj {
+            Msg::JjChangesLabel
+        } else {
+            Msg::GitChangesLabel
+        },
+    );
     let actual_help: Vec<_> = crate::ops::help::sections_for(&p.new.app, Context::Canvas)
         .into_iter()
-        .filter(|section| section.title == if jj { "jj" } else { "Git" })
+        .filter(|section| section.title == label)
         .flat_map(|section| section.rows)
-        .filter(|(keys, _)| keys != "Enter")
+        .filter(|(keys, _)| old_keys.contains(keys) || keys == "S" || keys == "U")
         .collect();
     assert_eq!(actual_help, help);
 }

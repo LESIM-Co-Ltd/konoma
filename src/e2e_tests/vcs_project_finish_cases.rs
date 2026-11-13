@@ -633,15 +633,22 @@ fn graph_help_literals(sim: &Sim, jj: bool) {
         assert!(!footer.contains("base"), "jj graph footer has no base token: {footer}");
         assert!(!help_text.contains("base"), "jj graph help has no base row");
     }
-    // As in the old hub's frame: the graph section, then Movement, then the leader sections.
+    // As in the old hub's frame: the graph section, then Movement, the copy section (titled
+    // `[Copy commit]` as the old hub's; present when the key acts), the Space menu, then the
+    // Tabs and Global sections the old hub's help ends with.
     let mut titles = vec![title.to_owned(), tr(sim.app.lang, Msg::HelpMove).to_owned()];
-    for (leader, key) in [(LeaderId::Copy, "y"), (LeaderId::Actions, "Space")] {
+    for (leader, key, old_title) in [
+        (LeaderId::Copy, "y", Some(Msg::WkGitCopyTitle)),
+        (LeaderId::Actions, "Space", None),
+    ] {
         if let Some(section) =
             crate::ui::help::leader_section(&sim.app, Context::Canvas, leader, key)
         {
-            titles.push(section.title);
+            titles.push(old_title.map_or(section.title, |m| tr(sim.app.lang, m).to_owned()));
         }
     }
+    titles.push(tr(sim.app.lang, Msg::HelpTabs).to_owned());
+    titles.push(tr(sim.app.lang, Msg::HelpGlobal).to_owned());
     assert_eq!(
         sections.iter().map(|s| s.title.clone()).collect::<Vec<_>>(),
         titles
@@ -1438,7 +1445,12 @@ fn vcs_port_screen_keys_decide_the_keys_and_the_footer_hint_together() {
     let mut sim = open(&jjroot, config("jj", "en"), (180, 24));
     let (footer, help) = shown_hints(&sim);
     assert!(!footer.contains("j/k"), "jj first screen shows no nav hint: {footer}");
-    assert!(help.contains("j/k / ↑/↓"), "jj default help: {help}");
+    // The old hub's jj changes help lists the movement keys as `[Movement] j / k  move`.
+    assert!(
+        help.lines()
+            .any(|l| l.trim_start().starts_with("j / k") && l.ends_with("move")),
+        "jj default help: {help}"
+    );
     screen(&mut sim, "log");
     assert!(shown_hints(&sim).0.contains("j/k:nav"), "jj log default footer");
     let mut cfg = config("jj", "en");

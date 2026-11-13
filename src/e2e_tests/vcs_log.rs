@@ -242,8 +242,9 @@ fn e2e_vcs_copy_menu_cells_help_footer_and_space_membership_match_the_declaratio
                 actual.title,
                 crate::i18n::tr(new.app.lang, crate::i18n::Msg::CopyHint)
             );
+            // The canvas's copy section reads like the old hub's (`[Copy commit]`, same rows).
             let expected_help =
-                crate::ui::help::leader_section(&new.app, Context::Canvas, LeaderId::Copy, "y")
+                crate::ui::help::leader_section(&old.app, legacy_context, LeaderId::GitCopy, "y")
                     .unwrap();
             assert!(crate::ops::help::sections_for(&new.app, Context::Canvas)
                 .iter()

@@ -146,9 +146,12 @@ fn vcs_port_copy_menu_literal_labels_help_footer_and_space_membership() {
             let expected =
                 crate::ui::help::leader_section(&sim.app, Context::Canvas, LeaderId::Copy, "y")
                     .unwrap();
+            // The help section is titled as the old hub's (`[Copy commit]`, `WkGitCopyTitle`).
             assert!(crate::ops::help::sections_for(&sim.app, Context::Canvas)
                 .iter()
-                .any(|s| s.title == expected.title && s.rows == expected.rows));
+                .any(
+                    |s| s.title == tr(sim.app.lang, Msg::WkGitCopyTitle) && s.rows == expected.rows
+                ));
             // The old hub's list footers never showed the copy key; the pushed detail's still does.
             let copy_token = format!("y:{}", tr(sim.app.lang, Msg::CopyHint));
             assert_eq!(
@@ -226,7 +229,12 @@ fn vcs_port_log_and_changes_help_filter_marks_and_footer_priority() {
                 .into_iter()
                 .flat_map(|s| s.rows)
                 .collect();
-            assert_eq!(rows.iter().filter(|(k, label)| k == "/" && label == tr(sim.app.lang, Msg::GitFilterByName)).count(), 1);
+            assert_eq!(
+                rows.iter()
+                    .filter(|(k, label)| k == "/" && label == tr(sim.app.lang, Msg::ListFilterHelp))
+                    .count(),
+                1
+            );
             assert!(!rows.iter().any(|(k, _)| k == "V"));
             assert!(!sim.app.project_marks_enabled());
             keys(&mut sim, "V");
@@ -515,9 +523,15 @@ fn vcs_port_declared_marks_and_branch_copy_help_follow_the_real_list() {
                 ProjectContent::List(_)
             ));
             let sections = crate::ops::help::sections_for(&sim.app, Context::Canvas);
+            // The old hub's screen sections and filter words (`screen_rows`, src/ops/help.rs).
+            let (label, filter) = match name {
+                "changes" => (Msg::GitChangesLabel, Msg::ListFilterHelp),
+                "log" => (Msg::GitLogLabel, Msg::ListFilterHelp),
+                _ => (Msg::GitBranchesLabel, Msg::GitFilterByName),
+            };
             let project = sections
                 .iter()
-                .find(|s| s.title == tr(sim.app.lang, Msg::ProjectTitle))
+                .find(|s| s.title == tr(sim.app.lang, label))
                 .unwrap();
             assert_eq!(project.rows.iter().any(|(k, _)| k == "V"), marks);
             if marks {
@@ -527,7 +541,7 @@ fn vcs_port_declared_marks_and_branch_copy_help_follow_the_real_list() {
             }
             assert!(project
                 .rows
-                .contains(&("/".into(), tr(sim.app.lang, Msg::GitFilterByName).into())));
+                .contains(&("/".into(), tr(sim.app.lang, filter).into())));
         }
         for other in [false, true] {
             if other {
@@ -535,10 +549,16 @@ fn vcs_port_declared_marks_and_branch_copy_help_follow_the_real_list() {
             }
             let name = sim.app.project_act_context().selected.unwrap().value;
             let sections = crate::ops::help::sections_for(&sim.app, Context::Canvas);
-            let git: Vec<_> = sections
+            // The old hub's branches section holds the three branch rows among its screen rows;
+            // they are picked out by their old keys (`l / Enter`, `c`, `d`).
+            let navigation = sections
                 .iter()
-                .filter(|s| s.title == "Git")
-                .flat_map(|s| &s.rows)
+                .find(|s| s.title == tr(sim.app.lang, Msg::GitBranchesLabel))
+                .unwrap();
+            let git: Vec<_> = navigation
+                .rows
+                .iter()
+                .filter(|(k, _)| ["l / Enter", "c", "d"].contains(&k.as_str()))
                 .map(|(_, desc)| desc.as_str())
                 .collect();
             assert_eq!(
@@ -549,10 +569,6 @@ fn vcs_port_declared_marks_and_branch_copy_help_follow_the_real_list() {
                     tr(sim.app.lang, Msg::GitDelete)
                 ]
             );
-            let navigation = sections
-                .iter()
-                .find(|s| s.title == tr(sim.app.lang, Msg::ProjectTitle))
-                .unwrap();
             assert!(navigation.rows.iter().any(|(k, _)| k == "/"));
             assert!(!navigation.rows.iter().any(|(k, _)| k == "V"));
             let tokens = crate::ops::footer::tokens(&sim.app, Context::Canvas);

@@ -426,9 +426,15 @@ fn e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration()
                 ProjectContent::List(_)
             ));
             let sections = crate::ops::help::sections_for(&new.app, Context::Canvas);
+            // The old hub's screen sections and filter words (`screen_rows`, src/ops/help.rs).
+            let (label, filter) = match screen {
+                "changes" => (Msg::GitChangesLabel, Msg::ListFilterHelp),
+                "log" => (Msg::GitLogLabel, Msg::ListFilterHelp),
+                _ => (Msg::GitBranchesLabel, Msg::GitFilterByName),
+            };
             let project = sections
                 .iter()
-                .find(|section| section.title == tr(new.app.lang, Msg::ProjectTitle))
+                .find(|section| section.title == tr(new.app.lang, label))
                 .unwrap();
             assert_eq!(
                 project.rows.iter().any(|(key, _)| key == "V"),
@@ -443,7 +449,7 @@ fn e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration()
             assert!(
                 project
                     .rows
-                    .contains(&("/".into(), tr(new.app.lang, Msg::GitFilterByName).into())),
+                    .contains(&("/".into(), tr(new.app.lang, filter).into())),
                 "{lang} {screen}"
             );
             new.press(KeyCode::Tab, KeyModifiers::NONE);
@@ -476,23 +482,26 @@ fn e2e_vcs_branches_copy_menu_clipboard_footer_and_help_match_legacy_acts() {
                 Action::BranchCreate,
                 Action::BranchDelete,
             ];
+            // The old hub's branches help (`screen_rows`, src/ops/help.rs) and the canvas's share
+            // one section label, so the three branch rows are compared as (keys, words) pairs,
+            // selected in the canvas section by the old rows' keys.
             let expected: Vec<_> = crate::ops::help::rows_for(&old.app, ctx)
                 .into_iter()
                 .filter(|r| r.actions.iter().any(|a| actions.contains(a)))
-                .map(|r| r.desc)
+                .map(|r| (r.keys_text, r.desc))
                 .collect();
             let sections = crate::ops::help::sections_for(&new.app, Context::Canvas);
-            let actual: Vec<_> = sections
-                .iter()
-                .filter(|s| s.title == "Git")
-                .flat_map(|s| &s.rows)
-                .map(|(_, desc)| desc.clone())
-                .collect();
-            assert_eq!(actual, expected);
             let navigation = sections
                 .iter()
-                .find(|s| s.title == tr(new.app.lang, Msg::ProjectTitle))
+                .find(|s| s.title == tr(new.app.lang, Msg::GitBranchesLabel))
                 .unwrap();
+            let actual: Vec<_> = navigation
+                .rows
+                .iter()
+                .filter(|(keys, _)| expected.iter().any(|(k, _)| k == keys))
+                .cloned()
+                .collect();
+            assert_eq!(actual, expected);
             assert!(navigation.rows.iter().any(|(keys, _)| keys == "/"));
             assert!(!navigation.rows.iter().any(|(keys, _)| keys == "V"));
             let plugin_tokens: Vec<_> = crate::ops::footer::tokens(&new.app, Context::Canvas)
