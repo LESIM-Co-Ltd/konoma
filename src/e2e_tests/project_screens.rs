@@ -995,14 +995,21 @@ fn e2e_project_hint_groups_only_enabled_keys_and_no_empty_hint() {
             .into_iter()
             .filter(|s| s.ends_with(":stage(all)"))
             .collect();
+        // With one member left, the row's words are that member's own help (the fixture's
+        // `action()` helper sets it to the id), not the group's.
         let rows: Vec<_> = hint_rows(&f)
             .into_iter()
-            .filter(|(_, d)| d == "stage / stage all")
+            .filter(|(_, d)| d == "hint-stage" || d == "hint-stage-all" || d == "stage / stage all")
             .collect();
         match expected {
             Some((token, keys)) => {
+                let words = if keys == "S" {
+                    "hint-stage-all"
+                } else {
+                    "hint-stage"
+                };
                 assert_eq!(tokens, [token]);
-                assert_eq!(rows, [(keys.into(), "stage / stage all".into())]);
+                assert_eq!(rows, [(keys.into(), words.into())]);
             }
             None => {
                 assert!(tokens.is_empty(), "{tokens:?}");

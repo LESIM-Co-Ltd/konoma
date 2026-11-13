@@ -226,14 +226,16 @@ mod tests {
                 ("x".into(), "outside help".into()),
             ]
         );
-        for (enabled, key) in [("stage", "s"), ("stage-all", "S")] {
+        // A row shows the group's joined words only while every member shows a key; with one
+        // member left the words are that member's own (here its label: it declares no help).
+        for (enabled, key, words) in [("stage", "s", "stage"), ("stage-all", "S", "stage all")] {
             assert_eq!(
                 actions
                     .help_section("canvas", "en", |id| id == enabled || id == "outside")
                     .unwrap()
                     .rows,
                 [
-                    (key.into(), "stage / stage all".into()),
+                    (key.into(), words.into()),
                     ("x".into(), "outside help".into())
                 ]
             );

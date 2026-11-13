@@ -117,7 +117,15 @@ pub fn bind_actions<H>(
                 .hint_group
                 .as_ref()
                 .and_then(|id| manifest.hint_groups.iter().find(|g| g.id == *id))
-                .map(|group| (id.to_string(), group.clone())),
+                .map(|group| {
+                    let mut group = group.clone();
+                    group.members = manifest
+                        .actions
+                        .iter()
+                        .filter(|m| m.hint_group.as_deref() == Some(group.id.as_str()))
+                        .count();
+                    (id.to_string(), group)
+                }),
             act: handle(&a.id),
             key: (!a.copy)
                 .then(|| {

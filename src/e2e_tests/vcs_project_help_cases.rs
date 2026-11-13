@@ -47,6 +47,16 @@ fn old_hub_help(
             old.open_git_log();
             old.open_git_commit_detail();
         }
+        // The uncommitted-changes detail (the graph's Uncommitted row, `Enter`).
+        "worktree_detail" => {
+            old.open_git_graph();
+            old.open_git_graph_detail();
+            assert!(
+                old.is_git_detail(),
+                "the old graph's Uncommitted detail did not open ({})",
+                root.display()
+            );
+        }
         other => panic!("unknown screen {other}"),
     }
     help_lines_without_actions(crate::ops::help::sections(&old), lang, screen != "changes")
@@ -161,6 +171,87 @@ fn vcs_port_help_equals_old_hub_on_every_screen() {
         "only {compared} help lines compared, expected at least {}",
         2 * measured
     );
+}
+
+/// Old hub: `src/ops/help.rs` `screen_rows` (`Screen::Detail`, shared by the commit detail and
+/// the worktree detail). The detail the graph's Uncommitted row opens with `Enter` (git and jj),
+/// and the one the worktrees list opens with `d` (git), show the old hub's help text, en and ja.
+#[test]
+fn vcs_port_worktree_detail_help_equals_old_hub() {
+    use crate::i18n::Lang;
+    if isolated("vcs_port_worktree_detail_help_equals_old_hub") {
+        return;
+    }
+    let git = super::vcs_changes::git_repo("vcs_help_wtdetail_git", true);
+    let mut roots = vec![("git", git.to_path_buf())];
+    let jj = if crate::vcs::jj::available() {
+        crate::test_support::jj_scratch_seeded("vcs_help_wtdetail_jj")
+    } else {
+        None
+    };
+    if let Some(jj) = &jj {
+        std::fs::write(jj.join("uncommitted.txt"), "new\n").unwrap();
+        roots.push(("jj", jj.to_path_buf()));
+    }
+    let mut compared = 0;
+    for (id, root) in &roots {
+        for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
+            let old = old_hub_help(root, lang, "worktree_detail");
+            // Measured: the commit detail's 26 lines (git), the same screen.
+            assert!(old.len() >= 20, "{id} {name}: only {} old lines", old.len());
+            let mut sim = open(root, config(id, name), (220, 60));
+            screen(&mut sim, "graph");
+            assert!(
+                sim.app.project_frame().unwrap().cursor == 0,
+                "the graph opens on its Uncommitted row"
+            );
+            press(&mut sim, KeyCode::Enter);
+            assert_eq!(
+                sim.app.project_frame().unwrap().key.screen,
+                "detail",
+                "{id} {name}: Enter on Uncommitted opens the detail"
+            );
+            let new = help_lines_without_actions(crate::ops::help::sections(&sim.app), lang, true);
+            assert_eq!(
+                new,
+                old,
+                "{id} {name}: worktree detail help differs from the old hub\nNEW:\n{}\nOLD:\n{}",
+                new.join("\n"),
+                old.join("\n")
+            );
+            compared += old.len();
+        }
+    }
+    assert!(compared >= 20 * 2 * roots.len(), "only {compared} lines compared");
+
+    // The worktrees list's `d` (git): the old hub opens the same `Screen::Detail`.
+    let dir = sandbox("vcs_help_wtdetail_list").into_canonical().unwrap();
+    let (root, _linked, _detached) = super::vcs_log::seed_worktrees(&dir);
+    // The current worktree's row (the list opens on it) has something to show.
+    std::fs::write(root.join("file.txt"), "changed\n").unwrap();
+    for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
+        let mut old = crate::app::App::new(root.to_path_buf(), crate::config::Config::default())
+            .unwrap();
+        old.lang = lang;
+        old.open_git_view();
+        old.open_git_worktrees();
+        old.worktree_show_changes();
+        assert!(old.is_git_detail(), "{name}: the old worktrees `d` did not open a detail");
+        let old_lines = help_lines_without_actions(crate::ops::help::sections(&old), lang, true);
+        let mut sim = open(&root, config("git", name), (220, 60));
+        screen(&mut sim, "worktrees");
+        keys(&mut sim, "d");
+        assert_eq!(sim.app.project_frame().unwrap().key.screen, "worktree_diff", "{name}");
+        let new = help_lines_without_actions(crate::ops::help::sections(&sim.app), lang, true);
+        assert!(old_lines.len() >= 20, "{name}: only {} lines", old_lines.len());
+        assert_eq!(
+            new,
+            old_lines,
+            "{name}: worktrees `d` detail help\nNEW:\n{}\nOLD:\n{}",
+            new.join("\n"),
+            old_lines.join("\n")
+        );
+    }
 }
 
 /// Old hub: `src/ops/help.rs` `screen_rows` (worktrees) rendered by `sections`. The canvas's
@@ -473,23 +564,29 @@ fn vcs_port_empty_changes_help_is_the_old_help_without_the_write_rows() {
         let new = help_lines_without_actions(crate::ops::help::sections(&sim.app), lang, false);
         // On an empty list the per-row keys do not act: `s`, `u` and `x` and the open key
         // `l / Enter` have no row; `S` and `U` (the all-rows variants) keep theirs, named by the
-        // key that is left. Rows are `   <keys, 16 wide> <description>`.
+        // key that is left, with words that describe only that key (a row's words describe
+        // exactly the keys on it). Rows are `   <keys, 16 wide> <description>`.
         let row = |keys: &str, rest: &str| format!("   {keys:16} {rest}");
+        let (stage_all, unstage_all) = if name == "en" {
+            ("stage all", "unstage all")
+        } else {
+            ("全ステージ", "全アンステージ")
+        };
         let mut dropped = 0;
         let kept: Vec<String> = old
             .iter()
             .filter_map(|line| {
-                let (Some(keys), Some(rest)) = (line.get(3..19), line.get(20..)) else {
+                let (Some(keys), Some(_)) = (line.get(3..19), line.get(20..)) else {
                     return Some(line.clone());
                 };
                 match keys.trim_end() {
                     "s / S" => {
                         dropped += 1;
-                        Some(row("S", rest))
+                        Some(row("S", stage_all))
                     }
                     "u / U" => {
                         dropped += 1;
-                        Some(row("U", rest))
+                        Some(row("U", unstage_all))
                     }
                     "x" | "l / Enter" => {
                         dropped += 1;

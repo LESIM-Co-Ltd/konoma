@@ -707,6 +707,15 @@ fn assert_hints(p: &WritePair, jj: bool, empty: bool) {
         assert_eq!(help[2].0, "x");
         help[0].0 = "S".into();
         help[1].0 = "U".into();
+        // With only S / U on the row, the words are those keys' own (step 1e), not the group's.
+        let ja = p.new.app.plugin_lang() == "ja";
+        help[0].1 = if ja { "全ステージ" } else { "stage all" }.into();
+        help[1].1 = if ja {
+            "全アンステージ"
+        } else {
+            "unstage all"
+        }
+        .into();
         help.remove(2);
     }
     assert_eq!(actual, expected);

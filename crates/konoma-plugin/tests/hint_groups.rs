@@ -218,6 +218,69 @@ mod host {
         );
     }
 
+    fn helped() -> Manifest {
+        Manifest::new("p", "1")
+            .shows(ViewKind::Canvas)
+            .hint_group(HintGroup::new("stage", "stage(all)").help("stage / stage all"))
+            .action(
+                Act::new("stage")
+                    .key("s")
+                    .label("stage")
+                    .help("stage one")
+                    .hint_group("stage"),
+            )
+            .action(
+                Act::new("stage-all")
+                    .key("S")
+                    .label("stage all")
+                    .help("stage everything")
+                    .hint_group("stage"),
+            )
+    }
+
+    /// A row's words describe exactly the keys on it: the group's joined help only while every
+    /// member of the group shows a key, else the words of the member that does.
+    #[test]
+    fn hint_group_help_names_only_the_keys_on_its_row() {
+        let (bound, _) = bind_actions("p", &helped(), None, str::to_owned);
+        let refs: Vec<_> = bound.iter().collect();
+        let words = |enabled: &dyn Fn(&str) -> bool| {
+            acts::help_rows(&refs, "en", |b| enabled(&b.act))
+                .into_iter()
+                .map(|r| (r.0, r.1.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let both = words(&|_| true);
+        assert_eq!(
+            both,
+            [(
+                vec![KeyPress::ch('s'), KeyPress::ch('S')],
+                "stage / stage all".to_string()
+            )]
+        );
+        assert_eq!(
+            words(&|a| a == "stage-all"),
+            [(vec![KeyPress::ch('S')], "stage everything".to_string())]
+        );
+        assert_eq!(
+            words(&|a| a == "stage"),
+            [(vec![KeyPress::ch('s')], "stage one".to_string())]
+        );
+        // A member the screen does not offer at all (absent from the offered actions) counts as
+        // not showing: the declared size of the group is what the row is checked against.
+        let only_all: Vec<_> = bound.iter().filter(|b| b.act == "stage-all").collect();
+        let rows = acts::help_rows(&only_all, "en", |_| true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "stage everything");
+        // A member without a key does not show either.
+        let mut unbound = bound.clone();
+        unbound[0].key = None;
+        let refs: Vec<_> = unbound.iter().collect();
+        let rows = acts::help_rows(&refs, "en", |_| true);
+        assert_eq!(rows[0].0, [KeyPress::ch('S')]);
+        assert_eq!(rows[0].1, "stage everything");
+    }
+
     #[test]
     fn hint_groups_are_scoped_to_the_plugin() {
         let (mut bound, _) = bind_actions("p", &manifest(), None, str::to_owned);

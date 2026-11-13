@@ -263,7 +263,7 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
                     31
                 }
             } else if id == "git" {
-                45
+                51
             } else {
                 32
             }
@@ -313,11 +313,13 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
         }
         assert_eq!(session.enabled("sync"), !git && cfg!(feature = "git"));
         let copies: Vec<_> = manifest.actions.iter().filter(|a| a.copy).collect();
-        assert_eq!(copies.len(), 19);
+        // git also copies on `worktree_diff` (6 more): the old hub's worktree detail had the menu.
+        assert_eq!(copies.len(), if git { 25 } else { 19 });
         for a in copies {
             assert!(
                 a.id.starts_with("log_copy_")
                     || a.id.starts_with("detail_copy_")
+                    || (git && a.id.starts_with("worktree_diff_copy_"))
                     || a.id.starts_with("graph_copy_")
                     || a.id == "branch_copy_name"
             );

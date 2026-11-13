@@ -3181,9 +3181,15 @@ impl App {
         use crate::keymap::{Backend, Context, Screen};
         let nav = self.tab.project_navigation.as_ref()?;
         let frame = nav.frame()?;
+        // The diff a worktrees row's `d` pushes is the old hub's `Screen::Detail` (one detail
+        // screen for a commit and for a worktree).
+        let screen = match frame.key.screen.as_str() {
+            "worktree_diff" => Screen::Detail,
+            name => Screen::from_name(name)?,
+        };
         Some(Context::Screen(
             Backend::from_id(&nav.project.plugin)?,
-            Screen::from_name(&frame.key.screen)?,
+            screen,
         ))
     }
 

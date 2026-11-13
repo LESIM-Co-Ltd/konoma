@@ -124,6 +124,34 @@ impl<'a, H> Hint<'a, H> {
         }
     }
 
+    /// The help words of a row that shows only the keys of the members that act now. The group's
+    /// joined help describes every member, so it is used only when all of them show a key; else
+    /// the words are the first showing member's own help (or label), so a row never names a key
+    /// that is not on it.
+    pub fn help_for(&self, lang: &str, enabled: impl Fn(&ActBinding<H>) -> bool) -> &'a str {
+        let shows = |b: &&&ActBinding<H>| b.key.is_some() && enabled(**b);
+        // A screen may not offer every declared member at all (a row-scoped member has no row to
+        // act on): those do not show either.
+        let declared = self.members[0]
+            .hint_group
+            .as_ref()
+            .map_or(0, |(_, g)| g.members)
+            .max(self.members.len());
+        let all_show = self.members.iter().filter(|b| shows(b)).count() == declared;
+        let first = self.members.iter().find(|b| shows(b));
+        match first {
+            Some(b) if !all_show => {
+                let own = b.help.get(lang);
+                if own.is_empty() {
+                    b.label.get(lang)
+                } else {
+                    own
+                }
+            }
+            _ => self.help(lang),
+        }
+    }
+
     /// Only keys whose actions act now, de-duplicated as in the host's operation groups.
     pub fn keys(&self, enabled: impl Fn(&ActBinding<H>) -> bool) -> Vec<KeyPress> {
         let mut keys = Vec::new();
@@ -208,7 +236,7 @@ pub fn help_rows<'a, H>(
                 return None;
             }
             let b = h.members[0];
-            let desc = h.help(lang);
+            let desc = h.help_for(lang, &enabled);
             Some((keys, desc, b))
         })
         .collect()
