@@ -229,3 +229,138 @@ fn an_unknown_operation_is_still_unknown() {
         }]
     );
 }
+
+/// Three jumps with the default keys `a`, `b`, `c`.
+fn three() -> Manifest {
+    Manifest::new("vcs", "1").project(
+        ProjectDecl::new()
+            .screen(ProjectScreen::new("sa", "A").key('a'))
+            .screen(ProjectScreen::new("sb", "B").key('b'))
+            .screen(ProjectScreen::new("sc", "C").key('c')),
+    )
+}
+
+fn bad_key_notes(notes: &[KeyNote]) -> Vec<String> {
+    notes
+        .iter()
+        .filter_map(|n| match n {
+            KeyNote::BadKey { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_refused_key_does_not_make_the_next_key_for_the_jump_a_false_note() {
+    // `j` is the host's (refused); `x` then is the jump's key, and nothing else is noted about it.
+    let user = table(&[("j", "goto_branches"), ("x", "goto_branches")]);
+    let (jumps, notes) = bind_jumps("vcs", &manifest(), Some(&user));
+    assert_eq!(jump_key_of(&jumps, "branches"), Some(KeyPress::ch('x')));
+    assert_eq!(bad_key_notes(&notes), vec!["j".to_string()], "{notes:?}");
+    let (_, act_notes) = bind_actions("vcs", &manifest(), Some(&user), |a| a.to_string());
+    assert!(act_notes.is_empty(), "{act_notes:?}");
+}
+
+#[test]
+fn of_several_keys_for_one_jump_the_first_acceptable_wins_and_the_others_are_noted() {
+    let user = table(&[
+        ("z", "goto_branches"),
+        ("x", "goto_branches"),
+        ("y", "goto_branches"),
+    ]);
+    let (jumps, notes) = bind_jumps("vcs", &manifest(), Some(&user));
+    assert_eq!(jump_key_of(&jumps, "branches"), Some(KeyPress::ch('x')));
+    assert_eq!(
+        bad_key_notes(&notes),
+        vec!["y".to_string(), "z".to_string()],
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn an_unparseable_jump_key_is_noted_once_by_the_whole_binding() {
+    let user = table(&[("nonsense-key", "goto_branches")]);
+    let (jumps, jump_notes) = bind_jumps("vcs", &manifest(), Some(&user));
+    let (_, act_notes) = bind_actions("vcs", &manifest(), Some(&user), |a| a.to_string());
+    assert_eq!(jump_key_of(&jumps, "branches"), Some(KeyPress::ch('b')));
+    assert_eq!(
+        jump_notes.len() + act_notes.len(),
+        1,
+        "{jump_notes:?} {act_notes:?}"
+    );
+}
+
+#[test]
+fn a_jump_whose_rebinding_is_refused_keeps_its_default_even_when_another_jump_moved_onto_it() {
+    // `a = goto_c` moves C onto A's default key; `b = goto_a` is refused (B has `b`). A must still
+    // have `a`, so the move of C onto `a` is the one refused.
+    let user = table(&[("a", "goto_sc"), ("b", "goto_sa")]);
+    let (jumps, notes) = bind_jumps("vcs", &three(), Some(&user));
+    assert_eq!(
+        jump_key_of(&jumps, "sa"),
+        Some(KeyPress::ch('a')),
+        "{jumps:?}"
+    );
+    assert_eq!(jump_key_of(&jumps, "sb"), Some(KeyPress::ch('b')));
+    assert_eq!(jump_key_of(&jumps, "sc"), Some(KeyPress::ch('c')));
+    assert_eq!(notes.len(), 2, "{notes:?}");
+}
+
+#[test]
+fn every_table_of_up_to_two_entries_keeps_the_jumps_keys_and_notes_each_refusal_once() {
+    let m = three();
+    let defaults = [("goto_sa", 'a'), ("goto_sb", 'b'), ("goto_sc", 'c')];
+    let keys = ["a", "b", "c", "x", "j"];
+    let actions = ["goto_sa", "goto_sb", "goto_sc", "noop"];
+    let mut entries: Vec<(&str, &str)> = Vec::new();
+    for k in keys {
+        for a in actions {
+            entries.push((k, a));
+        }
+    }
+    let mut tables: Vec<Vec<(&str, &str)>> = vec![vec![]];
+    for (i, e) in entries.iter().enumerate() {
+        tables.push(vec![*e]);
+        for f in &entries[i + 1..] {
+            if f.0 != e.0 {
+                tables.push(vec![*e, *f]);
+            }
+        }
+    }
+    assert_eq!(tables.len(), 181, "the enumeration shrank or grew");
+    for t in tables {
+        let user = table(&t);
+        let (jumps, notes) = bind_jumps("vcs", &m, Some(&user));
+        let case = format!("{t:?} -> {jumps:?} {notes:?}");
+        let mut seen = Vec::new();
+        for (op, d) in defaults {
+            let jump = jumps.iter().find(|j| j.op == op).expect("jump");
+            let user_keys: Vec<char> = t
+                .iter()
+                .filter(|(_, a)| *a == op)
+                .map(|(k, _)| k.chars().next().unwrap())
+                .collect();
+            let removed = t.iter().any(|(k, a)| *a == "noop" && *k == d.to_string());
+            match jump.key {
+                Some(k) => {
+                    let ok =
+                        k == KeyPress::ch(d) || user_keys.iter().any(|u| KeyPress::ch(*u) == k);
+                    assert!(ok, "{case}");
+                    assert!(!seen.contains(&k), "shared key: {case}");
+                    seen.push(k);
+                }
+                None => assert!(removed, "keyless without noop: {case}"),
+            }
+        }
+        // Each entry that is not what its jump ended with is noted exactly once.
+        let refused = t
+            .iter()
+            .filter(|(k, a)| {
+                defaults.iter().any(|(op, _)| op == a)
+                    && jumps.iter().find(|j| j.op == *a).and_then(|j| j.key)
+                        != Some(KeyPress::ch(k.chars().next().unwrap()))
+            })
+            .count();
+        assert_eq!(notes.len(), refused, "{case}");
+    }
+}

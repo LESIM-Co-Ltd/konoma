@@ -152,9 +152,20 @@ fn jump_key_refusal(key: &keys::KeySpec) -> Option<String> {
 /// The jump operations of a plugin with their keys: the manifest's defaults, replaced by `user`
 /// (the plugin's `[keys.<id>]` table). The same table [`bind_actions`] reads: `<key> =
 /// "noop"` takes the key from the jump that has it, `<key> = "goto_<screen>"` gives the jump
-/// that key. A rebinding that cannot be kept (a key the host acts on, a key another jump has)
-/// leaves the jump on its default key and is noted; the notes of an unparseable key and a second
-/// key for one operation are [`bind_actions`]'s, which reads the same entries.
+/// that key.
+///
+/// Rules (this function owns every note about a `goto_*` entry except an unparseable key, which
+/// [`bind_actions`] notes, as it reads the same entries):
+/// - Entries are read in the sorted order of their keys. Of several keys for one jump the first
+///   acceptable one wins; a key the host acts on, or a later key for the same jump, is noted.
+/// - `noop`/`disabled` on a key removes the jump that has it by default; such a jump is the only
+///   one that may end without a key.
+/// - The accepted rebindings are tried together (jumps may swap keys). A key wanted by two jumps
+///   goes to the one that holds it: the rebinding that would take it is refused and noted, and its
+///   jump keeps its default key, which stays reserved for it.
+///
+/// After binding, every jump has its accepted key or its default key (or none if removed), and no
+/// two jumps share a key.
 pub fn bind_jumps(
     id: &str,
     manifest: &Manifest,
@@ -174,7 +185,8 @@ pub fn bind_jumps(
     };
     let mut entries: Vec<(&String, &String)> = user.iter().collect();
     entries.sort();
-    let mut chosen: Vec<(&str, KeyPress, &String)> = Vec::new();
+    // The accepted rebinding of each jump: (jump index, key, the key as written).
+    let mut chosen: Vec<(usize, KeyPress, &String)> = Vec::new();
     for (key, action) in entries {
         let Ok(spec) = keys::parse_key(key) else {
             continue;
@@ -186,49 +198,70 @@ pub fn bind_jumps(
             {
                 jump.key = None;
             }
-        } else if jumps.iter().any(|j| j.op == *action) {
-            if chosen.iter().any(|(op, _, _)| op == action) {
-                continue;
-            }
-            if let Some(why) = jump_key_refusal(&spec) {
-                notes.push(KeyNote::BadKey {
+        } else if let Some(slot) = jumps.iter().position(|j| j.op == *action) {
+            match jump_key_refusal(&spec) {
+                Some(why) => notes.push(KeyNote::BadKey {
                     plugin: id.to_string(),
                     key: key.clone(),
                     why,
-                });
-                continue;
+                }),
+                None => chosen.push((slot, keypress_of(spec), key)),
             }
-            chosen.push((action, keypress_of(spec), key));
         }
     }
-    // The chosen jumps leave their defaults first, then each takes its key unless another jump
-    // has it; a jump that cannot gets its default back when that is free.
-    let defaults = jump_ops(manifest);
-    for (op, _, _) in &chosen {
-        if let Some(jump) = jumps.iter_mut().find(|j| j.op == *op) {
-            jump.key = None;
-        }
+    // Every acceptable key is a candidate; a jump takes its first candidate that is not refused.
+    // All jumps are tried at once (so two jumps may swap keys). While a key is wanted by two
+    // jumps, the first candidate that wants a key another jump holds is refused (the next one of
+    // its jump is tried, else the jump keeps its default key, which stays reserved for it). A jump
+    // the user did not remove therefore always ends on an accepted key or on its default.
+    let defaults: Vec<Option<KeyPress>> = jumps.iter().map(|j| j.key).collect();
+    let mut refused = vec![false; chosen.len()];
+    let active = |refused: &[bool], slot: usize| {
+        chosen
+            .iter()
+            .enumerate()
+            .find(|(i, (s, _, _))| *s == slot && !refused[*i])
+            .map(|(i, _)| i)
+    };
+    loop {
+        let now: Vec<Option<KeyPress>> = (0..jumps.len())
+            .map(|slot| match active(&refused, slot) {
+                Some(i) => Some(chosen[i].1),
+                None => defaults[slot],
+            })
+            .collect();
+        let clash = (0..jumps.len()).find_map(|slot| {
+            let i = active(&refused, slot)?;
+            let holder = (0..jumps.len()).find(|o| *o != slot && now[*o] == Some(chosen[i].1))?;
+            Some((i, holder))
+        });
+        let Some((i, holder)) = clash else {
+            for (jump, key) in jumps.iter_mut().zip(now) {
+                jump.key = key;
+            }
+            break;
+        };
+        refused[i] = true;
+        notes.push(KeyNote::BadKey {
+            plugin: id.to_string(),
+            key: chosen[i].2.clone(),
+            why: format!("`{}` already jumps on it", jumps[holder].op),
+        });
     }
-    for (op, key, written) in &chosen {
-        let Some(slot) = jumps.iter().position(|j| j.op == *op) else {
+    // The keys written after the one a jump took are the second key for one operation.
+    for (slot, jump) in jumps.iter().enumerate() {
+        let Some(took) = active(&refused, slot) else {
             continue;
         };
-        if let Some(other) = jumps.iter().find(|j| j.key == Some(*key)) {
-            notes.push(KeyNote::BadKey {
-                plugin: id.to_string(),
-                key: (*written).clone(),
-                why: format!("`{}` already jumps on it", other.op),
-            });
-            let back = defaults
-                .iter()
-                .find(|(d, _, _)| d == op)
-                .map(|(_, _, k)| *k);
-            if let Some(back) = back.filter(|b| !jumps.iter().any(|j| j.key == Some(*b))) {
-                jumps[slot].key = Some(back);
+        for (i, (s, _, written)) in chosen.iter().enumerate() {
+            if *s == slot && i > took {
+                notes.push(KeyNote::BadKey {
+                    plugin: id.to_string(),
+                    key: (*written).clone(),
+                    why: format!("`{}` already has a key here; one key per action", jump.op),
+                });
             }
-            continue;
         }
-        jumps[slot].key = Some(*key);
     }
     (jumps, notes)
 }
@@ -326,18 +359,10 @@ fn apply_user_table(
             }
             continue;
         }
-        // A screen's jump is an operation of the same table ([`bind_jumps`] binds it).
+        // A screen's jump is an operation of the same table: [`bind_jumps`] binds it and owns
+        // every note about it (a key that does not parse is noted below, once).
         let is_jump = jump_ops(manifest).iter().any(|(op, _, _)| op == action);
         if is_jump && keys::parse_key(key).is_ok() {
-            if chosen.iter().any(|(a, _)| a == action) {
-                notes.push(KeyNote::BadKey {
-                    plugin: id.to_string(),
-                    key: key.clone(),
-                    why: format!("`{action}` already has a key here; one key per action"),
-                });
-            } else {
-                chosen.push((action.clone(), key.clone()));
-            }
             continue;
         }
         if !is_jump && !manifest.actions.iter().any(|a| a.id == *action) {
