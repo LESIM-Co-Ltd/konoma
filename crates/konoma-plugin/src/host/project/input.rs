@@ -257,10 +257,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
         let mut update = ProjectUpdate::handled();
         match key.code {
-            KeyCode::Char('r') => {
-                self.mark_screen_stale(nav);
-                update.commands.push(ProjectCommand::EnsureView);
-            }
+            KeyCode::Char('r') => update = self.refresh_update(nav),
             KeyCode::Esc if nav.frame().is_some_and(|f| !f.query.is_empty()) => {
                 nav.clear_filter(content.as_deref())
             }
@@ -315,6 +312,23 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
         update
     }
+    /// The canvas's refresh, the one path both the `r` key and the `Space` menu's refresh item run:
+    /// the screen's rows are read again.
+    fn refresh_update(&mut self, nav: &ProjectScreenState<I>) -> ProjectUpdate<I> {
+        let mut update = ProjectUpdate::handled();
+        self.mark_screen_stale(nav);
+        update.commands.push(ProjectCommand::EnsureView);
+        update
+    }
+
+    /// Refresh the screen on top of the active project (see [`Self::refresh_update`]).
+    pub fn refresh_screen(&mut self, context: &mut ProjectContextMut<'_, I>) -> ProjectUpdate<I> {
+        match context.active.as_deref() {
+            Some(nav) => self.refresh_update(nav),
+            None => ProjectUpdate::new(ProjectDispatch::Unhandled),
+        }
+    }
+
     pub fn waiting(&self, context: &ProjectContextMut<'_, I>) -> bool {
         waiting(
             context.active.as_deref(),

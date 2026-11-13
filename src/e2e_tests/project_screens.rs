@@ -2836,7 +2836,8 @@ fn row_lists(rows: &[String], key: &str) -> bool {
 /// active one still the first, on the same screen): each key the `[Tabs]` help section lists acts
 /// there, and a key that does not act (`Ctrl-t`, the plugin's own "open the row in a new tab",
 /// needs a row) is listed nowhere. `[`, `]` and `1 - 9` change the active tab only with two tabs
-/// open; like every other screen's help, the section lists them regardless of the count.
+/// open: the project canvas lists `[ / ]` only then (`gate.rs`), and `1 - 9` regardless of the
+/// count, like every other screen's help.
 pub(in crate::e2e_tests) fn check_tab_keys_listed_and_act(
     label: &str,
     ctrl_t_acts: bool,
@@ -2851,16 +2852,24 @@ pub(in crate::e2e_tests) fn check_tab_keys_listed_and_act(
             !tabs.is_empty(),
             "{label} {lang:?}: a Tabs section is listed"
         );
-        for (key, token) in [
-            ('t', "t"),
-            ('[', "["),
-            (']', "]"),
-            ('2', "1 - 9"),
-            ('T', "T"),
-        ] {
+        for (key, token) in [('t', "t"), ('2', "1 - 9"), ('T', "T")] {
             assert!(
                 row_lists(&tabs, token),
                 "{label} {lang:?}: the Tabs section lists {key}: {tabs:?}"
+            );
+        }
+        // With one tab `[` and `]` return at once, so no row lists them; with two they do.
+        assert!(
+            !row_lists(&tabs, "["),
+            "{label} {lang:?}: one tab, `[ / ]` is not listed: {tabs:?}"
+        );
+        let (mut two, _keep_two) = make(true);
+        two.app.lang = lang;
+        let (_, two_tabs) = help_key_texts(&two);
+        for (key, token) in [('[', "["), (']', "]")] {
+            assert!(
+                row_lists(&two_tabs, token),
+                "{label} {lang:?}: two tabs, the Tabs section lists {key}: {two_tabs:?}"
             );
         }
         assert_eq!(

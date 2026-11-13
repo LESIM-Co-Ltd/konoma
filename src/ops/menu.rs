@@ -31,6 +31,7 @@ use crate::plugins::PluginAct;
 use konoma_host_core::menu::{self as menu_core, Skeleton};
 use konoma_plugin::host::acts::{fixed_menu_items, FixedMenuLabel};
 use konoma_plugin::host::project::diff_presentation::{DiffPresentation, DiffUiOp};
+use konoma_plugin::host::project::presentation::ProjectControlId;
 
 /// One entry of an open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -501,8 +502,17 @@ fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
 /// The host's shared operations a project canvas offers in its `Space` menu, in the order the
 /// legacy hub listed them. Each is listed iff its key acts there (the gate), like the plugin's own
 /// items; the canvas's other keys (`/`, `Tab`, `h`) are the project controls, not these.
-const PROJECT_SHARED_OPS: [Action; 10] = [
-    Action::GitLaunchTool,
+/// (`GitLaunchTool` exists only with the `git` feature.)
+fn project_shared_ops() -> Vec<Action> {
+    let mut ops = Vec::new();
+    #[cfg(feature = "git")]
+    ops.push(Action::GitLaunchTool);
+    ops.extend(PROJECT_SHARED_REST);
+    ops
+}
+
+/// The shared operations after the tool.
+const PROJECT_SHARED_REST: [Action; 9] = [
     Action::Refresh,
     Action::TabNewAfter,
     Action::TabPrev,
@@ -513,6 +523,10 @@ const PROJECT_SHARED_OPS: [Action; 10] = [
     Action::ToggleFollow,
     Action::Quit,
 ];
+
+fn project_shared_rest_len() -> usize {
+    PROJECT_SHARED_REST.len()
+}
 
 /// The project canvas's `Space` menu: the plugin's declared operations (their letters as the
 /// presentation assigned them) followed by the host's shared operations, all through the one
@@ -538,7 +552,36 @@ fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
         .get(&ctx)
         .cloned()
         .unwrap_or_default();
-    for a in PROJECT_SHARED_OPS {
+    // The canvas's own controls, listed iff the footer and the help name them (the presentation's
+    // controls are the one answer to "does this key act here"): search, the screen cycle, back.
+    let controls = presentation.controls();
+    let control_keys = |id: ProjectControlId| {
+        controls
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.keys.iter().copied().find_map(menu_core::plain_key))
+    };
+    let mut project_controls: Vec<Action> = Vec::new();
+    if let Some(key) = control_keys(ProjectControlId::Filter) {
+        menu_core::add_candidate(&mut cands, Action::ListFilterStart, key);
+        project_controls.push(Action::ListFilterStart);
+    }
+    #[cfg(feature = "git")]
+    {
+        // `Tab` does nothing on a pushed screen (the cycle's own rule).
+        if control_keys(ProjectControlId::Screens).is_some() && !app.project_pushed() {
+            for a in [Action::GitScreenNext, Action::GitScreenPrev] {
+                menu_core::add_candidate(&mut cands, a, None);
+                project_controls.push(a);
+            }
+        }
+        if let Some(key) = control_keys(ProjectControlId::Back) {
+            menu_core::add_candidate(&mut cands, Action::GitClose, key);
+            project_controls.push(Action::GitClose);
+        }
+    }
+    let shared = project_shared_ops();
+    for &a in &shared {
         let key = bound
             .iter()
             .find(|(_, b)| *b == a)
@@ -547,16 +590,26 @@ fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
             menu_core::add_candidate(&mut cands, a, key);
         }
     }
+    // The old hub's order: the tool, then the canvas's controls, then the rest.
+    let tools = shared.len() - project_shared_rest_len();
+    let order: Vec<Action> = shared[..tools]
+        .iter()
+        .chain(project_controls.iter())
+        .chain(shared[tools..].iter())
+        .copied()
+        .collect();
     menu_core::build_items(
         cands,
         &own,
         &[],
-        &PROJECT_SHARED_OPS,
+        &order,
         mnemonic,
         |a| {
             !gated
                 || match a {
                     Action::Plugin(_) => acting.iter().any(|i| plugin(i.action) == a),
+                    // Present only because the presentation names the control.
+                    _ if project_controls.contains(&a) => true,
                     _ => action_enabled(app, ctx, a),
                 }
         },
@@ -565,6 +618,23 @@ fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
                 .iter()
                 .find(|i| plugin(i.action) == a)
                 .map(|i| i.label.clone()),
+            // The old hub worded back as `close` on the changes screen (the hub itself) and as
+            // `back` on every other.
+            #[cfg(feature = "git")]
+            Action::GitClose => Some(
+                tr(
+                    app.lang,
+                    if matches!(
+                        app.canvas_screen(),
+                        Some(Context::Screen(_, crate::keymap::Screen::Changes))
+                    ) {
+                        Msg::FtClose
+                    } else {
+                        Msg::GitBack
+                    },
+                )
+                .to_string(),
+            ),
             _ => label_of(app, ctx, a, &[]).map(|m| tr(app.lang, m).to_string()),
         },
     )

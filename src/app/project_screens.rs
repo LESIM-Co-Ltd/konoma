@@ -1068,6 +1068,44 @@ impl App {
         }
     }
 
+    /// `r` on a project canvas, whether pressed or chosen from the `Space` menu: the host's one
+    /// refresh path (the screen's rows are read again).
+    pub(crate) fn project_refresh(&mut self) {
+        let update = self.with_project_host(|host, context| host.refresh_screen(context));
+        self.apply_project_update(update);
+    }
+
+    /// The first key of the canvas control the `Space` menu offers (search, or back), among the
+    /// keys the footer and the help name for it.
+    pub(crate) fn project_control_key(&self, search: bool) -> Option<KeyPress> {
+        use konoma_plugin::host::project::presentation::ProjectControlId as Id;
+        let want = if search { Id::Filter } else { Id::Back };
+        let (presentation, _) = self.project_presentation()?;
+        presentation
+            .controls()
+            .iter()
+            .find(|control| control.id == want)
+            .and_then(|control| control.keys.first().copied())
+    }
+
+    /// Press the search or back key of the canvas (see [`Self::project_press`]).
+    pub(crate) fn project_press_control(&mut self, search: bool) {
+        if let Some(key) = self.project_control_key(search) {
+            self.project_press(key);
+        }
+    }
+
+    /// A canvas control chosen from the `Space` menu runs the key's own path: the same handler
+    /// the key goes through, so the menu and the key cannot differ.
+    pub(crate) fn project_press(&mut self, key: KeyPress) -> bool {
+        let modifiers = if key.ctrl {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::NONE
+        };
+        self.handle_project_key(KeyEvent::new(key.code, modifiers))
+    }
+
     pub(crate) fn handle_project_key(&mut self, key: KeyEvent) -> bool {
         use crate::keymap::{Action, Motion, Resolution};
         #[cfg(feature = "git")]

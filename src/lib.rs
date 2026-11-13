@@ -1917,6 +1917,10 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
                 app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::NotAGitRepo).into());
             }
         }
+        // On a project canvas the key `r` is the host's own refresh; the menu item runs that path.
+        Action::Refresh if ctx == keymap::Context::Canvas && app.project_active() => {
+            app.project_refresh()
+        }
         Action::Refresh => {
             app.refresh_explicit()?;
             // The log, the graph, the branch and worktree lists read again too.
@@ -2060,6 +2064,23 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::DiffNextChange => app.diff_change_jump(1),
         #[cfg(feature = "git")]
         Action::DiffPrevChange => app.diff_change_jump(-1),
+        // On a project canvas the screen controls (screens, search, back) are the host's keys;
+        // a `Space` menu item for one presses that key, so the menu and the key share one path.
+        #[cfg(feature = "git")]
+        Action::GitScreenNext if ctx == keymap::Context::Canvas && app.project_active() => {
+            app.project_press(KeyPress::key(KeyCode::Tab));
+        }
+        #[cfg(feature = "git")]
+        Action::GitScreenPrev if ctx == keymap::Context::Canvas && app.project_active() => {
+            app.project_press(KeyPress::key(KeyCode::BackTab));
+        }
+        #[cfg(feature = "git")]
+        Action::GitClose if ctx == keymap::Context::Canvas && app.project_active() => {
+            app.project_press_control(false);
+        }
+        Action::ListFilterStart if ctx == keymap::Context::Canvas && app.project_active() => {
+            app.project_press_control(true);
+        }
         #[cfg(feature = "git")]
         Action::GitScreenNext => app.git_screen_cycle(1),
         #[cfg(feature = "git")]

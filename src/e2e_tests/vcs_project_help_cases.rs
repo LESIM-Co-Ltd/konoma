@@ -59,7 +59,29 @@ fn old_hub_help(
         }
         other => panic!("unknown screen {other}"),
     }
-    help_lines_without_actions(crate::ops::help::sections(&old), lang, screen != "changes")
+    without_tab_step_row(help_lines_without_actions(
+        crate::ops::help::sections(&old),
+        lang,
+        screen != "changes",
+    ))
+}
+
+/// Excluded difference (rule: a key that does nothing gets no hint): with one tab open `[` and
+/// `]` return at once, so the project canvas's help has no `[ / ]` row (`gate.rs`: they act only
+/// with two tabs or more), while the old hub listed it regardless. The exclusion is itself
+/// checked: the old help must have exactly one such row.
+fn without_tab_step_row(lines: Vec<String>) -> Vec<String> {
+    let before = lines.len();
+    let kept: Vec<String> = lines
+        .into_iter()
+        .filter(|l| l.get(3..19).map(str::trim_end) != Some("[ / ]"))
+        .collect();
+    assert_eq!(
+        kept.len() + 1,
+        before,
+        "the old help no longer has exactly one `[ / ]` row"
+    );
+    kept
 }
 
 /// The screens of one project kind and the fewest help lines (Space menu excluded) each must
@@ -67,23 +89,23 @@ fn old_hub_help(
 fn help_oracle_screens(id: &str) -> Vec<(&'static str, usize)> {
     if id == "git" {
         vec![
-            ("changes", 31),
-            ("log", 26),
-            ("graph", 29),
-            ("branches", 23),
+            ("changes", 30),
+            ("log", 25),
+            ("graph", 28),
+            ("branches", 22),
             // Compared per row in `vcs_port_worktrees_help_equals_old_hub_per_row`.
             ("worktrees", 0),
             // The pushed commit detail (log, Enter): the old hub's `Screen::Detail`
             // (measured: 26 lines, the Space menu excluded).
-            ("detail", 26),
+            ("detail", 25),
         ]
     } else {
         vec![
-            ("changes", 27),
-            ("log", 26),
-            ("graph", 28),
-            ("branches", 20),
-            ("detail", 26),
+            ("changes", 26),
+            ("log", 25),
+            ("graph", 27),
+            ("branches", 19),
+            ("detail", 25),
         ]
     }
 }
@@ -250,7 +272,7 @@ fn vcs_port_worktree_detail_help_equals_old_hub() {
             before,
             "{name}: the old worktree detail help no longer has a [{copy_title}] section"
         );
-        let old_lines = help_lines_without_actions(old_sections, lang, true);
+        let old_lines = without_tab_step_row(help_lines_without_actions(old_sections, lang, true));
         let mut sim = open(&root, config("git", name), (220, 60));
         screen(&mut sim, "worktrees");
         keys(&mut sim, "d");
@@ -295,8 +317,8 @@ fn vcs_port_worktrees_help_equals_old_hub_per_row() {
     for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
         let old = old_hub_help(&root, lang, "worktrees");
         assert_eq!(old.iter().filter(|l| is_ctrl_t(l)).count(), 1, "{old:?}");
-        // Measured: 22 compared lines with the `Ctrl-t` row, 21 without.
-        assert!(old.len() >= 22, "only {} old lines compared", old.len());
+        // Measured: 21 compared lines with the `Ctrl-t` row, 20 without (no `[ / ]` row).
+        assert!(old.len() >= 21,"only {} old lines compared", old.len());
         let old_without: Vec<String> = old.iter().filter(|l| !is_ctrl_t(l)).cloned().collect();
         for index in 0..rows {
             let mut sim = open(&root, config("git", name), (220, 60));
@@ -322,7 +344,7 @@ fn vcs_port_worktrees_help_equals_old_hub_per_row() {
         }
     }
     assert!(acting >= 1 && inert >= 1, "acting {acting}, inert {inert}");
-    assert!(compared >= 21 * rows * 2, "only {compared} help lines compared");
+    assert!(compared >= 20 * rows * 2,"only {compared} help lines compared");
 }
 
 /// Every help row of the canvas as (keys, description), Space menu included.
@@ -674,8 +696,8 @@ fn vcs_port_empty_changes_help_is_the_old_help_without_the_write_rows() {
     let root = super::vcs_changes::git_repo("vcs_help_empty_changes", false);
     for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
         let old = old_hub_help(&root, lang, "changes");
-        // Measured: 27 lines on a clean repository (the changes list is empty).
-        assert!(old.len() >= 27, "only {} old lines compared", old.len());
+        // Measured: 26 lines on a clean repository (the changes list is empty; no `[ / ]` row).
+        assert!(old.len() >= 26,"only {} old lines compared", old.len());
         let sim = open(&root, config("git", name), (220, 60));
         let new = help_lines_without_actions(crate::ops::help::sections(&sim.app), lang, false);
         // On an empty list the per-row keys do not act: `s`, `u` and `x` and the open key

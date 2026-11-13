@@ -416,11 +416,14 @@ fn assert_space_contract(sim: &Sim) {
         "enough footer operations {ctx:?}: {want:?}; menu={declared:?}\n{}",
         sim.screen()
     );
+    // A plugin item outside the footer priority (it leads the menu, before the host's items) is
+    // not a footer operation, so it is not part of the order compared here.
     assert_eq!(
         declared
             .iter()
-            .take(want.len())
             .map(|i| i.action)
+            .filter(|a| !matches!(a, Action::Plugin(_)) || want.contains(a))
+            .take(want.len())
             .collect::<Vec<_>>(),
         want
     );
@@ -440,6 +443,7 @@ fn assert_space_contract(sim: &Sim) {
     assert_eq!(
         open.iter()
             .copied()
+            .filter(|a| !matches!(a, Action::Plugin(_)) || want.contains(a))
             .take(open_want.len())
             .collect::<Vec<_>>(),
         open_want
