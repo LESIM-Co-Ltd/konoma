@@ -32,10 +32,12 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .as_ref()
         .map(|e| e.message.get(app.plugin_lang()))
         .unwrap_or(tr(app.lang, Msg::Loading));
+    let jumps = app.plugin_keys.jumps_of(&nav.project.plugin).to_vec();
     let update = draw_project(
         frame.buffer_mut(),
         area,
         ProjectDrawValues {
+            jumps: &jumps,
             declaration: &runtime.project.declaration,
             active_screen: &active.key.screen,
             cursor: active.cursor,

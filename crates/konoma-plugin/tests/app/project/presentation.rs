@@ -15,6 +15,8 @@ use std::time::Duration;
 mod fixture;
 use fixture::{Log, PresentationPlugin};
 
+#[path = "presentation_jumps.rs"]
+mod jumps;
 #[path = "presentation_wake.rs"]
 mod wake;
 

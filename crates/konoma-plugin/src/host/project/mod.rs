@@ -45,6 +45,8 @@ pub use input::{ProjectContextMut, ProjectKeyFacts, ProjectReplay, ProjectReplay
 #[cfg(test)]
 mod actions_tests;
 #[cfg(test)]
+mod draw_tests;
+#[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
 mod input_tests;

@@ -364,7 +364,7 @@ fn screen_action_wins_shared_jump_and_right_uses_enter() {
             .screen("list")
             .selected(ProjectRow::new("file", "a")),
         diff: false,
-        jumps: vec!['x', 'o'],
+        jumps: vec![KeyPress::ch('x'), KeyPress::ch('o')],
     };
     let actions = vec![own.clone(), tree.clone()];
     let (mut host, mut context) = f.parts();

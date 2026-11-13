@@ -224,10 +224,12 @@ impl ProjectLoopState {
             .as_ref()
             .map(|e| e.message.get(prepared.lang))
             .unwrap_or(konoma_host_core::help_msg::CoreMsg::Loading.tr(prepared.keys.lang()));
+        let jumps = self.jumps(prepared);
         let update = draw_project(
             buffer,
             area,
             ProjectDrawValues {
+                jumps: &jumps,
                 declaration: &runtime.project.declaration,
                 active_screen: &frame.key.screen,
                 cursor: frame.cursor,

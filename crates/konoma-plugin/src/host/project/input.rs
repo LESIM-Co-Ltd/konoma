@@ -5,6 +5,7 @@ use super::actions::{
     ProjectWritePolicy,
 };
 use super::*;
+use crate::host::bind::jump_target;
 use crate::project::ProjectView;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use konoma_host_core::keymap::{KeyPress, Motion};
@@ -33,6 +34,10 @@ pub struct ProjectKeyFacts {
     /// The keys that start the list filter on this screen, decided the same way as `back_keys`
     /// (`/` is the fixed key).
     pub filter_keys: Vec<KeyPress>,
+    /// The screen-jump operations of the project's plugin with the keys they have now
+    /// ([`crate::host::bind::bind_jumps`]). A screen's declared key is only its default; the
+    /// keys that jump are these.
+    pub jumps: Vec<crate::host::bind::JumpBinding>,
 }
 
 impl Default for ProjectKeyFacts {
@@ -53,6 +58,7 @@ impl Default for ProjectKeyFacts {
             layout: DiffLayout::Unified,
             back_keys: vec![KeyPress::ch('q')],
             filter_keys: vec![KeyPress::ch('/')],
+            jumps: Vec::new(),
         }
     }
 }
@@ -112,23 +118,16 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
         let interaction = self.pending_interaction(context, &facts.actions);
         let nav = context.active.as_ref().unwrap();
-        let declaration = self
-            .runtimes
-            .get(&nav.project)
-            .map(|r| &r.project.declaration);
         // The press as the keymap sees it (code and Ctrl). An Alt chord is never one of these.
         let pressed = (!key.modifiers.contains(KeyModifiers::ALT)).then(|| KeyPress::norm(&key));
         let back_key = pressed.is_some_and(|k| facts.back_keys.contains(&k));
         let filter_key = pressed.is_some_and(|k| facts.filter_keys.contains(&k));
+        let jump_key = pressed.is_some_and(|k| jump_target(&facts.jumps, k).is_some());
         let navigation = !interaction
             && !facts.leader
             && (matches!(key.code, KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab)
                 || back_key
-                || declaration.is_some_and(|d| {
-                    d.screens
-                        .iter()
-                        .any(|s| s.key.is_some_and(|c| key.code == KeyCode::Char(c)))
-                }));
+                || jump_key);
         let global = !interaction
             && (key
                 .modifiers
@@ -298,16 +297,14 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                     nav.toggle_mark(content, declaration);
                 }
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(_) => {
                 if facts.action.is_some() {
                     return ProjectUpdate::new(ProjectDispatch::Unhandled);
                 }
-                if let Some(screen) =
-                    declaration.and_then(|d| d.screens.iter().find(|s| s.key == Some(c)))
-                {
+                if let Some(screen) = pressed.and_then(|k| jump_target(&facts.jumps, k)) {
                     if !nav.pushed(declaration) {
                         *nav.frame_mut().unwrap() =
-                            ProjectFrame::new(ScreenKey::new(&screen.id, context.id));
+                            ProjectFrame::new(ScreenKey::new(screen, context.id));
                         update.commands.push(ProjectCommand::EnsureView);
                     }
                 } else {

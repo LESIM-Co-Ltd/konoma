@@ -48,6 +48,7 @@ impl ProjectLoopState {
             &prepared.config.keys,
             &prepared.config.plugins,
         );
+        let jumps = bound.jumps.clone();
         let actions = self.actions(prepared, info);
         let mut ids = Vec::new();
         let bindings: Vec<_> = bound
@@ -205,6 +206,7 @@ impl ProjectLoopState {
             &declaration.screens,
             &nav.frame().unwrap().key.screen,
             prepared.lang,
+            &jumps,
         );
         // `!` launches the tool on every standalone screen; the footer shows it where the host
         // does (the version-control changes screen only — not the home screen of another
@@ -280,11 +282,11 @@ impl ProjectLoopState {
             &bindings,
             &words,
         );
-        let screens = declaration
-            .screens
-            .iter()
-            .filter_map(|s| Some((s.key?.to_string(), s.title.get(prepared.lang).into())))
-            .collect::<Vec<_>>();
+        let screens = crate::host::project::presentation::screen_help_rows(
+            &declaration.screens,
+            &jumps,
+            prepared.lang,
+        );
         // The words of a version-control screen are the old hub's, screen by screen.
         let jj = facts.vcs_jj == Some(true);
         let screen_id = nav.frame().unwrap().key.screen.clone();

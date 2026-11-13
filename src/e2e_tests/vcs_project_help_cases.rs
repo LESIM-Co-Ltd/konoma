@@ -353,7 +353,8 @@ fn vcs_port_help_follows_rebound_and_cleared_keys() {
         let default = all_help_rows(&sim);
         let diff_all = tr(Lang::En, if *id == "jj" { Msg::JjDiffAll } else { Msg::GitDiffAll });
         // The diff-all key is the plugin's own (`[keys.<plugin>]`). The screen jump keys (`b`,
-        // `w`) are the project's declared keys, not rebindable, so they are not part of this test.
+        // `w`) are rebindable too (`goto_<screen>`), but that is pinned by `vcs_jump_keys_*`
+        // in vcs_project_keys_cases.rs, so they are not part of this test.
         {
             let (word, key, action, surface) = (diff_all, "d", "diff_all", *id);
             let with = |entries: &[(&str, &str)]| {

@@ -9,6 +9,8 @@ pub struct Log {
     pub outcome: Option<Outcome>,
     pub chip_failure: bool,
     pub graph: bool,
+    /// Two more screens after `items`, reached by `s` and `u`, each with a footer hint.
+    pub jumps: bool,
 }
 
 pub struct PresentationPlugin(pub Arc<Mutex<Log>>);
@@ -16,27 +18,42 @@ pub struct PresentationPlugin(pub Arc<Mutex<Log>>);
 impl Plugin for PresentationPlugin {
     fn manifest(&self) -> Manifest {
         let screen = || ActContext::screen("items", ["item"]);
-        let graph = self.0.lock().unwrap().graph;
+        let (graph, jumps) = {
+            let log = self.0.lock().unwrap();
+            (log.graph, log.jumps)
+        };
         let mut project =
             ProjectDecl::new().marker(DetectionMarker::new("project.marker", MarkerKind::File));
         if graph {
             project = project.screen(ProjectScreen::new("graph", "Graph"));
         }
+        let mut project = project
+            .chip("status")
+            .screen(
+                ProjectScreen::new("items", "Items")
+                    .key('i')
+                    .marks(true)
+                    .row_kind("item"),
+            )
+            .screen(ProjectScreen::new("text", "Text").pushed());
+        if jumps {
+            project = project
+                .screen(
+                    ProjectScreen::new("second", "Second")
+                        .key('s')
+                        .jump_hint(0, "Second"),
+                )
+                .screen(
+                    ProjectScreen::new("third", "Third")
+                        .key('u')
+                        .jump_hint(0, "Third"),
+                );
+        }
         Manifest::new(if graph { "git" } else { "project-presentation" }, "1")
             .name("Presentation")
             .shows(ViewKind::List)
             .shows(ViewKind::Text)
-            .project(
-                project
-                    .chip("status")
-                    .screen(
-                        ProjectScreen::new("items", "Items")
-                            .key('i')
-                            .marks(true)
-                            .row_kind("item"),
-                    )
-                    .screen(ProjectScreen::new("text", "Text").pushed()),
-            )
+            .project(project)
             .action(
                 Act::new("open")
                     .key("Enter")
@@ -84,11 +101,17 @@ impl Session for PresentationPlugin {
         id != "disabled"
     }
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
-        if req.project.as_ref().unwrap().screen == "text" {
+        let screen = req.project.as_ref().unwrap().screen.clone();
+        if screen == "text" {
             return Ok(View::text(["pushed text"]));
         }
+        // The two jump screens say which one is shown.
+        let shown = match screen.as_str() {
+            "second" | "third" => format!("shown-{screen}"),
+            _ => "alpha".to_string(),
+        };
         Ok(View::List(ListView {
-            rows: vec![ListRow::new("item", vec![Line::raw("alpha")])
+            rows: vec![ListRow::new("item", vec![Line::raw(shown)])
                 .value("alpha")
                 .target("alpha.txt")],
             ..Default::default()

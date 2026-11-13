@@ -14,7 +14,8 @@ pub enum ProjectActionScope {
         plugin: String,
         context: ProjectAct,
         diff: bool,
-        jumps: Vec<char>,
+        /// The keys that jump to a screen now (the effective keys, [`crate::host::bind::bind_jumps`]).
+        jumps: Vec<KeyPress>,
     },
     TreeSelection {
         plugins: Vec<String>,
@@ -75,7 +76,7 @@ pub fn action_key(
     key: KeyPress,
 ) -> Option<KeyPress> {
     if let ProjectActionScope::Screen { jumps, .. } = scope {
-        if jumps.iter().any(|c| key == KeyPress::ch(*c))
+        if jumps.contains(&key)
             && !matches!(
                 action.declaration.project_context,
                 Some(ActContext::Screen { .. })

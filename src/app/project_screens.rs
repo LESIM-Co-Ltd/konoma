@@ -881,18 +881,11 @@ impl App {
                     .project_content()
                     .is_some_and(|view| matches!(view.as_ref(), ProjectContent::Diff(_))),
                 jumps: self
-                    .project_runtimes
-                    .get(&nav.project)
-                    .map(|runtime| {
-                        runtime
-                            .project
-                            .declaration
-                            .screens
-                            .iter()
-                            .filter_map(|screen| screen.key)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                    .plugin_keys
+                    .jumps_of(&nav.project.plugin)
+                    .iter()
+                    .filter_map(|jump| jump.key)
+                    .collect(),
             };
         }
         let plugins = self
@@ -1126,7 +1119,14 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let jumps = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .map(|nav| self.plugin_keys.jumps_of(&nav.project.plugin).to_vec())
+            .unwrap_or_default();
         let facts = ProjectKeyFacts {
+            jumps,
             back_keys: self.project_back_keys(),
             filter_keys: self.project_filter_keys(),
             blocked: self.show_help
@@ -1735,10 +1735,14 @@ impl App {
                 .project
                 .declaration
                 .screens;
-            Some((screens, screen))
+            Some((
+                screens,
+                screen,
+                self.plugin_keys.jumps_of(&nav.project.plugin),
+            ))
         }) {
-            Some((screens, screen)) => {
-                facts.with_declared_screens(screens, &screen, self.plugin_lang())
+            Some((screens, screen, jumps)) => {
+                facts.with_declared_screens(screens, &screen, self.plugin_lang(), jumps)
             }
             None => facts,
         };

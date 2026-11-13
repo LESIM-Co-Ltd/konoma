@@ -153,10 +153,7 @@ impl ProjectPresentation {
                 .zip(plugin.rows.drain(..))
                 .collect();
             if !graph {
-                for jump in &self.facts.jump_hints {
-                    if self.covered.contains(&jump.key) {
-                        continue;
-                    }
+                for jump in &self.jump_hints {
                     let Some((_, word)) = words.jumps.iter().find(|(id, _)| *id == jump.screen)
                     else {
                         continue;

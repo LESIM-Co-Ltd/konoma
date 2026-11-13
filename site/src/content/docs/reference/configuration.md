@@ -242,6 +242,10 @@ rainbow = false      # monochrome CSV / TSV columns
 - The keys of a plugin's own actions can be rebound in `[keys.<plugin id>]` (`W = "width"` gives the action `width` the key
   `W`; `w = "noop"` takes a key away). The footer and the `?` help follow. A key the host keeps for itself is refused (the
   action stays in the `Space` menu) and the startup message says so.
+- The keys that jump between a plugin's project screens are operations too, named `goto_<screen id>`: `B = "goto_branches"`
+  in `[keys.git]` moves the jump to the branches screen from `b` to `B`, and `b = "noop"` removes it (Tab still reaches
+  the screen). The footer, the `?` help and the tab bar follow. A key the host keeps for itself, or another jump's key, is refused
+  and the jump keeps its default key.
 - **Old names are announced once, at start.** When the config still uses one of the `[ui]` names in the table
   below and the plugin's own key is not set, the footer says `config: [ui] md_alerts is an old name — write
   [plugins.markdown] alerts instead` (and `(+n more)` for the rest). The old name keeps working; the message goes

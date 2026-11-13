@@ -8,6 +8,14 @@ fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
 
+fn jump(screen: &str, key: Option<char>) -> crate::host::bind::JumpBinding {
+    crate::host::bind::JumpBinding {
+        op: crate::host::bind::jump_op_id(screen),
+        screen: screen.into(),
+        key: key.map(konoma_host_core::keymap::KeyPress::ch),
+    }
+}
+
 fn project() -> ProjectKey {
     ProjectKey {
         plugin: "test".into(),
@@ -189,6 +197,7 @@ fn pending_prompt_or_space_prevents_navigation_bypass() {
             prompt.declaration.text_input = Some(crate::TextInput::new("Text", ""));
             let facts = ProjectKeyFacts {
                 actions: vec![prompt],
+                jumps: vec![jump("other", Some('o'))],
                 global: later == '?',
                 ..Default::default()
             };
@@ -222,6 +231,8 @@ fn replay_observes_each_intermediate_prompt_and_leader() {
     let mut facts = ProjectKeyFacts {
         action: Some(action.id.clone()),
         actions: vec![action.clone()],
+        // `o` jumps to `other` (declared below): the leader must still keep it from jumping.
+        jumps: vec![jump("other", Some('o'))],
         ..Default::default()
     };
     let mut act_facts = f.facts();
@@ -286,4 +297,90 @@ fn replay_observes_each_intermediate_prompt_and_leader() {
         "list"
     );
     host.end_replay();
+}
+
+/// Presses `c` on the list screen of a project that declares `other` (default key `o`) with the
+/// given jump bindings; returns the dispatch and the screen shown afterwards.
+fn press_with_jumps(
+    c: char,
+    jumps: Vec<crate::host::bind::JumpBinding>,
+) -> (super::actions::ProjectDispatch, String) {
+    let mut f = super::actions_tests::Fixture::new();
+    f.runtimes.get_mut(&project()).unwrap().project.declaration =
+        crate::ProjectDecl::new().screen(crate::ProjectScreen::new("other", "Other").key('o'));
+    let facts = ProjectKeyFacts {
+        jumps,
+        ..Default::default()
+    };
+    let (mut host, mut context) = f.parts();
+    let dispatch = host.handle_key(&mut context, key(c), &facts).dispatch;
+    let screen = context
+        .active
+        .as_ref()
+        .unwrap()
+        .frame()
+        .unwrap()
+        .key
+        .screen
+        .clone();
+    (dispatch, screen)
+}
+
+#[test]
+fn a_rebound_jump_key_navigates_and_the_declared_key_does_not() {
+    use super::actions::ProjectDispatch;
+    let rebound = || vec![jump("other", Some('x'))];
+    assert_eq!(
+        press_with_jumps('x', rebound()),
+        (ProjectDispatch::Handled, "other".into()),
+        "the key the user gave jumps"
+    );
+    assert_eq!(
+        press_with_jumps('o', rebound()),
+        (ProjectDispatch::Unhandled, "list".into()),
+        "the declared default is inert once rebound"
+    );
+}
+
+#[test]
+fn the_default_jump_key_navigates_and_a_removed_one_does_not() {
+    use super::actions::ProjectDispatch;
+    assert_eq!(
+        press_with_jumps('o', vec![jump("other", Some('o'))]),
+        (ProjectDispatch::Handled, "other".into())
+    );
+    assert_eq!(
+        press_with_jumps('o', vec![jump("other", None)]),
+        (ProjectDispatch::Unhandled, "list".into()),
+        "a removed jump has no key at all"
+    );
+    assert_eq!(
+        press_with_jumps('o', Vec::new()),
+        (ProjectDispatch::Unhandled, "list".into()),
+        "no jump bindings, no jump: the declared key alone is not read"
+    );
+}
+
+#[test]
+fn a_screen_action_with_the_rebound_key_wins_over_the_jump() {
+    use super::actions::ProjectDispatch;
+    let mut f = super::actions_tests::Fixture::new();
+    f.runtimes.get_mut(&project()).unwrap().project.declaration =
+        crate::ProjectDecl::new().screen(crate::ProjectScreen::new("other", "Other").key('o'));
+    let facts = ProjectKeyFacts {
+        jumps: vec![jump("other", Some('x'))],
+        // `facts.action`: an action of the screen owns `x`.
+        action: Some(super::actions_tests::action().id),
+        ..Default::default()
+    };
+    let (mut host, mut context) = f.parts();
+    assert_eq!(
+        host.handle_key(&mut context, key('x'), &facts).dispatch,
+        ProjectDispatch::Unhandled,
+        "left to the action"
+    );
+    assert_eq!(
+        context.active.as_ref().unwrap().frame().unwrap().key.screen,
+        "list"
+    );
 }

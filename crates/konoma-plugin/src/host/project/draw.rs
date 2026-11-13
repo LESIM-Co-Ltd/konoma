@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::{ProjectContent, ProjectDialog, ProjectPrompt, PromptInvocation};
+use crate::host::bind::{jump_key_of, JumpBinding};
 use crate::project::ProjectDecl;
 use konoma_host_core::project::DiffLayout;
 use ratatui::{
@@ -25,6 +26,8 @@ pub struct ProjectDrawValues<'a> {
     pub visible_rows: &'a [usize],
     pub layout: DiffLayout,
     pub lang: &'a str,
+    /// The screen-jump operations with the keys they have now: the tab bar writes these keys.
+    pub jumps: &'a [JumpBinding],
     /// Already localized loading or failure message.
     pub unavailable: &'a str,
 }
@@ -63,9 +66,12 @@ pub fn draw_project(
     let checks = screen.is_some_and(|s| s.checks);
     let mut tabs = Vec::new();
     for screen in values.declaration.screens.iter().filter(|s| !s.pushed) {
-        let label = match screen.key {
-            Some(key) => format!(" {key}:{} ", screen.title.get(values.lang)),
-            None => format!(" {} ", screen.title.get(values.lang)),
+        // The key shown is the one that jumps now, not the declared default.
+        let label = match jump_key_of(values.jumps, &screen.id).map(|k| k.code) {
+            Some(crossterm::event::KeyCode::Char(key)) => {
+                format!(" {key}:{} ", screen.title.get(values.lang))
+            }
+            _ => format!(" {} ", screen.title.get(values.lang)),
         };
         let span = Span::raw(label);
         tabs.push(if screen.id == values.active_screen {

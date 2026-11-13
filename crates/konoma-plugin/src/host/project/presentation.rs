@@ -5,6 +5,7 @@ use konoma_host_core::help::{footer_key, help_key};
 use konoma_host_core::keymap::KeyPress;
 
 use crate::host::acts::{self, ActBinding};
+use crate::host::bind::{jump_key_of, JumpBinding};
 use konoma_host_core::help::CoreSection;
 use konoma_host_core::menu::{self, Item};
 
@@ -276,6 +277,7 @@ impl ProjectPresentationFacts {
         screens: &[crate::project::ProjectScreen],
         current: &str,
         lang: &str,
+        jumps: &[JumpBinding],
     ) -> Self {
         self.home = is_home_screen(screens, current);
         self.new_tab_footer = screens
@@ -291,7 +293,8 @@ impl ProjectPresentationFacts {
                     Some(ProjectJumpHint {
                         screen: s.id.clone(),
                         footer: *footer,
-                        key: KeyPress::ch(s.key?),
+                        // The key that jumps now (rebound, or none when the user removed it).
+                        key: jump_key_of(jumps, &s.id)?,
                         label: label.get(lang).to_string(),
                     })
                 })
@@ -301,6 +304,24 @@ impl ProjectPresentationFacts {
         };
         self
     }
+}
+
+/// The help rows `<key>  <screen title>` of the screens a project jumps between, with the keys
+/// that jump now. A screen whose jump was removed has no row.
+pub fn screen_help_rows(
+    screens: &[crate::project::ProjectScreen],
+    jumps: &[JumpBinding],
+    lang: &str,
+) -> Vec<(String, String)> {
+    screens
+        .iter()
+        .filter_map(|s| {
+            Some((
+                help_key(jump_key_of(jumps, &s.id)?),
+                s.title.get(lang).into(),
+            ))
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -366,6 +387,8 @@ pub struct ProjectPresentation {
     /// The footer priority of each plugin row, in the same order (`u8::MAX` without one).
     plugin_row_footers: Vec<u8>,
     covered: Vec<KeyPress>,
+    /// The jump keys that act on this screen (see [`ProjectPresentation::build`]).
+    jump_hints: Vec<ProjectJumpHint>,
     copy_menu: Vec<Item<usize, String>>,
     actions_menu: Vec<Item<usize, String>>,
     declared_actions_menu: Vec<Item<usize, String>>,
@@ -386,6 +409,14 @@ impl ProjectPresentation {
         #[cfg(any(test, feature = "test-hooks"))]
         BUILD_COUNT.with(|count| count.set(count.get() + 1));
         use ProjectControlId as Id;
+        // The one answer to "does this jump key act here": an action that owns the letter keeps
+        // it, so its jump is neither in the footer nor in the help. Both read this list.
+        let jump_hints: Vec<ProjectJumpHint> = facts
+            .jump_hints
+            .iter()
+            .filter(|jump| !bindings.iter().any(|b| b.binding.key == Some(jump.key)))
+            .cloned()
+            .collect();
         let text_controls = text_controls(facts, words);
         let text_help = text_controls.as_ref().map(|controls| {
             let mut hints: Vec<_> = controls
@@ -544,11 +575,7 @@ impl ProjectPresentation {
             if let Some(open) = open {
                 entries.insert(0, (open_priority, open));
             }
-            for jump in &facts.jump_hints {
-                // An action that owns the letter keeps it.
-                if bindings.iter().any(|b| b.binding.key == Some(jump.key)) {
-                    continue;
-                }
+            for jump in &jump_hints {
                 entries.push((
                     jump.footer,
                     dynamic(format!("{}:{}", footer_key(jump.key, true), jump.label)),
@@ -774,6 +801,7 @@ impl ProjectPresentation {
             plugin_rows,
             plugin_row_footers,
             covered,
+            jump_hints,
             copy_menu,
             actions_menu,
             declared_actions_menu,

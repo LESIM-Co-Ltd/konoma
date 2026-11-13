@@ -1029,20 +1029,13 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
         .tab
         .project_navigation
         .as_ref()
-        .and_then(|nav| app.project_runtimes.get(&nav.project))
-        .map(|runtime| {
-            runtime
-                .project
-                .declaration
-                .screens
-                .iter()
-                .filter_map(|screen| {
-                    Some((
-                        screen.key?.to_string(),
-                        screen.title.get(app.plugin_lang()).into(),
-                    ))
-                })
-                .collect::<Vec<_>>()
+        .and_then(|nav| Some((nav, app.project_runtimes.get(&nav.project)?)))
+        .map(|(nav, runtime)| {
+            konoma_plugin::host::project::presentation::screen_help_rows(
+                &runtime.project.declaration.screens,
+                app.plugin_keys.jumps_of(&nav.project.plugin),
+                app.plugin_lang(),
+            )
         })
         .unwrap_or_default();
     let mut sections: Vec<HelpSection> = presentation

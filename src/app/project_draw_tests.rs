@@ -112,6 +112,25 @@ fn app() -> (App, crate::test_support::TmpDir) {
     cfg.external.git = false;
     let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     app.flash = None;
+    let declaration = ProjectDecl::new()
+        .marker(konoma_plugin::project::DetectionMarker::new(
+            "marker",
+            konoma_plugin::project::MarkerKind::Any,
+        ))
+        .screen(
+            ProjectScreen::new("items", konoma_plugin::t!(en: "List", ja: "一覧"))
+                .key('1')
+                .marks(true)
+                .checks(true),
+        )
+        .screen(ProjectScreen::new("other", "Other"))
+        .screen(ProjectScreen::new("hidden", "Hidden").pushed());
+    // The fixture plugin gets its jump keys from the same binding function every plugin does. The
+    // registry itself would refuse the golden's digit key `1`, so the keys are built from the
+    // manifest without its checks.
+    app.plugin_keys = crate::plugins::PluginKeys::from_unchecked_manifest(
+        &konoma_plugin::Manifest::new("fixture", "0.1.0").project(declaration.clone()),
+    );
     let project = ProjectKey {
         plugin: "fixture".into(),
         root: dir.to_path_buf(),
@@ -136,15 +155,7 @@ fn app() -> (App, crate::test_support::TmpDir) {
                 root: dir.to_path_buf(),
                 marker: "marker".into(),
                 session_watch_paths: None,
-                declaration: ProjectDecl::new()
-                    .screen(
-                        ProjectScreen::new("items", konoma_plugin::t!(en: "List", ja: "一覧"))
-                            .key('1')
-                            .marks(true)
-                            .checks(true),
-                    )
-                    .screen(ProjectScreen::new("other", "Other"))
-                    .screen(ProjectScreen::new("hidden", "Hidden").pushed()),
+                declaration,
             },
             top: Default::default(),
             closed_tabs: Default::default(),
@@ -281,10 +292,12 @@ fn body_output(
     let visible = app.project_visible_rows();
     let nav = app.tab.project_navigation.as_ref().unwrap();
     let runtime = &app.project_runtimes[&nav.project];
+    let jumps = app.plugin_keys.jumps_of(&nav.project.plugin).to_vec();
     let update = draw::draw_project(
         &mut small,
         area,
         ProjectDrawValues {
+            jumps: &jumps,
             declaration: &runtime.project.declaration,
             active_screen: "items",
             cursor,

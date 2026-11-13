@@ -1,11 +1,31 @@
 //! Fresh action/key facts and adapters around the shared prompt and replay transitions.
 
 use super::*;
+use crate::host::bind::JumpBinding;
 use crate::host::project::actions::{action_key, acts_in};
 use crate::host::project::draw::{present_project_dialog, ProjectDialogLabel, ProjectDialogWords};
 use crate::project::ProjectAct;
 
 impl ProjectLoopState {
+    /// The screen-jump operations of the plugin showing the project, with the keys they have now
+    /// (the user's `[keys.<plugin id>]` applied the way konoma applies it).
+    pub(super) fn jumps(&self, prepared: &PreparedProjects) -> Vec<JumpBinding> {
+        let Some(nav) = &self.screen else {
+            return Vec::new();
+        };
+        let Some(manifest) = prepared.registry.manifest(&nav.project.plugin) else {
+            return Vec::new();
+        };
+        AppActs::from_config(
+            &nav.project.plugin,
+            manifest,
+            &prepared.config.keys,
+            &prepared.config.plugins,
+        )
+        .0
+        .jumps
+    }
+
     pub(super) fn actions(
         &self,
         prepared: &PreparedProjects,
@@ -28,13 +48,7 @@ impl ProjectLoopState {
             plugin: nav.project.plugin.clone(),
             context: nav.act_context(content.as_deref()),
             diff: matches!(content.as_deref(), Some(ProjectContent::Diff(_))),
-            jumps: self.runtimes[&nav.project]
-                .project
-                .declaration
-                .screens
-                .iter()
-                .filter_map(|s| s.key)
-                .collect(),
+            jumps: bound.jumps.iter().filter_map(|j| j.key).collect(),
         };
         let actions: Vec<_> = manifest
             .actions
@@ -265,6 +279,7 @@ impl ProjectLoopState {
             .find(|a| a.key == Some(kp))
             .map(|a| a.id.clone());
         let facts = ProjectKeyFacts {
+            jumps: self.jumps(prepared),
             // An already open menu was handled above. Its trigger must still pass through
             // the shared filter/pending-input transitions before opening a new menu.
             global: self.keys.layer_of_key(CoreContext::Canvas, kp)

@@ -105,6 +105,21 @@ pub struct JumpBinding {
     pub key: Option<KeyPress>,
 }
 
+/// The screen `key` jumps to, among the jumps as they are bound now: the one place that answers
+/// "does this key jump, and where" (the key handling, the screen tabs, the footer and the help
+/// all read it, so a rebound or removed jump key means the same everywhere).
+pub fn jump_target(jumps: &[JumpBinding], key: KeyPress) -> Option<&str> {
+    jumps
+        .iter()
+        .find(|j| j.key == Some(key))
+        .map(|j| j.screen.as_str())
+}
+
+/// The key that jumps to `screen` now (`None`: the screen has no jump or it was removed).
+pub fn jump_key_of(jumps: &[JumpBinding], screen: &str) -> Option<KeyPress> {
+    jumps.iter().find(|j| j.screen == screen)?.key
+}
+
 /// The jump operations a manifest declares: its project's screens that are reached by a key
 /// (a pushed screen has none), as `(operation id, screen id, default key)`.
 fn jump_ops(manifest: &Manifest) -> Vec<(String, String, KeyPress)> {
@@ -165,7 +180,10 @@ pub fn bind_jumps(
             continue;
         };
         if action == "noop" || action == "disabled" {
-            for jump in jumps.iter_mut().filter(|j| j.key == Some(keypress_of(spec))) {
+            for jump in jumps
+                .iter_mut()
+                .filter(|j| j.key == Some(keypress_of(spec)))
+            {
                 jump.key = None;
             }
         } else if jumps.iter().any(|j| j.op == *action) {
@@ -201,7 +219,10 @@ pub fn bind_jumps(
                 key: (*written).clone(),
                 why: format!("`{}` already jumps on it", other.op),
             });
-            let back = defaults.iter().find(|(d, _, _)| d == op).map(|(_, _, k)| *k);
+            let back = defaults
+                .iter()
+                .find(|(d, _, _)| d == op)
+                .map(|(_, _, k)| *k);
             if let Some(back) = back.filter(|b| !jumps.iter().any(|j| j.key == Some(*b))) {
                 jumps[slot].key = Some(back);
             }
@@ -211,6 +232,10 @@ pub fn bind_jumps(
     }
     (jumps, notes)
 }
+
+#[cfg(test)]
+#[path = "bind_tests.rs"]
+mod tests;
 
 /// The declared actions of plugin `id`, in declaration order, with their keys: the manifest's,
 /// replaced by `user` (the plugin's `[keys.<id>]` table, if the user wrote one). `handle` makes
