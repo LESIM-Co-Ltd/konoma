@@ -2931,3 +2931,89 @@ fn e2e_project_tab_keys_of_another_provider_are_listed_where_they_act() {
         another_provider_screen(true, two)
     });
 }
+
+/// The rows of the `[Launch]` help section (empty when the section is not listed), in the host's
+/// language.
+fn launch_help_rows(sim: &Sim) -> Vec<(String, String)> {
+    let title = crate::i18n::tr(sim.app.lang, crate::i18n::Msg::HelpLaunch);
+    crate::ops::help::sections(&sim.app)
+        .into_iter()
+        .filter(|s| s.title == title)
+        .flat_map(|s| s.rows)
+        .collect()
+}
+
+/// `e` and `o` act on any project screen whose selected row has a launchable target, so the help
+/// of another provider's screen lists them there and only there (the footer never showed them).
+/// `e` is pressed for real: the host only records the pending edit. `o` goes through a stubbed
+/// process runner, so no opener starts.
+#[test]
+fn e2e_project_help_of_another_provider_lists_launch_rows_where_the_keys_act() {
+    use crate::i18n::{tr, Lang, Msg};
+    for lang in [Lang::En, Lang::Jp] {
+        // A row with a target (the first, `file.txt`): both keys act and both rows are listed,
+        // after the plugin's sections and before the menus behind Space.
+        let (mut sim, _keep) = another_provider_screen(false, false);
+        sim.app.lang = lang;
+        sim.resize(160, 100);
+        let target = sim.app.project_launch_target().expect("alpha has a target");
+        let rows = launch_help_rows(&sim);
+        let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["e", "o"], "{lang:?}: {rows:?}");
+        let titles: Vec<String> = crate::ops::help::sections(&sim.app)
+            .into_iter()
+            .map(|s| s.title)
+            .collect();
+        let at = |m: Msg| titles.iter().position(|t| *t == tr(lang, m)).unwrap();
+        assert!(
+            at(Msg::HelpLaunch) < at(Msg::WkActionsTitle)
+                && at(Msg::WkActionsTitle) < at(Msg::HelpTabs),
+            "{lang:?}: {titles:?}"
+        );
+        // Through the real `?`, the rows are on screen.
+        sim.key('?');
+        assert!(sim.app.show_help);
+        if lang == Lang::En {
+            // The ja screen text has a cell filler between wide glyphs, so only en is matched.
+            sim.see(tr(lang, Msg::HelpLaunch));
+            sim.see("edit in external editor");
+        }
+        sim.key('?');
+        assert!(!sim.app.show_help);
+        let opened = Arc::new(Mutex::new(0usize));
+        let seen = opened.clone();
+        sim.app.set_office_runner(Arc::new(move |_| {
+            *seen.lock().unwrap() += 1;
+            Ok(Some(0))
+        }));
+        sim.key('e');
+        assert_eq!(
+            sim.app.take_pending_edit(),
+            Some((target.clone(), None)),
+            "{lang:?}: e records that row's file"
+        );
+        sim.key('o');
+        assert_eq!(*opened.lock().unwrap(), 1, "{lang:?}: o opens that row");
+
+        // A row without a target (the second): neither key acts, neither row is listed.
+        sim.key('j');
+        drain(&mut sim);
+        assert!(sim.app.project_launch_target().is_none());
+        assert!(
+            launch_help_rows(&sim).is_empty(),
+            "{lang:?}: {:?}",
+            launch_help_rows(&sim)
+        );
+        sim.key('e');
+        assert!(sim.app.take_pending_edit().is_none(), "{lang:?}");
+        sim.key('o');
+        assert_eq!(*opened.lock().unwrap(), 1, "{lang:?}: o does not act");
+
+        // A pushed screen has no row at all.
+        let (mut sim, _keep) = another_provider_screen(true, false);
+        sim.app.lang = lang;
+        assert!(launch_help_rows(&sim).is_empty(), "{lang:?}");
+        sim.key('e');
+        assert!(sim.app.take_pending_edit().is_none(), "{lang:?}");
+    }
+}

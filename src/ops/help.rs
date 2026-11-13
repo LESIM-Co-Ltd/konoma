@@ -1054,13 +1054,9 @@ fn project_sections(app: &App) -> Vec<HelpSection> {
         })
         .collect();
     // The Tabs and Global rows (`t`, `[`, `]`, `1 - 9`, `T`, `?`, `Q`, `P`, `F`) act on every
-    // project screen, the graph's branch picker included, so every screen lists them; only the
-    // launch verbs of the old hub stay with the version-control screens.
-    add_host_rows(
-        app,
-        &mut sections,
-        app.project_vcs_jj().is_some() && !app.project_picker(),
-    );
+    // project screen, the graph's branch picker included, so every screen lists them; the launch
+    // verbs (`e`, `o`) are gated by the selected row's target.
+    add_host_rows(app, &mut sections);
     sections
 }
 
@@ -1116,18 +1112,16 @@ fn vcs_screen_words(_: &App, _: bool) -> (Msg, Msg, Msg) {
 
 /// The rows the host adds to a project canvas's help. Every project screen lists the Tabs and
 /// Global rows at the end: those keys sit in the core Global layer, which a project screen hands
-/// back to the host (the graph's branch picker included). On a version-control screen (`vcs`) the
-/// help also has, as the old hub listed them, the launch verbs (`e`, `o`) after the movement
-/// section. A row is there only while its key acts on this screen, like every other row.
-fn add_host_rows(app: &App, sections: &mut Vec<HelpSection>, vcs: bool) {
+/// back to the host (the graph's branch picker included). The launch verbs (`e`, `o`) are listed
+/// too: they act on any project screen whose selected row has a launchable target (`verb_target`),
+/// so `gate_edit` / `gate_open_external` decide, per screen and per row, like every other row.
+/// They sit after the movement section as the old hub listed them; a screen without one (another
+/// provider's) puts them where every canvas does, before the menus behind `Space` / `y`.
+fn add_host_rows(app: &App, sections: &mut Vec<HelpSection>) {
     // The screen's own context: its rows are worded and gated as the old hub's were.
     let ctx = app.canvas_screen().unwrap_or(Context::Canvas);
     let facts = core_help::facts_for(app, ctx);
-    let mut rows = if vcs {
-        vec![r(&[Action::RequestEdit]), r(&[Action::OpenExternal])]
-    } else {
-        Vec::new()
-    };
+    let mut rows = vec![r(&[Action::RequestEdit]), r(&[Action::OpenExternal])];
     rows.extend(global_rows());
     let mut by: Vec<(Sec, Vec<(String, String)>)> = Vec::new();
     for row in &rows {
@@ -1152,11 +1146,14 @@ fn add_host_rows(app: &App, sections: &mut Vec<HelpSection>, vcs: bool) {
     let global = take(Sec::Global, Msg::HelpGlobal);
     if let Some(launch) = launch {
         let movement = tr(app.lang, Msg::HelpMove);
+        let menus = tr(app.lang, Msg::WkActionsTitle);
         let at = sections
             .iter()
             .position(|s| s.title == movement)
-            .map_or(1, |i| i + 1);
-        sections.insert(at.min(sections.len()), launch);
+            .map(|i| i + 1)
+            .or_else(|| sections.iter().position(|s| s.title == menus))
+            .unwrap_or(sections.len());
+        sections.insert(at, launch);
     }
     sections.extend(tabs);
     sections.extend(global);
