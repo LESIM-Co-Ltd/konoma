@@ -90,10 +90,14 @@ fn expected_canvas_help_sections(
 ) -> HelpSections {
     let mut wanted = sections.clone();
     if picker {
-        // The graph branch picker's help is its own single section; the host adds no Tabs or
-        // Global chrome there, so nothing is excluded (and nothing may be left over).
-        assert_eq!(sections.len(), 1, "picker help is one section: {sections:?}");
-        return wanted;
+        // The graph branch picker's help is its own section plus the Global section (`?`, `Q`
+        // act there, as on every project screen); the host adds no Tabs section there, so only
+        // the host-only Global rows below are excluded.
+        assert_eq!(
+            sections.len(),
+            2,
+            "picker help is its own section and the Global section: {sections:?}"
+        );
     }
     if let Some((keys, host_text, app_text)) = root_row {
         // Design :220 / :967: the root screen's return key quits the standalone program.
@@ -108,7 +112,7 @@ fn expected_canvas_help_sections(
         }
         assert_eq!(replaced, 1, "exactly one root return row in the host help");
     }
-    for (en, ja, line) in CANVAS_HELP_HOST_ONLY {
+    for (en, ja, line) in CANVAS_HELP_HOST_ONLY.iter().filter(|_| !picker) {
         let title = if lang == "ja" { ja } else { en };
         assert!(
             wanted.iter().any(|(t, _)| t == title),

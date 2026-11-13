@@ -2746,3 +2746,63 @@ fn e2e_project_outcome_open_tab_uses_host_tab_lifecycle() {
     assert!(f.sim.app.project_active());
     f.sim.see("alpha");
 }
+
+#[test]
+fn e2e_project_help_of_another_provider_lists_the_global_rows_and_the_keys_act() {
+    use crate::i18n::{tr, Lang, Msg};
+    for lang in [Lang::En, Lang::Jp] {
+        let mut f = fixture("project_global_help", false, 1, None, None, None);
+        open(&mut f);
+        f.sim.app.lang = lang;
+        f.sim.resize(160, 70);
+        // Through the real `?` key: the Global section lists the four layer-0 rows that act.
+        f.sim.key('?');
+        assert!(f.sim.app.show_help);
+        let global = tr(lang, Msg::HelpGlobal);
+        if lang == Lang::En {
+            // The drawn panel (the ja run only switches the host's language after the project
+            // opened, so its sections are checked as data below).
+            f.sim.see(global);
+        }
+        let core = |m: konoma_host_core::help_msg::CoreMsg| {
+            if lang == Lang::En {
+                m.en()
+            } else {
+                m.ja()
+            }
+        };
+        for (keys, text) in [
+            ("P", tr(lang, Msg::PasteJumpHelp)),
+            ("?", core(konoma_host_core::help_msg::CoreMsg::ToggleHelp)),
+            ("F", tr(lang, Msg::FollowHelp)),
+            ("Q", core(konoma_host_core::help_msg::CoreMsg::Quit)),
+        ] {
+            let rows: Vec<_> = crate::ops::help::sections(&f.sim.app)
+                .into_iter()
+                .filter(|s| s.title == global)
+                .flat_map(|s| s.rows)
+                .collect();
+            assert!(
+                rows.iter().any(|(k, d)| k == keys && d == text),
+                "{lang:?}: the Global section lists {keys}: {rows:?}"
+            );
+        }
+        // No Tabs section on another provider's screen (the plugin's own `Ctrl-t` row stays).
+        assert!(
+            crate::ops::help::sections(&f.sim.app)
+                .iter()
+                .all(|s| s.title != tr(lang, Msg::HelpTabs)),
+            "{lang:?}: tab rows stay with the version-control screens"
+        );
+        // The listed keys act: `?` closes the help, `F` turns following on, `Q` asks and quits.
+        f.sim.key('?');
+        assert!(!f.sim.app.show_help, "{lang:?}: ? closes the help");
+        assert!(!f.sim.app.follow_enabled());
+        f.sim.key('F');
+        assert!(f.sim.app.follow_enabled(), "{lang:?}: F follows");
+        f.sim.key('Q');
+        assert!(!f.sim.quit);
+        f.sim.key('y');
+        assert!(f.sim.quit, "{lang:?}: Q then y quits");
+    }
+}

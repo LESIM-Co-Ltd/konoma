@@ -1,7 +1,7 @@
 //! The standalone project-screen help lists the Global rows (`?` and `Q`, the only layer-0 keys
 //! the standalone keeps), with the effective keys, and the listed keys do what the rows say.
-//! As in the host, the version-control screens (git, jj) list them; another provider's project
-//! help stays as it was.
+//! As in the host, every project screen lists them (git, jj and another provider's, the graph's
+//! branch picker included), because the keys act on every one of them.
 use super::*;
 
 /// The drawn text of every line, spaces removed so wide characters compare exactly.
@@ -123,15 +123,69 @@ fn project_help_lists_global_rows_on_root_and_pushed_screens() {
     }
 }
 
+/// `?` and `Q` act on every project screen of the standalone, so another provider's help lists
+/// the Global rows too (en and ja, on a root and on a pushed screen), and the keys act.
 #[test]
-fn project_help_of_another_provider_has_no_global_rows() {
-    let (_dir, mut p, _) = setup_with(false, true, &config("en", ""));
-    let mut t = big();
-    drive(&mut p, &mut t, vec![Key::char('?')]);
-    assert!(
-        lines(&t).iter().all(|l| !l.contains("Global")),
-        "a generic project's help is unchanged"
-    );
+fn project_help_of_another_provider_lists_the_global_rows() {
+    for (lang, title) in [("en", "Global"), ("ja", "共通(Global)")] {
+        for pushed in [false, true] {
+            let (_dir, mut p, _) = setup_with(false, true, &config(lang, ""));
+            let mut t = big();
+            if pushed {
+                opening(&mut p, &mut t, "log");
+            }
+            assert_help_lists(&mut p, &mut t, title);
+            // `Q` ends the loop at once, with or without the help open.
+            for keys in [vec![Key::char('Q')], vec![Key::char('?'), Key::char('Q')]] {
+                let (_dir, mut p, _) = setup_with(false, true, &config(lang, ""));
+                let mut t = big();
+                if pushed {
+                    opening(&mut p, &mut t, "log");
+                }
+                let expected = keys.len();
+                let mut all = keys;
+                all.push(Key::char('j'));
+                assert_eq!(
+                    drive(&mut p, &mut t, all).read,
+                    expected,
+                    "Q stops reading keys ({lang}, pushed: {pushed})"
+                );
+            }
+        }
+    }
+}
+
+/// The graph's branch picker is a modal list, but `?` and `Q` act there as on every screen
+/// (`Q` is handled before the screen sees the key), so its help lists them.
+#[test]
+fn project_help_of_the_graph_picker_lists_the_global_rows_and_the_keys_act() {
+    for name in VCS {
+        for (lang, title) in [("en", "Global"), ("ja", "共通(Global)")] {
+            let (_dir, mut p, _) = vcs(name, &config(lang, ""));
+            let mut t = big();
+            opening(&mut p, &mut t, "graph_picker");
+            assert_help_lists(&mut p, &mut t, title);
+            // `?` opens the help and, pressed again, closes it.
+            drive(&mut p, &mut t, vec![Key::char('?'), Key::char('?')]);
+            assert!(
+                lines(&t).iter().all(|l| !l.contains(title)),
+                "`?` closed the help on the picker ({name} {lang})"
+            );
+            for keys in [vec![Key::char('Q')], vec![Key::char('?'), Key::char('Q')]] {
+                let (_dir, mut p, _) = vcs(name, &config(lang, ""));
+                let mut t = big();
+                opening(&mut p, &mut t, "graph_picker");
+                let expected = keys.len();
+                let mut all = keys;
+                all.push(Key::char('j'));
+                assert_eq!(
+                    drive(&mut p, &mut t, all).read,
+                    expected,
+                    "Q stops reading keys on the picker ({name} {lang})"
+                );
+            }
+        }
+    }
 }
 
 #[test]

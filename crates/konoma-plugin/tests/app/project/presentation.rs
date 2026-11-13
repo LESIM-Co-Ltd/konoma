@@ -120,7 +120,14 @@ fn standalone_project_host_only_keys_are_inert_and_unadvertised() {
     );
     assert!(log.lock().unwrap().acts.is_empty());
     let terminal = run(&mut prepared, &mut events, &["?"]);
+    // The Global section (`?`, `Q`) is the standalone's own; its `Q` row reads "back to tree in
+    // preview" (the shared core text), so it is taken out before the host-only words are looked for.
     let help = text(&terminal);
+    assert!(
+        help.contains("Global") && help.contains("quit (back to tree in preview)"),
+        "the standalone keeps its two Global rows: {help}"
+    );
+    let help = help.replace("quit (back to tree in preview)", "");
     for forbidden in [
         "new tab", "Tabs", "follow", "tree", "e:edit", "o:open", "!:tool",
     ] {
@@ -135,7 +142,12 @@ fn standalone_project_host_only_keys_are_inert_and_unadvertised() {
 fn project_open_aliases_and_root_pushed_wording_match_actions() {
     let (_dir, mut prepared, mut events, log) = setup("[ui]\nlang='en'\n");
     let terminal = run(&mut prepared, &mut events, &["?"]);
-    let help = text(&terminal);
+    // The Global section's `Q` row also says "quit"; it is taken out so that the words checked
+    // below are the ones of the screen's own return row.
+    let own = |terminal: &Terminal<TestBackend>| {
+        text(terminal).replace("quit (back to tree in preview)", "")
+    };
+    let help = own(&terminal);
     assert!(
         help.contains("l/→"),
         "Enter coverage must leave both Right aliases"
@@ -144,8 +156,8 @@ fn project_open_aliases_and_root_pushed_wording_match_actions() {
     assert!(!help.contains("back to changes"));
     let terminal = run(&mut prepared, &mut events, &["Right", "?"]);
     assert_eq!(log.lock().unwrap().acts, ["open"]);
-    assert!(text(&terminal).contains("back"));
-    assert!(!text(&terminal).contains("quit"));
+    assert!(own(&terminal).contains("back"));
+    assert!(!own(&terminal).contains("quit"));
     assert_eq!(prepared.screen.as_ref().unwrap().stack.len(), 2);
     let (_dir, mut prepared, mut events, _) = setup_with(
         "[ui]\nlang='en'\n",
@@ -155,7 +167,7 @@ fn project_open_aliases_and_root_pushed_wording_match_actions() {
         },
     );
     let terminal = run(&mut prepared, &mut events, &["?"]);
-    assert!(text(&terminal).contains("quit"), "graph root must say quit");
+    assert!(own(&terminal).contains("quit"), "graph root must say quit");
     assert!(!text(&terminal).contains("back to changes"));
 }
 

@@ -163,7 +163,20 @@ fn cells(sim: &mut Sim, names: &[&str]) -> Value {
         } else {
             "quit"
         };
-        let sections = p.help_sections(
+        // The Global section as the real host lists it, minus the host-only `P` and `F`: the
+        // standalone keeps `?` and `Q` only (design :1266).
+        let global: Vec<(String, String)> = crate::ops::help::sections(&sim.app)
+            .into_iter()
+            .filter(|s| s.title == "Global")
+            .flat_map(|s| s.rows)
+            .filter(|(key, _)| key == "?" || key == "Q")
+            .collect();
+        assert_eq!(
+            global.len(),
+            2,
+            "the host's project help lists `?` and `Q`: {global:?}"
+        );
+        let mut sections = p.help_sections(
             &ProjectHelpWords {
                 plugin: "Presentation",
                 project: "Project",
@@ -191,6 +204,10 @@ fn cells(sim: &mut Sim, names: &[&str]) -> Value {
             },
             &[("i".into(), "Items".into())],
         );
+        sections.push(konoma_host_core::help::CoreSection {
+            title: "Global".into(),
+            rows: global,
+        });
         let lines = konoma_widgets::help_panel::help_lines(
             &sections
                 .iter()

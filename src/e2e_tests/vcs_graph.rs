@@ -1294,3 +1294,55 @@ fn e2e_vcs_graph_tab_close_discards_only_closed_tabs_cached_views() {
         assert!(!new.app.project_cached_tabs_for_test().contains(&b));
     }
 }
+
+#[test]
+fn e2e_vcs_graph_picker_help_lists_the_global_rows_and_the_keys_act() {
+    // The branch picker is a modal list, but `?`, `F`, `Q` (and `P`) act there as on every project
+    // screen, so its help lists the Global section; the tab keys do not act there (no tab opens),
+    // so no Tabs section is listed.
+    let dir = picker_fixture();
+    let rows_of = |new: &Sim, title: &str| -> Vec<(String, String)> {
+        crate::ops::help::sections(&new.app)
+            .into_iter()
+            .filter(|s| s.title == title)
+            .flat_map(|s| s.rows)
+            .collect()
+    };
+    for lang in ["en", "ja"] {
+        let (_old, mut new) = graph_pair(&dir, lang, "right", (160, 40), 12, false, false);
+        new.key('b');
+        drain(&mut new);
+        assert_eq!(new.app.project_frame().unwrap().key.screen, "graph_picker");
+        let titles: Vec<_> = crate::ops::help::sections(&new.app)
+            .into_iter()
+            .map(|s| s.title)
+            .collect();
+        let global = crate::i18n::tr(new.app.lang, crate::i18n::Msg::HelpGlobal);
+        assert_eq!(
+            titles.len(),
+            2,
+            "{lang}: the picker's own section and Global: {titles:?}"
+        );
+        assert_eq!(titles[1], global, "{lang}");
+        let keys: Vec<_> = rows_of(&new, global).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, ["P", "?", "F", "Q"], "{lang}");
+        // The keys listed act on the picker.
+        let tabs = new.app.tab_count();
+        new.key('F');
+        assert!(new.app.follow_enabled(), "{lang}: F follows on the picker");
+        new.ctrl('t');
+        assert_eq!(
+            new.app.tab_count(),
+            tabs,
+            "{lang}: Ctrl-t opens nothing on the picker"
+        );
+        new.key('?');
+        assert!(new.app.show_help, "{lang}: ? opens the help on the picker");
+        new.key('?');
+        assert!(!new.app.show_help, "{lang}: ? closes it");
+        new.key('Q');
+        assert!(!new.quit, "{lang}: Q asks first");
+        new.key('y');
+        assert!(new.quit, "{lang}: Q then y quits from the picker");
+    }
+}
