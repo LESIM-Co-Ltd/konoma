@@ -2064,22 +2064,12 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::DiffNextChange => app.diff_change_jump(1),
         #[cfg(feature = "git")]
         Action::DiffPrevChange => app.diff_change_jump(-1),
-        // On a project canvas the screen controls (screens, search, back) are the host's keys;
-        // a `Space` menu item for one presses that key, so the menu and the key share one path.
-        #[cfg(feature = "git")]
-        Action::GitScreenNext if ctx == keymap::Context::Canvas && app.project_active() => {
-            app.project_press(KeyPress::key(KeyCode::Tab));
-        }
-        #[cfg(feature = "git")]
-        Action::GitScreenPrev if ctx == keymap::Context::Canvas && app.project_active() => {
-            app.project_press(KeyPress::key(KeyCode::BackTab));
-        }
-        #[cfg(feature = "git")]
-        Action::GitClose if ctx == keymap::Context::Canvas && app.project_active() => {
-            app.project_press_control(false);
-        }
-        Action::ListFilterStart if ctx == keymap::Context::Canvas && app.project_active() => {
-            app.project_press_control(true);
+        // A canvas control chosen from the `Space` menu presses the control's key, so the menu
+        // and the key share one path.
+        Action::ProjectControl(control) => {
+            if app.project_active() {
+                app.project_press_control(control);
+            }
         }
         #[cfg(feature = "git")]
         Action::GitScreenNext => app.git_screen_cycle(1),

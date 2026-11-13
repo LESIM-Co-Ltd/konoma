@@ -523,6 +523,25 @@ pub enum Action {
     /// An action the open plugin declared (`Manifest::actions`). It has no config name: its key
     /// is the plugin's own (`[keys.<plugin id>]`), and it is always reachable from `Space`.
     Plugin(crate::plugins::PluginAct),
+    /// A control of the project canvas (search, the screen cycle, back) as a `Space` menu item.
+    /// It has no config name and no key of its own: only the canvas menu builds it, and running
+    /// it presses the control's key through the canvas's own key handler.
+    ProjectControl(ProjectMenuControl),
+}
+
+/// The canvas controls the project canvas's `Space` menu lists. A host enum rather than
+/// `ProjectControlId`: the screen cycle is one presentation control with two keys, and the menu
+/// lists its two directions as two items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectMenuControl {
+    /// The filter key (`/`).
+    Search,
+    /// The first key of the screens control (`Tab`).
+    NextScreen,
+    /// The second key of the screens control (`Shift-Tab`).
+    PrevScreen,
+    /// The back key (`h`, or `q`).
+    Back,
 }
 
 // =============================================================================
@@ -2925,6 +2944,10 @@ pub fn action_name(a: Action) -> String {
         Action::GitGraphPickerApply => "git_graph_picker_apply",
         Action::ToggleFocusedItem => "toggle_focused_item",
         Action::Plugin(p) => return format!("plugin:{}.{}", p.plugin(), p.act()),
+        Action::ProjectControl(ProjectMenuControl::Search) => "project_control:search",
+        Action::ProjectControl(ProjectMenuControl::NextScreen) => "project_control:next_screen",
+        Action::ProjectControl(ProjectMenuControl::PrevScreen) => "project_control:prev_screen",
+        Action::ProjectControl(ProjectMenuControl::Back) => "project_control:back",
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => "git_diff_discard",
         Action::CycleDiffLayout => "cycle_diff_layout",
@@ -3355,6 +3378,51 @@ mod tests {
         assert_eq!(action_from_str("tab_new"), Some(Action::TabNew));
         assert_eq!(action_from_str("tab_new_after"), Some(Action::TabNewAfter));
         assert_eq!(action_name(Action::TabNewAfter), "tab_new_after");
+    }
+
+    /// The canvas controls of the `Space` menu have no config name: no string a `[keys]` table can
+    /// hold (their own names, the old hub's names for the same words, the plugin spelling) gives
+    /// one, so an old binding keeps the meaning it had.
+    #[test]
+    fn project_control_items_have_no_config_name() {
+        let controls = [
+            ProjectMenuControl::Search,
+            ProjectMenuControl::NextScreen,
+            ProjectMenuControl::PrevScreen,
+            ProjectMenuControl::Back,
+        ];
+        for control in controls {
+            let name = action_name(Action::ProjectControl(control));
+            assert!(
+                !matches!(action_from_str(&name), Some(Action::ProjectControl(_))),
+                "{name}"
+            );
+            assert_eq!(action_from_str(&name), None, "{name}");
+        }
+        for name in [
+            "project_control",
+            "project_control:search",
+            "project_control.search",
+            "search",
+            "back",
+            "git_close",
+            "git_screen_next",
+            "git_screen_prev",
+            "list_filter_start",
+        ] {
+            assert!(
+                !matches!(action_from_str(name), Some(Action::ProjectControl(_))),
+                "{name}"
+            );
+        }
+        // The four names differ, so a conflict report cannot confuse them.
+        let mut names: Vec<String> = controls
+            .iter()
+            .map(|c| action_name(Action::ProjectControl(*c)))
+            .collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 4);
     }
 
     #[test]

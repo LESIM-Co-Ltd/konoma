@@ -2,7 +2,7 @@
 // acts there, with the words and the order the old hub listed them in, and the menu letter does
 // what the key does.
 
-use crate::keymap::Action;
+use crate::keymap::{Action, ProjectMenuControl};
 use crate::ops::menu::{MenuItem, View};
 
 /// The shared operations the canvas offers, in menu order, with the plain key each is listed
@@ -60,10 +60,10 @@ fn expected_shared(sim: &Sim, tool_screen: bool) -> Vec<Action> {
 
 /// The canvas's own controls, with the plain key the menu lists each under where it has one.
 const CONTROL_KEYS: [(Action, Option<char>); 4] = [
-    (Action::ListFilterStart, Some('/')),
-    (Action::GitScreenNext, None),
-    (Action::GitScreenPrev, None),
-    (Action::GitClose, Some('h')),
+    (Action::ProjectControl(ProjectMenuControl::Search), Some('/')),
+    (Action::ProjectControl(ProjectMenuControl::NextScreen), None),
+    (Action::ProjectControl(ProjectMenuControl::PrevScreen), None),
+    (Action::ProjectControl(ProjectMenuControl::Back), Some('h')),
 ];
 
 fn is_control(a: Action) -> bool {
@@ -78,7 +78,7 @@ fn is_host(a: Action) -> bool {
 /// cycle off a pushed screen (`Tab` does nothing there), back always.
 fn expected_controls(sim: &Sim) -> Vec<Action> {
     if sim.app.project_pushed() {
-        vec![Action::GitClose]
+        vec![Action::ProjectControl(ProjectMenuControl::Back)]
     } else {
         CONTROL_KEYS.iter().map(|(a, _)| *a).collect()
     }
@@ -99,7 +99,12 @@ fn check_space_shared(sim: &Sim, old: Option<&Sim>, tool_screen: bool, what: &st
         "{what}: the canvas controls, in order\n{items:?}"
     );
     for item in &controls {
-        let want = CONTROL_KEYS.iter().find(|(a, _)| *a == item.action).unwrap().1;
+        let mut want = CONTROL_KEYS.iter().find(|(a, _)| *a == item.action).unwrap().1;
+        // On the pushed detail (a text screen) `h` pans: the back keys are `q` and `Esc`, and the
+        // menu does not list `q` as a letter, so the item takes a free one.
+        if sim.app.project_pushed() && item.action == Action::ProjectControl(ProjectMenuControl::Back) {
+            want = None;
+        }
         if let Some(c) = want {
             assert_eq!(item.key.code, KeyCode::Char(c), "{what}: {item:?}");
         }
@@ -128,35 +133,45 @@ fn check_space_shared(sim: &Sim, old: Option<&Sim>, tool_screen: bool, what: &st
     if let Some(old) = old {
         let old_items = space_items(&old.app);
         let host: Vec<&MenuItem> = items.iter().filter(|i| is_host(i.action)).collect();
+        // The canvas's controls are not the old hub's actions (they are the canvas's own items),
+        // so each host item is matched to the old hub's item by its words, and then its letter
+        // must be the same; the shared operations are the same actions, matched by identity.
+        let mut positions = Vec::new();
         for item in &host {
-            let counterpart = old_items
+            let position = old_items
                 .iter()
-                // The old branches screen has its own filter action on the same `/` key.
-                .find(|o| {
-                    o.action == item.action
-                        || (item.action == Action::ListFilterStart
-                            && o.key.code == KeyCode::Char('/'))
+                .position(|o| {
+                    if is_control(item.action) {
+                        o.label == item.label
+                    } else {
+                        o.action == item.action
+                    }
                 })
-                .unwrap_or_else(|| panic!("{what}: the old hub has {:?}\n{old_items:?}", item.action));
+                .unwrap_or_else(|| {
+                    panic!("{what}: the old hub has {:?}\n{old_items:?}", item.label)
+                });
+            let counterpart = &old_items[position];
             assert_eq!(item.label, counterpart.label, "{what}: {:?} words", item.action);
+            // The screen cycle has no key of its own to list under: the menu hands it a free
+            // letter, and which letters are free depends on the other items (the old hub's `a`
+            // and `b` were its log and branch jumps, which the canvas does not list). Every other
+            // item keeps the letter it had.
+            let keyless = CONTROL_KEYS
+                .iter()
+                .any(|(c, letter)| *c == item.action && letter.is_none());
+            if !keyless {
+                assert_eq!(
+                    item.key, counterpart.key,
+                    "{what}: {:?} letter\nnew={items:?}\nold={old_items:?}",
+                    item.label
+                );
+            }
+            positions.push(position);
         }
         // The old hub's order of the host's items (tool, search, screens, back, then the rest).
-        let old_order: Vec<Action> = old_items
-            .iter()
-            // The old branches screen's own filter action is on the same `/` key.
-            .map(|o| {
-                if o.key.code == KeyCode::Char('/') {
-                    Action::ListFilterStart
-                } else {
-                    o.action
-                }
-            })
-            .filter(|a| host.iter().any(|i| i.action == *a))
-            .collect();
-        assert_eq!(
-            old_order,
-            host.iter().map(|i| i.action).collect::<Vec<_>>(),
-            "{what}: the old hub's order"
+        assert!(
+            positions.windows(2).all(|w| w[0] < w[1]),
+            "{what}: the old hub's order {positions:?}\nnew={host:?}\nold={old_items:?}"
         );
     }
 }
@@ -283,11 +298,12 @@ fn vcs_port_project_space_controls_do_what_their_keys_do() {
     if let Some(jj) = &jj {
         cases.push((jj.as_ref(), "jj", true));
     }
+    use ProjectMenuControl as C;
     let controls: [(Action, KeyCode); 4] = [
-        (Action::ListFilterStart, KeyCode::Char('/')),
-        (Action::GitScreenNext, KeyCode::Tab),
-        (Action::GitScreenPrev, KeyCode::BackTab),
-        (Action::GitClose, KeyCode::Char('h')),
+        (Action::ProjectControl(C::Search), KeyCode::Char('/')),
+        (Action::ProjectControl(C::NextScreen), KeyCode::Tab),
+        (Action::ProjectControl(C::PrevScreen), KeyCode::BackTab),
+        (Action::ProjectControl(C::Back), KeyCode::Char('h')),
     ];
     let mut compared = 0;
     for (root, id, is_jj) in cases {
@@ -299,23 +315,38 @@ fn vcs_port_project_space_controls_do_what_their_keys_do() {
             for name in names {
                 for (control, key) in controls {
                     let what = format!("{id} {lang} {name} {control:?}");
+                    // The pushed detail is a text screen: `h` pans there, and `q` goes back.
+                    let key = if name == "detail" && key == KeyCode::Char('h') {
+                        let (before, by_h, _) =
+                            control_run(root, id, lang, name, control, key, false);
+                        assert_eq!(by_h, before, "{what}: h pans on the detail, it does not go back");
+                        KeyCode::Char('q')
+                    } else {
+                        key
+                    };
                     let (before, by_key, listed) =
                         control_run(root, id, lang, name, control, key, false);
                     let (_, by_menu, _) = control_run(root, id, lang, name, control, key, true);
                     // The key acts iff the menu lists it, and the menu letter ends where the key does.
-                    assert_eq!(by_key != before, listed, "{what}: listed iff the key acts");
+                    assert_eq!(
+                        by_key != before,
+                        listed,
+                        "{what}: listed iff the key acts (before {before:?}, by key {by_key:?})"
+                    );
                     assert_eq!(by_menu, by_key, "{what}: the menu letter does what the key does");
                     // The effect itself, by control.
                     match control {
-                        Action::ListFilterStart if listed => assert!(by_key.3, "{what}: filter"),
-                        Action::GitScreenNext | Action::GitScreenPrev if listed => {
+                        Action::ProjectControl(C::Search) if listed => {
+                            assert!(by_key.3, "{what}: filter")
+                        }
+                        Action::ProjectControl(C::NextScreen | C::PrevScreen) if listed => {
                             assert_ne!(by_key.1, before.1, "{what}: another screen")
                         }
                         // A pushed screen pops; a root screen leaves the project.
-                        Action::GitClose if before.2 => {
+                        Action::ProjectControl(C::Back) if before.2 => {
                             assert!(by_key.0 && !by_key.2, "{what}: popped")
                         }
-                        Action::GitClose => assert!(!by_key.0, "{what}: left"),
+                        Action::ProjectControl(C::Back) => assert!(!by_key.0, "{what}: left"),
                         _ => {}
                     }
                     compared += 1;

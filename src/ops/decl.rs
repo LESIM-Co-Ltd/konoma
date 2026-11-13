@@ -381,6 +381,8 @@ pub fn decl(a: Action) -> Decl {
         // A plugin's operation is named by the plugin (`Manifest::actions`), in the language of
         // the interface; the footer, the help and the menu read it from the declaration.
         A::Plugin(_) => NONE,
+        // A canvas control is worded by the canvas menu (the words of the old hub's items).
+        A::ProjectControl(_) => NONE,
     }
 }
 

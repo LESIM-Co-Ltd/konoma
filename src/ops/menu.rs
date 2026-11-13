@@ -24,7 +24,7 @@
 
 use crate::app::App;
 use crate::i18n::{tr, Msg};
-use crate::keymap::{Action, Context, KeyPress, LeaderId};
+use crate::keymap::{Action, Context, KeyPress, LeaderId, ProjectMenuControl};
 
 use super::{action_enabled, decl, footer, help, keys};
 use crate::plugins::PluginAct;
@@ -528,6 +528,22 @@ fn project_shared_rest_len() -> usize {
     PROJECT_SHARED_REST.len()
 }
 
+/// Whether the canvas shows the changes screen (the old hub itself, which words back as `close`).
+fn on_changes_screen(app: &App) -> bool {
+    #[cfg(feature = "git")]
+    {
+        matches!(
+            app.canvas_screen(),
+            Some(Context::Screen(_, crate::keymap::Screen::Changes))
+        )
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
 /// The project canvas's `Space` menu: the plugin's declared operations (their letters as the
 /// presentation assigned them) followed by the host's shared operations, all through the one
 /// shared builder. Items are decided over every candidate, so a letter does not move when another
@@ -554,31 +570,29 @@ fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
         .unwrap_or_default();
     // The canvas's own controls, listed iff the footer and the help name them (the presentation's
     // controls are the one answer to "does this key act here"): search, the screen cycle, back.
+    // `App::project_control_key` is the one answer to "does this control's key act here"; the
+    // item's letter is the first plain character among the keys the control names.
     let controls = presentation.controls();
-    let control_keys = |id: ProjectControlId| {
-        controls
-            .iter()
-            .find(|c| c.id == id)
-            .map(|c| c.keys.iter().copied().find_map(menu_core::plain_key))
-    };
     let mut project_controls: Vec<Action> = Vec::new();
-    if let Some(key) = control_keys(ProjectControlId::Filter) {
-        menu_core::add_candidate(&mut cands, Action::ListFilterStart, key);
-        project_controls.push(Action::ListFilterStart);
-    }
-    #[cfg(feature = "git")]
-    {
-        // `Tab` does nothing on a pushed screen (the cycle's own rule).
-        if control_keys(ProjectControlId::Screens).is_some() && !app.project_pushed() {
-            for a in [Action::GitScreenNext, Action::GitScreenPrev] {
-                menu_core::add_candidate(&mut cands, a, None);
-                project_controls.push(a);
-            }
+    for (control, id) in [
+        (ProjectMenuControl::Search, ProjectControlId::Filter),
+        (ProjectMenuControl::NextScreen, ProjectControlId::Screens),
+        (ProjectMenuControl::PrevScreen, ProjectControlId::Screens),
+        (ProjectMenuControl::Back, ProjectControlId::Back),
+    ] {
+        if app.project_control_key_in(&presentation, control).is_none() {
+            continue;
         }
-        if let Some(key) = control_keys(ProjectControlId::Back) {
-            menu_core::add_candidate(&mut cands, Action::GitClose, key);
-            project_controls.push(Action::GitClose);
-        }
+        let letter = match control {
+            ProjectMenuControl::NextScreen | ProjectMenuControl::PrevScreen => None,
+            _ => controls
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|c| c.keys.iter().copied().find_map(menu_core::plain_key)),
+        };
+        let action = Action::ProjectControl(control);
+        menu_core::add_candidate(&mut cands, action, letter);
+        project_controls.push(action);
     }
     let shared = project_shared_ops();
     for &a in &shared {
@@ -620,17 +634,15 @@ fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
                 .map(|i| i.label.clone()),
             // The old hub worded back as `close` on the changes screen (the hub itself) and as
             // `back` on every other.
-            #[cfg(feature = "git")]
-            Action::GitClose => Some(
+            Action::ProjectControl(control) => Some(
                 tr(
                     app.lang,
-                    if matches!(
-                        app.canvas_screen(),
-                        Some(Context::Screen(_, crate::keymap::Screen::Changes))
-                    ) {
-                        Msg::FtClose
-                    } else {
-                        Msg::GitBack
+                    match control {
+                        ProjectMenuControl::Search => Msg::HintSearch,
+                        ProjectMenuControl::NextScreen => Msg::MenuNextScreen,
+                        ProjectMenuControl::PrevScreen => Msg::MenuPrevScreen,
+                        ProjectMenuControl::Back if on_changes_screen(app) => Msg::FtClose,
+                        ProjectMenuControl::Back => Msg::GitBack,
                     },
                 )
                 .to_string(),

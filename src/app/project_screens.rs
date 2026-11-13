@@ -282,7 +282,7 @@ use ratatui::text::Line;
 
 use super::*;
 use crate::i18n::Msg;
-use crate::keymap::{Context, KeyPress};
+use crate::keymap::{Context, KeyPress, ProjectMenuControl};
 use crate::plugins::{ActBinding, PluginAct};
 
 #[cfg(test)]
@@ -1075,22 +1075,47 @@ impl App {
         self.apply_project_update(update);
     }
 
-    /// The first key of the canvas control the `Space` menu offers (search, or back), among the
-    /// keys the footer and the help name for it.
-    pub(crate) fn project_control_key(&self, search: bool) -> Option<KeyPress> {
-        use konoma_plugin::host::project::presentation::ProjectControlId as Id;
-        let want = if search { Id::Filter } else { Id::Back };
+    /// The key of a canvas control as the footer and the help name it, or `None` where that key
+    /// does not act (the control is not named on this screen; `Tab` does nothing on a pushed
+    /// screen). The `Space` menu lists a control iff this answers, and pressing the item presses
+    /// this key.
+    pub(crate) fn project_control_key(&self, control: ProjectMenuControl) -> Option<KeyPress> {
         let (presentation, _) = self.project_presentation()?;
-        presentation
-            .controls()
-            .iter()
-            .find(|control| control.id == want)
-            .and_then(|control| control.keys.first().copied())
+        self.project_control_key_in(&presentation, control)
     }
 
-    /// Press the search or back key of the canvas (see [`Self::project_press`]).
-    pub(crate) fn project_press_control(&mut self, search: bool) {
-        if let Some(key) = self.project_control_key(search) {
+    /// [`Self::project_control_key`] over a presentation already built (the menu builds the
+    /// presentation once and asks for every control).
+    pub(crate) fn project_control_key_in(
+        &self,
+        presentation: &ProjectPresentation,
+        control: ProjectMenuControl,
+    ) -> Option<KeyPress> {
+        use konoma_plugin::host::project::presentation::ProjectControlId as Id;
+        let want = match control {
+            ProjectMenuControl::Search => Id::Filter,
+            ProjectMenuControl::NextScreen | ProjectMenuControl::PrevScreen => Id::Screens,
+            ProjectMenuControl::Back => Id::Back,
+        };
+        let keys = &presentation.controls().iter().find(|c| c.id == want)?.keys;
+        match control {
+            ProjectMenuControl::Search | ProjectMenuControl::Back => keys.first().copied(),
+            ProjectMenuControl::NextScreen | ProjectMenuControl::PrevScreen
+                if self.project_pushed() =>
+            {
+                None
+            }
+            ProjectMenuControl::NextScreen => keys.iter().copied().find(|k| k.code == KeyCode::Tab),
+            ProjectMenuControl::PrevScreen => {
+                keys.iter().copied().find(|k| k.code == KeyCode::BackTab)
+            }
+        }
+    }
+
+    /// Run a canvas control chosen from the `Space` menu: press its key (see
+    /// [`Self::project_press`]).
+    pub(crate) fn project_press_control(&mut self, control: ProjectMenuControl) {
+        if let Some(key) = self.project_control_key(control) {
             self.project_press(key);
         }
     }
