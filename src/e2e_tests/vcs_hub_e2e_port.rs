@@ -893,3 +893,49 @@ fn vcs_hub_e2e_project_views_and_large_diff_render_is_bounded() {
         "the allocation counter looks dead: {views_alloc}"
     );
 }
+
+// ---- decided difference: old second_git_op_is_rejected_while_one_is_in_flight ----
+// The old hub refused a second write with the `GitOpBusy` flash. On the new path a running write
+// removes the other acts' hints and their keys do nothing (no flash, no dialog, no git call).
+
+fn has_write_hints(w: &W) -> bool {
+    let hints = write_tokens(&w.sim.app);
+    hints.contains(&"c:commit".to_string()) && hints.iter().any(|t| t.starts_with("s/S:"))
+}
+
+#[test]
+fn vcs_hub_e2e_while_a_write_runs_other_act_keys_show_no_hint_and_do_nothing() {
+    let (mut w, before) = blocked_commit("vcs_hub_e2e_running_hides_acts", "RUNNINGCOMMIT");
+    assert!(w.sim.app.project_write_running());
+    let (status, index) = (w.status(), w.index());
+    w.sim.app.flash = None;
+    w.sim.draw();
+    // No stage or commit hint in the footer or the help, and none drawn on the screen.
+    assert_eq!(write_tokens(&w.sim.app), Vec::<String>::new());
+    assert_eq!(write_help(&w.sim.app), Vec::<(String, String)>::new());
+    w.sim.dont_see("stage");
+    w.sim.dont_see("commit");
+    for key in ['s', 'S', 'u', 'U', 'x', 'c'] {
+        w.sim.key(key);
+        assert_eq!(w.flash(), None, "{key}: no flash");
+        w.no_dialog();
+        assert!(
+            w.sim.app.project_write_running(),
+            "{key}: still the one write"
+        );
+    }
+    assert_eq!(w.status(), status);
+    assert_eq!(w.index(), index);
+    assert_eq!(commit_subjects(&w.root), before);
+    // The write finishes and the hints come back.
+    std::fs::remove_file(w.root.join(".git/BLOCK")).unwrap();
+    drain(&mut w.sim);
+    assert!(!w.sim.app.project_write_running());
+    assert!(commit_subjects(&w.root).contains(&"RUNNINGCOMMIT".to_string()));
+    assert!(has_write_hints(&w), "{:?}", write_tokens(&w.sim.app));
+    // The "Committed" flash replaces the footer until it is cleared.
+    w.sim.app.flash = None;
+    w.sim.draw();
+    w.sim.see("commit");
+    w.sim.see("stage");
+}

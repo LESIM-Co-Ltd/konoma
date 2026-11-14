@@ -275,21 +275,28 @@ where
         if shared.origin != facts.origin {
             return ProjectUpdate::handled();
         }
+        // A refusal before the job runs drops the invocation, and with it the typed text.
+        let keeps_text = shared
+            .declaration
+            .text_input
+            .as_ref()
+            .is_some_and(|input| input.keep_on_failure);
         if !facts.policy.allow_write(shared.declaration.writes) {
-            return ProjectUpdate::notice(ProjectNotice::ReadOnly);
+            return refused(ProjectNotice::ReadOnly, keeps_text.then_some(invocation));
         }
         let Some(runtime) = self.runtimes.get(&shared.origin.project) else {
             return ProjectUpdate::handled();
         };
         if runtime.busy && !runtime.acting {
+            let spare = keeps_text.then(|| invocation.clone());
             return if self.queue_input(context, ProjectInput::Act(Box::new(invocation))) {
                 ProjectUpdate::handled()
             } else {
-                ProjectUpdate::notice(ProjectNotice::Busy)
+                refused(ProjectNotice::Busy, spare)
             };
         }
         if runtime.busy || !runtime.ready {
-            return ProjectUpdate::notice(ProjectNotice::Busy);
+            return refused(ProjectNotice::Busy, keeps_text.then_some(invocation));
         }
         if !runtime
             .enabled
@@ -366,17 +373,29 @@ where
             watch,
             effect: Box::new(invocation.into_effect(tree_status)),
         };
-        if runtime.tx.try_send(job).is_ok() {
-            runtime.busy = true;
-            runtime.acting = true;
-            runtime.acting_writes = writes;
-            runtime.pending_retry = retry;
-            if let Some(frame) = context.active.as_mut().and_then(|nav| nav.frame_mut()) {
-                frame.pending.clear();
-            }
+        if runtime.tx.try_send(job).is_err() {
+            return refused(ProjectNotice::Busy, retry.map(|invocation| *invocation));
+        }
+        runtime.busy = true;
+        runtime.acting = true;
+        runtime.acting_writes = writes;
+        runtime.pending_retry = retry;
+        if let Some(frame) = context.active.as_mut().and_then(|nav| nav.frame_mut()) {
+            frame.pending.clear();
         }
         ProjectUpdate::handled()
     }
+}
+
+/// A notice for an act that was refused before it ran. The invocation, when its text input is
+/// kept on failure, comes back as a retry so the host reopens the typed text.
+fn refused<I: ProjectActionInvocation>(
+    notice: ProjectNotice,
+    retry: Option<I>,
+) -> ProjectUpdate<I> {
+    let mut update = ProjectUpdate::notice(notice);
+    update.events.extend(retry.map(ProjectEvent::Retry));
+    update
 }
 
 impl<I: ProjectActionInvocation> ProjectHost<'_, I> {

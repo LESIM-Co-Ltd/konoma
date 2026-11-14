@@ -1347,6 +1347,12 @@ impl App {
         if let Some(prompt) = update.prompt {
             self.apply_project_prompt_update(prompt);
         }
+        // Only an act refused before it ran returns events here; the rest come from the poll.
+        for event in update.events {
+            if let ProjectEvent::Retry(invocation) = event {
+                self.reopen_project_input(invocation);
+            }
+        }
         handled
     }
 

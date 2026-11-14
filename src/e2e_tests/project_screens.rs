@@ -2642,8 +2642,10 @@ fn e2e_project_switch_root_reply_relocates_only_the_tab_that_asked() {
     assert!(!f.sim.app.project_active());
 }
 
-/// `refused_git_op_puts_the_typed_text_back` protected a state this path cannot reach: a typed
-/// prompt submitted into a running write. Both directions are mutually exclusive here — an
+/// `refused_git_op_puts_the_typed_text_back` protected a typed prompt submitted into a running
+/// write. By keys alone that state is unreachable (a prompt submitted into a runtime that
+/// refuses is covered by `vcs_port_write_submit_refused_as_busy_keeps_the_typed_commit_message`).
+/// Both directions are mutually exclusive here — an
 /// open prompt feeds every key into its buffer, so no act can start beneath it, and while an
 /// act runs its act keys are disabled, so no prompt can open on top of it. The only text a
 /// running act can meet is the screen's own `/` filter, which keeps its characters across the

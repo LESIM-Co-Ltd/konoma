@@ -3109,19 +3109,38 @@ const GROUPS: &[Group] = &[
         &["app"],
         "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
     ),
-    // A text input can never be submitted into a running act: while the runtime acts, its act
-    // keys are disabled (crates/konoma-plugin/src/host/project/actions.rs:232,423 — `request_act`
-    // requires `!acting`), and while a prompt is open every key feeds the dialog, so no act can
-    // start under it (src/app/project_screens.rs:1170-1173). Submitting into a busy view queues
-    // the invocation with its text instead (actions.rs:284-290). No typed text can meet a busy
-    // refusal; the old reopen path has no counterpart to pin. The anchor test fixes the
-    // mechanism from both sides — act keys dead under a running act, act keys typing into an
-    // open prompt — and keeps the one text a running act can meet (the `/` filter) intact.
+    // A refused submit puts the typed text back (the `keep_on_failure` retry): the runtime
+    // refuses as busy or not ready before the act runs, the notice flashes, and the prompt opens
+    // again with the buffer and the cursor at the end. The keys cannot start a write under an open
+    // prompt, so the test puts the runtime into the refusing state directly and presses Enter.
     (
         "refused_git_op_puts_the_typed_text_back",
-        &["n/a:busy-submit-unreachable-prompts-and-running-acts-are-mutually-exclusive"],
-        &["app"],
-        "e2e_project_prompt_and_running_act_are_mutually_exclusive",
+        &[
+            "prompt:stays-open",
+            "typed-text:kept",
+            "cursor:at-end",
+            "flash:busy",
+        ],
+        &["port"],
+        "vcs_port_write_submit_refused_as_busy_keeps_the_typed_commit_message",
+    ),
+    (
+        "dialog_submit_rechecks_the_guard_and_keeps_the_unexecuted_commit_message",
+        &["flash:read-only", "no-write-running", "typed-text:kept"],
+        &["port"],
+        "vcs_port_write_submit_rechecks_read_only_and_keeps_the_typed_commit_message",
+    ),
+    // The old hub flashed `GitOpBusy` for a second write. On the new path a running write removes
+    // the other acts' hints (`!acting` in `act_enabled`) and their keys do nothing.
+    (
+        "second_git_op_is_rejected_while_one_is_in_flight",
+        &[
+            "decided:running-act-hides-and-ignores-acts",
+            "second-act:not-started",
+            "repository:untouched",
+        ],
+        &["port"],
+        "vcs_hub_e2e_while_a_write_runs_other_act_keys_show_no_hint_and_do_nothing",
     ),
     (
         "same_root_tab_is_refreshed_even_though_it_is_not_the_origin",
@@ -3404,13 +3423,13 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // read-only checkout 5.
             + 108
             // The old-hub WRITE unit tests (src/app/tests.rs, write_guard_tests.rs,
-            // follow_worker.rs), 96 rows: basic git-view list/refresh/stage/discard/unstage 15 +
+            // follow_worker.rs), 105 rows: basic git-view list/refresh/stage/discard/unstage 15 +
             // branches list/checkout/create/delete 8 + worktree create flows 13 + commit flows 7 +
             // git_op background/busy/watcher/stale/cross-tab/status/same-root/relocation
             // machinery 23 + failure fatal-first/reopen/no-clobber/no-filter-hijack 16 +
-            // busy-submit n/a 1 + sync-fallback n/a 1 + jj sync gate 3 + write guard 6 +
-            // follow paused surface 3.
-            + 96,
+            // busy-submit 4 + sync-fallback n/a 1 + jj sync gate 3 + write guard 6 +
+            // follow paused surface 3 + submit-recheck 3 + second-write 3.
+            + 105,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

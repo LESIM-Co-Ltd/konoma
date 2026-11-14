@@ -289,6 +289,7 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "worktree_add_never_relocates_a_tab_that_did_not_ask",
             "same_root_tab_is_refreshed_even_though_it_is_not_the_origin",
             "ui_confirm_jj_sync_gates_the_only_write",
+            "second_git_op_is_rejected_while_one_is_in_flight",
         ],
     ),
     (
@@ -296,6 +297,7 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
         &[
             "guard_refuses_every_git_job_even_without_an_action_declaration_or_a_repository",
             "guard_refuses_jj_sync_before_a_dialog_or_backend_detection",
+            "dialog_submit_rechecks_the_guard_and_keeps_the_unexecuted_commit_message",
         ],
     ),
     (
@@ -339,14 +341,10 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
     // branch create/delete, jj sync round trip, worktree list/Ctrl-t/create/refusals (including
     // Enter on the current worktree)/diff detail+layout, commit-in-log, background-runner commit,
     // stage round trips — and 1 in e2e_tests/project_host.rs: the read-only checkout Enter).
-    // + 29 (the old-hub WRITE unit tests: 26 in src/app/tests.rs — the git_op runner/lifecycle
-    // block, the worktree/branch/commit flows, the basic git-view list/stage/discard tests and the
-    // jj sync gate — + 2 in src/app/write_guard_tests.rs + 1 in src/app/follow_worker.rs).
-    // Excluded from this unit while unclassified/unfixed:
-    // `second_git_op_is_rejected_while_one_is_in_flight` (src/app/tests.rs) — the new path silently
-    // disables the key while an act runs instead of flashing GitOpBusy — and
-    // `dialog_submit_rechecks_the_guard_and_keeps_the_unexecuted_commit_message`
-    // (src/app/write_guard_tests.rs) — a refused submit drops the typed text on the new path.
-    assert_eq!(total, 208, "frozen B/C/E/H/S inventory");
+    // + 31 (the old-hub WRITE unit tests: 27 in src/app/tests.rs — the git_op runner/lifecycle
+    // block, the worktree/branch/commit flows, the basic git-view list/stage/discard tests, the
+    // second-write refusal and the jj sync gate — + 3 in src/app/write_guard_tests.rs + 1 in
+    // src/app/follow_worker.rs).
+    assert_eq!(total, 210, "frozen B/C/E/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }

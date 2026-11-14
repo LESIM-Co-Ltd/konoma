@@ -444,3 +444,129 @@ fn screen_action_wins_shared_jump_and_right_uses_enter() {
         );
     }
 }
+
+fn text_invocation(f: &mut Fixture, keep: bool) -> Invocation {
+    let mut invocation = f.request();
+    let input = crate::TextInput::new("Message", "seed");
+    invocation.declaration = invocation.declaration.clone().text_input(if keep {
+        input.keep_on_failure()
+    } else {
+        input
+    });
+    invocation.context.text = Some("typed message".into());
+    invocation
+}
+
+fn notice_of(update: &ProjectUpdate<Invocation>) -> Option<ProjectNotice> {
+    update.commands.iter().find_map(|command| match command {
+        ProjectCommand::Notice(notice) => Some(*notice),
+        _ => None,
+    })
+}
+
+fn retried_text(update: &ProjectUpdate<Invocation>) -> Vec<Option<String>> {
+    update
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ProjectEvent::Retry(invocation) => Some(invocation.context.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn act_refused_before_it_runs_returns_the_typed_text_as_a_retry() {
+    // Every refusal that happens before the job is sent, each with a kept and an unkept input.
+    for refusal in [
+        "read_only",
+        "busy_acting",
+        "busy_not_acting_queue_full",
+        "not_ready",
+        "send_failed",
+    ] {
+        for keep in [true, false] {
+            let mut f = Fixture::new();
+            let invocation = text_invocation(&mut f, keep);
+            let mut facts = f.facts();
+            match refusal {
+                "read_only" => facts.policy.declared_read_only = true,
+                "busy_acting" => {
+                    let runtime = f.runtimes.get_mut(&project()).unwrap();
+                    runtime.busy = true;
+                    runtime.acting = true;
+                }
+                "busy_not_acting_queue_full" => {
+                    f.runtimes.get_mut(&project()).unwrap().busy = true;
+                    let frame = f.state.as_mut().unwrap().frame_mut().unwrap();
+                    for _ in 0..4096 {
+                        frame
+                            .pending
+                            .push_back(ProjectInput::Act(Box::new(invocation.clone())));
+                    }
+                }
+                "not_ready" => f.runtimes.get_mut(&project()).unwrap().ready = false,
+                "send_failed" => {
+                    // The channel holds one job and nothing drains it: a first act fills it.
+                    let (mut host, mut context) = f.parts();
+                    host.execute_act(&mut context, invocation.clone(), &facts, |_| None);
+                    let runtime = f.runtimes.get_mut(&project()).unwrap();
+                    runtime.busy = false;
+                    runtime.acting = false;
+                    runtime.pending_retry = None;
+                }
+                _ => unreachable!(),
+            }
+            let (mut host, mut context) = f.parts();
+            let update = host.execute_act(&mut context, invocation, &facts, |_| None);
+            let notice = if refusal == "read_only" {
+                ProjectNotice::ReadOnly
+            } else {
+                ProjectNotice::Busy
+            };
+            assert_eq!(notice_of(&update), Some(notice), "{refusal} keep={keep}");
+            let want = if keep {
+                vec![Some("typed message".to_string())]
+            } else {
+                vec![]
+            };
+            assert_eq!(retried_text(&update), want, "{refusal} keep={keep}");
+        }
+    }
+    // A refusal that is not about running now (queued for later) keeps the invocation queued.
+    let mut f = Fixture::new();
+    let invocation = text_invocation(&mut f, true);
+    f.runtimes.get_mut(&project()).unwrap().busy = true;
+    let facts = f.facts();
+    let (mut host, mut context) = f.parts();
+    let update = host.execute_act(&mut context, invocation, &facts, |_| None);
+    assert!(notice_of(&update).is_none() && update.events.is_empty());
+    // Origin, selection and disabled refusals never reopen the input.
+    for case in ["origin", "disabled", "selection"] {
+        let mut f = Fixture::new();
+        let invocation = text_invocation(&mut f, true);
+        let mut facts = f.facts();
+        match case {
+            "origin" => facts.origin.root = "/other".into(),
+            "disabled" => {
+                f.runtimes
+                    .get_mut(&project())
+                    .unwrap()
+                    .enabled
+                    .insert("run".into(), false);
+            }
+            _ => {
+                f.runtimes.get_mut(&project()).unwrap().views.insert(
+                    ScreenKey::new("list", 7),
+                    Arc::new(ProjectContent::List(ListView {
+                        rows: vec![ListRow::new("file", vec![]).value("b")],
+                        ..Default::default()
+                    })),
+                );
+            }
+        }
+        let (mut host, mut context) = f.parts();
+        let update = host.execute_act(&mut context, invocation, &facts, |_| None);
+        assert!(update.events.is_empty(), "{case}");
+    }
+}

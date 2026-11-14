@@ -782,6 +782,137 @@ fn vcs_port_write_read_only_refuses_every_git_write_before_prompt_or_dispatch() 
     }
 }
 
+/// Cursor of the open text prompt.
+fn input_cursor(w: &W) -> usize {
+    let Some(ProjectDialog::Act { cursor, .. }) = &w.sim.app.project_dialog else {
+        panic!("missing input")
+    };
+    *cursor
+}
+
+#[test]
+fn vcs_port_write_submit_rechecks_read_only_and_keeps_the_typed_commit_message() {
+    // Maps old dialog_submit_rechecks_the_guard_and_keeps_the_unexecuted_commit_message.
+    let mut w = W::git(
+        "vcs_port_write_submit_recheck",
+        true,
+        "en",
+        "relative",
+        false,
+    );
+    w.key('S');
+    let (subjects, acts) = (commit_subjects_of(&w.root), w.acts());
+    w.key('c');
+    w.type_text("keep this message");
+    assert_eq!(
+        w.input(),
+        (
+            "Commit message".to_string(),
+            "keep this message".to_string()
+        )
+    );
+    // The plugin turns read-only after the prompt opened: the submit must re-check.
+    w.sim.app.cfg.plugins.insert(
+        "git".into(),
+        toml::Table::from_iter([("read_only".into(), true.into())]),
+    );
+    w.press(KeyCode::Enter);
+    assert_eq!(
+        w.flash().as_deref(),
+        Some(crate::i18n::tr(
+            w.sim.app.lang,
+            crate::i18n::Msg::PluginReadOnly
+        ))
+    );
+    assert_eq!(
+        w.input(),
+        (
+            "Commit message".to_string(),
+            "keep this message".to_string()
+        ),
+        "the prompt is open again with the typed message"
+    );
+    assert_eq!(input_cursor(&w), "keep this message".chars().count());
+    assert!(!w.sim.app.project_write_running());
+    assert_eq!(w.acts(), acts, "no act ran");
+    assert_eq!(commit_subjects_of(&w.root), subjects, "no commit landed");
+    w.sim.see("keep this message");
+}
+
+#[test]
+fn vcs_port_write_submit_refused_as_busy_keeps_the_typed_commit_message() {
+    // Maps old refused_git_op_puts_the_typed_text_back. The real keys open the prompt and submit;
+    // the runtime is put into the refusing state directly because a running write hides the `c`
+    // key, so no key sequence can submit a prompt that was opened before another write began.
+    for state in ["another_act_in_flight", "runtime_not_ready"] {
+        let mut w = W::git("vcs_port_write_submit_busy", true, "en", "relative", false);
+        w.key('S');
+        let (subjects, acts) = (commit_subjects_of(&w.root), w.acts());
+        w.key('c');
+        w.type_text("a carefully written commit message");
+        let key = w
+            .sim
+            .app
+            .tab
+            .project_navigation
+            .as_ref()
+            .unwrap()
+            .project
+            .clone();
+        let set = |w: &mut W, busy: bool| {
+            let runtime = w.sim.app.project_runtimes.get_mut(&key).unwrap();
+            match state {
+                "another_act_in_flight" => {
+                    runtime.busy = busy;
+                    runtime.acting = busy;
+                }
+                _ => runtime.ready = !busy,
+            }
+        };
+        set(&mut w, true);
+        w.sim.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            w.flash().as_deref(),
+            Some(crate::i18n::tr(
+                w.sim.app.lang,
+                crate::i18n::Msg::ProjectBusy
+            )),
+            "{state}: the flash says why nothing ran"
+        );
+        assert_eq!(
+            w.input(),
+            (
+                "Commit message".to_string(),
+                "a carefully written commit message".to_string()
+            ),
+            "{state}: the typed message is kept"
+        );
+        assert_eq!(
+            input_cursor(&w),
+            "a carefully written commit message".chars().count(),
+            "{state}: the cursor stays at the end"
+        );
+        assert_eq!(w.acts(), acts, "{state}: no act ran");
+        assert_eq!(commit_subjects_of(&w.root), subjects, "{state}");
+        // Once the runtime is free, the same prompt submits the kept message.
+        set(&mut w, false);
+        w.press(KeyCode::Enter);
+        w.no_dialog();
+        assert_eq!(
+            commit_subjects_of(&w.root)[0],
+            "a carefully written commit message",
+            "{state}"
+        );
+    }
+}
+
+fn commit_subjects_of(root: &std::path::Path) -> Vec<String> {
+    crate::git::log(root, 200)
+        .into_iter()
+        .map(|c| c.summary)
+        .collect()
+}
+
 #[test]
 fn vcs_port_write_refresh_current_screen_tree_status_and_commit_chip() {
     let mut w = W::git("vcs_port_write_refresh", true, "en", "relative", false);
