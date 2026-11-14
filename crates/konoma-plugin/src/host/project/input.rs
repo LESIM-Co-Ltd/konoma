@@ -95,6 +95,10 @@ impl ProjectReplayState {
     }
 }
 
+/// The host's refresh key on a project canvas. The one source of that key: [`ProjectHost::handle_key`]
+/// matches it and the `Space` menu's refresh item presses it, so the two are one path.
+pub const REFRESH_KEY: char = 'r';
+
 impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
     pub fn handle_key(
         &mut self,
@@ -257,7 +261,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
         let mut update = ProjectUpdate::handled();
         match key.code {
-            KeyCode::Char('r') => update = self.refresh_update(nav),
+            KeyCode::Char(REFRESH_KEY) => update = self.refresh_update(nav),
             KeyCode::Esc if nav.frame().is_some_and(|f| !f.query.is_empty()) => {
                 nav.clear_filter(content.as_deref())
             }
@@ -312,21 +316,13 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
         update
     }
-    /// The canvas's refresh, the one path both the `r` key and the `Space` menu's refresh item run:
-    /// the screen's rows are read again.
+    /// The canvas's refresh (the screen's rows are read again). Reached only through the
+    /// [`REFRESH_KEY`] arm of [`Self::handle_key`], after the busy guard.
     fn refresh_update(&mut self, nav: &ProjectScreenState<I>) -> ProjectUpdate<I> {
         let mut update = ProjectUpdate::handled();
         self.mark_screen_stale(nav);
         update.commands.push(ProjectCommand::EnsureView);
         update
-    }
-
-    /// Refresh the screen on top of the active project (see [`Self::refresh_update`]).
-    pub fn refresh_screen(&mut self, context: &mut ProjectContextMut<'_, I>) -> ProjectUpdate<I> {
-        match context.active.as_deref() {
-            Some(nav) => self.refresh_update(nav),
-            None => ProjectUpdate::new(ProjectDispatch::Unhandled),
-        }
     }
 
     pub fn waiting(&self, context: &ProjectContextMut<'_, I>) -> bool {

@@ -1068,11 +1068,12 @@ impl App {
         }
     }
 
-    /// `r` on a project canvas, whether pressed or chosen from the `Space` menu: the host's one
-    /// refresh path (the screen's rows are read again).
+    /// The `Space` menu's refresh item on a project canvas: presses the host's refresh key through
+    /// the key's own handler, so the busy guard (queue / `Busy` notice) applies as for the key.
     pub(crate) fn project_refresh(&mut self) {
-        let update = self.with_project_host(|host, context| host.refresh_screen(context));
-        self.apply_project_update(update);
+        self.project_press(KeyPress::ch(
+            konoma_plugin::host::project::input::REFRESH_KEY,
+        ));
     }
 
     /// The key of a canvas control as the footer and the help name it, or `None` where that key
@@ -1110,6 +1111,29 @@ impl App {
                 keys.iter().copied().find(|k| k.code == KeyCode::BackTab)
             }
         }
+    }
+
+    /// The plain letter a canvas control's menu item asks for. It comes from the keymap alone (the
+    /// filter keys; the scheme's `Left` keys then the back keys), never from which controls this
+    /// screen names, so the letter assignment is the same on every screen of the project and a
+    /// control that stops acting does not move the letters after it. The screen cycle has none.
+    pub(crate) fn project_control_letter(&self, control: ProjectMenuControl) -> Option<KeyPress> {
+        use crate::keymap::{Action, Motion};
+        let keys: Vec<KeyPress> = match control {
+            ProjectMenuControl::Search => self.project_filter_keys(),
+            ProjectMenuControl::Back => self
+                .keymaps
+                .keys_of_on(
+                    Context::Text,
+                    self.screen_keys_for(Context::Text),
+                    Action::Navigate(Motion::Left),
+                )
+                .into_iter()
+                .chain(self.project_back_keys())
+                .collect(),
+            ProjectMenuControl::NextScreen | ProjectMenuControl::PrevScreen => Vec::new(),
+        };
+        keys.into_iter().find_map(konoma_host_core::menu::plain_key)
     }
 
     /// Run a canvas control chosen from the `Space` menu: press its key (see

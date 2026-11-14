@@ -31,7 +31,6 @@ use crate::plugins::PluginAct;
 use konoma_host_core::menu::{self as menu_core, Skeleton};
 use konoma_plugin::host::acts::{fixed_menu_items, FixedMenuLabel};
 use konoma_plugin::host::project::diff_presentation::{DiffPresentation, DiffUiOp};
-use konoma_plugin::host::project::presentation::ProjectControlId;
 
 /// One entry of an open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -568,30 +567,18 @@ fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
         .get(&ctx)
         .cloned()
         .unwrap_or_default();
-    // The canvas's own controls, listed iff the footer and the help name them (the presentation's
-    // controls are the one answer to "does this key act here"): search, the screen cycle, back.
-    // `App::project_control_key` is the one answer to "does this control's key act here"; the
-    // item's letter is the first plain character among the keys the control names.
-    let controls = presentation.controls();
+    // The canvas's own controls (search, the screen cycle, back) are ordinary candidates on every
+    // screen, so the letters are assigned over the whole list; the gate below hides the ones whose
+    // key does not act here (`App::project_control_key_in`, the one answer to that).
     let mut project_controls: Vec<Action> = Vec::new();
-    for (control, id) in [
-        (ProjectMenuControl::Search, ProjectControlId::Filter),
-        (ProjectMenuControl::NextScreen, ProjectControlId::Screens),
-        (ProjectMenuControl::PrevScreen, ProjectControlId::Screens),
-        (ProjectMenuControl::Back, ProjectControlId::Back),
+    for control in [
+        ProjectMenuControl::Search,
+        ProjectMenuControl::NextScreen,
+        ProjectMenuControl::PrevScreen,
+        ProjectMenuControl::Back,
     ] {
-        if app.project_control_key_in(&presentation, control).is_none() {
-            continue;
-        }
-        let letter = match control {
-            ProjectMenuControl::NextScreen | ProjectMenuControl::PrevScreen => None,
-            _ => controls
-                .iter()
-                .find(|c| c.id == id)
-                .and_then(|c| c.keys.iter().copied().find_map(menu_core::plain_key)),
-        };
         let action = Action::ProjectControl(control);
-        menu_core::add_candidate(&mut cands, action, letter);
+        menu_core::add_candidate(&mut cands, action, app.project_control_letter(control));
         project_controls.push(action);
     }
     let shared = project_shared_ops();
@@ -622,8 +609,10 @@ fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
             !gated
                 || match a {
                     Action::Plugin(_) => acting.iter().any(|i| plugin(i.action) == a),
-                    // Present only because the presentation names the control.
-                    _ if project_controls.contains(&a) => true,
+                    // Listed iff the control's key acts on this screen.
+                    Action::ProjectControl(control) => {
+                        app.project_control_key_in(&presentation, control).is_some()
+                    }
                     _ => action_enabled(app, ctx, a),
                 }
         },

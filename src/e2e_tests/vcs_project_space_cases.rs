@@ -407,6 +407,213 @@ fn vcs_port_project_space_refresh_runs_the_keys_path() {
     }
 }
 
+/// The menu's refresh item takes the key `r`'s path, busy guard included: while the screen's job
+/// holds the session both the key and `Space` + the item's letter queue behind it, and with a full
+/// queue both answer with the busy notice. Idle, both refresh (see
+/// `vcs_port_project_space_refresh_runs_the_keys_path`).
+#[test]
+fn vcs_port_project_space_refresh_has_the_keys_busy_guard() {
+    if isolated("vcs_port_project_space_refresh_has_the_keys_busy_guard") {
+        return;
+    }
+    let git = super::vcs_changes::git_repo("vcs_space_refresh_busy", true);
+    let jj = if crate::vcs::jj::available() {
+        let root = super::vcs_log::jj_repo(false);
+        std::fs::write(root.join("changed.txt"), "new\n").unwrap();
+        Some(root)
+    } else {
+        None
+    };
+    let mut cases: Vec<(&'static str, &str, &std::path::Path)> =
+        vec![("git", "git.changes", git.as_ref())];
+    if let Some(jj) = &jj {
+        cases.push(("jj", "jj.changes", jj.as_ref()));
+    }
+    let queue_cap = 4096;
+    let mut compared = 0;
+    for (backend, table, root) in cases {
+        for lang in ["en", "ja"] {
+            for full in [false, true] {
+                // Filling the queue is slow, so the full-queue case runs in en only.
+                if full && lang == "ja" {
+                    continue;
+                }
+                let mut seen = Vec::new();
+                for by_menu in [false, true] {
+                    let what = format!("{backend} {lang} full={full} by_menu={by_menu}");
+                    let (mut cfg, h) = wt_flaky_cfg(backend, table);
+                    cfg.ui.lang = lang.into();
+                    let mut sim = open(root, cfg, (160, 20));
+                    screen(&mut sim, "changes");
+                    // `r` starts a read the plugin holds: the view is waiting.
+                    h.hold.store(true, std::sync::atomic::Ordering::SeqCst);
+                    sim.press(KeyCode::Char('r'), KeyModifiers::NONE);
+                    assert!(sim.app.project_jobs_pending(), "{what}: r did not start a job");
+                    if full {
+                        // An unbound key waits in line too; fill the queue to its bound.
+                        let have = sim.app.project_frame().unwrap().pending.len();
+                        for _ in have..queue_cap {
+                            sim.app.handle_project_key(crossterm::event::KeyEvent::new(
+                                KeyCode::Char('W'),
+                                KeyModifiers::NONE,
+                            ));
+                        }
+                        assert_eq!(
+                            sim.app.project_frame().unwrap().pending.len(),
+                            queue_cap,
+                            "{what}"
+                        );
+                    }
+                    let letter = space_items(&sim.app)
+                        .into_iter()
+                        .find(|i| i.action == Action::Refresh)
+                        .expect("refresh is listed")
+                        .key;
+                    let before = sim.app.project_frame().unwrap().pending.len();
+                    sim.app.flash = None;
+                    if by_menu {
+                        // While a job holds the view every press, `Space` and a menu letter
+                        // included, waits in line in the host before the menu sees it. What the
+                        // menu does with its letter once it has it is `find` then
+                        // `dispatch_action`; run exactly that.
+                        let action = crate::ops::menu::find(
+                            &sim.app,
+                            Context::Canvas,
+                            LeaderId::Actions,
+                            letter,
+                        )
+                        .expect("the letter is in the menu");
+                        assert_eq!(action, Action::Refresh, "{what}");
+                        let surface = sim.app.surface();
+                        crate::dispatch_action(&mut sim.app, action, surface).unwrap();
+                    } else {
+                        sim.press(KeyCode::Char('r'), KeyModifiers::NONE);
+                    }
+                    let after = (
+                        sim.app.project_frame().unwrap().pending.len(),
+                        sim.app.flash.clone(),
+                        sim.app.project_jobs_pending(),
+                    );
+                    if full {
+                        assert_eq!(after.0, before, "{what}: nothing more is queued");
+                        assert_eq!(
+                            after.1.as_deref(),
+                            Some(tr(sim.app.lang, Msg::ProjectBusy)),
+                            "{what}: the busy notice"
+                        );
+                    } else {
+                        assert_eq!(after.0, before + 1, "{what}: queued behind the job");
+                        assert_eq!(after.1, None, "{what}");
+                    }
+                    assert!(after.2, "{what}: still waiting on the one held job");
+                    assert_eq!(sim.app.pending_leader, None, "{what}");
+                    seen.push(after);
+                    h.latch.open();
+                    drain(&mut sim);
+                    compared += 1;
+                }
+                assert_eq!(seen[0], seen[1], "{backend} {lang} full={full}: key vs menu");
+            }
+        }
+    }
+    assert!(compared >= if jj.is_some() { 12 } else { 6 }, "{compared}");
+}
+
+/// Letters are assigned over the whole candidate list and the gate then hides what does not act,
+/// so an item keeps its letter when another stops acting: the same on a list screen and on the
+/// pushed detail of the same project, also when `[keys]` takes a shared operation's key away.
+#[test]
+fn vcs_port_project_space_letters_do_not_move_between_screens() {
+    if isolated("vcs_port_project_space_letters_do_not_move_between_screens") {
+        return;
+    }
+    let git = super::vcs_log::repo(3);
+    let jj = if crate::vcs::jj::available() {
+        Some(super::vcs_log::graph_jj_fixture())
+    } else {
+        None
+    };
+    let mut cases: Vec<(&std::path::Path, &str)> = vec![(git.as_ref(), "git")];
+    if let Some(jj) = &jj {
+        cases.push((jj.as_ref(), "jj"));
+    }
+    // Operations whose key `[keys]` takes away one by one, then all together: each is then a
+    // keyless item whose letter is picked from the free ones.
+    let unbound: [&[&str]; 8] = [
+        &[],
+        &["r"],
+        &["t"],
+        &["T"],
+        &["P"],
+        &["F"],
+        &["?"],
+        &["r", "t", "T", "P", "F", "?"],
+    ];
+    use ProjectMenuControl as C;
+    let mut compared = 0;
+    for (root, id) in cases {
+        for keys_off in unbound {
+            let make = || {
+                let mut cfg = config(id, "en");
+                cfg.keys.surfaces.insert(
+                    "canvas".into(),
+                    keys_off.iter().map(|k| (k.to_string(), "noop".into())).collect(),
+                );
+                open(root, cfg, (160, 20))
+            };
+            let mut list = make();
+            screen(&mut list, "log");
+            let on_list = space_items(&list.app);
+            let mut pushed = make();
+            screen(&mut pushed, "log");
+            press(&mut pushed, KeyCode::Enter);
+            assert!(pushed.app.project_pushed(), "{id} {keys_off:?}");
+            let on_pushed = space_items(&pushed.app);
+            // The screen cycle does not act on the pushed screen, the search not on its text
+            // detail: they are hidden there, and every item that stays has the letter it has
+            // in the full candidate list (the same screen with nothing gated).
+            for (sim, shown, screen_name) in [
+                (&list, &on_list, "list"),
+                (&pushed, &on_pushed, "pushed"),
+            ] {
+                let all = crate::ops::menu::declared_actions_menu(&sim.app, Context::Canvas);
+                // Every control is a candidate on every screen (the letters are assigned over
+                // all of them), also the ones the gate hides here.
+                for control in [C::Search, C::NextScreen, C::PrevScreen, C::Back] {
+                    assert!(
+                        all.iter().any(|a| a.action == Action::ProjectControl(control)),
+                        "{id} {keys_off:?} {screen_name}: {control:?} is not a candidate\nall={all:?}"
+                    );
+                }
+                for item in shown {
+                    let full = all
+                        .iter()
+                        .find(|a| a.action == item.action)
+                        .unwrap_or_else(|| panic!("{id} {screen_name}: {item:?} not a candidate"));
+                    assert_eq!(
+                        item.key, full.key,
+                        "{id} {keys_off:?} {screen_name}: {:?} letter moved when the others were hidden\nshown={shown:?}\nall={all:?}",
+                        item.action
+                    );
+                    compared += 1;
+                }
+            }
+            // The pushed screen hides exactly the items whose keys do not act there.
+            assert!(
+                on_list.iter().any(|i| i.action == Action::ProjectControl(C::NextScreen)),
+                "{id} {keys_off:?}"
+            );
+            for hidden in [C::NextScreen, C::PrevScreen] {
+                assert!(
+                    !on_pushed.iter().any(|i| i.action == Action::ProjectControl(hidden)),
+                    "{id} {keys_off:?}: {hidden:?} on the pushed screen"
+                );
+            }
+        }
+    }
+    assert!(compared >= if jj.is_some() { 120 } else { 60 }, "{compared}");
+}
+
 #[test]
 fn vcs_port_project_space_tab_keys_follow_the_tab_count_in_menu_and_help() {
     if isolated("vcs_port_project_space_tab_keys_follow_the_tab_count_in_menu_and_help") {
