@@ -352,6 +352,51 @@ struct RootJobs {
     expecting_switch: bool,
     failure_cursor: usize,
 }
+
+/// Row 0 of the host frame carries the busy segment ("{spinner} {label}  ", DIM) only while a
+/// project write act runs here (`busy_indicator=false`). Assert that, then copy the app frame's
+/// cells over exactly that segment.
+fn blank_host_busy_segment(host_frame: &mut Buffer, app_frame: &Buffer, host: &crate::app::App) {
+    let width = host_frame.area.width;
+    let row: Vec<String> = (0..width)
+        .map(|x| host_frame[(x, 0)].symbol().to_string())
+        .collect();
+    let has_spinner = row.iter().any(|s| {
+        konoma_widgets::loading::SPINNER_FRAMES
+            .iter()
+            .any(|g| g == s)
+    });
+    if !host.git_write_running() {
+        assert!(!has_spinner, "no busy segment without a running write");
+        return;
+    }
+    let jobs = host.busy_jobs();
+    let first = jobs.first().expect("a running write is a busy job");
+    let mut text = format!(
+        "{} {}",
+        host.spinner_glyph(),
+        crate::i18n::tr(host.lang, *first)
+    );
+    if jobs.len() > 1 {
+        text.push_str(&format!(" +{}", jobs.len() - 1));
+    }
+    text.push_str("  ");
+    let glyphs: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+    let start = (0..width as usize)
+        .find(|&x| row[x..].starts_with(&glyphs))
+        .unwrap_or_else(|| panic!("busy segment {text:?} missing from host row 0: {row:?}"));
+    for (i, _) in glyphs.iter().enumerate() {
+        let x = (start + i) as u16;
+        assert!(
+            host_frame[(x, 0)]
+                .modifier
+                .contains(ratatui::style::Modifier::DIM),
+            "busy segment cell {x} must be DIM"
+        );
+        host_frame[(x, 0)] = app_frame[(x, 0)].clone();
+    }
+}
+
 impl RootJobs {
     fn new(a: &Path, app_a: &Path, case: RootJobCase) -> Self {
         let (ready_tx, ready) = mpsc::channel();
@@ -472,6 +517,10 @@ impl RootJobs {
         let mut app_frame = frame.clone();
         normalize_write_frame(&mut host_frame, &self.a);
         normalize_write_frame(&mut app_frame, &self.app_a);
+        // The busy indicator is host-only chrome (the standalone app has none); a running write
+        // forces it on even with `busy_indicator=false`. Assert it precisely, then blank exactly
+        // its cells so the rest of the frame is still compared cell by cell.
+        blank_host_busy_segment(&mut host_frame, &app_frame, &host.app);
         let mut chrome = graph_fixture.clone();
         let worktrees = read_snapshot_for_test("vcs_app_worktrees");
         let row = if app_state
