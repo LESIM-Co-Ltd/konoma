@@ -645,7 +645,14 @@ fn submit_recheck_cases(lang: &str) {
         } else {
             KeyCode::Char('y')
         });
-        script.expect(|_, state| assert!(state.prompt.is_none(), "submit guard closes the dialog"));
+        // Refused before it ran: the input gives the typed text back; a confirmation just closes.
+        if input {
+            script.prompt("input", "submit guard");
+        } else {
+            script.expect(|_, state| {
+                assert!(state.prompt.is_none(), "a refused confirmation closes the dialog")
+            });
+        }
         script.notice(crate::i18n::tr(
             if lang == "ja" {
                 crate::i18n::Lang::Jp

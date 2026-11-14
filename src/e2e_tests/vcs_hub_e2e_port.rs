@@ -685,6 +685,17 @@ fn blocked_commit(name: &str, message: &str) -> (W, Vec<String>) {
     let before = commit_subjects(&w.root);
     // Direct press: `W::press` would wait for the parked job.
     w.sim.press(KeyCode::Enter, KeyModifiers::NONE);
+    // git rewrites `.git/index` before it runs the hook; the hook's marker file orders every
+    // later snapshot after that write.
+    let marker = w.root.join(".git/HOOK_ENTERED");
+    let start = std::time::Instant::now();
+    while !marker.exists() {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(20),
+            "the pre-commit hook never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
     (w, before)
 }
 

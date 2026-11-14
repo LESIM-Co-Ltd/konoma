@@ -10223,7 +10223,7 @@ fn install_blocking_pre_commit_hook(dir: &std::path::Path) {
     // Git execs this hook; see `write_executable` for why it is not `fs::write` + chmod.
     crate::test_support::write_executable(
         &hook,
-        "#!/bin/sh\nn=0\nwhile [ -f \"$(git rev-parse --git-dir)/BLOCK\" ] && [ $n -lt 1000 ]; do\n  sleep 0.02\n  n=$((n+1))\ndone\nexit 0\n",
+        "#!/bin/sh\n: > \"$(git rev-parse --git-dir)/HOOK_ENTERED\"\nn=0\nwhile [ -f \"$(git rev-parse --git-dir)/BLOCK\" ] && [ $n -lt 1000 ]; do\n  sleep 0.02\n  n=$((n+1))\ndone\nexit 0\n",
     );
 }
 
