@@ -27,7 +27,29 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "e2e_git_branches_filter_narrows_and_clears",
             "e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list",
             "e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing",
+            "e2e_diff_view_preview_representation_q_returns_to_hub",
+            "e2e_git_hub_stage_and_diff",
+            "e2e_git_branch_create_switches_to_it",
+            "e2e_git_branch_delete_removes_feature_branch",
+            "e2e_jj_sync_full_round_trip_confirms_and_reports_completion",
+            "e2e_git_worktrees_view_lists_and_enter_switches_root",
+            "e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched",
+            "e2e_git_worktree_create_switches_into_it",
+            "e2e_git_worktrees_refuses_bare_and_prunable_targets",
+            "e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub",
+            "e2e_git_worktree_show_changes_opens_detail_with_title_and_returns_to_list",
+            "e2e_git_worktree_show_changes_works_on_the_currently_active_worktree",
+            "e2e_git_worktree_show_changes_refuses_bare_worktree",
+            "e2e_git_worktree_diff_toggle_layout_and_back",
+            "e2e_git_stage_then_commit_appears_in_log",
+            "e2e_git_stage_and_commit_through_the_background_runner",
+            "e2e_git_stage_unstage_roundtrip",
+            "e2e_git_stage_all_then_unstage_all",
         ],
+    ),
+    (
+        "src/e2e_tests/project_host.rs",
+        &["e2e_git_read_only_stops_checkout_enter_before_starting_a_job"],
     ),
     (
         "src/speed_tests.rs",
@@ -270,7 +292,11 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
     // 106 + 14 (vcs_writes.rs) + 5 (vcs_branches.rs D) + 3 (vcs_worktrees.rs D: create, diff, read-only)
     // + 10 (vcs_worktrees.rs E/H) + 1 (vcs_branches.rs cells) + 1 (vcs_graph.rs jj title)
     // + 20 (U9b5a: 8 e2e_tests.rs + 1 speed_tests.rs + 2 ops_keys.rs + 2 lib.rs + 3 default_keys.rs
-    // + 4 newkeys.rs: p/! origins, branch/worktree filter component, e/o/ctrl-t, deleted row).
-    assert_eq!(total, 160, "frozen B/C/E/H/S inventory");
+    // + 4 newkeys.rs: p/! origins, branch/worktree filter component, e/o/ctrl-t, deleted row)
+    // + 19 (the last old-hub drivers: 18 in e2e_tests.rs — diff-preview R/q, changes stage/diff,
+    // branch create/delete, jj sync round trip, worktree list/Ctrl-t/create/refusals (including
+    // Enter on the current worktree)/diff detail+layout, commit-in-log, background-runner commit,
+    // stage round trips — and 1 in e2e_tests/project_host.rs: the read-only checkout Enter).
+    assert_eq!(total, 179, "frozen B/C/E/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }

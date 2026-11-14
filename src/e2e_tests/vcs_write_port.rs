@@ -712,6 +712,52 @@ fn vcs_port_write_commit_blank_success_and_failed_hook_keep_the_prompt() {
 }
 
 #[test]
+fn vcs_port_write_commit_then_log_screen_shows_the_subject() {
+    let mut w = W::git("vcs_port_write_commit_log", true, "en", "relative", false);
+    w.select("a-modified");
+    w.key('s');
+    assert_eq!(w.status(), status_after_stage("a-modified"));
+    w.key('c');
+    w.type_text("subject-of-commit");
+    w.press(KeyCode::Enter);
+    assert_eq!(
+        w.run_git(&["log", "--format=%s"]),
+        "subject-of-commit\nseed\n"
+    );
+    // The committed rows (a-modified and the rename staged from the start) left the list; the
+    // unstaged rows stay, and the canvas keeps its screen.
+    assert_eq!(
+        w.rows(),
+        [
+            "  U repo/b-new",
+            "  D repo/c-deleted",
+            "  M repo/sub/日本語.txt"
+        ]
+    );
+    assert!(w.screen_is("changes"));
+    // The log screen draws the new commit's subject.
+    w.press(KeyCode::Tab);
+    assert!(w.screen_is("log"));
+    w.sim.see("subject-of-commit");
+    w.sim.see("seed");
+}
+
+#[test]
+fn vcs_port_write_stage_runs_in_the_background_and_stages_after_drain() {
+    let mut w = W::git("vcs_port_write_stage_bg", true, "en", "relative", false);
+    w.select("a-modified");
+    w.sim.key('s');
+    assert!(
+        w.sim.app.project_write_running(),
+        "the stage act is running right after the key"
+    );
+    drain(&mut w.sim);
+    assert!(!w.sim.app.project_write_running());
+    assert_eq!(w.status(), status_after_stage("a-modified"));
+    assert_eq!(w.rows(), rows_with("relative", &["a-modified"]));
+}
+
+#[test]
 fn vcs_port_write_read_only_refuses_every_git_write_before_prompt_or_dispatch() {
     for lang in ["en", "ja"] {
         let mut w = W::git("vcs_port_write_read_only", true, lang, "relative", true);
@@ -930,6 +976,37 @@ fn vcs_port_write_jj_sync_confirmation_cancel_enter_and_uppercase_y() {
             assert!(after[2].starts_with("snapshot working copy"));
             assert_eq!(w.rows(), ["  M repo/a-modified"]);
         }
+    }
+}
+
+#[test]
+fn vcs_port_write_jj_sync_lowercase_y_confirms_and_reports() {
+    for lang in ["en", "ja"] {
+        let (text, done) = if lang == "en" {
+            (
+                "Let jj snapshot the working copy? (jj undo reverses it)",
+                "jj snapshotted the working copy",
+            )
+        } else {
+            (
+                "jj に作業コピーを取り込ませますか?(jj undo で戻せます)",
+                "jj が作業コピーを取り込みました",
+            )
+        };
+        let Some(mut w) = W::jj("vcs_port_write_jj_y", lang, true, false, false) else {
+            return;
+        };
+        let before = write_jj_state(&w.root);
+        w.key('s');
+        assert_eq!(w.confirmation(), text);
+        w.press(KeyCode::Char('y'));
+        w.no_dialog();
+        assert_eq!(w.acts(), ["sync"]);
+        assert_eq!(w.flash().as_deref(), Some(done));
+        let after = write_jj_state(&w.root);
+        assert_eq!(after[0], "changed\n");
+        assert_ne!(after[2], before[2], "the operation log gained the snapshot");
+        assert!(after[2].starts_with("snapshot working copy"));
     }
 }
 
@@ -1209,6 +1286,10 @@ fn vcs_port_branch_delete_dialog_safe_force_cancel_and_current_guard() {
             })
         );
         assert!(!w.has_ref("alpha"));
+        assert!(
+            !branch_values(&w.sim).iter().any(|(_, v)| v == "alpha"),
+            "alpha left the list"
+        );
         run_git(&w.root, &["switch", "日本語"]);
         std::fs::write(w.root.join("unmerged"), "only here\n").unwrap();
         run_git(&w.root, &["add", "."]);
@@ -1238,6 +1319,7 @@ fn vcs_port_branch_read_only_guard_precedes_all_prompts_and_writes() {
     for lang in ["en", "ja"] {
         let mut w = branches("vcs_port_branch_read_only", lang, true);
         w.select_branch("alpha");
+        w.sim.dont_see("checkout");
         for key in [KeyCode::Enter, KeyCode::Char('c'), KeyCode::Char('d')] {
             w.press(key);
             assert_eq!(
@@ -1249,6 +1331,8 @@ fn vcs_port_branch_read_only_guard_precedes_all_prompts_and_writes() {
                 })
             );
             w.no_dialog();
+            assert!(w.screen_is("branches"));
+            assert!(!w.sim.app.project_write_running(), "{key:?} started a job");
             assert_eq!(current_branch(&w.root).as_deref(), Some("main"));
             assert_eq!(crate::vcs::refs(&w.root).len(), 3);
             assert_eq!(w.acts(), Vec::<String>::new());
@@ -1336,6 +1420,7 @@ fn vcs_port_worktree_create_works_on_empty_filter_and_blank_does_not_reopen() {
     w.press(KeyCode::Enter);
     assert_eq!(w.sim.app.tab.root, base.join("from-empty"));
     assert!(w.sim.app.tab.root.join(".git").is_file());
+    assert!(w.has_ref("from-empty"), "the worktree's branch was created");
 }
 
 #[test]

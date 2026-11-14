@@ -2466,6 +2466,315 @@ const GROUPS: &[Group] = &[
         &["port"],
         "vcs_hub_e2e_a_deleted_row_offers_neither_e_nor_o",
     ),
+    // ---- The last old-hub drivers (108 rows): the remaining e2e_tests.rs tests — diff-preview
+    // representation/q, changes stage/diff, branch create/delete, the jj sync round trip, the
+    // worktree list/Ctrl-t/create/refusals/diff screens, commit-in-log, the background
+    // runner commit and the two stage round trips — and the project_host.rs read-only checkout.
+    // e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub maps with a decided
+    // row: the worktrees screen is a tab, so a refused switch (bare, missing or the current
+    // worktree) keeps it, where the old hub closed its overlay back to the changes list.
+    (
+        "e2e_diff_view_preview_representation_q_returns_to_hub",
+        &["enter:opens-file-diff"],
+        &["git"],
+        "vcs_port_file_head_baseline_right_remaps_and_diff_layout",
+    ),
+    (
+        "e2e_diff_view_preview_representation_q_returns_to_hub",
+        &["R:cycles-to-preview", "q:preview-returns-to-project"],
+        &["git"],
+        "vcs_keys_git_file_diff_r_cycles_to_preview_and_q_returns_to_changes",
+    ),
+    (
+        "e2e_git_hub_stage_and_diff",
+        &[
+            "rows:modified-and-untracked",
+            "s:stages-file",
+            "u:unstages-file",
+        ],
+        &["git"],
+        "vcs_port_write_stage_unstage_each_file_kind_style_and_language",
+    ),
+    (
+        "e2e_git_hub_stage_and_diff",
+        &["enter:opens-file-diff"],
+        &["git"],
+        "vcs_port_file_head_baseline_right_remaps_and_diff_layout",
+    ),
+    (
+        "e2e_git_hub_stage_and_diff",
+        &["q:diff-to-changes"],
+        &["git"],
+        "vcs_hub_e2e_l_opens_the_diff_q_returns_to_the_list_and_h_leaves",
+    ),
+    (
+        "e2e_git_hub_stage_and_diff",
+        &["q:changes-to-origin"],
+        &["git"],
+        "vcs_hub_e2e_p_and_bang_work_from_the_tree_and_every_preview",
+    ),
+    (
+        "e2e_git_branch_create_switches_to_it",
+        &["b:opens-branches"],
+        &["git"],
+        "vcs_hub_e2e_branches_screen_lists_branches_marks_the_current_one_and_q_leaves",
+    ),
+    (
+        "e2e_git_branch_create_switches_to_it",
+        &[
+            "c:opens-name-dialog",
+            "enter:creates-and-switches",
+            "stays-on-branches",
+        ],
+        &["git"],
+        "vcs_port_branch_create_success_blank_and_failure_keeps_typed_input",
+    ),
+    (
+        "e2e_git_branch_delete_removes_feature_branch",
+        &["b:opens-branches"],
+        &["git"],
+        "vcs_hub_e2e_branches_screen_lists_branches_marks_the_current_one_and_q_leaves",
+    ),
+    (
+        "e2e_git_branch_delete_removes_feature_branch",
+        &[
+            "select:feature-x",
+            "d:opens-confirm",
+            "y:deletes-ref",
+            "y:removes-list-row",
+        ],
+        &["git"],
+        "vcs_port_branch_delete_dialog_safe_force_cancel_and_current_guard",
+    ),
+    (
+        "e2e_jj_sync_full_round_trip_confirms_and_reports_completion",
+        &["s:asks-confirmation", "sync:reports-done"],
+        &["jj"],
+        "vcs_port_write_jj_sync_confirmation_cancel_enter_and_uppercase_y",
+    ),
+    (
+        "e2e_jj_sync_full_round_trip_confirms_and_reports_completion",
+        &["y:confirms-and-snapshots"],
+        &["jj"],
+        "vcs_port_write_jj_sync_lowercase_y_confirms_and_reports",
+    ),
+    (
+        "e2e_git_worktrees_view_lists_and_enter_switches_root",
+        &["chip:backend", "chip:screen"],
+        &["git"],
+        "vcs_port_mode_chips_follow_the_backend_and_the_screen",
+    ),
+    (
+        "e2e_git_worktrees_view_lists_and_enter_switches_root",
+        &[
+            "w:opens-worktrees",
+            "title:worktrees",
+            "row:linked-listed",
+            "mark:current",
+        ],
+        &["git"],
+        "vcs_port_worktree_top_edge_open_cursor_move_and_filter_rows",
+    ),
+    (
+        "e2e_git_worktrees_view_lists_and_enter_switches_root",
+        &["enter:switches-root", "tree:shows-worktree-entries"],
+        &["git"],
+        "vcs_port_worktree_enter_each_kind_root_open_dir_and_flash_including_l",
+    ),
+    (
+        "e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched",
+        &[
+            "ctrl-t:opens-new-tab",
+            "new-tab:root-and-open-dir",
+            "new-tab:tree-entries",
+            "new-tab:no-project",
+            "origin-tab:root",
+            "origin-tab:screen-and-cursor",
+        ],
+        &["git"],
+        "vcs_port_host_only_worktree_ctrl_t_opens_new_tab_keeps_original_and_file_target_previews",
+    ),
+    (
+        "e2e_git_worktree_create_switches_into_it",
+        &["c:opens-name-input"],
+        &["git"],
+        "vcs_port_worktree_create_blank_and_git_failure_flash_without_reopen",
+    ),
+    (
+        "e2e_git_worktree_create_switches_into_it",
+        &[
+            "enter:worktree-created",
+            "root:switches-to-worktree",
+            "open_dir:worktree",
+            "project:closed-to-tree",
+            "dot-git:created",
+        ],
+        &["git"],
+        "vcs_port_worktree_create_switches_with_slash_existing_branch_and_custom_directory",
+    ),
+    (
+        "e2e_git_worktree_create_switches_into_it",
+        &["branch:created"],
+        &["git"],
+        "vcs_port_worktree_create_works_on_empty_filter_and_blank_does_not_reopen",
+    ),
+    (
+        "e2e_git_worktrees_refuses_bare_and_prunable_targets",
+        &["cursor:opens-on-current"],
+        &["en", "ja"],
+        "vcs_port_worktree_top_edge_open_cursor_move_and_filter_rows",
+    ),
+    (
+        "e2e_git_worktrees_refuses_bare_and_prunable_targets",
+        &[
+            "row:bare-listed",
+            "enter:bare-refused-flash",
+            "enter:prunable-refused-flash",
+            "enter:refused-stays-on-list",
+        ],
+        &["en", "ja"],
+        "vcs_port_worktree_enter_each_kind_root_open_dir_and_flash_including_l",
+    ),
+    (
+        "e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub",
+        &[
+            "w:opens-list",
+            "enter:current-flashes-already-here",
+            "enter:current-keeps-root",
+            "decided:refused-switch-stays-on-screen",
+        ],
+        &["en", "ja"],
+        "vcs_port_worktree_enter_each_kind_root_open_dir_and_flash_including_l",
+    ),
+    (
+        "e2e_git_worktree_show_changes_opens_detail_with_title_and_returns_to_list",
+        &[
+            "d:opens-detail",
+            "title:branch-base",
+            "body:committed-file",
+            "body:uncommitted-file",
+            "q:returns-to-list",
+        ],
+        &["git"],
+        "vcs_port_worktree_diff_title_body_layout_motion_and_back",
+    ),
+    (
+        "e2e_git_worktree_show_changes_works_on_the_currently_active_worktree",
+        &["cursor:opens-on-current"],
+        &["git"],
+        "vcs_port_worktree_top_edge_open_cursor_move_and_filter_rows",
+    ),
+    (
+        "e2e_git_worktree_show_changes_works_on_the_currently_active_worktree",
+        &[
+            "d:on-current-opens",
+            "body:uncommitted-lines",
+            "q:returns-to-list",
+        ],
+        &["git"],
+        "vcs_port_worktree_diff_title_body_layout_motion_and_back",
+    ),
+    (
+        "e2e_git_worktree_show_changes_refuses_bare_worktree",
+        &["d:bare-refused-flash", "d:refused-stays-on-list"],
+        &["en", "ja"],
+        "vcs_port_worktree_diff_empty_and_refused_rows_flash_without_push",
+    ),
+    (
+        "e2e_git_worktree_diff_toggle_layout_and_back",
+        &["d:opens-detail", "title:uncommitted"],
+        &["en", "ja"],
+        "vcs_keys_git_d_opens_the_uncommitted_diff_or_flashes_no_changes",
+    ),
+    (
+        "e2e_git_worktree_diff_toggle_layout_and_back",
+        &[
+            "no-mark:before",
+            "s:split-mark",
+            "s:side-by-side-flash",
+            "q:returns-to-changes",
+        ],
+        &["en", "ja"],
+        "vcs_keys_git_detail_s_marks_side_by_side_and_q_pops",
+    ),
+    (
+        "e2e_git_stage_then_commit_appears_in_log",
+        &["s:stages-file"],
+        &["git"],
+        "vcs_port_write_stage_unstage_each_file_kind_style_and_language",
+    ),
+    (
+        "e2e_git_stage_then_commit_appears_in_log",
+        &[
+            "c:opens-commit-input",
+            "enter:commit-in-repo",
+            "row:committed-files-leave",
+        ],
+        &["git"],
+        "vcs_port_write_commit_blank_success_and_failed_hook_keep_the_prompt",
+    ),
+    (
+        "e2e_git_stage_then_commit_appears_in_log",
+        &[
+            "row:committed-file-leaves",
+            "row:unstaged-files-remain",
+            "log:subject-drawn",
+            "stays-on-changes",
+        ],
+        &["git"],
+        "vcs_port_write_commit_then_log_screen_shows_the_subject",
+    ),
+    (
+        "e2e_git_stage_and_commit_through_the_background_runner",
+        &[
+            "commit:runs-in-background",
+            "commit:lands-in-log",
+            "ui:stays-responsive",
+        ],
+        &["git"],
+        "vcs_hub_e2e_ui_keeps_responding_while_a_real_git_commit_is_blocked",
+    ),
+    (
+        "e2e_git_stage_and_commit_through_the_background_runner",
+        &["s:stages-through-the-job-runner"],
+        &["git"],
+        "vcs_port_write_stage_runs_in_the_background_and_stages_after_drain",
+    ),
+    (
+        "e2e_git_stage_and_commit_through_the_background_runner",
+        &["row:committed-file-leaves", "stays-on-changes"],
+        &["git"],
+        "vcs_port_write_commit_then_log_screen_shows_the_subject",
+    ),
+    (
+        "e2e_git_stage_unstage_roundtrip",
+        &["s:staged", "u:unstaged"],
+        &["git"],
+        "vcs_port_write_stage_unstage_each_file_kind_style_and_language",
+    ),
+    (
+        "e2e_git_stage_all_then_unstage_all",
+        &["S:stages-all", "U:unstages-all"],
+        &["git"],
+        "vcs_port_write_all_and_empty_guards_run_no_git",
+    ),
+    (
+        "e2e_git_read_only_stops_checkout_enter_before_starting_a_job",
+        &["footer:no-checkout"],
+        &["read-only"],
+        "vcs_port_branch_read_only_guard_precedes_all_prompts_and_writes",
+    ),
+    (
+        "e2e_git_read_only_stops_checkout_enter_before_starting_a_job",
+        &[
+            "b:opens-branches",
+            "enter:read-only-flash",
+            "enter:no-job",
+            "stays-on-branches",
+        ],
+        &["read-only"],
+        "vcs_port_branch_read_only_guard_precedes_all_prompts_and_writes",
+    ),
 ];
 
 // Kept independently from GROUPS so deleting a table entry cannot silently shrink the scope.
@@ -2678,7 +2987,15 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // branch/worktree filter component 7 + e/o/ctrl-t 10 + deleted-row e/o/ctrl-t 7 +
             // tab-cycle extras 6 (initial screen, footer token, b/w jumps, jj no-worktrees — in
             // the grouped section).
-            + 168,
+            + 168
+            // The last old-hub drivers, 108 rows: diff-preview R/q 3 + changes stage/diff 6 +
+            // branch create 4 + branch delete 5 + jj sync 3 + worktrees view 8 + Ctrl-t tab 6 +
+            // worktree create 7 + bare/prunable refusals 10 + Enter on the current worktree 8
+            // (4 x en/ja, one decided) + worktree diff detail 5 +
+            // active-worktree diff 4 + bare diff refusal 4 + diff layout toggle 12 +
+            // commit-in-log 8 + background-runner commit 6 + stage round trip 2 + stage-all 2 +
+            // read-only checkout 5.
+            + 108,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

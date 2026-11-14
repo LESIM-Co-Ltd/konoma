@@ -360,6 +360,8 @@ fn vcs_port_worktree_enter_each_kind_root_open_dir_and_flash_including_l() {
                     assert_eq!(sim.app.tab.root, path, "{kind}");
                     assert_eq!(sim.app.tab.open_dir, path, "{kind}");
                     assert!(!sim.app.project_active());
+                    assert_eq!(sim.app.tab.mode, Mode::Tree, "{kind}");
+                    assert!(!sim.app.tab.entries.is_empty(), "{kind}");
                 } else {
                     assert_eq!(&sim.app.tab.root, root, "{kind}");
                     assert_eq!(&sim.app.tab.open_dir, root, "{kind}");
@@ -383,6 +385,10 @@ fn vcs_port_host_only_worktree_ctrl_t_opens_new_tab_keeps_original_and_file_targ
     assert_eq!(sim.app.tab.open_dir, r.linked);
     assert_eq!(sim.app.tab.mode, Mode::Tree);
     assert!(!sim.app.tab.entries.is_empty());
+    assert!(
+        !sim.app.project_active(),
+        "the new tab has no project canvas"
+    );
     assert_eq!(sim.app.flash, None);
     sim.app.tab_goto(0);
     drain(&mut sim);
@@ -546,6 +552,8 @@ fn vcs_port_worktree_diff_title_body_layout_motion_and_back() {
     std::fs::write(r.linked.join("file.txt"), body("line")).unwrap();
     super::vcs_log::commit_worktree(&r.linked);
     std::fs::write(r.root.join("file.txt"), body("uncommitted")).unwrap();
+    // An uncommitted (untracked) file in the linked worktree joins its committed diff.
+    std::fs::write(r.linked.join("dirty.txt"), "dirty\n").unwrap();
     for lang in ["en", "ja"] {
         for width in [80u16, 160] {
             for (path, head, title) in [
@@ -583,14 +591,34 @@ fn vcs_port_worktree_diff_title_body_layout_motion_and_back() {
                         diff.title.as_ref().map(|t| t.to_string()),
                         Some(title.clone())
                     );
-                    // One file: its heading, the removed `base` line, then the 70 added lines.
-                    assert_eq!(diff.lines.len(), 72);
-                    assert_eq!(diff.lines[0].text.trim_end(), "file.txt");
+                    // One file: its heading, the removed `base` line, then the 70 added lines
+                    // (the linked case adds the uncommitted file's heading and added line).
+                    assert_eq!(diff.lines.len(), if path == &r.linked { 74 } else { 72 });
+                    if path == &r.linked {
+                        let dirty = diff
+                            .lines
+                            .iter()
+                            .position(|l| l.text.trim_end() == "dirty.txt")
+                            .expect("the uncommitted file is in the diff");
+                        let added = &diff.lines[dirty + 1];
+                        assert_eq!(
+                            (added.old_no, added.new_no, added.text.trim_end()),
+                            (None, Some(1), "dirty")
+                        );
+                    }
+                    let file = diff
+                        .lines
+                        .iter()
+                        .position(|l| l.text.trim_end() == "file.txt")
+                        .unwrap();
                     assert_eq!(
-                        (diff.lines[1].old_no, diff.lines[1].text.trim_end()),
+                        (
+                            diff.lines[file + 1].old_no,
+                            diff.lines[file + 1].text.trim_end()
+                        ),
                         (Some(1), "base")
                     );
-                    for (i, line) in diff.lines[2..].iter().enumerate() {
+                    for (i, line) in diff.lines[file + 2..].iter().enumerate() {
                         assert_eq!(line.new_no, Some(i as u32 + 1));
                         assert_eq!(
                             line.text.trim_end(),

@@ -88,6 +88,74 @@ fn vcs_keys_git_d_opens_the_uncommitted_diff_or_flashes_no_changes() {
 }
 
 #[test]
+fn vcs_keys_git_detail_s_marks_side_by_side_and_q_pops() {
+    if isolated("vcs_keys_git_detail_s_marks_side_by_side_and_q_pops") {
+        return;
+    }
+    for lang in ["en", "ja"] {
+        let repo = super::vcs_changes::git_repo("vcs_keys_git_d_s", true);
+        let mut sim = open(&repo, config("git", lang), (80, 30));
+        screen(&mut sim, "changes");
+        press(&mut sim, KeyCode::Char('d'));
+        assert_eq!(frame_screen(&sim), "detail", "{lang}: d opens the detail");
+        sim.dont_see("⇆");
+        press(&mut sim, KeyCode::Char('s'));
+        sim.see("⇆");
+        assert_eq!(
+            sim.app.flash.as_deref(),
+            Some(if lang == "en" {
+                "diff: side-by-side"
+            } else {
+                "diff: 横並び"
+            }),
+            "{lang}"
+        );
+        press(&mut sim, KeyCode::Char('q'));
+        assert!(sim.app.project_active(), "{lang}: q pops the detail");
+        assert_eq!(frame_screen(&sim), "changes", "{lang}");
+    }
+}
+
+#[test]
+fn vcs_keys_git_file_diff_r_cycles_to_preview_and_q_returns_to_changes() {
+    if isolated("vcs_keys_git_file_diff_r_cycles_to_preview_and_q_returns_to_changes") {
+        return;
+    }
+    let dir = sandbox("vcs_keys_git_r_q");
+    seed_repo_markdown(&dir);
+    let root = canon(&dir);
+    let mut sim = open(&root, config("git", "en"), (140, 30));
+    screen(&mut sim, "changes");
+    press(&mut sim, KeyCode::Char('g'));
+    let doc = root.join("doc.md").to_string_lossy().into_owned();
+    let index = {
+        let content = sim.app.project_content().unwrap();
+        let ProjectContent::List(list) = content.as_ref() else {
+            panic!("not a list")
+        };
+        list.rows
+            .iter()
+            .filter(|r| r.selectable)
+            .position(|r| r.value == doc)
+            .expect("doc.md row")
+    };
+    for _ in 0..index {
+        press(&mut sim, KeyCode::Char('j'));
+    }
+    press(&mut sim, KeyCode::Enter);
+    assert!(sim.app.is_git_diff_preview(), "Enter opens the file diff");
+    assert!(!sim.app.project_active());
+    press(&mut sim, KeyCode::Char('R'));
+    assert!(
+        sim.app.preview_from_diff_for_test(),
+        "R cycles to the file's Preview representation"
+    );
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(sim.app.project_active(), "q restores the project");
+    assert_eq!(frame_screen(&sim), "changes");
+}
+
+#[test]
 fn vcs_keys_git_bang_requests_the_tool_and_respects_the_external_flag() {
     if isolated("vcs_keys_git_bang_requests_the_tool_and_respects_the_external_flag") {
         return;
