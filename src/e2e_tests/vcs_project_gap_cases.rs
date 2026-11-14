@@ -504,3 +504,135 @@ fn vcs_port_branch_footer_enter_token_per_row() {
     }
 }
 
+// ---- old git_{view,log,graph,branch}_move_extremes_no_panic (one test per list) ----
+// The old hub clamped its own selection index; the fact it protected — a move past either end of a
+// list never panics and stays on the first/last row — holds for every list screen of the canvas.
+#[test]
+fn vcs_port_list_cursor_clamps_at_both_ends_of_every_list_screen() {
+    if isolated("vcs_port_list_cursor_clamps_at_both_ends_of_every_list_screen") {
+        return;
+    }
+    let root = sandbox("vcs_port_clamp_ends");
+    seed_repo_history(&root);
+    // Two uncommitted files give the changes screen two rows and the graph a working-tree row.
+    std::fs::write(root.join("a.rs"), "fn a() { 33 }\n").unwrap();
+    std::fs::write(root.join("new.txt"), "new\n").unwrap();
+    let mut sim = open(&root, config("git", "en"), (160, 20));
+    for name in ["changes", "log", "graph", "branches"] {
+        screen(&mut sim, name);
+        keys(&mut sim, "g");
+        let first = selected_value(&sim);
+        keys(&mut sim, "k");
+        assert_eq!(
+            selected_value(&sim),
+            first,
+            "{name}: k above the top stays on the first row"
+        );
+        keys(&mut sim, "G");
+        let last = selected_value(&sim);
+        assert_ne!(last, first, "{name}: G reaches a different row");
+        keys(&mut sim, "j");
+        assert_eq!(
+            selected_value(&sim),
+            last,
+            "{name}: j below the bottom stays on the last row"
+        );
+        keys(&mut sim, "g");
+        assert_eq!(selected_value(&sim), first, "{name}: g returns to the top");
+    }
+}
+
+// ---- old stale_listing_chip_shows_in_the_git_view ----
+// The chip comes from the shared `context_spans`, which the project canvas's status bar draws too.
+#[test]
+fn vcs_port_stale_listing_chip_shows_on_the_project_canvas() {
+    if isolated("vcs_port_stale_listing_chip_shows_on_the_project_canvas") {
+        return;
+    }
+    let root = sandbox("vcs_port_stale_chip");
+    crate::test_support::init_git_repo(&root);
+    let mut sim = open(&root, config("git", "en"), (120, 20));
+    assert!(
+        !sim.screen().contains("STALE"),
+        "a healthy canvas shows no stale chip"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+    sim.app.refresh_fs_watched(false, &[]);
+    assert!(sim.app.tree_stale(), "sanity: the root removal marked it");
+    sim.draw();
+    assert!(
+        sim.screen().contains("STALE"),
+        "the stale chip is drawn on the project canvas"
+    );
+}
+
+// ---- old git_view_branch_re_verifies_when_switching_to_a_different_repo ----
+// Each tab's canvas title is re-verified against that tab's repository, not the previously
+// active tab's: tab A stays "alpha-branch", tab B stays "beta-branch", across switches.
+#[test]
+fn vcs_port_each_tabs_project_title_reverifies_its_repo_branch() {
+    if isolated("vcs_port_each_tabs_project_title_reverifies_its_repo_branch") {
+        return;
+    }
+    let parent = crate::test_support::unique_tmp("vcs_port_branch_title_tabs");
+    for (name, branch, file) in [
+        ("a", "alpha-branch", "only-a.txt"),
+        ("b", "beta-branch", "only-b.txt"),
+    ] {
+        let root = parent.join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        crate::test_support::init_git_repo(&root);
+        std::fs::write(root.join(file), "x\n").unwrap();
+        crate::test_support::run_git(&root, &["add", "-A"]);
+        crate::test_support::run_git(&root, &["commit", "-qm", "init"]);
+        crate::test_support::run_git(&root, &["checkout", "-q", "-b", branch]);
+        std::fs::write(root.join(file), "x\nchanged\n").unwrap();
+    }
+    let mut sim = Sim::with_config_sized(&parent, config("git", "en"), 160, 20);
+    let enter_project = |sim: &mut Sim, dir: &str| {
+        sim.select(dir);
+        sim.key('l');
+        sim.app.tab.projects.wait_for_result();
+        sim.app.poll_projects();
+        let (_, legacy) = App::count_legacy_hub_opens(|| sim.key('p'));
+        drain(sim);
+        assert_eq!(legacy, 0, "{dir}: no legacy open");
+        assert!(sim.app.project_active(), "{dir}: project opened");
+    };
+    enter_project(&mut sim, "/a");
+    assert!(sim.screen().contains("alpha-branch"), "{}", sim.screen());
+    assert!(sim.screen().contains("only-a.txt"), "{}", sim.screen());
+    // The second tab starts as a tree at the first repo's root; go up, into repo b.
+    sim.app.tab_new().unwrap();
+    sim.key('h');
+    enter_project(&mut sim, "/b");
+    assert!(sim.screen().contains("beta-branch"), "{}", sim.screen());
+    assert!(sim.screen().contains("only-b.txt"), "{}", sim.screen());
+    assert!(
+        !sim.screen().contains("alpha-branch"),
+        "{}",
+        sim.screen()
+    );
+    for _ in 0..2 {
+        sim.app.tab_goto(0);
+        drain(&mut sim);
+        assert!(
+            sim.screen().contains("alpha-branch"),
+            "tab A's own branch: {}",
+            sim.screen()
+        );
+        assert!(
+            !sim.screen().contains("beta-branch"),
+            "{}",
+            sim.screen()
+        );
+        sim.app.tab_goto(1);
+        drain(&mut sim);
+        assert!(
+            sim.screen().contains("beta-branch"),
+            "tab B's own branch: {}",
+            sim.screen()
+        );
+    }
+}
+

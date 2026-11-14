@@ -3201,6 +3201,365 @@ const GROUPS: &[Group] = &[
         &["app"],
         "jj_follow_result_does_not_interrupt_the_project_canvas",
     ),
+    // ---- the old-hub READ/VIEW unit tests (src/app/tests.rs, src/ui/git.rs, src/ui/mod.rs) ----
+    // Cursor clamping, the stale chip, graph base/legend/picker, diff open/close/cache, log and
+    // detail content, copy, filter, branch re-verification, per-frame rescan suppression and the
+    // jj-opens gates are held by the project canvas and its screens. Refuse-to-open cases land on
+    // `p`; `q`/h-leaves and the empty-log case are decided differences; old-hub machinery
+    // (`internal_mode`, `came_from_git_view`) is n/a with the new mechanism cited.
+    (
+        "diff_from_tree_and_worktree_detail_and_cycle",
+        &["tree-diff:opens-preview"],
+        &["app"],
+        "vcs_hub_e2e_p_and_bang_work_from_the_tree_and_every_preview",
+    ),
+    (
+        "diff_from_tree_and_worktree_detail_and_cycle",
+        &["tree-diff:lines-nonempty"],
+        &["app"],
+        "vcs_port_file_head_baseline_right_remaps_and_diff_layout",
+    ),
+    (
+        "diff_from_tree_and_worktree_detail_and_cycle",
+        &["tree-diff:close-returns"],
+        &["app"],
+        "vcs_host_nonrepository_diff_navigation_options_and_origin",
+    ),
+    (
+        "diff_from_tree_and_worktree_detail_and_cycle",
+        &["worktree-d:opens-detail"],
+        &["app"],
+        "vcs_keys_git_d_opens_the_uncommitted_diff_or_flashes_no_changes",
+    ),
+    (
+        "diff_from_tree_and_worktree_detail_and_cycle",
+        &["worktree:title-overridden", "worktree:multi-file-headers"],
+        &["app"],
+        "vcs_port_worktree_diff_title_body_layout_motion_and_back",
+    ),
+    (
+        "diff_from_tree_and_worktree_detail_and_cycle",
+        &[
+            "layout:starts-unified",
+            "layout:to-split",
+            "layout:to-auto",
+            "layout:back-unified",
+        ],
+        &["app"],
+        "vcs_keys_git_detail_s_cycles_unified_split_auto_unified",
+    ),
+    (
+        "git_branch_move_extremes_no_panic",
+        &["clamp:bottom", "clamp:top"],
+        &["app"],
+        "vcs_port_list_cursor_clamps_at_both_ends_of_every_list_screen",
+    ),
+    (
+        "git_graph_move_extremes_no_panic",
+        &["clamp:bottom", "clamp:top"],
+        &["app"],
+        "vcs_port_list_cursor_clamps_at_both_ends_of_every_list_screen",
+    ),
+    (
+        "git_log_move_extremes_no_panic",
+        &["clamp:bottom", "clamp:top"],
+        &["app"],
+        "vcs_port_list_cursor_clamps_at_both_ends_of_every_list_screen",
+    ),
+    (
+        "git_view_move_extremes_no_panic",
+        &["clamp:bottom", "clamp:top"],
+        &["app"],
+        "vcs_port_list_cursor_clamps_at_both_ends_of_every_list_screen",
+    ),
+    (
+        "stale_listing_chip_shows_in_the_git_view",
+        &["chip:absent-healthy", "chip:present-stale"],
+        &["app"],
+        "vcs_port_stale_listing_chip_shows_on_the_project_canvas",
+    ),
+    (
+        "graph_config_base_branches_drive_base_order_and_picker_reorder",
+        &["base:first-existing-in-config"],
+        &["app"],
+        "vcs_port_graph_widths_queries_connector_motion_and_short_heights",
+    ),
+    (
+        "graph_config_base_branches_drive_base_order_and_picker_reorder",
+        &["legend:config-order-head-then-recency"],
+        &["app"],
+        "vcs_port_real_graph_conversion_legend_and_legacy_cells",
+    ),
+    (
+        "graph_config_base_branches_drive_base_order_and_picker_reorder",
+        &["picker:reorder-derives-base"],
+        &["app"],
+        "vcs_port_picker_apply_and_every_cancel_key",
+    ),
+    (
+        "graph_legend_caps_branches_head_first_and_picker_toggles",
+        &["legend:head-first"],
+        &["app"],
+        "vcs_port_real_graph_conversion_legend_and_legacy_cells",
+    ),
+    (
+        "graph_legend_caps_branches_head_first_and_picker_toggles",
+        &["legend:cap-hidden-count"],
+        &["app"],
+        "vcs_port_original_graph_selection_base_picker_and_config",
+    ),
+    (
+        "graph_legend_caps_branches_head_first_and_picker_toggles",
+        &[
+            "picker:head-row-first-and-untoggleable",
+            "picker:all-applied-unhides",
+        ],
+        &["app"],
+        "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
+    ),
+    // `git_diff_opens_from_view_and_esc_returns_to_view` is out of scope (not ledgered): its Esc
+    // assertion has no new-path test — Esc on a canvas-opened file diff closes to the tree and orphans
+    // `project_return` (BUG, src/lib.rs:2460). All its other assertions are held by
+    // vcs_port_file_head_baseline_right_remaps_and_diff_layout (open:is-preview, open:off-canvas,
+    // open:lines-nonempty) and vcs_keys_git_file_diff_n_cycles_changed_files_and_closes_to_changes
+    // (cache:set, cache:refresh-drops, close:q-returns).
+    (
+        "open_git_view_noop_when_not_a_repo",
+        &["refuse:keeps-tree", "refuse:flashes"],
+        &["app"],
+        "vcs_port_tree_keys_refresh_and_meta_alignment_literals",
+    ),
+    (
+        "open_git_view_noop_when_not_a_repo",
+        &["refuse:no-legacy-open"],
+        &["app"],
+        "e2e_standard_vcs_disabled_and_no_backend_never_open_the_legacy_hub",
+    ),
+    // `internal_mode` does not exist on the new path: the canvas's screens are the runtime's
+    // `ProjectContent` view, read through `app.project_frame().key.screen`
+    // (src/app/project_screens.rs:681: `self.tab.project_navigation.as_ref()?.frame()`).
+    (
+        "git_log_lists_commits_and_detail_has_diff_lines",
+        &[
+            "screen:l-opens-log",
+            "list:commits",
+            "sel:moves",
+            "detail:opens",
+            "detail:diff-lines-added",
+            "close:detail-to-list",
+            "n/a:internal-mode-replaced-by-project-frame",
+        ],
+        &["app"],
+        "vcs_port_original_log_detail_history_and_six_copy_keys",
+    ),
+    (
+        "git_log_lists_commits_and_detail_has_diff_lines",
+        &["order:newest-first"],
+        &["app"],
+        "vcs_port_log_205_commits_keep_exactly_the_first_200",
+    ),
+    (
+        "git_log_lists_commits_and_detail_has_diff_lines",
+        &["decided:q-leaves-to-origin"],
+        &["app"],
+        "vcs_port_q_returns_to_origin_and_l_g_are_list_keys_on_log_and_graph",
+    ),
+    (
+        "open_git_log_noop_when_no_commits",
+        &["decided:empty-log-in-cycle", "row:no-commits"],
+        &["app"],
+        "vcs_port_unborn_both_languages_fixed_tabs_and_empty_row",
+    ),
+    (
+        "current_commit_meta_resolves_per_surface_and_none_in_tree",
+        &["meta:tree-none"],
+        &["app"],
+        "vcs_port_copy_contexts_and_space_footer_order",
+    ),
+    (
+        "current_commit_meta_resolves_per_surface_and_none_in_tree",
+        &["meta:log-selected", "meta:detail-full"],
+        &["app"],
+        "e2e_vcs_copy_log_and_detail_clipboard_and_flash_match_old_hub_for_all_six_items",
+    ),
+    // `git_copy_message_and_branch_name_set_flash` is out of scope: the old hub flashed
+    // `NoCopyTarget` when `y` had nothing to copy, while the canvas's `y` leader simply does
+    // not open. That silence is not a decided difference (no design decision covers it), so
+    // the whole test is UNDECIDED rather than half-ported.
+    (
+        "git_copy_branch_name_copies_current_branch",
+        &["copy:branch-value", "copy:flash-not-no-target"],
+        &["app"],
+        "vcs_hub_e2e_branch_list_y_menu_copies_the_name_and_c_creates",
+    ),
+    (
+        "git_branch_filter_commit_and_backspace",
+        &[
+            "filter:narrows-substring",
+            "filter:each-keystroke",
+            "filter:backspace-widens",
+            "filter:enter-commits-query",
+        ],
+        &["app"],
+        "vcs_hub_e2e_branches_filter_narrows_to_the_query_and_clears_on_escape",
+    ),
+    (
+        "graph_base_set_clear_and_detail_scroll_hscroll",
+        &["base:set", "base:clear"],
+        &["app"],
+        "vcs_port_original_graph_selection_base_picker_and_config",
+    ),
+    (
+        "graph_base_set_clear_and_detail_scroll_hscroll",
+        &[
+            "detail:vscroll-both-ways",
+            "detail:G-tail-clamped",
+            "detail:g-top",
+            "detail:hscroll-home-end",
+            "detail:clamp-to-width",
+        ],
+        &["app"],
+        "vcs_port_detail_full_matrix_and_cursor_return",
+    ),
+    (
+        "graph_picker_move_jump_toggle_current_only_and_cancel",
+        &[
+            "picker:moves",
+            "picker:jumps-ends",
+            "picker:current-only",
+        ],
+        &["app"],
+        "vcs_port_picker_all_keys_icons_languages_and_branch_refresh",
+    ),
+    (
+        "graph_picker_move_jump_toggle_current_only_and_cancel",
+        &["picker:toggle-non-head-on"],
+        &["app"],
+        "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
+    ),
+    (
+        "graph_picker_move_jump_toggle_current_only_and_cancel",
+        &["picker:cancel-discards"],
+        &["app"],
+        "vcs_port_picker_apply_and_every_cancel_key",
+    ),
+    (
+        "close_git_graph_returns_to_git_view",
+        &["decided:q-leaves-to-origin"],
+        &["app"],
+        "vcs_port_q_returns_to_origin_and_l_g_are_list_keys_on_log_and_graph",
+    ),
+    // `diff_view_n_switches_changed_files_and_keeps_return_target` is out of scope (not ledgered): its
+    // return-target half is held only for `q` — `Esc` on a canvas-opened file diff skips
+    // `return_to_project` (`handle_esc` routes `PreviewGitDiff` to `close_git_diff`,
+    // src/lib.rs:2460) and orphans `project_return` (BUG). All its other assertions are held by
+    // vcs_keys_git_file_diff_n_cycles_changed_files_and_closes_to_changes (decided:file-cycle-keys-
+    // are-ctrl-n-ctrl-p, next:advances, next:wraps, prev:walks-back, prev:wraps, tree-cursor:follows,
+    // q:returns; `came_from_git_view` has no counterpart: the return target is the canvas itself,
+    // saved in `tab.project_return` at src/app/project_screens.rs:1307) and
+    // colocated_changed_file_navigation_uses_project_backend_in_every_representation
+    // (position:shown-and-follows).
+    (
+        "external_git_disabled_flashes_distinct_message_and_tree_renders",
+        &[
+            "refuse:external-git-disabled-flash",
+            "refuse:no-project-no-legacy-open",
+            "tree:statuses-empty-and-renders",
+            "sanity:default-config-opens",
+        ],
+        &["app"],
+        "vcs_hub_e2e_p_on_a_git_repo_flashes_the_distinct_reason_when_git_is_off_or_missing",
+    ),
+    (
+        "open_git_view_reports_a_missing_git_binary_distinctly",
+        &[
+            "refuse:git-not-installed-flash",
+            "refuse:not-the-other-reasons",
+            "sanity:available-binary-opens",
+        ],
+        &["app"],
+        "vcs_hub_e2e_p_on_a_git_repo_flashes_the_distinct_reason_when_git_is_off_or_missing",
+    ),
+    (
+        "git_view_branch_re_verifies_when_switching_to_a_different_repo",
+        &[
+            "title:repo-a",
+            "title:repo-b",
+            "title:re-verified",
+            "list:per-tab",
+        ],
+        &["app"],
+        "vcs_port_each_tabs_project_title_reverifies_its_repo_branch",
+    ),
+    (
+        "repeated_ui_renders_of_the_changes_hub_do_not_rescan_git_status",
+        &["draw:no-view-recall"],
+        &["app"],
+        "vcs_hub_e2e_repeated_draws_of_the_changes_screen_do_not_recall_the_view",
+    ),
+    (
+        "jj_hub_opens_even_when_the_git_binary_is_missing",
+        &[
+            "jj:opens",
+            "jj:changes-listed",
+            "jj:no-git-not-installed-flash",
+        ],
+        &["app"],
+        "vcs_hub_e2e_jj_opens_despite_git_switched_off_and_missing_binary",
+    ),
+    (
+        "jj_hub_opens_even_when_the_git_integration_is_switched_off",
+        &[
+            "tree:markers-from-jj",
+            "jj:opens",
+            "jj:changes-listed",
+            "jj:no-external-disabled-flash",
+        ],
+        &["app"],
+        "vcs_hub_e2e_jj_opens_despite_git_switched_off_and_missing_binary",
+    ),
+    (
+        "git_detail_render_shows_diff",
+        &["detail:diff-body"],
+        &["app"],
+        "vcs_port_detail_full_matrix_and_cursor_return",
+    ),
+    (
+        "git_graph_renders_lanes_refs_and_detail",
+        &[
+            "graph:subjects",
+            "graph:refs",
+            "graph:node-and-connectors",
+            "graph:lane-colors",
+            "worktree:top-row-selected",
+        ],
+        &["app"],
+        "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+    ),
+    (
+        "git_graph_renders_lanes_refs_and_detail",
+        &["move:commit-rows-only"],
+        &["app"],
+        "vcs_port_graph_widths_queries_connector_motion_and_short_heights",
+    ),
+    (
+        "git_graph_renders_lanes_refs_and_detail",
+        &["detail:opens", "worktree:enter-opens-detail"],
+        &["app"],
+        "vcs_port_graph_every_copy_base_reload_and_both_detail_open_keys",
+    ),
+    (
+        "git_graph_renders_lanes_refs_and_detail",
+        &["detail:diff-lines"],
+        &["app"],
+        "vcs_port_detail_full_matrix_and_cursor_return",
+    ),
+    (
+        "git_graph_renders_lanes_refs_and_detail",
+        &["worktree:multi-file-headers"],
+        &["app"],
+        "vcs_port_worktree_diff_title_body_layout_motion_and_back",
+    ),
 ];
 
 // Kept independently from GROUPS so deleting a table entry cannot silently shrink the scope.
@@ -3429,7 +3788,20 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // machinery 23 + failure fatal-first/reopen/no-clobber/no-filter-hijack 16 +
             // busy-submit 4 + sync-fallback n/a 1 + jj sync gate 3 + write guard 6 +
             // follow paused surface 3 + submit-recheck 3 + second-write 3.
-            + 105,
+            + 105
+            // The old-hub READ/VIEW unit tests (src/app/tests.rs, src/ui/git.rs,
+            // src/ui/mod.rs), 93 rows: tree/worktree diff and the `s` layout cycle 10 +
+            // list clamps 8 + stale chip 2 + config base order 3 + legend cap and picker
+            // toggles 4 + not-a-repo refuse 3 + log list/detail (incl. the internal_mode n/a
+            // and q-leaves decided rows) 9 + empty-log 2 + commit meta 3 + branch copy 2 +
+            // branch filter 4 + graph base/detail scroll 7 + picker
+            // move/jump/toggle/cancel 5 + graph close 1 + branch re-verify 4 + repeated
+            // draws 1 + refused opens with git off / binary missing 7 (4 + 3) + jj gates 7 +
+            // ui detail 1 + ui graph 10. (git_diff_opens_from_view_and_esc_returns_to_view and
+            // diff_view_n_switches_changed_files_and_keeps_return_target are out of scope: their
+            // Esc assertion is a BUG with no new-path test; git_copy_message_and_branch_name_set_flash
+            // stays out: its no-target flash is UNDECIDED.)
+            + 93,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

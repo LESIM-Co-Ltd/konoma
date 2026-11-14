@@ -117,7 +117,12 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "graph_picker_marker_column_gated_by_icons_and_alignment_preserved",
             "changes_hub_help_shows_jj_section_and_hides_git_write_keys",
             "graph_help_shows_jj_section_and_all_revisions_row",
+            "git_detail_render_shows_diff",
         ],
+    ),
+    (
+        "src/ui/mod.rs",
+        &["git_graph_renders_lanes_refs_and_detail"],
     ),
     (
         "src/e2e_tests/vcs_graph.rs",
@@ -290,6 +295,29 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "same_root_tab_is_refreshed_even_though_it_is_not_the_origin",
             "ui_confirm_jj_sync_gates_the_only_write",
             "second_git_op_is_rejected_while_one_is_in_flight",
+            "diff_from_tree_and_worktree_detail_and_cycle",
+            "git_branch_move_extremes_no_panic",
+            "git_graph_move_extremes_no_panic",
+            "git_log_move_extremes_no_panic",
+            "git_view_move_extremes_no_panic",
+            "stale_listing_chip_shows_in_the_git_view",
+            "graph_config_base_branches_drive_base_order_and_picker_reorder",
+            "graph_legend_caps_branches_head_first_and_picker_toggles",
+            "open_git_view_noop_when_not_a_repo",
+            "git_log_lists_commits_and_detail_has_diff_lines",
+            "open_git_log_noop_when_no_commits",
+            "current_commit_meta_resolves_per_surface_and_none_in_tree",
+            "git_copy_branch_name_copies_current_branch",
+            "git_branch_filter_commit_and_backspace",
+            "graph_base_set_clear_and_detail_scroll_hscroll",
+            "graph_picker_move_jump_toggle_current_only_and_cancel",
+            "close_git_graph_returns_to_git_view",
+            "git_view_branch_re_verifies_when_switching_to_a_different_repo",
+            "repeated_ui_renders_of_the_changes_hub_do_not_rescan_git_status",
+            "external_git_disabled_flashes_distinct_message_and_tree_renders",
+            "open_git_view_reports_a_missing_git_binary_distinctly",
+            "jj_hub_opens_even_when_the_git_binary_is_missing",
+            "jj_hub_opens_even_when_the_git_integration_is_switched_off",
         ],
     ),
     (
@@ -345,6 +373,15 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
     // block, the worktree/branch/commit flows, the basic git-view list/stage/discard tests, the
     // second-write refusal and the jj sync gate — + 3 in src/app/write_guard_tests.rs + 1 in
     // src/app/follow_worker.rs).
-    assert_eq!(total, 210, "frozen B/C/E/H/S inventory");
+    // + 25 (the old-hub READ/VIEW unit tests: 23 in src/app/tests.rs — list clamps, stale chip,
+    // graph base/legend/picker, diff from tree/worktree, log open/detail, copy, branch filter,
+    // refused opens (git switched off / binary missing / not a repository), per-tab branch title,
+    // bounded draws, jj-opens-despite-git-off — plus git_detail_render_shows_diff in src/ui/git.rs
+    // and git_graph_renders_lanes_refs_and_detail in src/ui/mod.rs. Not in scope:
+    // git_diff_opens_from_view_and_esc_returns_to_view and
+    // diff_view_n_switches_changed_files_and_keeps_return_target (their Esc assertion has no
+    // new-path test — BUG, src/lib.rs:2460) and git_copy_message_and_branch_name_set_flash (its
+    // no-target flash half is an undecided silence-vs-flash difference).
+    assert_eq!(total, 235, "frozen B/C/E/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }

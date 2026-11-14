@@ -183,7 +183,11 @@ impl W {
     }
 
     fn status(&self) -> String {
-        self.run_git(&["status", "--porcelain=v1"])
+        // `--no-optional-locks`, the same etiquette as every background read in the app: this
+        // status may run while the session's own `git commit` is parked in a hook holding
+        // `index.lock` — without it the read itself can take the lock for an instant and make
+        // the just-dispatched commit fail at startup.
+        self.run_git(&["--no-optional-locks", "status", "--porcelain=v1"])
     }
 
     fn index(&self) -> Vec<u8> {
@@ -1491,6 +1495,13 @@ fn vcs_port_branch_empty_repository_allows_create_and_has_no_row_actions() {
     w.press(KeyCode::Enter);
     w.no_dialog();
     w.key('d');
+    w.no_dialog();
+    // Fact only: the old hub flashed "no copy target" with no branch selected; on the canvas
+    // the `y` leader does not open and nothing is flashed. Whether that silence is intended
+    // is undecided — this test only records what the new path does today.
+    w.key('y');
+    assert_eq!(w.sim.app.pending_leader, None);
+    assert_eq!(w.flash(), None);
     w.no_dialog();
     w.key('c');
     assert!(w.sim.app.project_dialog.is_some());

@@ -383,6 +383,33 @@ fn vcs_hub_e2e_branches_filter_narrows_to_the_query_and_clears_on_escape() {
     );
     w.press(KeyCode::Esc);
     assert_eq!(branch_values(&w.sim).len(), 3);
+    // ---- old git_branch_filter_commit_and_backspace ----
+    // "a" narrows to alpha+main, backspacing off the "l" widens it back, and Enter commits the
+    // query (leaves input mode) while keeping the list narrowed.
+    let narrowed = |sim: &Sim| {
+        let mut v: Vec<String> = branch_values(sim).iter().map(|(_, v)| v.clone()).collect();
+        v.sort();
+        v
+    };
+    w.key('/');
+    w.type_text("a");
+    assert_eq!(narrowed(&w.sim), ["alpha", "main"]);
+    w.type_text("l");
+    assert_eq!(
+        branch_values(&w.sim),
+        vec![("branch".to_string(), "alpha".to_string())]
+    );
+    w.press(KeyCode::Backspace);
+    assert_eq!(
+        narrowed(&w.sim),
+        ["alpha", "main"],
+        "backspace widens the query"
+    );
+    w.press(KeyCode::Enter);
+    let frame = w.sim.app.project_frame().unwrap();
+    assert!(!frame.filtering, "Enter leaves input mode");
+    assert_eq!(frame.query, "a", "Enter keeps the query");
+    assert_eq!(branch_values(&w.sim).len(), 2);
 }
 
 // ---- old e2e_enter_on_a_git_branch_list_still_checks_out (footer and Enter) ----
@@ -938,4 +965,158 @@ fn vcs_hub_e2e_while_a_write_runs_other_act_keys_show_no_hint_and_do_nothing() {
     w.sim.draw();
     w.sim.see("commit");
     w.sim.see("stage");
+}
+
+// ---- old repeated_ui_renders_of_the_changes_hub_do_not_rescan_git_status ----
+// The canvas's drawn content is the runtime's last answered view; a draw alone never asks the
+// session again, so repainting the changes screen cannot re-run `git status`.
+#[test]
+fn vcs_hub_e2e_repeated_draws_of_the_changes_screen_do_not_recall_the_view() {
+    let mut w = W::git("vcs_hub_e2e_repeated_draws", true, "en", "relative", false);
+    assert!(w.screen_is("changes"));
+    let (views, _) = w.counts();
+    for _ in 0..40 {
+        w.sim.draw();
+    }
+    assert_eq!(
+        w.counts().0,
+        views,
+        "40 draws issued no new view request (git status is not re-run per frame)"
+    );
+}
+
+// ---- old jj_hub_opens_even_when_the_git_integration_is_switched_off +
+// jj_hub_opens_even_when_the_git_binary_is_missing ----
+// `[external] git` and the git-binary probe gate the git plugin only; a jj repo's project opens
+// through `p` either way — jj never asks either.
+#[test]
+fn vcs_hub_e2e_jj_opens_despite_git_switched_off_and_missing_binary() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let dir = sandbox("vcs_hub_e2e_jj_no_git").into_canonical().unwrap();
+    let root = dir.join("repo");
+    seed_jj_write_repository(&root, false);
+    let opens_jj = |sim: &mut Sim, why: &str| {
+        sim.app.tab.projects.wait_for_result();
+        sim.app.poll_projects();
+        let (_, legacy) = App::count_legacy_hub_opens(|| sim.key('p'));
+        drain(sim);
+        assert_eq!(legacy, 0, "{why}: no legacy open");
+        assert!(
+            sim.app.project_active(),
+            "{why}: the jj project opens: {:?}",
+            sim.app.flash
+        );
+        assert_eq!(sim.app.project_frame().unwrap().key.screen, "changes");
+        let content = sim.app.project_content().unwrap();
+        let ProjectContent::List(list) = content.as_ref() else {
+            panic!("{why}: the changes list is required")
+        };
+        assert!(
+            !list.rows.is_empty(),
+            "{why}: the seeded jj change is listed"
+        );
+    };
+    // `[external] git = false` (both plugins registered, the git one just disabled).
+    // The tree's status markers come from jj and never consult that setting either.
+    let mut cfg = Config::default();
+    cfg.external.git = false;
+    cfg.ui.tabbar = "hidden".into();
+    cfg.ui.statusbar = "split".into();
+    let mut sim = Sim::with_config_sized(&root, cfg, 200, 24);
+    assert!(
+        !crate::vcs::statuses(&root).is_empty(),
+        "the tree's markers come from jj regardless of [external] git"
+    );
+    opens_jj(&mut sim, "external.git=false");
+    assert_ne!(
+        sim.app.flash.as_deref(),
+        Some(crate::i18n::tr(
+            sim.app.lang,
+            crate::i18n::Msg::ExternalGitDisabled
+        )),
+        "jj never asks [external] git, so this reason must never fire for it"
+    );
+    // A missing git binary with the default config.
+    crate::git::set_git_binary_available_for_test(Some(false));
+    let mut sim = Sim::with_config_sized(&root, Config::default(), 200, 24);
+    opens_jj(&mut sim, "no git binary");
+    assert_ne!(
+        sim.app.flash.as_deref(),
+        Some(crate::i18n::tr(
+            sim.app.lang,
+            crate::i18n::Msg::GitNotInstalled
+        )),
+        "the jj backend never touches the git executable"
+    );
+    crate::git::set_git_binary_available_for_test(None);
+}
+
+// ---- old external_git_disabled_flashes_distinct_message_and_tree_renders +
+// open_git_view_reports_a_missing_git_binary_distinctly ----
+// On a real git repository `p` is gated by `ops::gate` (`gate_open_git_view`): with
+// `[external] git = false`, or without a git executable, no project opens and no legacy hub
+// opens; the flash names the real reason (not "not a repository") and the tree still draws.
+#[test]
+fn vcs_hub_e2e_p_on_a_git_repo_flashes_the_distinct_reason_when_git_is_off_or_missing() {
+    use crate::i18n::{tr, Msg};
+    let dir = sandbox("vcs_hub_e2e_git_off").into_canonical().unwrap();
+    let root = dir.join("repo");
+    seed_write_repository(&root, true);
+    let refused = |sim: &mut Sim, msg: Msg, why: &str| {
+        sim.app.flash = None;
+        let (_, legacy) = App::count_legacy_hub_opens(|| sim.key('p'));
+        drain(sim);
+        assert_eq!(legacy, 0, "{why}: no legacy open");
+        assert!(!sim.app.project_active(), "{why}: no project opens");
+        assert!(sim.app.project_frame().is_none(), "{why}: no project frame");
+        assert_eq!(
+            sim.app.flash.as_deref(),
+            Some(tr(sim.app.lang, msg)),
+            "{why}: the distinct reason"
+        );
+        for other in [
+            Msg::NotAGitRepo,
+            Msg::ExternalGitDisabled,
+            Msg::GitNotInstalled,
+        ] {
+            if std::mem::discriminant(&other) != std::mem::discriminant(&msg) {
+                assert_ne!(
+                    sim.app.flash.as_deref(),
+                    Some(tr(sim.app.lang, other)),
+                    "{why}: not the other reasons"
+                );
+            }
+        }
+        // The tree still renders after the refusal.
+        sim.draw();
+        sim.see("a-modified");
+    };
+    // `[external] git = false`: statuses, branch and workdir degrade to empty/None.
+    let mut cfg = Config::default();
+    cfg.external.git = false;
+    cfg.ui.tabbar = "hidden".into();
+    cfg.ui.statusbar = "split".into();
+    let mut sim = Sim::with_config_sized(&root, cfg, 200, 24);
+    assert!(crate::git::statuses(&root).is_empty(), "statuses");
+    assert!(crate::git::branch(&root).is_none(), "branch");
+    assert!(crate::git::workdir(&root).is_none(), "workdir");
+    refused(&mut sim, Msg::ExternalGitDisabled, "external.git=false");
+    // No git executable with the default config.
+    crate::git::set_git_binary_available_for_test(Some(false));
+    let mut sim = Sim::with_config_sized(&root, Config::default(), 200, 24);
+    refused(&mut sim, Msg::GitNotInstalled, "no git binary");
+    // Sanity (old tests' second half): with git available and enabled, `p` opens the project.
+    crate::git::set_git_binary_available_for_test(None);
+    let mut sim = Sim::with_config_sized(&root, Config::default(), 200, 24);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    sim.key('p');
+    drain(&mut sim);
+    assert!(
+        sim.app.project_active(),
+        "sanity: the same repo opens: {:?}",
+        sim.app.flash
+    );
 }

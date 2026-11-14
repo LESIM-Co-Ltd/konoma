@@ -261,6 +261,11 @@ fn vcs_port_tree_keys_refresh_and_meta_alignment_literals() {
         "p outside a repository does not open a project"
     );
     assert_eq!(sim.app.tab.mode, crate::app::Mode::Tree);
+    assert_eq!(
+        sim.app.flash.as_deref(),
+        Some(crate::i18n::tr(sim.app.lang, crate::i18n::Msg::NotAGitRepo)),
+        "p outside a repository flashes the not-a-repo notice"
+    );
     let root = sandbox("vcs_finish_refresh");
     seed_repo_history(&root);
     let mut sim = open(&root, config("git", "en"), (180, 24));

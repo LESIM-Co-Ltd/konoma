@@ -521,3 +521,151 @@ fn vcs_jump_keys_a_refused_key_is_told_at_startup() {
         );
     }
 }
+
+// ---- old diff_view_n_switches_changed_files_and_keeps_return_target +
+// git_diff_opens_from_view_and_esc_returns_to_view (the cache/close half) ----
+// Decided difference: the changed-file cycle moved from `n`/`N` to `Ctrl-n`/`Ctrl-p` (plain
+// `n`/`N` move between diff hunks). `Ctrl-n` inside the file diff preview cycles the project's
+// change set (wrapping both ways, the tree cursor following), the drawn diff is cached until an
+// fs refresh drops the cache, and `Esc`/`q` both close back onto the canvas's changes screen —
+// the return target survives cycling.
+#[test]
+fn vcs_keys_git_file_diff_n_cycles_changed_files_and_closes_to_changes() {
+    if isolated("vcs_keys_git_file_diff_n_cycles_changed_files_and_closes_to_changes") {
+        return;
+    }
+    let repo = super::vcs_changes::git_repo("vcs_keys_git_diff_n", true);
+    let mut sim = open(&repo, config("git", "en"), (140, 30));
+    let ctrl = |sim: &mut Sim, c: char| {
+        sim.press(
+            KeyCode::Char(c),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        drain(sim);
+    };
+    press(&mut sim, KeyCode::Enter);
+    assert!(sim.app.is_git_diff_preview() && !sim.app.project_active());
+    assert!(
+        sim.app.tab.project_return.is_some(),
+        "Enter on the changes row saves the canvas for return"
+    );
+    let first = sim.app.tab.preview_path.clone().unwrap();
+    // `Ctrl-n` walks the changed-file list forward and wraps at the end; `Ctrl-p` walks it back.
+    let mut seen = vec![first.clone()];
+    for _ in 0..64 {
+        ctrl(&mut sim, 'n');
+        let now = sim.app.tab.preview_path.clone().unwrap();
+        if now == first {
+            break;
+        }
+        assert!(
+            !seen.contains(&now),
+            "Ctrl-n visited {now:?} twice before wrapping"
+        );
+        seen.push(now);
+    }
+    assert!(seen.len() >= 2, "the fixture needs two changed files");
+    // The position in the change set is shown and follows the cycling.
+    let (pos0, total) = sim.app.diff_change_position().unwrap();
+    assert_eq!(total, seen.len(), "the (n/total) indicator counts the change set");
+    // `Ctrl-p` walks the same cycle back, wraps at the top, and the tree cursor follows the shown
+    // diff.
+    ctrl(&mut sim, 'n');
+    assert_eq!(
+        sim.app.diff_change_position().unwrap().0,
+        pos0 % total + 1,
+        "the position follows the cycling"
+    );
+    assert_eq!(
+        sim.app.tab.entries[sim.app.tab.selected].path,
+        sim.app.tab.preview_path.clone().unwrap(),
+        "the tree cursor follows the shown diff"
+    );
+    ctrl(&mut sim, 'p');
+    assert_eq!(
+        sim.app.tab.preview_path.as_deref(),
+        Some(first.as_path()),
+        "Ctrl-p steps back to the previous file"
+    );
+    for expected in seen.iter().skip(1).rev() {
+        ctrl(&mut sim, 'p');
+        assert_eq!(
+            sim.app.tab.preview_path.as_deref(),
+            Some(expected.as_path()),
+            "Ctrl-p wraps and walks the cycle back"
+        );
+    }
+    ctrl(&mut sim, 'p');
+    assert_eq!(
+        sim.app.tab.preview_path.as_deref(),
+        Some(first.as_path()),
+        "Ctrl-p wraps back to the start"
+    );
+    // The drawn diff is served through the per-path diff cache: a seeded line comes back
+    // verbatim instead of a fresh `file_diff` read, and an fs refresh drops the cache so the
+    // next read recomputes from the working tree (never a stale diff).
+    sim.app.seed_source_diff_for_test(vec![crate::git::DiffLine {
+        kind: crate::git::DiffLineKind::Added,
+        old_no: None,
+        new_no: Some(1),
+        text: "SEEDED CACHE MARKER".into(),
+    }]);
+    assert!(
+        sim.app
+            .git_diff_lines()
+            .iter()
+            .any(|l| l.text == "SEEDED CACHE MARKER"),
+        "the per-path diff cache serves the read"
+    );
+    let mut body = std::fs::read_to_string(&first).unwrap();
+    body.push_str("AFTER REFRESH\n");
+    std::fs::write(&first, body).unwrap();
+    sim.app.refresh_fs_watched(false, &[]);
+    let lines = sim.app.git_diff_lines();
+    assert!(
+        !lines.iter().any(|l| l.text == "SEEDED CACHE MARKER"),
+        "refresh drops the diff cache"
+    );
+    assert!(
+        lines.iter().any(|l| l.text.contains("AFTER REFRESH")),
+        "the re-read diff shows the new content"
+    );
+    // `q` closes back to the canvas's changes screen (the saved `project_return`), keeping the
+    // row's origin — the fact the old hub's `came_from_git_view` carried.
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(sim.app.project_active() && frame_screen(&sim) == "changes");
+    press(&mut sim, KeyCode::Enter);
+    assert!(sim.app.is_git_diff_preview());
+    let reopened = sim.app.tab.preview_path.clone().unwrap();
+    ctrl(&mut sim, 'n');
+    assert_ne!(
+        sim.app.tab.preview_path.as_deref(),
+        Some(reopened.as_path()),
+        "cycling still works after reopening"
+    );
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(sim.app.project_active() && frame_screen(&sim) == "changes");
+}
+
+// ---- old diff_from_tree_and_worktree_detail_and_cycle (the `s` cycle half) ----
+// `s` on the pushed detail cycles the shared layout unified → split → auto → unified.
+#[test]
+fn vcs_keys_git_detail_s_cycles_unified_split_auto_unified() {
+    if isolated("vcs_keys_git_detail_s_cycles_unified_split_auto_unified") {
+        return;
+    }
+    let repo = super::vcs_changes::git_repo("vcs_keys_git_detail_s3", true);
+    let mut sim = open(&repo, config("git", "en"), (120, 30));
+    press(&mut sim, KeyCode::Char('d'));
+    assert_eq!(frame_screen(&sim), "detail");
+    assert!(!sim.app.diff_is_split(200), "starts unified");
+    press(&mut sim, KeyCode::Char('s'));
+    assert!(sim.app.diff_is_split(200), "s -> split");
+    press(&mut sim, KeyCode::Char('s'));
+    assert!(
+        sim.app.diff_is_split(200) && !sim.app.diff_is_split(40),
+        "s -> auto (width decides)"
+    );
+    press(&mut sim, KeyCode::Char('s'));
+    assert!(!sim.app.diff_is_split(200), "s -> unified again");
+}
