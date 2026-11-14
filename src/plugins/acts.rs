@@ -617,6 +617,18 @@ mod tests {
             .collect()
     }
 
+    /// The key of the jump with this operation name (`None` when it has no key). The jump is looked
+    /// up by name: its place in the list follows the screens' order, and every screen that is
+    /// not pushed has an entry, key or not.
+    #[track_caller]
+    fn jump_key_of(k: &PluginKeys, op: &str) -> Option<KeyPress> {
+        jump_keys(k)
+            .into_iter()
+            .find(|(name, _, _)| name == op)
+            .unwrap_or_else(|| panic!("no jump named {op}"))
+            .2
+    }
+
     #[test]
     fn the_declared_screen_keys_are_the_default_jumps() {
         let k = PluginKeys::build(&project_registry(), &mut proj_tables(&[]));
@@ -650,13 +662,12 @@ mod tests {
             &project_registry(),
             &mut proj_tables(&[("B", "goto_branches")]),
         );
-        let keys = jump_keys(&k);
-        assert_eq!(keys[0].2, Some(KeyPress::ch('B')));
-        assert_eq!(keys[1].2, Some(KeyPress::ch('i')));
+        assert_eq!(jump_key_of(&k, "goto_branches"), Some(KeyPress::ch('B')));
+        assert_eq!(jump_key_of(&k, "goto_worktrees"), Some(KeyPress::ch('i')));
         assert!(k.notes().is_empty(), "{:?}", k.notes());
         let k = PluginKeys::build(&project_registry(), &mut proj_tables(&[("b", "noop")]));
-        assert_eq!(jump_keys(&k)[0].2, None, "noop removes it");
-        assert_eq!(jump_keys(&k)[1].2, Some(KeyPress::ch('i')));
+        assert_eq!(jump_key_of(&k, "goto_branches"), None, "noop removes it");
+        assert_eq!(jump_key_of(&k, "goto_worktrees"), Some(KeyPress::ch('i')));
     }
 
     #[test]
@@ -676,7 +687,11 @@ mod tests {
                 &project_registry(),
                 &mut proj_tables(&[(key, "goto_branches")]),
             );
-            assert_eq!(jump_keys(&k)[0].2, Some(KeyPress::ch('b')), "{key}");
+            assert_eq!(
+                jump_key_of(&k, "goto_branches"),
+                Some(KeyPress::ch('b')),
+                "{key}"
+            );
             assert!(
                 k.notes()
                     .iter()
