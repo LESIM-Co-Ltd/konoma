@@ -499,6 +499,53 @@ pub fn project_dialog_presentation_build_count() -> usize {
     DIALOG_BUILD_COUNT.with(std::cell::Cell::get)
 }
 
+/// One answer of a confirmation: `key = label` in the box, `key:status` in the footer.
+pub struct ConfirmationChoiceWords<'a> {
+    pub key: char,
+    pub label: &'a str,
+    pub status: &'a str,
+    pub destructive: bool,
+}
+
+/// The confirmation box every project confirmation is drawn with: the bold message lines, one
+/// `key = label` line per answer, then the cancel guide. An act's prompt and the standalone's
+/// quit question both come through here, so there is one renderer.
+pub fn present_confirmation(
+    words: &ProjectDialogWords<'_>,
+    message: &str,
+    choices: &[ConfirmationChoiceWords<'_>],
+    destructive: bool,
+) -> ProjectDialogPresentation {
+    let mut lines: Vec<Line<'static>> = message
+        .lines()
+        .map(|l| Line::raw(l.to_string()).bold())
+        .collect();
+    lines.push(Line::raw(""));
+    for choice in choices {
+        let line = Line::raw(format!("{} = {}", choice.key, choice.label));
+        lines.push(if choice.destructive {
+            line.fg(Color::Red)
+        } else {
+            line.dim()
+        });
+    }
+    lines.push(Line::raw(words.confirm_cancel.to_string()).dim());
+    ProjectDialogPresentation {
+        title: words.confirm_title.into(),
+        lines,
+        accent: if destructive { Color::Red } else { Color::Cyan },
+        selected_line: 0,
+        visible: true,
+        footer: ProjectDialogFooter::Confirmation {
+            choices: choices
+                .iter()
+                .map(|choice| format!("{}:{}", choice.key, choice.status))
+                .collect(),
+            cancel: words.confirm_cancel_status.into(),
+        },
+    }
+}
+
 pub fn present_project_dialog<I: PromptInvocation>(
     dialog: &ProjectDialog<I>,
     resolved_project_labels: &[ProjectDialogLabel],
@@ -544,51 +591,26 @@ pub fn present_project_dialog<I: PromptInvocation>(
             let invocation = invocation.prompt_invocation();
             match prompts.get(*stage) {
                 Some(ProjectPrompt::Confirmation(prompt)) => {
-                    lines.extend(
-                        invocation
-                            .confirmation_text(prompt, lang)
-                            .lines()
-                            .map(|l| Line::raw(l.to_string()).bold()),
+                    let choices: Vec<_> = prompt
+                        .choices
+                        .iter()
+                        .map(|choice| ConfirmationChoiceWords {
+                            key: choice.key,
+                            label: choice.choice.label.get(lang),
+                            status: choice
+                                .status
+                                .as_ref()
+                                .unwrap_or(&choice.choice.label)
+                                .get(lang),
+                            destructive: choice.destructive,
+                        })
+                        .collect();
+                    return present_confirmation(
+                        words,
+                        &invocation.confirmation_text(prompt, lang),
+                        &choices,
+                        invocation.destructive(),
                     );
-                    lines.push(Line::raw(""));
-                    for choice in &prompt.choices {
-                        let line = Line::raw(format!(
-                            "{} = {}",
-                            choice.key,
-                            choice.choice.label.get(lang)
-                        ));
-                        lines.push(if choice.destructive {
-                            line.fg(Color::Red)
-                        } else {
-                            line.dim()
-                        });
-                    }
-                    lines.push(Line::raw(words.confirm_cancel.to_string()).dim());
-                    presentation.title = words.confirm_title.into();
-                    presentation.accent = if invocation.destructive() {
-                        Color::Red
-                    } else {
-                        Color::Cyan
-                    };
-                    presentation.footer = ProjectDialogFooter::Confirmation {
-                        choices: prompt
-                            .choices
-                            .iter()
-                            .map(|choice| {
-                                format!(
-                                    "{}:{}",
-                                    choice.key,
-                                    choice
-                                        .status
-                                        .as_ref()
-                                        .unwrap_or(&choice.choice.label)
-                                        .get(lang)
-                                )
-                            })
-                            .collect(),
-                        cancel: words.confirm_cancel_status.into(),
-                    };
-                    return presentation;
                 }
                 Some(ProjectPrompt::Text(prompt)) => {
                     lines.push(Line::raw(prompt.label.get(lang).to_string()).bold());

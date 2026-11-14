@@ -16,6 +16,8 @@ use std::sync::{mpsc, Arc};
 mod global_help_tests;
 #[path = "idle_resize_tests.rs"]
 mod idle_resize_tests;
+#[path = "quit_guard_tests.rs"]
+mod quit_guard_tests;
 
 struct Project;
 impl Plugin for Project {

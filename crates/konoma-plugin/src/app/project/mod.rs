@@ -67,7 +67,9 @@ use crate::{Failure, TermCaps};
 use super::{AppKeys, Display};
 
 pub use launch::ProjectLaunchTarget;
-pub use looping::{run_project_with, ProjectLoopCx, StandaloneInvocation, StandaloneSurface};
+pub use looping::{
+    quit_while_write_text, run_project_with, ProjectLoopCx, StandaloneInvocation, StandaloneSurface,
+};
 pub use prepare::prepare_projects;
 
 fn watch_warning(lang: &str) -> &'static str {

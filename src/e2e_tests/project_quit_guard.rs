@@ -177,6 +177,23 @@ fn e2e_quit_after_the_write_finished_adds_no_git_op_line() {
     assert!(g.sim.quit, "idle again: confirm_quit off quits at once");
 }
 
+/// The standalone project app (which cannot depend on this crate's i18n) words the running-write
+/// warning itself; it must stay the host's `Msg::QuitWhileGitOp`, in both languages.
+#[test]
+fn standalone_quit_while_write_text_matches_the_host_message() {
+    for (lang, code) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
+        assert_eq!(
+            konoma_plugin::app::project::quit_while_write_text(code),
+            crate::i18n::tr(lang, Msg::QuitWhileGitOp),
+            "{code}"
+        );
+    }
+    assert_ne!(
+        konoma_plugin::app::project::quit_while_write_text("en"),
+        konoma_plugin::app::project::quit_while_write_text("ja")
+    );
+}
+
 #[test]
 fn e2e_quit_write_act_of_a_background_tab_still_warns() {
     // The runtime is the project's, not the tab's: a second tab sees the same running write.

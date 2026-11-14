@@ -5,7 +5,7 @@
 use super::*;
 
 /// The drawn text of every line, spaces removed so wide characters compare exactly.
-fn lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+pub(super) fn lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
     let buf = terminal.backend().buffer();
     (0..buf.area.height)
         .map(|y| {

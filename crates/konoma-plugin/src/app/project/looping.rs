@@ -31,9 +31,12 @@ mod idle;
 mod input;
 #[path = "presentation.rs"]
 mod presentation;
+#[path = "quit_guard.rs"]
+mod quit_guard;
 #[path = "root_switch.rs"]
 pub(super) mod root_switch;
 use input::key_event;
+pub use quit_guard::quit_while_write_text;
 
 #[cfg(test)]
 #[path = "preview_tests.rs"]
@@ -96,6 +99,8 @@ struct ProjectLoopState {
     menu: Option<konoma_host_core::keymap::CoreMenu>,
     presentation: Option<presentation::Presentation>,
     root_switch: Option<root_switch::PendingRootSwitch>,
+    /// The "quit while a write runs?" question is open (see `quit_guard`).
+    quit_confirm: bool,
 }
 
 impl ProjectLoopState {
@@ -122,6 +127,7 @@ impl ProjectLoopState {
             menu: None,
             presentation: None,
             root_switch: prepared.root_switch.take(),
+            quit_confirm: false,
         }
     }
     fn poll_detection(
@@ -601,8 +607,23 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         }
                         redraw = true;
                     }
-                    crate::app::looping::FileLoopExit::Quit
-                    | crate::app::looping::FileLoopExit::End => break,
+                    crate::app::looping::FileLoopExit::Quit => {
+                        if state.request_quit() {
+                            break;
+                        }
+                        // A write is running: leave the preview for the diff screen it was
+                        // opened from (as `ReturnToSource` does), where the question is drawn.
+                        state.file_preview = None;
+                        if let Some(p) = pictures.as_mut() {
+                            p.forget();
+                            p.forget_still();
+                        }
+                        if let Err(error) = state.diff.as_mut().unwrap().return_from_preview() {
+                            prepared.notice = Some(error.message.get(prepared.lang).into());
+                        }
+                        redraw = true;
+                    }
+                    crate::app::looping::FileLoopExit::End => break,
                 }
                 // Preview may have resized the terminal. Recompute the owner's rectangles
                 // and viewport before its first returning frame.
@@ -659,13 +680,21 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                 .set_style(whole, ratatui::style::Style::new().bg(bg));
                         }
                         if state.diff_return.is_some() && !state.preview_project {
+                            let state_quit_dialog = state.quit_presentation(prepared);
                             let diff = state.diff.as_mut().unwrap();
                             let footer_width = crate::app::draw::status_footer_width(
                                 whole.width,
                                 combined,
                                 &diff.context_spans(),
                             );
-                            let footer = diff.footer(prepared.notice.as_deref(), footer_width);
+                            let quit = state_quit_dialog.as_ref();
+                            let footer = match quit {
+                                Some(dialog) => crate::host::project::draw::project_dialog_footer(
+                                    dialog,
+                                    footer_width,
+                                ),
+                                None => diff.footer(prepared.notice.as_deref(), footer_width),
+                            };
                             let mut borrowed = crate::app::draw::Frame::Diff(diff);
                             crate::app::draw::draw_in(
                                 frame,
@@ -700,6 +729,13 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                 .as_ref()
                                 .unwrap()
                                 .draw_discard(frame.buffer_mut(), whole);
+                            if let Some(dialog) = &state_quit_dialog {
+                                crate::host::project::draw::draw_project_dialog(
+                                    frame.buffer_mut(),
+                                    whole,
+                                    dialog,
+                                );
+                            }
                         } else {
                             if let Some(p) = pictures.as_mut() {
                                 p.draw(frame.buffer_mut(), area, false);

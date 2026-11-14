@@ -3,7 +3,7 @@
 use super::*;
 use crate::host::bind::JumpBinding;
 use crate::host::project::actions::{action_key, acts_in};
-use crate::host::project::draw::{present_project_dialog, ProjectDialogLabel, ProjectDialogWords};
+use crate::host::project::draw::{present_project_dialog, ProjectDialogLabel};
 use crate::project::ProjectAct;
 
 impl ProjectLoopState {
@@ -177,19 +177,25 @@ impl ProjectLoopState {
     ) -> bool {
         // Dialogs get the raw key first, just as in konoma's dispatcher.
         prepared.notice = None;
+        // An open quit question takes every key (Ctrl-c included, as any open dialog does).
+        if self.quit_confirm {
+            return self.quit_confirm_key(key);
+        }
         let filtering = self
             .screen
             .as_ref()
             .and_then(|nav| nav.frame())
             .is_some_and(|frame| frame.filtering);
+        // Ctrl-c is a quit key here (the terminal is in raw mode), so it follows the same rule as
+        // every other way out: a running write asks first, as it would orphan the write.
         if self.dialog.is_none() && !filtering && KeyPress::norm(&key) == KeyPress::ctrl_ch('c') {
-            return true;
+            return self.request_quit();
         }
         if self.help.is_some()
             && self.keys.help_resolve(KeyPress::norm(&key))
                 == CoreResolution::Action(CoreAction::Quit)
         {
-            return true;
+            return self.request_quit();
         }
         if self.diff_return.is_some() && !self.preview_project {
             use crate::app::diff_screen::DiffScreenAction;
@@ -201,7 +207,7 @@ impl ProjectLoopState {
                     self.diff.as_mut().unwrap().close();
                     self.screen = self.diff_return.take();
                 }
-                Ok((DiffScreenAction::Quit, _)) => return true,
+                Ok((DiffScreenAction::Quit, _)) => return self.request_quit(),
                 Ok((DiffScreenAction::Stay, notice)) => prepared.notice = notice,
                 Ok((which @ (DiffScreenAction::Edit | DiffScreenAction::Open), _)) => {
                     let verb = if which == DiffScreenAction::Edit {
@@ -255,7 +261,7 @@ impl ProjectLoopState {
             && self.keys.resolve(CoreContext::Canvas, kp)
                 == CoreResolution::Action(CoreAction::Quit)
         {
-            return true;
+            return self.request_quit();
         }
         let resolution = self.keys.resolve(CoreContext::Text, kp);
         let motion = fixed_keys(CoreContext::Text)
@@ -416,6 +422,9 @@ impl ProjectLoopState {
         &self,
         prepared: &PreparedProjects,
     ) -> Option<crate::host::project::draw::ProjectDialogPresentation> {
+        if let Some(quit) = self.quit_presentation(prepared) {
+            return Some(quit);
+        }
         let dialog = self.dialog.as_ref()?;
         let labels = match dialog {
             ProjectDialog::Projects { projects, .. } => projects
@@ -432,21 +441,11 @@ impl ProjectLoopState {
                 .collect(),
             _ => Vec::new(),
         };
-        let text = |en, ja| if prepared.lang == "ja" { ja } else { en };
-        let presentation = present_project_dialog(
+        Some(present_project_dialog(
             dialog,
             &labels,
-            &ProjectDialogWords {
-                lang: prepared.lang,
-                choose: text("Choose a project", "プロジェクトを選択"),
-                confirm_title: text(" Confirm ", " 確認 "),
-                input_title: text(" Input ", " 入力 "),
-                keys: text("Enter:choose  Esc:cancel", "Enter:選択  Esc:キャンセル"),
-                confirm_cancel: text("n / Esc = cancel", "n / Esc = 取消"),
-                confirm_cancel_status: text("n/Esc:cancel", "n/Esc:取消"),
-            },
-        );
-        Some(presentation)
+            &super::quit_guard::dialog_words(prepared.lang),
+        ))
     }
 }
 

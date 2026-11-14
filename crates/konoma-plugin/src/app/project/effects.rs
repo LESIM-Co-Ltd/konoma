@@ -154,7 +154,8 @@ impl ProjectLoopState {
                     }
                     return false;
                 }
-                return true;
+                // Leaving the root screen ends the program: the same rule as every quit.
+                return self.request_quit();
             }
             self.ensure(info);
         }
