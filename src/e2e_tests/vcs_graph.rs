@@ -195,6 +195,88 @@ fn e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy(
     }
 }
 
+/// The picker's top edge (title, `(shown/total)` count, filler) equals the old hub's at every step
+/// of the picker flows: opening, a branch added, every key of the toggle sequence in en and ja
+/// with icons on and off, and the jj pickers (not colocated: empty; colocated: git branches).
+#[test]
+fn vcs_port_picker_title_counts_equal_old_hub_at_every_step() {
+    let dir = picker_fixture();
+    for icons in [false, true] {
+        let (mut old, mut new) = graph_pair(&dir, "en", "right", (160, 16), 12, false, icons);
+        let mut seen = 0;
+        old.key('b');
+        new.key('b');
+        drain(&mut new);
+        picker_title_matches(&mut old, &mut new);
+        seen += 1;
+        old.key('q');
+        new.key('q');
+        drain(&mut new);
+        let repository = git2::Repository::open(&dir).unwrap();
+        let head = repository.head().unwrap().peel_to_commit().unwrap();
+        repository
+            .branch(&format!("title-added-{icons}"), &head, false)
+            .unwrap();
+        old.key('b');
+        new.key('b');
+        drain(&mut new);
+        picker_title_matches(&mut old, &mut new);
+        seen += 1;
+        assert_eq!(seen, 2, "icons={icons}");
+    }
+    for lang in ["en", "ja"] {
+        for icons in [false, true] {
+            let (mut old, mut new) = graph_pair(&dir, lang, "right", (160, 16), 12, true, icons);
+            let mut seen = 0;
+            for key in ['b', 'x', 'j', 'x', 'a', 'c', 'J', 'K', 'G', 'k', 'g'] {
+                old.key(key);
+                new.key(key);
+                drain(&mut new);
+                picker_title_matches(&mut old, &mut new);
+                seen += 1;
+            }
+            assert_eq!(seen, 11, "{lang} icons={icons}");
+        }
+    }
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    for colocated in [false, true] {
+        let jj_dir = crate::test_support::unique_tmp("vcs_picker_title_jj");
+        std::fs::create_dir_all(&jj_dir).unwrap();
+        let jj_dir = jj_dir.into_canonical().unwrap();
+        jj(
+            &jj_dir,
+            &[
+                "git",
+                "init",
+                if colocated {
+                    "--colocate"
+                } else {
+                    "--no-colocate"
+                },
+                ".",
+            ],
+        );
+        jj(&jj_dir, &["commit", "-m", "Graph 日本語"]);
+        jj(&jj_dir, &["bookmark", "create", "-r", "@-", "日本語"]);
+        let _preference = Preference::pin("jj");
+        for lang in ["en", "ja"] {
+            let cfg = plugin_config("jj", "vcs_picker_title_jj", lang);
+            let (mut old, mut new) = pair_config(&jj_dir, "jj", cfg, 160, 16);
+            old.app.open_git_graph();
+            for _ in 0..2 {
+                new.press(KeyCode::Tab, KeyModifiers::NONE);
+                drain(&mut new);
+            }
+            old.key('b');
+            new.key('b');
+            drain(&mut new);
+            picker_title_matches(&mut old, &mut new);
+        }
+    }
+}
+
 #[test]
 fn e2e_vcs_graph_picker_has_no_filter() {
     let dir = picker_fixture();

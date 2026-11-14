@@ -27,6 +27,7 @@ const PICKER_OPEN_TEST: &str =
     "e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells";
 const PICKER_STEPS_TEST: &str =
     "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy";
+const PICKER_TITLE_TEST: &str = "vcs_port_picker_title_counts_equal_old_hub_at_every_step";
 const PICKER_JJ_TEST: &str =
     "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints";
 
@@ -67,7 +68,7 @@ fn title_rows() -> Vec<(&'static str, String, &'static str)> {
             rows.push((
                 PICKER_OPEN_TEST,
                 format!("title:picker-count:{icons}:{step}"),
-                PICKER_OPEN_TEST,
+                PICKER_TITLE_TEST,
             ));
         }
     }
@@ -77,7 +78,7 @@ fn title_rows() -> Vec<(&'static str, String, &'static str)> {
                 rows.push((
                     PICKER_STEPS_TEST,
                     format!("title:picker-count:{lang}:{icons}:{step}"),
-                    PICKER_STEPS_TEST,
+                    PICKER_TITLE_TEST,
                 ));
             }
         }
@@ -87,7 +88,7 @@ fn title_rows() -> Vec<(&'static str, String, &'static str)> {
             rows.push((
                 PICKER_JJ_TEST,
                 format!("title:picker-count:{kind}:{lang}"),
-                PICKER_JJ_TEST,
+                PICKER_TITLE_TEST,
             ));
         }
     }

@@ -243,7 +243,7 @@ fn vcs_host_base_order_and_cached_view_are_per_tab() {
     keys(&mut sim, "js");
     let cached = sim.app.project_content().unwrap();
     let pinned = list(&sim);
-    assert!(pinned.title.as_ref().unwrap().plain().contains("base:"));
+    assert!(super::vcs_changes::heading_text(&pinned).contains("base:"));
     assert!(pinned
         .bottom
         .as_ref()
@@ -259,7 +259,7 @@ fn vcs_host_base_order_and_cached_view_are_per_tab() {
     assert_ne!(a, sim.app.tab.id);
     enter(&mut sim);
     graph(&mut sim);
-    assert!(!list(&sim).title.as_ref().unwrap().plain().contains("base:"));
+    assert!(!super::vcs_changes::heading_text(&list(&sim)).contains("base:"));
     keys(&mut sim, "r");
     sim.app.tab_goto(0);
     drain(&mut sim);

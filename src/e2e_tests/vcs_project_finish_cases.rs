@@ -833,7 +833,7 @@ fn vcs_port_renderer_normal_rows_markers_and_base_selection() {
         let id = selected_value(&sim);
         keys(&mut sim, "s");
         assert_eq!(selected_value(&sim), id);
-        let title = real_list(&sim).title.unwrap().plain();
+        let title = crate::e2e_tests::vcs_changes::heading_text(&real_list(&sim));
         assert!(title.contains("base: trunk"));
         assert_eq!(title.matches("base:").count(), 1);
         assert_eq!(title.matches('⌖').count(), usize::from(icons));
@@ -867,7 +867,9 @@ fn vcs_port_renderer_normal_rows_markers_and_base_selection() {
         let full = sim.screen();
         assert!(!full.contains("⎇●") && !full.contains("⌖●"));
         keys(&mut sim, "x");
-        assert!(!real_list(&sim).title.unwrap().plain().contains("base:"));
+        assert!(
+            !crate::e2e_tests::vcs_changes::heading_text(&real_list(&sim)).contains("base:")
+        );
         keys(&mut sim, "b");
         sim.see("trunk");
         sim.see("feature-x");

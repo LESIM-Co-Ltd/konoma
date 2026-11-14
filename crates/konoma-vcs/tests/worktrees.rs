@@ -502,9 +502,11 @@ mod reading {
             else {
                 panic!("diff required")
             };
+            // The title sits on the frame's top edge, padded like the old hub's; no header line.
+            assert!(diff.header.is_empty());
             assert_eq!(
-                diff.header[0].plain(),
-                format!("feature ← {base}  {}", feature.display())
+                diff.title.as_ref().map(Line::plain).as_deref(),
+                Some(format!(" feature ← {base}  {} ", feature.display()).as_str())
             );
             assert_eq!(diff.hunks.len(), 1);
             assert_eq!(diff.hunks[0].path.as_deref(), Some("feature.txt"));
@@ -541,7 +543,11 @@ mod reading {
                 else {
                     panic!("diff required")
                 };
-                assert!(diff.header[0].plain().ends_with("(未コミットの変更)"));
+                assert!(diff.header.is_empty());
+                assert!(diff
+                    .title
+                    .as_ref()
+                    .is_some_and(|t| t.plain().ends_with("(未コミットの変更) ")));
                 assert!(diff
                     .hunks
                     .iter()

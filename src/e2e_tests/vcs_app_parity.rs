@@ -281,6 +281,51 @@ fn expand_nav(value: &serde_json::Value, nav: &str) -> serde_json::Value {
     }
 }
 
+/// Replaces the jj change id after `jj @ ` with `?` of the same width (only that id, no other text).
+fn mask_jj_change_id(edge: &str) -> String {
+    const MARK: &str = "jj @ ";
+    let Some(at) = edge.find(MARK) else {
+        return edge.to_owned();
+    };
+    let start = at + MARK.len();
+    let id_len = edge[start..]
+        .chars()
+        .take_while(char::is_ascii_lowercase)
+        .count();
+    format!(
+        "{}{}{}",
+        &edge[..start],
+        "?".repeat(id_len),
+        &edge[start + id_len..]
+    )
+}
+
+/// The expected (host) frame takes the standalone frame's jj change id cells on the top edge: the
+/// two sides look at two repositories made from one seed, so only that id differs by construction.
+/// Everything else on the edge, and the rest of the frame, stays compared cell for cell.
+fn align_jj_change_id(expected: &mut Buffer, app: &Buffer) {
+    const MARK: &str = "jj @ ";
+    let width = app.area.width;
+    for y in 0..4u16 {
+        let edge = crate::test_support::top_edge::row_text(app, y, 0..width);
+        if !edge.starts_with('┌') {
+            continue;
+        }
+        let Some(at) = edge.find(MARK) else { continue };
+        // Everything left of the id is ASCII or a one-cell box glyph: char index == column.
+        let start = edge[..at].chars().count() + MARK.len();
+        let id_len = edge[at + MARK.len()..]
+            .chars()
+            .take_while(char::is_ascii_lowercase)
+            .count();
+        for x in start..start + id_len {
+            let x = x as u16 + app.area.x;
+            let symbol = app[(x, y)].symbol().to_owned();
+            expected[(x, y)].set_symbol(&symbol);
+        }
+    }
+}
+
 fn frames(
     host: &Buffer,
     app: &Buffer,
@@ -421,7 +466,15 @@ fn frames(
         let edge_row = (0..4u16).find(|y| text(host, *y).starts_with('┌'));
         if let Some(y) = edge_row {
             let (host_edge, app_edge) = (text(host, y), text(app, y));
-            assert_eq!(app_edge, host_edge, "top edge, standalone vs host ({lang})");
+            // The host and the standalone app look at two repositories made from the same seed
+            // (`diff_repositories`), so a jj change id in the title differs between them by
+            // construction; it is masked to the same width. The id itself is compared with the
+            // old hub on one repository by the title tests (`vcs_changes.rs`).
+            assert_eq!(
+                mask_jj_change_id(&app_edge),
+                mask_jj_change_id(&host_edge),
+                "top edge, standalone vs host ({lang})"
+            );
             assert!(
                 host_edge.ends_with('┐'),
                 "the list frame's top edge: {host_edge:?}"
@@ -682,6 +735,7 @@ fn frames(
             );
         }
     }
+    align_jj_change_id(&mut expected, app);
     compare_ported_frame(&expected, app).unwrap_or_else(|e| {
         dump_parity_frame("host whole frame", host);
         dump_parity_frame("app whole frame", app);

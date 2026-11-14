@@ -190,7 +190,9 @@ fn normalize_write_frame(frame: &mut Buffer, root: &Path) {
 /// the clip is followed by the frame's right border; both sides must still normalize equal.
 #[test]
 fn clipped_identity_component_before_the_frame_border_normalizes() {
-    let parent = std::path::PathBuf::from("/tmp/konoma_e2e_x_1_0");
+    // Same naming as the real sandboxes; nothing is created on disk (the path is only text).
+    let dir = crate::test_support::unique_tmp("konoma_e2e_x");
+    let parent = dir.as_path().to_path_buf();
     let build = |component: &str, clip: usize, gap: u16, border: bool| {
         let root = parent.join(component).join("repo");
         let text = format!("{}/{component}/", parent.display());

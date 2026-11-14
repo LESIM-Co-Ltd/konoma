@@ -9,7 +9,6 @@ fn frame_screen(sim: &Sim) -> String {
 /// those cells are skipped (reading them mixes the previous screen's text into the title).
 #[track_caller]
 fn see_title(sim: &Sim, lang: &str) {
-    use unicode_width::UnicodeWidthStr;
     let squash = |s: &str| s.split_whitespace().collect::<String>();
     let want = if lang == "en" { "Uncommittedchanges" } else { "未コミットの変更" };
     let screen = sim.screen();

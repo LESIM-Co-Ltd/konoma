@@ -490,7 +490,7 @@ fn vcs_port_picker_all_keys_icons_languages_and_branch_refresh() {
                     assert_eq!(
                         title,
                         format!(
-                            "{}  ({shown}/{count})",
+                            " {}  ({shown}/{count}) ",
                             crate::i18n::tr(host.app.lang, crate::i18n::Msg::GraphPickerTitle)
                         )
                     );
@@ -616,7 +616,7 @@ fn vcs_port_picker_apply_and_every_cancel_key() {
                         assert_eq!(graph.label.as_ref(), Some(first));
                         assert_eq!(graph.base, crate::git::branch_tip(&root, first));
                     }
-                    let title = port_list(host).title.unwrap().plain();
+                    let title = crate::e2e_tests::vcs_changes::heading_text(&port_list(host));
                     if let Some(label) = &graph.label {
                         assert!(title.contains(&format!("base: {label}")));
                     } else {
@@ -856,7 +856,7 @@ fn vcs_port_jj_and_colocated_log_cells_metadata_and_picker_source() {
                         assert_eq!(
                             list.title.unwrap().plain(),
                             format!(
-                                "{}  ({count}/{count})",
+                                " {}  ({count}/{count}) ",
                                 crate::i18n::tr(host.app.lang, crate::i18n::Msg::GraphPickerTitle)
                             )
                         );

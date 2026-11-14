@@ -214,6 +214,16 @@ pub(super) fn git_repo_at(dir: &std::path::Path, changed: bool) {
     }
 }
 
+/// The list's title as text: the heading's parts around the count (no query, no count), or the
+/// plain title when the list has one. The drawn top edge is compared separately, cell for cell.
+pub(super) fn heading_text(list: &konoma_plugin::view::ListView) -> String {
+    match (&list.heading, &list.title) {
+        (Some(heading), _) => format!("{}{}", heading.before.plain(), heading.after.plain()),
+        (None, Some(title)) => title.plain(),
+        (None, None) => String::new(),
+    }
+}
+
 pub(super) fn compare_body(old: &mut Sim, new: &mut Sim, width: u16, height: u16) -> Vec<String> {
     // Compare logical frames. TestBackend retains old symbols in cells hidden under a wide
     // glyph; those terminal continuation cells are not the frame the renderer produced.

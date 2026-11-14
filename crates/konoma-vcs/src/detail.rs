@@ -163,7 +163,14 @@ mod tests {
             assert!(!view.hunks.is_empty(), "{lang}: the diff is there");
         }
         let (view, _) = read(&super::super::Backend::Git, root, Some("HEAD"), "en");
-        assert!(view.title.is_none(), "a commit keeps its own header");
+        // A commit keeps its own header and gets the old hub's ` commit <short> ` title.
+        let title = view.title.as_ref().map(Line::plain).unwrap_or_default();
+        assert!(
+            title.starts_with(" commit ")
+                && title.ends_with(' ')
+                && title.len() > " commit  ".len(),
+            "{title:?}"
+        );
     }
 
     #[cfg(feature = "git")]

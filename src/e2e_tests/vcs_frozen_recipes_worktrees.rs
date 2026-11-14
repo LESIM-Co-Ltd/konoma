@@ -118,7 +118,14 @@ fn title_width(c: &mut Ctx, width: u16) -> u16 {
         let crate::app::project_screens::ProjectContent::Diff(diff) = content.as_ref() else {
             panic!("diff required")
         };
-        diff.header[0].to_string()
+        // The plugin's title is padded (" title ") like the old hub's drawn edge; the old string
+        // is the text alone, drawn one cell right of the padding.
+        diff.title
+            .as_ref()
+            .expect("diff title")
+            .to_string()
+            .trim()
+            .to_owned()
     };
     ratatui::text::Line::raw(title)
         .width()
@@ -147,16 +154,16 @@ pub(super) fn diff(c: &mut Ctx) {
                 c.key('d');
                 let label = format!("lang={lang} w={width} worktree={name}");
                 let tw = title_width(c, width);
-                // Old title at (x + 2, 1); new header row inside the frame at (x + 1, 2).
-                c.region(&format!("{label} title"), 0..tw, 0..1, (2, 1), (1, 2));
-                // The old frame has a border and one title row more than the new diff header.
+                // Both frames draw the title on the top edge (row 1), its text from x = 2.
+                c.region(&format!("{label} title"), 0..tw, 0..1, (2, 1), (2, 1));
+                // Both frames have the border and the body from row 2: the title is on the edge.
                 let diff_region = |c: &mut Ctx, what: &str| {
                     c.region(
                         &format!("{label} {what}"),
                         0..width - 2,
                         2..16,
                         (1, 0),
-                        (1, 2),
+                        (1, 0),
                     );
                 };
                 diff_region(c, "diff");
