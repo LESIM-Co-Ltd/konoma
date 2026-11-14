@@ -15,6 +15,51 @@ pub(in crate::app) fn test_frame() -> ratatui::buffer::Buffer {
     LAST_FRAME.with(|frame| frame.borrow().as_ref().expect("a frame was drawn").clone())
 }
 
+/// The project canvas as drawn alone (before the header, footer and overlays), recorded with each
+/// project frame so a test can tell the overlay from the canvas by what differs.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Clone, Debug)]
+pub struct TestCanvas {
+    /// The canvas rectangle of the frame.
+    pub area: ratatui::layout::Rect,
+    /// The content is drawn inside the outer frame (a list or a diff).
+    pub framed: bool,
+    /// The screen right after the canvas was drawn.
+    pub alone: ratatui::buffer::Buffer,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static LAST_CANVAS: std::cell::RefCell<Option<TestCanvas>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub(in crate::app) fn record_test_canvas(
+    area: ratatui::layout::Rect,
+    framed: bool,
+    buffer: &ratatui::buffer::Buffer,
+) {
+    LAST_CANVAS.with(|canvas| {
+        *canvas.borrow_mut() = Some(TestCanvas {
+            area,
+            framed,
+            alone: buffer.clone(),
+        })
+    });
+}
+
+/// The canvas of the last project frame (see [`TestCanvas`]).
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn test_canvas() -> TestCanvas {
+    LAST_CANVAS.with(|canvas| {
+        canvas
+            .borrow()
+            .as_ref()
+            .expect("a project frame was drawn")
+            .clone()
+    })
+}
+
 use ratatui::layout::Rect;
 use ratatui::style::Style as RStyle;
 use ratatui::text::Line as RLine;

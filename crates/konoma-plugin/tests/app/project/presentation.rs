@@ -368,37 +368,10 @@ fn reference() -> serde_json::Value {
 }
 
 fn assert_cells(terminal: &Terminal<TestBackend>, expected: &serde_json::Value) {
-    use serde_json::json;
     let buffer = terminal.backend().buffer();
-    assert_eq!(buffer.area, ratatui::layout::Rect::new(0, 0, 100, 32));
-    assert_eq!(expected["rect"], json!([0, 0, 100, 32]));
-    let cells: Vec<_> = expected["runs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|r| std::iter::repeat_n(&r[1], r[0].as_u64().unwrap() as usize))
-        .collect();
-    assert_eq!(cells.len(), 3200);
-    assert_eq!(expected["count"], cells.len());
-    let mut compared = 0;
-    let mut nonempty = 0;
-    for y in 0..32 {
-        for x in 0..100 {
-            let c = &buffer[(x, y)];
-            assert_eq!(
-                json!([
-                    c.symbol(),
-                    format!("{:?}", c.fg),
-                    format!("{:?}", c.bg),
-                    c.modifier.bits()
-                ]),
-                *cells[compared],
-                "cell ({x}, {y})"
-            );
-            compared += 1;
-            nonempty += usize::from(!c.symbol().trim().is_empty());
-        }
-    }
-    assert_eq!(compared, 3200);
-    assert!(nonempty > 0);
+    let whole = ratatui::layout::Rect::new(0, 0, 100, 32);
+    assert_eq!(buffer.area, whole);
+    assert_eq!(expected["count"], 3200);
+    // The frozen cells are the old hub's drawing; the list is now inside a frame.
+    crate::framed::assert_frozen_stage("project_presentation", buffer, whole, expected);
 }

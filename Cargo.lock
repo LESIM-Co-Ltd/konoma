@@ -2069,6 +2069,7 @@ dependencies = [
  "flate2",
  "image",
  "ratatui",
+ "serde_json",
  "unicode-width",
  "zip",
 ]

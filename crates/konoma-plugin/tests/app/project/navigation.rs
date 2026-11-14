@@ -298,41 +298,14 @@ fn key(name: &str) -> AppEvent {
 }
 
 fn assert_cells(terminal: &Terminal<TestBackend>, expected: &Value) {
-    let rect = Rect::new(0, 1, 54, 12);
-    assert_eq!(
-        expected["rect"],
-        serde_json::json!([rect.x, rect.y, rect.width, rect.height])
+    // The frozen cells are the body of the old hub's drawing; the list is now inside a frame.
+    assert_eq!(expected["count"], 648);
+    crate::framed::assert_frozen_stage(
+        "project_navigation",
+        terminal.backend().buffer(),
+        Rect::new(0, 1, 54, 12),
+        expected,
     );
-    let cells: Vec<_> = expected["runs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|run| std::iter::repeat_n(&run[1], run[0].as_u64().unwrap() as usize))
-        .collect();
-    assert_eq!(cells.len(), 648);
-    assert_eq!(expected["count"], cells.len());
-    let buffer = terminal.backend().buffer();
-    let mut compared = 0;
-    let mut nonempty = 0;
-    for y in rect.y..rect.bottom() {
-        for x in rect.x..rect.right() {
-            let actual = &buffer[(x, y)];
-            assert_eq!(
-                serde_json::json!([
-                    actual.symbol(),
-                    format!("{:?}", actual.fg),
-                    format!("{:?}", actual.bg),
-                    actual.modifier.bits()
-                ]),
-                *cells[compared],
-                "cell ({x}, {y})"
-            );
-            nonempty += usize::from(!actual.symbol().trim().is_empty());
-            compared += 1;
-        }
-    }
-    assert_eq!(compared, 648);
-    assert!(nonempty > 0);
 }
 
 #[test]

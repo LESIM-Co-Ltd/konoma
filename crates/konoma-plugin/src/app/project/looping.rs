@@ -244,6 +244,15 @@ impl ProjectLoopState {
                 query: &frame.query,
             },
         );
+        #[cfg(any(test, feature = "test-hooks"))]
+        crate::app::draw::record_test_canvas(
+            area,
+            matches!(
+                content.as_deref(),
+                Some(ProjectContent::List(_) | ProjectContent::Diff(_))
+            ),
+            buffer,
+        );
         if let Some(frame) = self.screen.as_mut().and_then(|n| n.frame_mut()) {
             if let Some(cursor) = update.cursor {
                 frame.cursor = cursor;
@@ -665,6 +674,10 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                                 prepared.display.bg(),
                                 area,
                             );
+                            // The file diff view has its own frame (the old hub's), not the list
+                            // frame: its cells are not moved.
+                            #[cfg(any(test, feature = "test-hooks"))]
+                            crate::app::draw::record_test_canvas(area, false, frame.buffer_mut());
                             if let Some(p) = pictures.as_mut() {
                                 state.diff.as_ref().unwrap().draw_overlay(
                                     p.doc_pics(),

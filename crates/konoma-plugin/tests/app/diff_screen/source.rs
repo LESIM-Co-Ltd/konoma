@@ -349,37 +349,12 @@ fn reference() -> serde_json::Value {
 }
 
 fn assert_cells(terminal: &Terminal<TestBackend>, expected: &serde_json::Value) {
-    use serde_json::json;
     let rect = ratatui::layout::Rect::new(0, 0, 54, 14);
     let buffer = terminal.backend().buffer();
     assert_eq!(buffer.area, rect);
-    assert_eq!(expected["rect"], json!([0, 0, 54, 14]));
     assert_eq!(expected["count"], 756);
-    let cells: Vec<_> = expected["runs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|r| std::iter::repeat_n(&r[1], r[0].as_u64().unwrap() as usize))
-        .collect();
-    assert_eq!(cells.len(), 756);
-    let mut compared = 0;
-    let mut nonempty = 0;
-    for (c, want) in buffer.content.iter().zip(cells) {
-        assert_eq!(
-            json!([
-                c.symbol(),
-                format!("{:?}", c.fg),
-                format!("{:?}", c.bg),
-                c.modifier.bits()
-            ]),
-            *want,
-            "cell {compared}"
-        );
-        compared += 1;
-        nonempty += usize::from(!c.symbol().trim().is_empty());
-    }
-    assert_eq!(compared, 756);
-    assert!(nonempty > 0);
+    // The frozen cells are the old hub's drawing; the diff is now inside a frame.
+    crate::framed::assert_frozen_stage("diff_source_screen", buffer, rect, expected);
 }
 
 #[test]

@@ -232,32 +232,15 @@ fn idle_fence_waits_for_landing_but_not_for_live_watch() {
                 "the asked context must land after the older reply"
             );
             assert_eq!(frame.area, ratatui::layout::Rect::new(0, 0, 40, 8));
-            let rows: Vec<String> = (0..8)
-                .map(|y| (0..40).map(|x| frame[(x, y)].symbol()).collect())
-                .collect();
-            let mut styles: Vec<(usize, serde_json::Value)> = Vec::new();
-            for c in &frame.content {
-                let style = serde_json::json!([
-                    format!("{:?}", c.fg),
-                    format!("{:?}", c.bg),
-                    c.modifier.bits()
-                ]);
-                if let Some(last) = styles.last_mut().filter(|last| last.1 == style) {
-                    last.0 += 1;
-                } else {
-                    styles.push((1, style));
-                }
-            }
             let stage = [0, 5, 1, 2, 3, 4][frames];
-            assert_eq!(
-                serde_json::json!(rows),
-                expected["frames"][stage]["rows"],
-                "frame {frames}: every row including the last"
-            );
-            assert_eq!(
-                serde_json::json!(styles),
-                expected["frames"][stage]["styles"],
-                "frame {frames}: foreground, background and modifiers"
+            // The frozen frame is the old hub's drawing (text rows and style runs, the whole
+            // screen); a list is now inside a frame, so the cells are compared through the frame
+            // rule: every row including the last, with foreground, background and modifiers.
+            crate::framed::assert_frozen_rows(
+                &format!("vcs_app_idle frame {frames}"),
+                &frame,
+                &expected["frames"][stage]["rows"],
+                &expected["frames"][stage]["styles"],
             );
             frames += 1;
             if frames == 1 {

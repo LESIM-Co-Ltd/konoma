@@ -387,7 +387,7 @@ pub fn run_project_fenced_for_test<B: Backend>(
 }
 
 /// Runtime fixture lookup shared by SDK and root tests. `serde_json` is already an app
-/// dependency here; the test-support crate intentionally has no JSON dependency.
+/// dependency here.
 pub fn read_snapshot_for_test(name: &str) -> serde_json::Value {
     assert!(
         !name.contains(['/', '\\']),

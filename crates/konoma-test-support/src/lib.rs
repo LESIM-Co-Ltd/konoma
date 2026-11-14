@@ -5,6 +5,9 @@
 
 use std::path::PathBuf;
 
+pub mod frozen_frame;
+pub mod top_edge;
+
 /// Owning guard for a path returned by [`unique_tmp`]: removes it (recursively, if it turned out to
 /// be a directory; as a single file otherwise) when dropped, so a fixture can never outlive the test
 /// that created it. Derefs to `Path`, so the overwhelming majority of call sites (`.join(...)`,

@@ -34,6 +34,10 @@ mod prepare;
 pub(in crate::app) mod preview;
 #[cfg(any(test, feature = "test-hooks"))]
 mod representation_test_hooks;
+/// The canvas of the last project frame drawn alone, to tell an overlay from the canvas.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use crate::app::draw::{test_canvas, TestCanvas};
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use idle_test_hooks::{

@@ -290,37 +290,14 @@ fn reference() -> Value {
 }
 
 fn assert_cells(terminal: &Terminal<TestBackend>, expected: &Value) {
-    let rect = Rect::new(0, 1, 54, 12);
-    assert_eq!(expected["rect"], json!([0, 1, 54, 12]));
-    let cells: Vec<_> = expected["runs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|r| std::iter::repeat_n(&r[1], r[0].as_u64().unwrap() as usize))
-        .collect();
-    assert_eq!(cells.len(), 648);
-    assert_eq!(expected["count"], cells.len());
-    let mut compared = 0;
-    let mut nonempty = 0;
-    for y in rect.y..rect.bottom() {
-        for x in rect.x..rect.right() {
-            let c = &terminal.backend().buffer()[(x, y)];
-            assert_eq!(
-                json!([
-                    c.symbol(),
-                    format!("{:?}", c.fg),
-                    format!("{:?}", c.bg),
-                    c.modifier.bits()
-                ]),
-                *cells[compared],
-                "cell ({x}, {y})"
-            );
-            compared += 1;
-            nonempty += usize::from(!c.symbol().trim().is_empty());
-        }
-    }
-    assert_eq!(compared, 648);
-    assert!(nonempty > 0);
+    // The frozen cells are the body of the old hub's drawing; the list is now inside a frame.
+    assert_eq!(expected["count"], 648);
+    crate::framed::assert_frozen_stage(
+        "project_actions",
+        terminal.backend().buffer(),
+        Rect::new(0, 1, 54, 12),
+        expected,
+    );
 }
 
 #[test]

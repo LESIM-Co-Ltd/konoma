@@ -2,6 +2,7 @@
 
 mod config;
 mod diff_screen;
+mod framed;
 mod help;
 mod keys;
 mod launch;

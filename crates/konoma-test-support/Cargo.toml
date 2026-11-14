@@ -13,6 +13,8 @@ description = "Test-only helpers shared by konoma and its crates (temp-dir guard
 [dependencies]
 ratatui.workspace = true
 unicode-width.workspace = true
+# `frozen_frame`: the cells of a frozen fixture.
+serde_json.workspace = true
 zip.workspace = true
 # `build_animated_gif`.
 image.workspace = true
