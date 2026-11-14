@@ -144,6 +144,7 @@ impl Session for ProjectFixtureSession {
             Ok(View::List(konoma_plugin::view::ListView {
                 title: None,
                 bottom: None,
+                heading: None,
                 rows: vec![konoma_plugin::view::ListRow::new(
                     "item",
                     vec![konoma_plugin::style::Line::raw("project item")],

@@ -147,8 +147,8 @@ pub(super) fn diff(c: &mut Ctx) {
                 c.key('d');
                 let label = format!("lang={lang} w={width} worktree={name}");
                 let tw = title_width(c, width);
-                // Old title at (x + 2, 1); new title at (x, 2).
-                c.region(&format!("{label} title"), 0..tw, 0..1, (2, 1), (0, 2));
+                // Old title at (x + 2, 1); new header row inside the frame at (x + 1, 2).
+                c.region(&format!("{label} title"), 0..tw, 0..1, (2, 1), (1, 2));
                 // The old frame has a border and one title row more than the new diff header.
                 let diff_region = |c: &mut Ctx, what: &str| {
                     c.region(
@@ -156,7 +156,7 @@ pub(super) fn diff(c: &mut Ctx) {
                         0..width - 2,
                         2..16,
                         (1, 0),
-                        (0, 2),
+                        (1, 2),
                     );
                 };
                 diff_region(c, "diff");

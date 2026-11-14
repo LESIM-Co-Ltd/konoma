@@ -224,7 +224,9 @@ fn cells(sim: &mut Sim, names: &[&str]) -> Value {
     } else {
         Paragraph::new(Line::from(spans)).render(footer, &mut buffer);
     }
-    encode(&buffer)
+    let mut stage = encode(&buffer);
+    stage["frame"] = super::frozen_frame::frame_info(sim, Rect::new(0, 1, 100, 30), &buffer);
+    stage
 }
 
 fn encode(buffer: &Buffer) -> Value {
@@ -327,7 +329,7 @@ fn project_presentation_matches_frozen_host_cells_with_standalone_capabilities()
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("snapshots/project_presentation.json");
     let expected: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(actual, expected);
+    super::frozen_frame::frozen_eq(&actual, &expected, "project_presentation");
 }
 
 /// The presentation tests of konoma-plugin start from `default_keymap_motions()`, a hand copy of

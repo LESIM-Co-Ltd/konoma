@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 #[path = "../../crates/konoma-plugin/tests/app/diff_screen/source_fixture.rs"]
 mod fixture;
 
-fn cells(sim: &Sim) -> Value {
+fn cells(sim: &mut Sim) -> Value {
     let rect = ratatui::layout::Rect::new(0, 0, 54, 14);
     let buffer = sim.term.backend().buffer();
     assert_eq!(buffer.area, rect);
@@ -56,7 +56,9 @@ fn cells(sim: &Sim) -> Value {
     }
     assert_eq!(count, 756);
     assert!(nonempty > 0);
-    json!({"rect":[0,0,54,14], "count":count, "runs":runs})
+    let frame =
+        super::frozen_frame::frame_info(sim, ratatui::layout::Rect::new(0, 1, 54, 12), &normalized);
+    json!({"rect":[0,0,54,14], "count":count, "runs":runs, "frame":frame})
 }
 
 #[test]
@@ -129,7 +131,7 @@ fn source_diff_keys_match_frozen_host_output() {
         for _ in 0..12 {
             sim.key('j');
         }
-        let mut stages = vec![cells(&sim)];
+        let mut stages = vec![cells(&mut sim)];
         for key in keys {
             let (name, mods) = key
                 .strip_prefix("ctrl-")
@@ -153,7 +155,7 @@ fn source_diff_keys_match_frozen_host_output() {
                 sim.app.seed_source_diff_for_test(fixture::raw_diff());
                 sim.draw();
             }
-            stages.push(cells(&sim));
+            stages.push(cells(&mut sim));
         }
         if keys == fixture::REFRESH_KEYS {
             assert!(sim.app.is_git_diff_preview());
@@ -176,5 +178,5 @@ fn source_diff_keys_match_frozen_host_output() {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("snapshots/diff_source_screen.json");
     let expected: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(actual, expected);
+    super::frozen_frame::frozen_eq(&actual, &expected, "diff_source_screen");
 }

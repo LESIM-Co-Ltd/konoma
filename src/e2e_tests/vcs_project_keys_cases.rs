@@ -4,14 +4,31 @@ fn frame_screen(sim: &Sim) -> String {
     sim.app.project_frame().unwrap().key.screen.clone()
 }
 
-/// The title is on screen. Whitespace is ignored because wide glyphs are padded in the dump.
+/// The title is on screen. Whitespace is ignored. The cell after a wide glyph is its continuation:
+/// a terminal never shows it, but the test backend keeps whatever an earlier frame left there, so
+/// those cells are skipped (reading them mixes the previous screen's text into the title).
 #[track_caller]
 fn see_title(sim: &Sim, lang: &str) {
+    use unicode_width::UnicodeWidthStr;
     let squash = |s: &str| s.split_whitespace().collect::<String>();
     let want = if lang == "en" { "Uncommittedchanges" } else { "未コミットの変更" };
     let screen = sim.screen();
-    // The title sits on the tab row, so look at the first two rows only.
-    let top: String = screen.lines().take(2).collect::<Vec<_>>().join("\n");
+    // The title sits on the outer frame's top edge, so look at the first two rows only.
+    let buf = sim.term.backend().buffer();
+    let width = usize::from(buf.area.width);
+    let mut top = String::new();
+    for row in buf.content().chunks(width).take(2) {
+        let mut skip = 0;
+        for cell in row {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            top.push_str(cell.symbol());
+            skip = cell.symbol().width().saturating_sub(1);
+        }
+        top.push('\n');
+    }
     assert!(squash(&top).contains(want), "{lang}: title missing:\n{screen}");
 }
 

@@ -30,6 +30,8 @@ pub struct ProjectDrawValues<'a> {
     pub jumps: &'a [JumpBinding],
     /// Already localized loading or failure message.
     pub unavailable: &'a str,
+    /// The active screen's filter query (empty when none): a list's heading shows it.
+    pub query: &'a str,
 }
 
 /// Only corrected fields are returned. Lists retain their stored scroll and hscroll.
@@ -40,8 +42,15 @@ pub struct ProjectDrawUpdate {
     pub hscroll: Option<u16>,
 }
 
-/// Legacy body geometry, also the worker viewport before reserving chip rows.
+/// The inside of the outer frame, the old hub's body geometry; also the worker viewport before
+/// reserving chip rows. A list and a diff are drawn here.
 pub fn project_body_area(area: Rect) -> Rect {
+    Block::bordered().inner(area)
+}
+
+/// The body of content that has no frame (a text screen, the loading or failure message): one row
+/// of tabs above it and no border. The old hub had no such screen, so this keeps its own look.
+pub fn unframed_body_area(area: Rect) -> Rect {
     Rect {
         y: area.y.saturating_add(1),
         height: area.height.saturating_sub(2),
@@ -50,13 +59,57 @@ pub fn project_body_area(area: Rect) -> Rect {
     }
 }
 
+/// A heading's line: the plugin's `before`, ` /query` while a query is set, `  (n)`, the plugin's
+/// `after`. `n` counts the shown rows that count toward the heading.
+fn heading_line(
+    list: &crate::view::ListView,
+    heading: &crate::view::ListHeading,
+    query: &str,
+    visible: &[usize],
+) -> Line<'static> {
+    let count = visible
+        .iter()
+        .filter(|index| {
+            list.rows
+                .get(**index)
+                .is_some_and(|row| row.counts_toward_heading())
+        })
+        .count();
+    fn push(spans: &mut Vec<Span<'static>>, line: crate::style::Line) {
+        let line = crate::ratatui_draw::into_line(line);
+        spans.extend(line.spans.into_iter().map(|mut span| {
+            span.style = line.style.patch(span.style);
+            span
+        }));
+    }
+    let mut spans = Vec::new();
+    push(&mut spans, heading.before.clone());
+    let mut middle = String::new();
+    if !query.is_empty() {
+        middle.push_str(&" ".repeat(usize::from(heading.query_gap)));
+        middle.push('/');
+        middle.push_str(query);
+    }
+    middle.push_str(&format!("  ({count})"));
+    spans.push(Span::raw(middle));
+    push(&mut spans, heading.after.clone());
+    Line::from(spans)
+}
+
 pub fn draw_project(
     buf: &mut Buffer,
     area: Rect,
     values: ProjectDrawValues<'_>,
 ) -> ProjectDrawUpdate {
-    let mut body = project_body_area(area);
-    let mut draw = |widget: Paragraph<'_>, area| widget.render(area, buf);
+    let framed = matches!(
+        values.content,
+        Some(ProjectContent::List(_) | ProjectContent::Diff(_))
+    );
+    let mut body = if framed {
+        project_body_area(area)
+    } else {
+        unframed_body_area(area)
+    };
     let screen = values
         .declaration
         .screens
@@ -85,37 +138,66 @@ pub fn draw_project(
         .map(Span::width)
         .sum::<usize>()
         .min(area.width as usize) as u16;
-    draw(
-        Paragraph::new(Line::from(tabs)),
-        Rect {
-            height: area.height.min(1),
-            ..area
-        },
-    );
+    let tabs = Line::from(tabs);
     let Some(content) = values.content else {
-        draw(Paragraph::new(values.unavailable), body);
-        return ProjectDrawUpdate::default();
-    };
-    // A list's or a diff's title sits beside the tabs.
-    let beside_tabs = match content {
-        ProjectContent::List(list) => list
-            .title
-            .as_ref()
-            .map(|title| crate::ratatui_draw::into_line(title.clone())),
-        ProjectContent::Diff(diff) => diff.title.clone(),
-        ProjectContent::Lines(_) => None,
-    };
-    if let Some(title) = beside_tabs {
+        let mut draw = |widget: Paragraph<'_>, area| widget.render(area, buf);
         draw(
-            Paragraph::new(title),
+            Paragraph::new(tabs),
             Rect {
-                x: area.x + tab_width,
-                width: area.width.saturating_sub(tab_width),
                 height: area.height.min(1),
                 ..area
             },
         );
+        draw(Paragraph::new(values.unavailable), body);
+        return ProjectDrawUpdate::default();
+    };
+    if framed {
+        // The outer frame carries the title at the left of its top edge and the screen tabs at the
+        // right end. When both do not fit between the corners the tabs are dropped, never the title.
+        let title = match content {
+            ProjectContent::List(list) => match &list.heading {
+                Some(heading) => Some(heading_line(
+                    list,
+                    heading,
+                    values.query,
+                    values.visible_rows,
+                )),
+                None => list
+                    .title
+                    .as_ref()
+                    .map(|title| crate::ratatui_draw::into_line(title.clone())),
+            },
+            ProjectContent::Diff(diff) => diff.title.clone(),
+            ProjectContent::Lines(_) => None,
+        };
+        let title_width = title.as_ref().map_or(0, Line::width);
+        let mut block = Block::bordered();
+        if let Some(title) = title {
+            block = block.title(title);
+        }
+        block.render(area, buf);
+        let room = usize::from(area.width.saturating_sub(2));
+        if tab_width > 0 && title_width + usize::from(tab_width) <= room {
+            Paragraph::new(tabs).render(
+                Rect {
+                    x: area.right().saturating_sub(1 + tab_width),
+                    y: area.y,
+                    width: tab_width,
+                    height: area.height.min(1),
+                },
+                buf,
+            );
+        }
+    } else {
+        Paragraph::new(tabs).render(
+            Rect {
+                height: area.height.min(1),
+                ..area
+            },
+            buf,
+        );
     }
+    let mut draw = |widget: Paragraph<'_>, area| widget.render(area, buf);
     if let ProjectContent::List(list) = content {
         if let Some(strip) = &list.bottom {
             let chip_lines = if strip.estimated_width <= usize::from(body.width.max(1)) {

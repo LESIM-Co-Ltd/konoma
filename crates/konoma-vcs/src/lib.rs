@@ -321,6 +321,7 @@ impl Session for Changes {
         }
         Ok(View::List(ListView {
             title: None,
+            heading: None,
             bottom: None,
             rows: vec![ListRow::new(
                 "empty",

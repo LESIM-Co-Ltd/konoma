@@ -240,6 +240,7 @@ fn every_other_path_a_child_sends_must_be_absolute_too() {
     let mut list = View::List(ListView {
         title: None,
         bottom: None,
+        heading: None,
         rows: vec![ListRow::new("", vec![]).target("rel/t")],
     });
     let r = view_to_wire(&mut list, &mut Enc::new(&side));
@@ -684,6 +685,7 @@ fn list_diff_message_reopen_round_trip() {
     let list = View::List(ListView {
         title: None,
         bottom: None,
+        heading: None,
         rows: vec![
             ListRow::new("file", lines()).target("/a/b").checked(true),
             ListRow::new("", vec![]),

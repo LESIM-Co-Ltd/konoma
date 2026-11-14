@@ -309,6 +309,7 @@ impl Graph {
                 t!(en: "Graph branches", ja: "グラフのブランチ").get(lang),
                 self.order.len()
             ))),
+            heading: None,
             bottom: None,
         })
     }
@@ -463,6 +464,7 @@ impl Graph {
         View::List(ListView {
             rows,
             title: Some(Line::raw(title)),
+            heading: None,
             bottom: (!legend.is_empty()).then(|| legend_strip(&legend, hidden, icons, cx.lang)),
         })
     }

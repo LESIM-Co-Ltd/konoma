@@ -190,6 +190,7 @@ fn list(chips: bool) -> ProjectContent {
             " title",
             Style::new().fg(C::Yellow),
         )])),
+        heading: None,
         rows: vec![
             ListRow::new(
                 "item",
@@ -258,7 +259,23 @@ fn body_output(
     cursor: usize,
     scroll: u16,
     hscroll: u16,
-) -> (Buffer, Value) {
+) -> (Buffer, Value, Option<Frame>) {
+    // A list and a diff are drawn inside the outer frame; the other contents are not.
+    let frame = match &content {
+        Some(ProjectContent::List(list)) => Some(Frame {
+            area,
+            title: list
+                .title
+                .as_ref()
+                .map(|t| t.spans.iter().map(|s| s.text.as_str()).collect())
+                .unwrap_or_default(),
+        }),
+        Some(ProjectContent::Diff(_)) => Some(Frame {
+            area,
+            title: String::new(),
+        }),
+        _ => None,
+    };
     let nav = app.tab.project_navigation.as_ref().unwrap();
     let key = nav.project.clone();
     let screen = nav.stack.last().unwrap().key.clone();
@@ -309,6 +326,7 @@ fn body_output(
             layout: app.diff_layout,
             lang: app.plugin_lang(),
             unavailable: tr(app.lang, Msg::Loading),
+            query: &nav.stack.last().unwrap().query,
         },
     );
     same_cells(&buffer, &small);
@@ -330,8 +348,18 @@ fn body_output(
             app.tab.preview_cols,
             app.tab.preview_viewport
         ]),
+        frame,
     )
 }
+
+/// The draw area and title of a framed content (a list or a diff).
+struct Frame {
+    area: Rect,
+    title: String,
+}
+
+/// The screen tabs of the fixture plugin's declaration, as `draw_project` words them.
+const TABS: &str = " 1:List  Other ";
 
 fn dialog(app: &App, prompt: ProjectPrompt, selected: usize, cursor: usize) -> ProjectDialog {
     let origin = ProjectOrigin {
@@ -401,6 +429,39 @@ fn color(c: Color) -> u32 {
 }
 
 fn cells(name: &str, outputs: Vec<(Buffer, Value)>) {
+    cells_framed(
+        name,
+        outputs.into_iter().map(|(b, s)| (b, s, None)).collect(),
+    );
+}
+
+/// The frozen cell at (x, y) of record `expected`, as `[symbol, fg, bg, modifier]`.
+fn frozen_cell(reference: &Value, expected: &Value, width: u16, x: u16, y: u16) -> Value {
+    let mut count = 0usize;
+    let rows = expected["rows"].as_array().unwrap();
+    let row = rows[usize::from(y)].as_u64().unwrap() as usize;
+    for run in reference["rows"][row].as_array().unwrap() {
+        let n = run[0].as_u64().unwrap() as usize;
+        if usize::from(x) < count + n {
+            return reference["cells"][run[1].as_u64().unwrap() as usize].clone();
+        }
+        count += n;
+    }
+    panic!("no frozen cell at {x},{y} (width {width})");
+}
+
+fn cell_json(c: &ratatui::buffer::Cell) -> Value {
+    json!([c.symbol(), color(c.fg), color(c.bg), c.modifier.bits()])
+}
+
+/// Compares a framed output with the pre-extraction fixture, which has no frame. The frame moved
+/// the body one column right (derived from the old and new body geometry): every frozen body cell
+/// is compared with the new cell at the body's new place. The cells of the draw area outside the
+/// old body (the frozen tab/title row, the last row, the two right columns) are checked against
+/// the rule instead: frame glyphs on the left, right and bottom edges; the top edge `┌`, the
+/// title at the left, the tabs right-aligned (dropped when title and tabs do not both fit), `┐`.
+/// Cells outside the draw area stay one-to-one.
+fn cells_framed(name: &str, outputs: Vec<(Buffer, Value, Option<Frame>)>) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("snapshots")
         .join(format!("{name}.json"));
@@ -409,10 +470,14 @@ fn cells(name: &str, outputs: Vec<(Buffer, Value)>) {
             .unwrap();
     let records = reference["outputs"].as_array().unwrap();
     assert_eq!(records.len(), outputs.len());
-    for ((buffer, state), expected) in outputs.iter().zip(records) {
+    for ((buffer, state, frame), expected) in outputs.iter().zip(records) {
         let a = buffer.area;
         assert_eq!(json!([a.x, a.y, a.width, a.height]), expected["rect"]);
         assert_eq!(*state, expected["state"]);
+        if let Some(frame) = frame {
+            framed_record(name, &reference, expected, buffer, frame);
+            continue;
+        }
         let mut count = 0;
         let row_ids = expected["rows"].as_array().unwrap();
         assert_eq!(row_ids.len(), usize::from(a.height));
@@ -436,6 +501,131 @@ fn cells(name: &str, outputs: Vec<(Buffer, Value)>) {
         }
         assert_eq!(count, usize::from(a.width) * usize::from(a.height));
         assert!(buffer.content.iter().any(|c| c.symbol() != " "));
+    }
+}
+
+fn within(r: Rect, x: u16, y: u16) -> bool {
+    x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+fn framed_record(name: &str, reference: &Value, expected: &Value, buffer: &Buffer, frame: &Frame) {
+    let area = frame.area;
+    let old = draw::unframed_body_area(area);
+    let new = draw::project_body_area(area);
+    assert_eq!((new.width, new.height), (old.width, old.height));
+    let (dx, dy) = (new.x - old.x, new.y - old.y);
+    assert_eq!(
+        (dx, dy),
+        (1, 0),
+        "the frame moves the body one column right"
+    );
+    let a = buffer.area;
+    let (mut compared, mut outside) = (0usize, 0usize);
+    for y in 0..a.height {
+        for x in 0..a.width {
+            let frozen = frozen_cell(reference, expected, a.width, x, y);
+            if within(old, x, y) {
+                assert_eq!(
+                    cell_json(&buffer[(x + dx, y + dy)]),
+                    frozen,
+                    "{name}, body cell {x},{y}"
+                );
+                compared += 1;
+            } else if !within(area, x, y) {
+                assert_eq!(cell_json(&buffer[(x, y)]), frozen, "{name}, cell {x},{y}");
+                outside += 1;
+            }
+        }
+    }
+    assert_eq!(compared, usize::from(old.width) * usize::from(old.height));
+    assert_eq!(
+        outside,
+        usize::from(a.width) * usize::from(a.height)
+            - usize::from(area.width) * usize::from(area.height)
+    );
+    // The cells of the area outside the body follow the rule.
+    let room = usize::from(area.width.saturating_sub(2));
+    let title: Vec<char> = frame.title.chars().collect();
+    let tab_chars: Vec<char> = TABS.chars().collect();
+    let tabs_shown = title.len() + tab_chars.len() <= room;
+    let default_cell = |x: u16, y: u16| {
+        let c = &buffer[(x, y)];
+        (c.fg, c.bg, c.modifier)
+            == (
+                Color::Reset,
+                Color::Reset,
+                ratatui::style::Modifier::empty(),
+            )
+    };
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if within(new, x, y) {
+                continue;
+            }
+            let c = &buffer[(x, y)];
+            let (left, right) = (x == area.x, x == area.right() - 1);
+            let want = if y == area.y {
+                let i = usize::from(x - area.x);
+                if left {
+                    "┌".to_string()
+                } else if right {
+                    "┐".to_string()
+                } else if i - 1 < title.len() {
+                    title[i - 1].to_string()
+                } else if tabs_shown && i > room - tab_chars.len() {
+                    tab_chars[i - 1 - (room - tab_chars.len())].to_string()
+                } else {
+                    "─".to_string()
+                }
+            } else if y == area.bottom() - 1 {
+                (if left {
+                    "└"
+                } else if right {
+                    "┘"
+                } else {
+                    "─"
+                })
+                .to_string()
+            } else {
+                "│".to_string()
+            };
+            assert_eq!(c.symbol(), want, "{name}, frame cell {x},{y}");
+            let plain = y != area.y || left || right || {
+                let i = usize::from(x - area.x) - 1;
+                i >= title.len() && !(tabs_shown && i >= room - tab_chars.len())
+            };
+            if plain {
+                assert!(default_cell(x, y), "{name}, frame glyph style {x},{y}");
+            }
+        }
+    }
+    // The frozen tab row: the tabs now sit at the right of the top edge. Their text, order and
+    // style are compared with the frozen tab cells; the frozen title (beside the tabs) with the
+    // title at the left, where the old row showed it at all.
+    let frozen_row = |i: u16| frozen_cell(reference, expected, a.width, area.x + i, area.y);
+    if tabs_shown {
+        let start = area.x + 1 + (room - tab_chars.len()) as u16;
+        for (i, ch) in tab_chars.iter().enumerate() {
+            let f = frozen_row(i as u16);
+            assert_eq!(f[0], json!(ch.to_string()), "{name}, frozen tab text");
+            assert_eq!(
+                cell_json(&buffer[(start + i as u16, area.y)]),
+                f,
+                "{name}, tab {i}"
+            );
+        }
+    }
+    let old_tab_width = tab_chars.len().min(usize::from(area.width));
+    for (j, ch) in title.iter().enumerate() {
+        if old_tab_width + j < usize::from(area.width) && j < room {
+            let f = frozen_row((old_tab_width + j) as u16);
+            assert_eq!(f[0], json!(ch.to_string()), "{name}, frozen title text");
+            assert_eq!(
+                cell_json(&buffer[(area.x + 1 + j as u16, area.y)]),
+                f,
+                "{name}, title {j}"
+            );
+        }
     }
 }
 
@@ -471,7 +661,7 @@ fn project_body_cells_match_each_content_and_small_viewport() {
             }
         }
     }
-    cells("project_body", outputs);
+    cells_framed("project_body", outputs);
 }
 
 #[test]
@@ -492,7 +682,7 @@ fn project_list_cells_preserve_columns_right_meta_and_chips() {
             }
         }
     }
-    cells("project_list", outputs);
+    cells_framed("project_list", outputs);
 }
 
 #[test]

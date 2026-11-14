@@ -41,7 +41,7 @@ pub fn outcome_protocol(o: &WOutcome) -> u32 {
 }
 pub fn view_protocol(v: &WView) -> u32 {
     if matches!(v, WView::ListDecorated { .. })
-        || matches!(v, WView::List(rows) if rows.iter().any(|r| !r.selectable || r.marked || r.initial_selection || r.filter_fallback || !r.value.is_empty()))
+        || matches!(v, WView::List(rows) if rows.iter().any(|r| !r.selectable || r.marked || r.initial_selection || r.filter_fallback || r.counted.is_some() || !r.value.is_empty()))
     {
         2
     } else {

@@ -241,6 +241,7 @@ impl ProjectLoopState {
                 layout: prepared.settings.diff_layout,
                 lang: prepared.lang,
                 unavailable,
+                query: &frame.query,
             },
         );
         if let Some(frame) = self.screen.as_mut().and_then(|n| n.frame_mut()) {

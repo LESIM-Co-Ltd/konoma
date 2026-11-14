@@ -506,6 +506,7 @@ impl Session for ScreenSession {
                 View::List(ListView {
                     title: None,
                     bottom: None,
+                    heading: None,
                     rows: vec![
                         ListRow::new(
                             "item",

@@ -9,6 +9,9 @@ mod confirmations;
 #[path = "project_left.rs"]
 mod left;
 
+#[path = "project_frozen_frame.rs"]
+mod frozen_frame;
+
 #[path = "project_navigation_bridge.rs"]
 mod navigation_bridge;
 

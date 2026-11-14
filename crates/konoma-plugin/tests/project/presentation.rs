@@ -31,6 +31,7 @@ impl Session for Project {
         Ok(View::List(ListView {
             title: None,
             bottom: None,
+            heading: None,
             rows: vec![
                 ListRow::new("empty", vec![Line::raw("empty")]).selectable(false),
                 ListRow::new("commit", vec![Line::raw("subject")])
@@ -205,6 +206,7 @@ mod transport {
             let mut view = View::List(ListView {
                 title: None,
                 bottom: None,
+                heading: None,
                 rows: vec![row.clone()],
             });
             let wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();

@@ -16,6 +16,16 @@ include!("vcs_project_help_cases.rs");
 include!("vcs_project_old_screens_cases.rs");
 include!("vcs_project_space_cases.rs");
 
+/// The column and row where a list's first body cell sits in a drawn project frame whose canvas
+/// starts at row 1 (below the app's header row), derived from the frame the host draws: the inside
+/// of the outer frame, so every hand-written body expectation moves with the frame in one place.
+fn body_origin() -> (u16, u16) {
+    let inner = konoma_plugin::host::project::draw::project_body_area(ratatui::layout::Rect::new(
+        0, 1, 40, 20,
+    ));
+    (inner.x, inner.y)
+}
+
 fn isolated(name: &str) -> bool {
     super::vcs_host_only::isolate_test("vcs_project_port", name)
 }
@@ -391,7 +401,8 @@ fn vcs_port_nested_changes_paths_compare_every_body_cell() {
                     }
                 })
                 .collect();
-            let area = Rect::new(0, 2, 198, 16);
+            let (bx, by) = body_origin();
+            let area = Rect::new(bx, by, 198, 16);
             let mut expected = Buffer::empty(area);
             Paragraph::new(lines).render(area, &mut expected);
             let frame = sim.project_frame();

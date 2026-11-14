@@ -53,6 +53,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             },
             lang: app.plugin_lang(),
             unavailable,
+            query: &active.query,
         },
     );
     if let Some(active) = app

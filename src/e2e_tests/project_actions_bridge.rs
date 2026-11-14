@@ -26,9 +26,10 @@ fn raw_key(f: &mut Fixture, name: &str) {
     f.sim.press(code, mods);
 }
 
-fn cells(f: &Fixture) -> Value {
+fn cells(f: &mut Fixture) -> Value {
     let area = Rect::new(0, 1, 54, 12);
-    let buffer = f.sim.term.backend().buffer();
+    let finished = f.sim.term.backend().buffer().clone();
+    let buffer = &finished;
     let mut runs: Vec<Value> = Vec::new();
     let mut compared = 0;
     let mut nonempty = 0;
@@ -52,7 +53,8 @@ fn cells(f: &Fixture) -> Value {
     }
     assert_eq!(compared, 648);
     assert!(nonempty > 0);
-    json!({"rect":[0,1,54,12], "count":compared, "runs":runs})
+    let frame = super::frozen_frame::frame_info(&mut f.sim, area, &finished);
+    json!({"rect":[0,1,54,12], "count":compared, "runs":runs, "frame":frame})
 }
 
 #[test]
@@ -71,7 +73,7 @@ fn project_prompt_sequence_matches_frozen_host_output() {
     for key in key_names(&expected["keys"]) {
         raw_key(&mut f, key);
         drain(&mut f.sim);
-        stages.push(cells(&f));
+        stages.push(cells(&mut f));
     }
     let (action, context) = last_act(&f);
     assert_eq!(action, "answers");
@@ -83,7 +85,7 @@ fn project_prompt_sequence_matches_frozen_host_output() {
         Some(ProjectRow::new("item", "opaque-alpha"))
     );
     let actual = json!({"keys":expected["keys"], "stages":stages});
-    assert_eq!(actual, expected);
+    super::frozen_frame::frozen_eq(&actual, &expected, "project_actions");
 }
 
 fn extra_reference() -> Value {
@@ -169,12 +171,12 @@ fn project_held_view_and_retry_match_frozen_host_output() {
         );
         if change == 3 {
             assert_eq!(
-                cells(&f),
+                cells(&mut f),
                 held_cells[0],
                 "a replay longer than one slice preserves the same final frame"
             );
         } else {
-            held_cells.push(cells(&f));
+            held_cells.push(cells(&mut f));
         }
     }
     let mut retry_cells = Vec::new();
@@ -213,10 +215,10 @@ fn project_held_view_and_retry_match_frozen_host_output() {
         drain(&mut f.sim);
         assert_eq!(f.log.lock().unwrap().acts.len(), 1);
         assert_eq!(f.sim.app.project_dialog.is_some(), mode == 0);
-        retry_cells.push(cells(&f));
+        retry_cells.push(cells(&mut f));
     }
     let actual = json!({"keys":expected["keys"], "held":held_cells, "retry":retry_cells});
-    assert_eq!(actual, expected);
+    super::frozen_frame::frozen_eq(&actual, &expected, "project_actions_extra");
 }
 
 #[test]
@@ -268,8 +270,8 @@ fn project_outcome_refresh_matches_frozen_host_output() {
     }
     drain(&mut f.sim);
     assert_eq!(last_act(&f).0, "retry-refresh");
-    let mut actual = cells(&f);
+    let mut actual = cells(&mut f);
     actual["keys"] = expected["keys"].clone();
     actual["host_only"] = expected["host_only"].clone();
-    assert_eq!(actual, expected);
+    super::frozen_frame::frozen_eq(&actual, &expected, "project_outcome_refresh");
 }

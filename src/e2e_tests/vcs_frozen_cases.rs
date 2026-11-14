@@ -178,7 +178,7 @@ impl Ctx {
 
     /// The body region of `compare_body`: below the two header rows, inside the old hub's border.
     pub(super) fn body(&mut self, label: &str, width: u16, height: u16) {
-        self.region(label, 0..width - 2, 2..height - 2, (1, 0), (0, 0));
+        self.region(label, 0..width - 2, 2..height - 2, (1, 0), (1, 0));
     }
 }
 

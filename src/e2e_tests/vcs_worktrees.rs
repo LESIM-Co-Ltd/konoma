@@ -295,7 +295,7 @@ fn same_diff(old: &mut Sim, new: &mut Sim, width: u16) {
     for y in 2..16 {
         for x in 0..width - 2 {
             let a = &before[(x + 1, y)];
-            let b = &after[(x, y + 2)];
+            let b = &after[(x + 1, y + 2)];
             assert_eq!(
                 (a.symbol(), a.fg, a.bg, a.modifier),
                 (b.symbol(), b.fg, b.bg, b.modifier),
@@ -841,7 +841,8 @@ fn e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy(
                     .min(usize::from(width - 4)) as u16;
                 for x in 0..title_width {
                     let a = &before[(x + 2, 1)];
-                    let b = &after[(x, 2)];
+                    // The diff header is still the first body row, inside the frame.
+                    let b = &after[(x + 1, 2)];
                     assert_eq!(
                         (a.symbol(), a.fg, a.bg, a.modifier),
                         (b.symbol(), b.fg, b.bg, b.modifier)

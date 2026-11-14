@@ -3,9 +3,10 @@ use super::*;
 use ratatui::layout::Rect;
 use serde_json::{json, Value};
 
-fn stage(f: &Fixture) -> Value {
+fn stage(f: &mut Fixture) -> Value {
     let area = Rect::new(0, 1, 54, 12);
-    let buffer = f.sim.term.backend().buffer();
+    let finished = f.sim.term.backend().buffer().clone();
+    let buffer = &finished;
     let mut runs: Vec<Value> = Vec::new();
     let mut nonempty = 0;
     for y in area.y..area.bottom() {
@@ -26,11 +27,12 @@ fn stage(f: &Fixture) -> Value {
         }
     }
     assert!(nonempty > 0);
+    let info = super::frozen_frame::frame_info(&mut f.sim, area, &finished);
     let nav = f.sim.app.tab.project_navigation.as_ref().unwrap();
     let frame = nav.frame().unwrap();
     json!({"rect":[0,1,54,12], "count":648, "screen":frame.key.screen,
         "selection":frame.key.selection, "cursor":frame.cursor, "query":frame.query,
-        "marked":frame.marked, "runs":runs})
+        "marked":frame.marked, "runs":runs, "frame":info})
 }
 
 #[test]
@@ -43,7 +45,7 @@ fn project_navigation_body_matches_frozen_host_output() {
     let mut f = fixture("project_navigation_bridge", false, 1, None, None, None);
     f.sim.resize(54, 14);
     open(&mut f);
-    let mut stages = vec![stage(&f)];
+    let mut stages = vec![stage(&mut f)];
     for key in keys {
         let key = key.as_str().unwrap();
         let code = match key {
@@ -53,10 +55,10 @@ fn project_navigation_body_matches_frozen_host_output() {
             _ => KeyCode::Char(key.chars().next().unwrap()),
         };
         press(&mut f, code);
-        stages.push(stage(&f));
+        stages.push(stage(&mut f));
     }
     press(&mut f, KeyCode::Char('d'));
-    let diff = stage(&f);
+    let diff = stage(&mut f);
     press(&mut f, KeyCode::Char('i'));
     let nav = f.sim.app.tab.project_navigation.as_ref().unwrap();
     let project = nav.project.clone();
@@ -76,7 +78,7 @@ fn project_navigation_body_matches_frozen_host_output() {
         Arc::new(konoma_plugin::host::project::ProjectContent::List(list)),
     );
     f.sim.draw();
-    let chips = stage(&f);
+    let chips = stage(&mut f);
     let actual = json!({"keys":keys,"stages":stages,"diff":diff,"chips":chips});
-    assert_eq!(actual, expected);
+    super::frozen_frame::frozen_eq(&actual, &expected, "project_navigation");
 }

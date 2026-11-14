@@ -101,6 +101,7 @@ impl Session for ApiPlugin {
             Ok(View::List(ListView {
                 title: None,
                 bottom: None,
+                heading: None,
                 rows: vec![ListRow::new("branch", vec![]).value("branch-2")],
             }))
         } else {

@@ -230,12 +230,12 @@ pub(super) fn compare_body(old: &mut Sim, new: &mut Sim, width: u16, height: u16
         .buffer
         .clone();
     // Split header: y=0. Hub title/project tabs: y=1. Both bodies start at y=2.
-    // The old hub's two border columns and last border row belong to its chrome.
+    // Both sides draw the same border, so the bodies sit at the same cells (x + 1, y).
     let mut differences = Vec::new();
     for y in 2..height - 2 {
         for x in 0..width - 2 {
             let before = &old[(x + 1, y)];
-            let after = &new[(x, y)];
+            let after = &new[(x + 1, y)];
             let before = (before.symbol(), before.fg, before.bg, before.modifier);
             let after = (after.symbol(), after.fg, after.bg, after.modifier);
             if before != after {

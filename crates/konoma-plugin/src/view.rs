@@ -523,10 +523,49 @@ pub enum ImageData {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListView {
     pub rows: Vec<ListRow>,
-    /// Optional styled title beside the host's project tabs.
+    /// Optional styled title at the left of the frame's top edge, drawn exactly as given
+    /// (the plugin writes its own padding and count). Ignored when `heading` is set.
     pub title: Option<Line>,
+    /// A title whose filter text and row count the host fills in; see [`ListHeading`].
+    pub heading: Option<ListHeading>,
     /// A divider and one or two wrapped chip lines below the scrolling rows.
     pub bottom: Option<ListStrip>,
+}
+
+/// A list title in which the plugin owns the words and the host owns the numbers it alone knows:
+/// the filter query and how many rows the filter leaves.
+///
+/// The host draws `before`, then the query (`/query`, preceded by `query_gap` spaces, only while a
+/// query is set), then `  (n)` where `n` is the number of shown rows that count toward the heading
+/// (see [`ListRow::counted`]), then `after`. The plugin writes any padding it wants at the ends
+/// of `before` and `after` (a leading and a trailing space for the usual title).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ListHeading {
+    pub before: Line,
+    pub after: Line,
+    /// Spaces between `before` and `/query`. One by default.
+    pub query_gap: u8,
+}
+
+impl ListHeading {
+    pub fn new(before: Line) -> Self {
+        Self {
+            before,
+            after: Line::default(),
+            query_gap: 1,
+        }
+    }
+
+    pub fn after(mut self, after: Line) -> Self {
+        self.after = after;
+        self
+    }
+
+    pub fn query_gap(mut self, gap: u8) -> Self {
+        self.query_gap = gap;
+        self
+    }
 }
 
 /// A non-scrolling list legend. Chips are separated by two spaces. The host reserves
@@ -603,9 +642,24 @@ pub struct ListRow {
     pub checked: Option<bool>,
     /// Host multi-selection, independent of the plugin-owned check state.
     pub marked: bool,
+    /// Whether the row counts toward the number in a [`ListHeading`]. `None` follows
+    /// `selectable`, so a message row never counts; set it for a selectable row that is not an
+    /// item (a graph's working-tree row) or an unselectable row that is.
+    pub counted: Option<bool>,
 }
 
 impl ListRow {
+    /// Make the row count (or not) toward the number in the list's [`ListHeading`].
+    pub fn counted(mut self, counted: bool) -> Self {
+        self.counted = Some(counted);
+        self
+    }
+
+    /// Whether this row counts toward the heading's number.
+    pub fn counts_toward_heading(&self) -> bool {
+        self.counted.unwrap_or(self.selectable)
+    }
+
     pub fn initial_selection(mut self, selected: bool) -> Self {
         self.initial_selection = selected;
         self
@@ -689,6 +743,7 @@ impl ListRow {
             target: None,
             checked: None,
             marked: false,
+            counted: None,
         }
     }
 }

@@ -118,6 +118,7 @@ fn vcs_port_style_bridge_preserves_every_legacy_color_and_modifier() {
         (Color::Reset, Modifier::BOLD),
     ]);
     let (_sim, frame) = draw_bridge_fixture(&root, lines);
+    let (bx, by) = body_origin();
     for (row, (color, modifiers)) in expected.into_iter().enumerate() {
         for x in 0..2 {
             let mut wanted = Cell::default();
@@ -125,12 +126,12 @@ fn vcs_port_style_bridge_preserves_every_legacy_color_and_modifier() {
             wanted.fg = color;
             wanted.modifier = modifiers;
             assert!(
-                bridge_cell(&wanted, &frame[(x, row as u16 + 2)]),
+                bridge_cell(&wanted, &frame[(x + bx, row as u16 + by)]),
                 "palette row={row}, x={x}"
             );
         }
     }
-    let cell = &frame[(0, 2)];
+    let cell = &frame[(bx, by)];
     let mut wrong = cell.clone();
     wrong.modifier ^= Modifier::BOLD;
     assert!(
@@ -250,6 +251,7 @@ fn vcs_port_graph_legacy_glyphs_and_padding_styles_reach_the_bridge() {
                 }
             }
             let (_sim, frame) = draw_bridge_fixture(&root, lines);
+            let (bx, by) = body_origin();
             for (y, (text, styles)) in legacy.into_iter().enumerate() {
                 for (x, (ch, code)) in text.chars().zip(styles.chars()).enumerate() {
                     let mut wanted = Cell::default();
@@ -265,7 +267,7 @@ fn vcs_port_graph_legacy_glyphs_and_padding_styles_reach_the_bridge() {
                         wanted.modifier = Modifier::BOLD;
                     }
                     assert!(
-                        bridge_cell(&wanted, &frame[(x as u16, y as u16 + 2)]),
+                        bridge_cell(&wanted, &frame[(x as u16 + bx, y as u16 + by)]),
                         "{vcs:?}/{worktree}/{x},{y}"
                     );
                 }
@@ -377,8 +379,9 @@ fn vcs_port_real_status_conversion_and_drawn_colors() {
             Some(sdk),
             "standard plugin status conversion {name}"
         );
+        let (bx, by) = body_origin();
         for x in [2, 3] {
-            let cell = &frame[(x, row as u16 + 2)];
+            let cell = &frame[(x + bx, row as u16 + by)];
             assert_eq!(cell.fg, color, "drawn status foreground {name}/{x}");
             assert_eq!(cell.bg, Color::Reset);
             assert_eq!(
@@ -568,18 +571,16 @@ fn vcs_port_right_metadata_literal_padding_ellipsis_and_narrow_fallback() {
             .extend(crate::plugins::test_plugins::marker_config(&token).plugins);
         let mut sim = open(&root, cfg, (width + 2, 8));
         let frame = sim.project_frame();
+        let (bx, by) = body_origin();
         let text = (0..width)
-            .map(|x| frame[(x, 2)].symbol())
+            .map(|x| frame[(x + bx, by)].symbol())
             .collect::<String>();
-        // The frame is wider than the column: measure the whole row, so overflow past the column
-        // (instead of elision) is visible.
-        let row = (0..width + 2)
-            .map(|x| frame[(x, 2)].symbol())
-            .collect::<String>();
-        let past_column = (width..width + 2)
-            .map(|x| frame[(x, 2)].symbol())
-            .collect::<String>();
-        assert_eq!(past_column.trim(), "", "width {width}: drawn past the column: {row:?}");
+        // The column is the frame's inside; the right edge of the frame follows it. Measure the
+        // whole row up to that edge, so overflow past the column (instead of elision) would
+        // overwrite the edge and be visible.
+        let row = text.clone();
+        let past_column = frame[(width + bx, by)].symbol().to_string();
+        assert_eq!(past_column, "│", "width {width}: drawn past the column: {row:?}");
         assert_eq!(
             unicode_width::UnicodeWidthStr::width(row.trim_end()),
             row.trim_end().chars().count(),
@@ -666,6 +667,7 @@ fn vcs_port_real_graph_conversion_legend_and_legacy_cells() {
         };
         assert_eq!(list.rows.len(), legacy.len());
         let frame = sim.project_frame();
+        let (bx, by) = body_origin();
         for (y, (text, codes)) in legacy.iter().enumerate() {
             let spans = &list.rows[y].cells[0].spans;
             for (x, (ch, code)) in text.chars().zip(codes.chars()).enumerate() {
@@ -714,7 +716,7 @@ fn vcs_port_real_graph_conversion_legend_and_legacy_cells() {
                     Modifier::empty()
                 };
                 assert!(
-                    bridge_cell(&expected, &frame[(x as u16, y as u16 + 2)]),
+                    bridge_cell(&expected, &frame[(x as u16 + bx, y as u16 + by)]),
                     "drawn graph cell {worktree}/{x},{y}"
                 );
             }
