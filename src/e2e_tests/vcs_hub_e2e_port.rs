@@ -484,11 +484,13 @@ fn vcs_hub_e2e_project_views_and_large_diff_render_is_bounded() {
         true,
     );
     let mut steps = Vec::new();
-    let views_alloc = crate::mem_tests::allocated_by(|| {
+    let p1 = crate::mem_tests::allocated_by(|| {
         for _ in 0..3 {
             w.press(KeyCode::Tab); // log, graph, branches
             steps.push(w.sim.app.project_frame().unwrap().key.screen.clone());
         }
+    });
+    let p2 = crate::mem_tests::allocated_by(|| {
         for _ in 0..8 {
             if w.screen_is("changes") {
                 break;
@@ -497,19 +499,47 @@ fn vcs_hub_e2e_project_views_and_large_diff_render_is_bounded() {
         }
         steps.push(w.sim.app.project_frame().unwrap().key.screen.clone());
         w.select("big.txt");
+    });
+    let p3 = crate::mem_tests::allocated_by(|| {
         w.press(KeyCode::Enter);
     });
+    let views_alloc = p1 + p2 + p3;
     // Every screen really was opened and drawn (a skipped screen would make the bound vacuous), and
     // the large diff is the full-screen preview of big.txt.
     assert_eq!(steps, ["log", "graph", "branches", "changes"]);
     assert_eq!(w.sim.app.tab.mode, Mode::Preview);
     w.sim.see("big.txt");
     w.sim.see("LINE changed 0");
+    // The count is deterministic (same thread, same data; measured: three Tab presses 11.0MB, the
+    // lap back to changes plus the cursor move 17.1MB, the diff open 7.4MB, 35.5MB in all). The old
+    // hub's bound was 60MB (1.7x); each part is held to 1.25x of what it costs, so doing the same
+    // work twice on any part (every frame drawn twice included) is over its ceiling.
     assert!(
-        // measured ~36MB (five screens and a 1005-line diff); the old hub's bound, ~1.7x headroom
-        views_alloc < 60_000_000,
+        p1 < 14_000_000,
+        "three screen switches allocated too much on the UI thread: {p1}"
+    );
+    assert!(
+        p2 < 21_500_000,
+        "the lap back to the changes screen allocated too much on the UI thread: {p2}"
+    );
+    assert!(
+        p3 < 9_500_000,
+        "opening the large diff allocated too much on the UI thread: {p3}"
+    );
+    assert!(
+        views_alloc < 45_000_000,
         "the canvas screens and the large diff allocated too much on the UI thread: {views_alloc}"
     );
+    for (name, part, floor) in [
+        ("p1", p1, 5_000_000),
+        ("p2", p2, 8_000_000),
+        ("p3", p3, 3_000_000),
+    ] {
+        assert!(
+            part > floor,
+            "the allocation counter looks dead for {name}: {part}"
+        );
+    }
     assert!(
         // Not vacuous: the screens cost something, so a counter that stopped counting is caught.
         views_alloc > 10_000_000,
