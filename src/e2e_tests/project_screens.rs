@@ -2955,6 +2955,115 @@ fn e2e_project_outcome_open_file_uses_line_and_q_returns_to_project() {
     f.sim.see("alpha");
 }
 
+/// `Esc` and `q` close a preview opened by a plugin's `OpenFile` outcome the same way: back onto
+/// the project canvas it came from, with no stale return target. One file per preview surface
+/// (text, table, image).
+#[test]
+fn e2e_project_outcome_open_file_esc_returns_to_project_like_q_on_every_preview_surface() {
+    for file in ["file.txt", "grid.csv", "pic.png"] {
+        let mut landings = Vec::new();
+        for key in [KeyCode::Char('q'), KeyCode::Esc] {
+            let name = format!("project_outcome_file_esc_{}_{}", &file[..4], landings.len());
+            let mut f = navigate(&name, |root| {
+                std::fs::write(root.join("grid.csv"), "a,b\n1,2\n").unwrap();
+                write_png(&root.join("pic.png"), 8, 8);
+                Outcome::OpenFile {
+                    path: root.join(file),
+                    line: None,
+                }
+            });
+            assert!(!f.sim.app.project_active(), "{file}");
+            assert_eq!(
+                f.sim.app.tab.mode,
+                Mode::Preview,
+                "{file} {:?} {:?}",
+                f.sim.app.flash,
+                f.sim.app.tab.preview_path
+            );
+            assert!(f.sim.app.tab.project_return.is_some(), "{file}");
+            press(&mut f, key);
+            assert!(
+                f.sim.app.project_active(),
+                "{file} {key:?}: back on the project"
+            );
+            assert!(
+                f.sim.app.tab.project_return.is_none(),
+                "{file} {key:?}: no stale project_return"
+            );
+            f.sim.see("alpha");
+            landings.push((
+                f.sim
+                    .app
+                    .project_frame()
+                    .map(|fr| (fr.key.screen.clone(), fr.cursor)),
+                f.sim.app.tab.mode,
+            ));
+        }
+        assert_eq!(landings[0], landings[1], "{file}: q and Esc land alike");
+    }
+}
+
+/// With a search active, the first `Esc` clears it and stays in the preview; the second returns.
+#[test]
+fn e2e_project_outcome_open_file_esc_clears_search_first_then_returns_to_project() {
+    let mut f = navigate("project_outcome_file_esc_search", |root| {
+        Outcome::OpenFile {
+            path: root.join("file.txt"),
+            line: None,
+        }
+    });
+    assert!(!f.sim.app.project_active());
+    press(&mut f, KeyCode::Char('/'));
+    for c in "three".chars() {
+        press(&mut f, KeyCode::Char(c));
+    }
+    press(&mut f, KeyCode::Enter);
+    assert_eq!(f.sim.app.preview_search_query(), Some("three"));
+    press(&mut f, KeyCode::Esc);
+    assert!(
+        f.sim.app.preview_search_query().is_none(),
+        "first Esc clears the search"
+    );
+    assert!(
+        !f.sim.app.project_active(),
+        "first Esc stays in the preview"
+    );
+    assert!(
+        f.sim.app.tab.project_return.is_some(),
+        "the return target is kept"
+    );
+    press(&mut f, KeyCode::Esc);
+    assert!(f.sim.app.project_active());
+    assert!(f.sim.app.tab.project_return.is_none());
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_project_outcome_open_diff_esc_returns_to_project_like_q() {
+    let mut landings = Vec::new();
+    for key in [KeyCode::Char('q'), KeyCode::Esc] {
+        let name = format!("project_outcome_diff_esc_{}", landings.len());
+        let mut f = navigate(&name, |root| Outcome::OpenDiff {
+            path: root.join("file.txt"),
+        });
+        assert!(f.sim.app.is_git_diff_preview() && f.sim.app.tab.project_return.is_some());
+        press(&mut f, key);
+        assert!(f.sim.app.project_active(), "{key:?}");
+        assert!(
+            f.sim.app.tab.project_return.is_none(),
+            "{key:?}: no stale project_return"
+        );
+        f.sim.see("alpha");
+        landings.push(
+            f.sim
+                .app
+                .project_frame()
+                .map(|fr| (fr.key.screen.clone(), fr.cursor)),
+        );
+    }
+    assert_eq!(landings[0], landings[1]);
+}
+
 #[test]
 fn e2e_project_outcome_open_diff_uses_host_diff() {
     let f = navigate("project_outcome_diff", |root| Outcome::OpenDiff {

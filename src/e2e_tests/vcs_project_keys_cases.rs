@@ -669,3 +669,238 @@ fn vcs_keys_git_detail_s_cycles_unified_split_auto_unified() {
     press(&mut sim, KeyCode::Char('s'));
     assert!(!sim.app.diff_is_split(200), "s -> unified again");
 }
+
+// ---- Esc on a preview opened from a project canvas returns where `q` returns ----
+// The old hub's `Esc` closed a diff back to the view it came from. On the project canvas the
+// return target is `tab.project_return`; `Esc` and `q` both close the preview through one
+// function, so each lands on the same screen/cursor and leaves no stale return target behind.
+
+/// What a close must agree on between `q` and `Esc`.
+#[derive(Debug, PartialEq)]
+struct Landing {
+    active: bool,
+    screen: Option<String>,
+    cursor: Option<usize>,
+    has_return: bool,
+    tree: bool,
+}
+
+fn landing(sim: &Sim) -> Landing {
+    Landing {
+        active: sim.app.project_active(),
+        screen: sim.app.project_frame().map(|f| f.key.screen.clone()),
+        cursor: sim.app.project_frame().map(|f| f.cursor),
+        has_return: sim.app.tab.project_return.is_some(),
+        tree: sim.app.tab.mode == Mode::Tree,
+    }
+}
+
+/// A repo of the given backend with changed files, or `None` when jj is not installed (the
+/// caller prints NOT RUN).
+fn esc_repo(id: &str, name: &str) -> Option<crate::test_support::TmpDir> {
+    if id == "git" {
+        return Some(super::vcs_changes::git_repo(name, true));
+    }
+    use crate::test_support::{jj_scratch_bare, run_jj};
+    if !crate::vcs::jj::available() {
+        eprintln!("NOT RUN: {name}: jj is not installed; 0 jj cases");
+        return None;
+    }
+    let dir = jj_scratch_bare(name).expect("jj is available: fixture must initialize");
+    for file in ["a-one.txt", "b-two.txt", "c-three.txt"] {
+        std::fs::write(dir.join(file), "base\n").unwrap();
+    }
+    assert!(run_jj(&dir, &["commit", "-m", "seed"]));
+    std::fs::write(dir.join("a-one.txt"), "worktree\n").unwrap();
+    std::fs::write(dir.join("b-two.txt"), "changed\n").unwrap();
+    std::fs::write(dir.join("d-new.txt"), "new\n").unwrap();
+    Some(dir.into_canonical().unwrap())
+}
+
+/// The canvas's changes screen with the cursor on the row `down` rows below the first, then the
+/// row's diff opened. Returns the session and the row's path.
+fn open_changed_diff(repo: &std::path::Path, id: &str, down: usize) -> Sim {
+    let mut sim = open(repo, config(id, "en"), (140, 30));
+    screen(&mut sim, "changes");
+    for _ in 0..down {
+        press(&mut sim, KeyCode::Char('j'));
+    }
+    let (_, legacy) = App::count_legacy_hub_opens(|| press(&mut sim, KeyCode::Enter));
+    assert_eq!(legacy, 0, "{id}: no old hub opened");
+    assert!(sim.app.is_git_diff_preview() && !sim.app.project_active(), "{id}");
+    assert!(sim.app.tab.project_return.is_some(), "{id}");
+    sim
+}
+
+#[test]
+fn vcs_keys_esc_on_a_file_diff_returns_to_the_changes_row_like_q() {
+    if isolated("vcs_keys_esc_on_a_file_diff_returns_to_the_changes_row_like_q") {
+        return;
+    }
+    for id in ["git", "jj"] {
+        let Some(repo) = esc_repo(id, "vcs_keys_esc_diff") else {
+            continue;
+        };
+        for down in [0usize, 1, 2] {
+            let mut by_q = open_changed_diff(&repo, id, down);
+            let before = by_q
+                .app
+                .tab
+                .project_return
+                .as_ref()
+                .and_then(|nav| nav.frame())
+                .map(|f| f.cursor);
+            press(&mut by_q, KeyCode::Char('q'));
+            let q = landing(&by_q);
+
+            let mut by_esc = open_changed_diff(&repo, id, down);
+            let (_, legacy) =
+                App::count_legacy_hub_opens(|| press(&mut by_esc, KeyCode::Esc));
+            assert_eq!(legacy, 0, "{id}: Esc opens no old hub");
+            let esc = landing(&by_esc);
+            assert!(esc.active, "{id} row {down}: Esc returns to the project: {esc:?}");
+            assert_eq!(esc.screen.as_deref(), Some("changes"), "{id} row {down}");
+            assert_eq!(esc.cursor, before, "{id} row {down}: same cursor row as saved");
+            assert_eq!(esc.cursor, Some(down), "{id} row {down}: the row we opened");
+            assert!(!esc.has_return, "{id} row {down}: no stale project_return");
+            assert!(!esc.tree, "{id} row {down}");
+            assert_eq!(esc, q, "{id} row {down}: Esc and q land alike");
+        }
+    }
+}
+
+#[test]
+fn vcs_keys_esc_after_cycling_changed_files_still_returns_to_the_project() {
+    if isolated("vcs_keys_esc_after_cycling_changed_files_still_returns_to_the_project") {
+        return;
+    }
+    for id in ["git", "jj"] {
+        let Some(repo) = esc_repo(id, "vcs_keys_esc_cycle") else {
+            continue;
+        };
+        let mut sim = open_changed_diff(&repo, id, 0);
+        sim.press(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        drain(&mut sim);
+        assert!(sim.app.is_git_diff_preview(), "{id}");
+        press(&mut sim, KeyCode::Esc);
+        let esc = landing(&sim);
+        assert!(esc.active && !esc.has_return && !esc.tree, "{id}: {esc:?}");
+        assert_eq!(esc.screen.as_deref(), Some("changes"), "{id}");
+    }
+}
+
+/// One changed Markdown file (`doc.md`, the only row of the changes screen), whose diff can be
+/// cycled with `R` into its ordinary `Preview` representation.
+fn md_diff_repo(id: &str, name: &str) -> Option<crate::test_support::TmpDir> {
+    let base = "# Title\n\nOriginal paragraph.\n";
+    let changed = "# Title\n\nCHANGED paragraph.\n";
+    if id == "git" {
+        let dir = sandbox(name);
+        crate::test_support::init_git_repo(&dir);
+        std::fs::write(dir.join("doc.md"), base).unwrap();
+        crate::test_support::run_git(&dir, &["add", "doc.md"]);
+        crate::test_support::run_git(&dir, &["commit", "-qm", "seed"]);
+        std::fs::write(dir.join("doc.md"), changed).unwrap();
+        return Some(dir.into_canonical().unwrap());
+    }
+    use crate::test_support::{jj_scratch_bare, run_jj};
+    if !crate::vcs::jj::available() {
+        eprintln!("NOT RUN: {name}: jj is not installed; 0 jj cases");
+        return None;
+    }
+    let dir = jj_scratch_bare(name).expect("jj is available: fixture must initialize");
+    std::fs::write(dir.join("doc.md"), base).unwrap();
+    assert!(run_jj(&dir, &["commit", "-m", "seed"]));
+    std::fs::write(dir.join("doc.md"), changed).unwrap();
+    Some(dir.into_canonical().unwrap())
+}
+
+/// The diff of `doc.md` cycled with `R` into its `Preview` representation.
+fn open_diff_preview_representation(repo: &std::path::Path, id: &str) -> Sim {
+    let mut sim = open_changed_diff(repo, id, 0);
+    for _ in 0..4 {
+        if sim.app.preview_from_diff_for_test() {
+            break;
+        }
+        press(&mut sim, KeyCode::Char('R'));
+    }
+    assert!(
+        sim.app.preview_from_diff_for_test() && !sim.app.is_git_diff_preview(),
+        "{id}: R reaches the diff's own Preview representation"
+    );
+    assert!(sim.app.tab.project_return.is_some(), "{id}: the canvas is still saved");
+    sim
+}
+
+#[test]
+fn vcs_keys_esc_on_the_diff_preview_representation_returns_like_q() {
+    if isolated("vcs_keys_esc_on_the_diff_preview_representation_returns_like_q") {
+        return;
+    }
+    for id in ["git", "jj"] {
+        let Some(repo) = md_diff_repo(id, "vcs_keys_esc_repr") else {
+            continue;
+        };
+        let mut landings = Vec::new();
+        for key in [KeyCode::Char('q'), KeyCode::Esc] {
+            let mut sim = open_diff_preview_representation(&repo, id);
+            press(&mut sim, key);
+            let l = landing(&sim);
+            assert!(l.active && !l.has_return && !l.tree, "{id} {key:?}: {l:?}");
+            assert_eq!(l.screen.as_deref(), Some("changes"), "{id} {key:?}");
+            assert_eq!(l.cursor, Some(0), "{id} {key:?}");
+            landings.push(l);
+        }
+        assert_eq!(landings[0], landings[1], "{id}: q and Esc land alike");
+    }
+}
+
+#[test]
+fn vcs_keys_esc_on_a_diff_opened_from_the_tree_still_closes_to_the_tree() {
+    if isolated("vcs_keys_esc_on_a_diff_opened_from_the_tree_still_closes_to_the_tree") {
+        return;
+    }
+    let repo = super::vcs_changes::git_repo("vcs_keys_esc_tree", true);
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    let file = repo.join("b-unstaged.txt");
+    sim.app.open_git_diff(&file);
+    assert!(sim.app.is_git_diff_preview());
+    assert!(sim.app.tab.project_return.is_none() && !sim.app.project_active());
+    press(&mut sim, KeyCode::Esc);
+    let l = landing(&sim);
+    assert!(l.tree && !l.active && !l.has_return, "{l:?}");
+    assert!(!sim.app.is_git_diff_preview());
+}
+
+#[test]
+fn vcs_keys_esc_clears_a_preview_search_first_then_returns_to_the_project() {
+    if isolated("vcs_keys_esc_clears_a_preview_search_first_then_returns_to_the_project") {
+        return;
+    }
+    for id in ["git", "jj"] {
+        let Some(repo) = md_diff_repo(id, "vcs_keys_esc_search") else {
+            continue;
+        };
+        let mut sim = open_diff_preview_representation(&repo, id);
+        press(&mut sim, KeyCode::Char('/'));
+        for c in "paragraph".chars() {
+            press(&mut sim, KeyCode::Char(c));
+        }
+        press(&mut sim, KeyCode::Enter);
+        assert_eq!(
+            sim.app.preview_search_query(),
+            Some("paragraph"),
+            "{id}: the representation is searchable"
+        );
+        press(&mut sim, KeyCode::Esc);
+        assert!(sim.app.preview_search_query().is_none(), "{id}: first Esc clears the search");
+        assert!(!sim.app.project_active(), "{id}: first Esc stays in the preview");
+        assert!(sim.app.tab.project_return.is_some(), "{id}: the return target is kept");
+        press(&mut sim, KeyCode::Esc);
+        let l = landing(&sim);
+        assert!(l.active && !l.has_return && !l.tree, "{id}: {l:?}");
+        assert_eq!(l.screen.as_deref(), Some("changes"), "{id}");
+    }
+}

@@ -3317,12 +3317,30 @@ const GROUPS: &[Group] = &[
         &["app"],
         "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
     ),
-    // `git_diff_opens_from_view_and_esc_returns_to_view` is out of scope (not ledgered): its Esc
-    // assertion has no new-path test — Esc on a canvas-opened file diff closes to the tree and orphans
-    // `project_return` (BUG, src/lib.rs:2460). All its other assertions are held by
-    // vcs_port_file_head_baseline_right_remaps_and_diff_layout (open:is-preview, open:off-canvas,
-    // open:lines-nonempty) and vcs_keys_git_file_diff_n_cycles_changed_files_and_closes_to_changes
-    // (cache:set, cache:refresh-drops, close:q-returns).
+    // `git_diff_opens_from_view_and_esc_returns_to_view`: `Esc` on a canvas-opened file diff
+    // returns to the canvas (the project the diff came from) like `q`, with no stale `project_return`.
+    (
+        "git_diff_opens_from_view_and_esc_returns_to_view",
+        &[
+            "open:is-preview",
+            "open:off-canvas",
+            "open:lines-nonempty",
+        ],
+        &["app"],
+        "vcs_port_file_head_baseline_right_remaps_and_diff_layout",
+    ),
+    (
+        "git_diff_opens_from_view_and_esc_returns_to_view",
+        &["cache:set", "cache:refresh-drops"],
+        &["app"],
+        "vcs_keys_git_file_diff_n_cycles_changed_files_and_closes_to_changes",
+    ),
+    (
+        "git_diff_opens_from_view_and_esc_returns_to_view",
+        &["close:esc-returns-to-view"],
+        &["app"],
+        "vcs_keys_esc_on_a_file_diff_returns_to_the_changes_row_like_q",
+    ),
     (
         "open_git_view_noop_when_not_a_repo",
         &["refuse:keeps-tree", "refuse:flashes"],
@@ -3449,16 +3467,35 @@ const GROUPS: &[Group] = &[
         &["app"],
         "vcs_port_q_returns_to_origin_and_l_g_are_list_keys_on_log_and_graph",
     ),
-    // `diff_view_n_switches_changed_files_and_keeps_return_target` is out of scope (not ledgered): its
-    // return-target half is held only for `q` — `Esc` on a canvas-opened file diff skips
-    // `return_to_project` (`handle_esc` routes `PreviewGitDiff` to `close_git_diff`,
-    // src/lib.rs:2460) and orphans `project_return` (BUG). All its other assertions are held by
-    // vcs_keys_git_file_diff_n_cycles_changed_files_and_closes_to_changes (decided:file-cycle-keys-
-    // are-ctrl-n-ctrl-p, next:advances, next:wraps, prev:walks-back, prev:wraps, tree-cursor:follows,
-    // q:returns; `came_from_git_view` has no counterpart: the return target is the canvas itself,
-    // saved in `tab.project_return` at src/app/project_screens.rs:1307) and
-    // colocated_changed_file_navigation_uses_project_backend_in_every_representation
-    // (position:shown-and-follows).
+    // `diff_view_n_switches_changed_files_and_keeps_return_target`: `came_from_git_view` has no
+    // counterpart (the return target is the canvas itself, saved in `tab.project_return` at
+    // src/app/project_screens.rs); `Esc` after cycling still returns to it.
+    (
+        "diff_view_n_switches_changed_files_and_keeps_return_target",
+        &[
+            "decided:file-cycle-keys-are-ctrl-n-ctrl-p",
+            "next:advances",
+            "next:wraps",
+            "prev:walks-back",
+            "prev:wraps",
+            "tree-cursor:follows",
+            "q:returns",
+        ],
+        &["app"],
+        "vcs_keys_git_file_diff_n_cycles_changed_files_and_closes_to_changes",
+    ),
+    (
+        "diff_view_n_switches_changed_files_and_keeps_return_target",
+        &["position:shown-and-follows"],
+        &["app"],
+        "colocated_changed_file_navigation_uses_project_backend_in_every_representation",
+    ),
+    (
+        "diff_view_n_switches_changed_files_and_keeps_return_target",
+        &["esc:returns-after-cycling"],
+        &["app"],
+        "vcs_keys_esc_after_cycling_changed_files_still_returns_to_the_project",
+    ),
     (
         "external_git_disabled_flashes_distinct_message_and_tree_renders",
         &[
@@ -3790,18 +3827,20 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // follow paused surface 3 + submit-recheck 3 + second-write 3.
             + 105
             // The old-hub READ/VIEW unit tests (src/app/tests.rs, src/ui/git.rs,
-            // src/ui/mod.rs), 93 rows: tree/worktree diff and the `s` layout cycle 10 +
+            // src/ui/mod.rs), 108 rows: tree/worktree diff and the `s` layout cycle 10 +
             // list clamps 8 + stale chip 2 + config base order 3 + legend cap and picker
             // toggles 4 + not-a-repo refuse 3 + log list/detail (incl. the internal_mode n/a
             // and q-leaves decided rows) 9 + empty-log 2 + commit meta 3 + branch copy 2 +
             // branch filter 4 + graph base/detail scroll 7 + picker
             // move/jump/toggle/cancel 5 + graph close 1 + branch re-verify 4 + repeated
             // draws 1 + refused opens with git off / binary missing 7 (4 + 3) + jj gates 7 +
-            // ui detail 1 + ui graph 10. (git_diff_opens_from_view_and_esc_returns_to_view and
-            // diff_view_n_switches_changed_files_and_keeps_return_target are out of scope: their
-            // Esc assertion is a BUG with no new-path test; git_copy_message_and_branch_name_set_flash
-            // stays out: its no-target flash is UNDECIDED.)
-            + 93,
+            // ui detail 1 + ui graph 10. (git_copy_message_and_branch_name_set_flash stays out:
+            // its no-target flash is UNDECIDED.)
+            + 93
+            // git_diff_opens_from_view_and_esc_returns_to_view 6 +
+            // diff_view_n_switches_changed_files_and_keeps_return_target 9 (their Esc half is
+            // held by the vcs_keys_esc_* tests).
+            + 15,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

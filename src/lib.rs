@@ -1981,20 +1981,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::VisualCommit => app.exit_visual_commit(),
         Action::VisualSelectSiblings => app.visual_select_scope(false),
         Action::VisualSelectAll => app.visual_select_scope(true),
-        Action::PreviewBack => {
-            if app.return_to_project() {
-                return Ok(false);
-            }
-            // A git diff preview — or an ordinary preview that *is* the diff's own `Preview`
-            // representation (`tab.preview_from_diff`, `docs/FEATURE-MD-RENDERED-DIFF.md` §4) —
-            // returns to the Git view (or the tree, whichever it came from). Everything else
-            // returns to the tree.
-            if app.is_git_diff_preview() || app.preview_is_diff_representation() {
-                app.close_git_diff();
-            } else {
-                app.back_to_tree();
-            }
-        }
+        Action::PreviewBack => close_preview(app),
         Action::SearchStart => app.start_search(),
         // `n` / `N` step through the matches of a search; with no search active a text or document
         // preview steps through its changes instead (layer 1).
@@ -2336,6 +2323,24 @@ fn handle_modal_confirm(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bo
     Ok(false)
 }
 
+/// Close the preview on screen: back to the project canvas it was opened from, else to the git
+/// view / tree it came from. `q` and `Esc` both end here, so they cannot disagree about where a
+/// preview returns to (and a saved `project_return` is never orphaned by a close to the tree).
+fn close_preview(app: &mut App) {
+    if app.return_to_project() {
+        return;
+    }
+    // A git diff preview — or an ordinary preview that *is* the diff's own `Preview`
+    // representation (`tab.preview_from_diff`, `docs/FEATURE-MD-RENDERED-DIFF.md` §4) —
+    // returns to the Git view (or the tree, whichever it came from). Everything else
+    // returns to the tree.
+    if app.is_git_diff_preview() || app.preview_is_diff_representation() {
+        app.close_git_diff();
+    } else {
+        app.back_to_tree();
+    }
+}
+
 /// Per-surface fixed handling of Esc (clear search/filter, close overlays, cancel visual …). Always quit=false.
 fn handle_esc(app: &mut App, sfc: Surface) -> bool {
     match sfc {
@@ -2390,11 +2395,11 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         | Surface::PreviewImage
         | Surface::PreviewTable
         | Surface::PreviewCanvas => {
-            // If a search is active, clear it; otherwise return to the tree.
+            // If a search is active, clear it; otherwise close the preview as `q` does.
             if app.preview_search_query().is_some() {
                 app.search_clear();
             } else {
-                app.back_to_tree();
+                close_preview(app);
             }
         }
         // Esc while a line is selected clears the selection (doesn't return to the tree).
@@ -2457,7 +2462,7 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
                 app.list_filter_clear(app::list_filter::ListId::Changes);
             }
         }
-        Surface::PreviewGitDiff => app.close_git_diff(),
+        Surface::PreviewGitDiff => close_preview(app),
         _ => {}
     }
     false

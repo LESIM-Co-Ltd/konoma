@@ -318,6 +318,8 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "open_git_view_reports_a_missing_git_binary_distinctly",
             "jj_hub_opens_even_when_the_git_binary_is_missing",
             "jj_hub_opens_even_when_the_git_integration_is_switched_off",
+            "git_diff_opens_from_view_and_esc_returns_to_view",
+            "diff_view_n_switches_changed_files_and_keeps_return_target",
         ],
     ),
     (
@@ -373,15 +375,14 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
     // block, the worktree/branch/commit flows, the basic git-view list/stage/discard tests, the
     // second-write refusal and the jj sync gate — + 3 in src/app/write_guard_tests.rs + 1 in
     // src/app/follow_worker.rs).
-    // + 25 (the old-hub READ/VIEW unit tests: 23 in src/app/tests.rs — list clamps, stale chip,
-    // graph base/legend/picker, diff from tree/worktree, log open/detail, copy, branch filter,
-    // refused opens (git switched off / binary missing / not a repository), per-tab branch title,
-    // bounded draws, jj-opens-despite-git-off — plus git_detail_render_shows_diff in src/ui/git.rs
+    // + 27 (the old-hub READ/VIEW unit tests: 25 in src/app/tests.rs — list clamps, stale chip,
+    // graph base/legend/picker, diff from tree/worktree, the file diff's open/close and
+    // changed-file cycle, log open/detail, copy, branch filter, refused opens (git switched off /
+    // binary missing / not a repository), per-tab branch title, bounded draws,
+    // jj-opens-despite-git-off — plus git_detail_render_shows_diff in src/ui/git.rs
     // and git_graph_renders_lanes_refs_and_detail in src/ui/mod.rs. Not in scope:
-    // git_diff_opens_from_view_and_esc_returns_to_view and
-    // diff_view_n_switches_changed_files_and_keeps_return_target (their Esc assertion has no
-    // new-path test — BUG, src/lib.rs:2460) and git_copy_message_and_branch_name_set_flash (its
+    // git_copy_message_and_branch_name_set_flash (its
     // no-target flash half is an undecided silence-vs-flash difference).
-    assert_eq!(total, 235, "frozen B/C/E/H/S inventory");
+    assert_eq!(total, 237, "frozen B/C/E/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }
