@@ -1771,6 +1771,237 @@ const GROUPS: &[Group] = &[
         &["fixture"],
         "e2e_vcs_frozen_replay_graph_jj_cells",
     ),
+    (
+        "e2e_vcs_writes_stage_unstage_modified_new_deleted_renamed_cjk_and_path_styles",
+        &[
+            "stage:flash",
+            "stage:status",
+            "stage:rows",
+            "unstage:flash",
+            "unstage:status",
+            "unstage:rows",
+        ],
+        &["en,ja:relative,home,full:a-modified,b-new,c-deleted,d-renamed,sub-cjk"],
+        "vcs_port_write_stage_unstage_each_file_kind_style_and_language",
+    ),
+    (
+        "e2e_vcs_writes_all_and_empty_guards_match_without_running_git",
+        &[
+            "empty:stage-all:flash",
+            "empty:unstage-all:flash",
+            "empty:index-bytes-status-and-lock-unchanged",
+            "empty:rows",
+            "changed:stage-all:flash-status-rows",
+            "changed:unstage-all:flash-status-rows",
+            "changed:second-unstage:nothing-staged",
+        ],
+        &["en,ja"],
+        "vcs_port_write_all_and_empty_guards_run_no_git",
+    ),
+    (
+        "e2e_vcs_writes_empty_file_keys_never_invoke_git_or_flash",
+        &[
+            "s:no-flash-no-act",
+            "u:no-flash-no-act",
+            "x:no-flash-no-dialog",
+        ],
+        &["git"],
+        "vcs_port_write_empty_list_keys_never_invoke_git_or_flash",
+    ),
+    (
+        "e2e_vcs_writes_discard_confirmation_and_failures",
+        &[
+            "discard:confirm-text",
+            "discard:success-file-flash-rows-act",
+            "untracked:failure-flash",
+            "index-lock:s:failure-flash",
+            "index-lock:u:failure-flash",
+            "index-lock:S:failure-flash",
+            "index-lock:U:failure-flash",
+        ],
+        &["en,ja"],
+        "vcs_port_write_discard_confirmation_success_and_failures",
+    ),
+    (
+        "e2e_vcs_writes_discard_cancel_n_matches_legacy_flash_and_closes",
+        &[
+            "n:flash-closes-no-act-bytes-unchanged",
+            "N:flash-closes-no-act-bytes-unchanged",
+        ],
+        &["en,ja"],
+        "vcs_port_write_discard_cancel_n_and_uppercase_n_flash_and_close",
+    ),
+    (
+        "e2e_vcs_writes_discard_cancel_escape_matches_legacy_flash_and_closes",
+        &["esc:flash-closes-no-act-bytes-unchanged"],
+        &["en,ja"],
+        "vcs_port_write_discard_cancel_escape_flashes_and_closes",
+    ),
+    (
+        "e2e_vcs_writes_discard_enter_does_nothing_and_uppercase_y_confirms",
+        &["enter:inert-no-act", "Y:confirms-act-flash-rows"],
+        &["en,ja"],
+        "vcs_port_write_discard_enter_does_nothing_and_uppercase_y_confirms",
+    ),
+    (
+        "e2e_vcs_writes_commit_success_empty_and_failed_hook_preserves_prompt",
+        &[
+            "blank:flash-closes-no-commit",
+            "success:flash-log-rows",
+            "failed-hook:flash-keeps-typed-input",
+        ],
+        &["en,ja"],
+        "vcs_port_write_commit_blank_success_and_failed_hook_keep_the_prompt",
+    ),
+    (
+        "e2e_vcs_writes_read_only_refuses_every_git_write_before_prompt_or_dispatch",
+        &[
+            "s:guard-flash-no-prompt-no-act",
+            "u:guard-flash-no-prompt-no-act",
+            "S:guard-flash-no-prompt-no-act",
+            "U:guard-flash-no-prompt-no-act",
+            "x:guard-flash-no-prompt-no-act",
+            "c:guard-flash-no-prompt-no-act",
+        ],
+        &["en,ja"],
+        "vcs_port_write_read_only_refuses_every_git_write_before_prompt_or_dispatch",
+    ),
+    (
+        "e2e_vcs_writes_refresh_current_screen_tree_status_and_commit_chip",
+        &[
+            "s:tree-dirty-and-list-refreshed",
+            "u:tree-dirty-and-list-refreshed",
+            "S:tree-dirty-and-list-refreshed",
+            "U:tree-dirty-and-list-refreshed",
+            "x:tree-dirty-and-list-refreshed",
+            "commit:tree-dirty-view-and-chip-counts",
+            "commit:rows-and-log",
+        ],
+        &["git"],
+        "vcs_port_write_refresh_current_screen_tree_status_and_commit_chip",
+    ),
+    (
+        "e2e_vcs_writes_footer_help_exact_except_empty_inert_file_keys",
+        &[
+            "footer:changed-tokens",
+            "footer:empty-tokens",
+            "help:changed-rows",
+            "help:empty-rows",
+        ],
+        &["en,ja"],
+        "vcs_port_write_footer_and_help_write_hints_and_empty_list_exception",
+    ),
+    (
+        "e2e_vcs_writes_jj_sync_confirmation_cancel_enter_and_uppercase_y",
+        &[
+            "confirm:text",
+            "cancel:n-N-esc-no-act-no-snapshot-flash-rows",
+            "enter:inert",
+            "Y:snapshot-act-flash-oplog-rows",
+            "Y:tree-dirty-view-and-chip-counts",
+            "hints:sync",
+        ],
+        &["en,ja:plain,colocated"],
+        "vcs_port_write_jj_sync_confirmation_cancel_enter_and_uppercase_y",
+    ),
+    (
+        "e2e_vcs_writes_jj_sync_setting_false_snapshots_without_prompt",
+        &["no-prompt:act-flash-snapshot-rows", "hints:sync"],
+        &["en,ja:plain,colocated"],
+        "vcs_port_write_jj_sync_setting_false_snapshots_without_prompt",
+    ),
+    (
+        "e2e_vcs_writes_jj_sync_read_only_refuses_before_prompt_or_snapshot",
+        &[
+            "guard-flash-no-prompt-no-act",
+            "state-unchanged-rows",
+            "hints:none-help-d-only",
+        ],
+        &["en,ja:confirm-false,confirm-true"],
+        "vcs_port_write_jj_sync_read_only_refuses_before_prompt_or_snapshot",
+    ),
+    (
+        "e2e_vcs_branches_checkout_current_and_other_branch_reload_and_tree_status",
+        &[
+            "checkout:flash",
+            "checkout:current-branch",
+            "checkout:screen-stays-on-branches",
+            "checkout:row-marked-current",
+            "checkout:tree-dirty-then-clean",
+            "checkout:host-git-branch",
+            "checkout:l-switches-main",
+            "conflict:flash-and-branch-unchanged",
+        ],
+        &["en,ja"],
+        "vcs_port_branch_checkout_current_and_other_branch_reload_and_tree_status",
+    ),
+    (
+        "e2e_vcs_branches_create_success_blank_and_failure_keeps_typed_input",
+        &[
+            "blank:flash-closes",
+            "duplicate:flash-keeps-typed-input",
+            "success:flash-current-row",
+        ],
+        &["en,ja"],
+        "vcs_port_branch_create_success_blank_and_failure_keeps_typed_input",
+    ),
+    (
+        "e2e_vcs_branches_delete_dialog_safe_force_cancel_and_current_guard",
+        &[
+            "current:guard-flash-no-dialog",
+            "confirm:text",
+            "n:cancel-flash-ref-kept",
+            "esc:cancel-flash-ref-kept",
+            "y:deletes-flash",
+            "y:unmerged-refused-ref-kept",
+            "bang:force-deletes-flash",
+        ],
+        &["en,ja"],
+        "vcs_port_branch_delete_dialog_safe_force_cancel_and_current_guard",
+    ),
+    (
+        "e2e_vcs_branches_read_only_guard_precedes_all_prompts_and_writes",
+        &[
+            "enter:guard-flash-no-prompt-no-write",
+            "c:guard-flash-no-prompt-no-write",
+            "d:guard-flash-no-prompt-no-write",
+        ],
+        &["en,ja"],
+        "vcs_port_branch_read_only_guard_precedes_all_prompts_and_writes",
+    ),
+    (
+        "e2e_vcs_branches_empty_allows_create_and_has_no_row_actions",
+        &[
+            "rows:empty-placeholder",
+            "enter:no-dialog",
+            "d:no-dialog",
+            "c:blank-flash",
+        ],
+        &["git"],
+        "vcs_port_branch_empty_repository_allows_create_and_has_no_row_actions",
+    ),
+    (
+        "e2e_vcs_worktrees_create_works_on_empty_filter_and_blank_does_not_reopen",
+        &["filter:empty-create-works", "blank:flash-no-reopen"],
+        &["en"],
+        "vcs_port_worktree_create_works_on_empty_filter_and_blank_does_not_reopen",
+    ),
+    (
+        "e2e_vcs_worktrees_diff_empty_and_refused_rows_flash_without_push",
+        &["diff:refused-flash", "diff:stays-on-screen-cursor-and-root"],
+        &["en,ja:main-clean,prunable,bare"],
+        "vcs_port_worktree_diff_empty_and_refused_rows_flash_without_push",
+    ),
+    (
+        "e2e_vcs_worktrees_read_only_blocks_create_before_prompt_but_all_navigation_and_diff_work",
+        &[
+            "create:guard-flash-no-prompt-no-write",
+            "enter:opens-linked-root",
+            "diff:opens-worktree-diff",
+        ],
+        &["en,ja"],
+        "vcs_port_worktree_read_only_blocks_create_before_prompt_but_navigation_and_diff_work",
+    ),
 ];
 
 // Kept independently from GROUPS so deleting a table entry cannot silently shrink the scope.
@@ -1961,7 +2192,15 @@ fn every_ported_assertion_names_an_existing_new_test() {
             + GAP_ROWS
             + 71
             // The Log Space minimum, now an ordinary assertion: git and jj.
-            + 2,
+            + 2
+            // The D (VCS write) ports: vcs_writes.rs 298 (180 stage/unstage + 14 all/empty + 3
+            // empty keys + 14 discard + 4 n/N + 2 esc + 4 enter/Y + 6 commit + 12 read-only + 7
+            // refresh + 8 footer/help + 24 jj confirm + 8 jj no-confirm + 12 jj read-only),
+            // vcs_branches.rs 46 (16 checkout + 6 create + 14 delete + 6 read-only + 4 empty),
+            // vcs_worktrees.rs 20 (2 create + 12 diff + 6 read-only).
+            + 298
+            + 46
+            + 20,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

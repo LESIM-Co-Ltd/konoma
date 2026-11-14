@@ -130,6 +130,30 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
             "e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration",
             "e2e_vcs_branches_copy_menu_clipboard_footer_and_help_match_legacy_acts",
+            "e2e_vcs_branches_checkout_current_and_other_branch_reload_and_tree_status",
+            "e2e_vcs_branches_create_success_blank_and_failure_keeps_typed_input",
+            "e2e_vcs_branches_delete_dialog_safe_force_cancel_and_current_guard",
+            "e2e_vcs_branches_read_only_guard_precedes_all_prompts_and_writes",
+            "e2e_vcs_branches_empty_allows_create_and_has_no_row_actions",
+        ],
+    ),
+    (
+        "src/e2e_tests/vcs_writes.rs",
+        &[
+            "e2e_vcs_writes_stage_unstage_modified_new_deleted_renamed_cjk_and_path_styles",
+            "e2e_vcs_writes_all_and_empty_guards_match_without_running_git",
+            "e2e_vcs_writes_empty_file_keys_never_invoke_git_or_flash",
+            "e2e_vcs_writes_discard_confirmation_and_failures",
+            "e2e_vcs_writes_discard_cancel_n_matches_legacy_flash_and_closes",
+            "e2e_vcs_writes_discard_cancel_escape_matches_legacy_flash_and_closes",
+            "e2e_vcs_writes_discard_enter_does_nothing_and_uppercase_y_confirms",
+            "e2e_vcs_writes_commit_success_empty_and_failed_hook_preserves_prompt",
+            "e2e_vcs_writes_read_only_refuses_every_git_write_before_prompt_or_dispatch",
+            "e2e_vcs_writes_refresh_current_screen_tree_status_and_commit_chip",
+            "e2e_vcs_writes_footer_help_exact_except_empty_inert_file_keys",
+            "e2e_vcs_writes_jj_sync_confirmation_cancel_enter_and_uppercase_y",
+            "e2e_vcs_writes_jj_sync_setting_false_snapshots_without_prompt",
+            "e2e_vcs_writes_jj_sync_read_only_refuses_before_prompt_or_snapshot",
         ],
     ),
     (
@@ -138,6 +162,9 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "e2e_vcs_project_footer_log_changes_and_worktrees_have_one_entry_per_key",
             "e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior",
             "e2e_vcs_worktrees_footer_preserves_legacy_action_priority_and_labels",
+            "e2e_vcs_worktrees_create_works_on_empty_filter_and_blank_does_not_reopen",
+            "e2e_vcs_worktrees_diff_empty_and_refused_rows_flash_without_push",
+            "e2e_vcs_worktrees_read_only_blocks_create_before_prompt_but_all_navigation_and_diff_work",
         ],
     ),
     (
@@ -195,6 +222,7 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
             total += 1;
         }
     }
-    assert_eq!(total, 106, "frozen B/C/H/S inventory");
+    // 106 + 14 (vcs_writes.rs) + 5 (vcs_branches.rs D) + 3 (vcs_worktrees.rs D: create, diff, read-only).
+    assert_eq!(total, 128, "frozen B/C/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }
