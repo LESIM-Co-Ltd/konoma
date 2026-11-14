@@ -1496,6 +1496,110 @@ fn vcs_port_worktree_read_only_blocks_create_before_prompt_but_navigation_and_di
     }
 }
 
+/// `git_op_result_does_not_disturb_another_tab`'s `write:still-completes`: the discard whose
+/// reply lands while a different tab is shown still did its work — the file reverts on disk —
+/// and the tab in front is left alone. The asking tab picks its queued effect up when it is
+/// shown again.
+#[test]
+fn vcs_port_write_discard_reply_landing_on_another_tab_still_reverts_the_file() {
+    let mut w = W::git(
+        "vcs_port_write_other_tab_discard",
+        true,
+        "en",
+        "relative",
+        false,
+    );
+    w.select("a-modified");
+    w.key('x');
+    // Confirm by a raw key so no poll applies the reply before the second tab is shown.
+    handle_key(
+        &mut w.sim.app,
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+    )
+    .unwrap();
+    // A tab rooted outside the repository when the reply lands: it does not reach it.
+    w.sim.key('t');
+    w.sim.app.tree_leave().unwrap();
+    assert!(!w.sim.app.tab.root.starts_with(&w.root));
+    w.sim.app.wait_project_job();
+    assert_eq!(w.calls.lock().unwrap().acts, ["discard"]);
+    assert_eq!(
+        std::fs::read_to_string(w.root.join("a-modified")).unwrap(),
+        "base a-modified\n",
+        "the discard completes even though its reply landed on another tab"
+    );
+    assert_eq!(
+        w.sim.app.flash, None,
+        "the shown tab does not take the write's flash"
+    );
+    // Back on the asking tab the queued effect arrives: its flash reports the revert and its
+    // refreshed list no longer carries the file.
+    w.sim.key('[');
+    w.sim.app.poll_projects();
+    drain(&mut w.sim);
+    assert!(
+        w.sim.app.flash.is_some(),
+        "the asking tab receives the write's flash"
+    );
+    assert!(
+        !w.rows().iter().any(|row| row.contains("a-modified")),
+        "the reverted file leaves the change list"
+    );
+}
+
+/// `same_root_tab_is_refreshed_even_though_it_is_not_the_origin`: a second tab at the same root
+/// that cached the change list before the write keeps the stale rows only until its own watcher
+/// reports the index the stage wrote; that event dirties every cached view, so the tab that did
+/// not ask still shows the latest list.
+#[test]
+fn vcs_port_write_stage_in_another_tab_revalidates_the_same_root_changes_screen() {
+    let mut w = W::git("vcs_port_same_root_refresh", true, "en", "relative", false);
+    // The second tab at the same root opens the change list before the write, so its rows are
+    // the cached pre-write state rather than a fresh first fetch.
+    w.sim.key('t');
+    w.sim.app.tab.projects.wait_for_result();
+    w.sim.app.poll_projects();
+    w.sim.key('p');
+    drain(&mut w.sim);
+    assert!(w.sim.app.project_active(), "{:?}", w.sim.app.flash);
+    assert!(w.sim.app.tab.projects.uses_injected_events());
+    let other = w.sim.app.tab.id;
+    assert_eq!(w.rows(), rows_with("relative", &[]));
+
+    // Back on the first tab, stage the file.
+    w.sim.key('[');
+    assert_ne!(w.sim.app.tab.id, other);
+    w.select("a-modified");
+    w.key('s');
+    assert_eq!(w.rows(), rows_with("relative", &["a-modified"]));
+
+    // On the second tab the write did not arrive: its cached rows are still the stale ones.
+    w.sim.key(']');
+    assert_eq!(w.sim.app.tab.id, other);
+    assert_eq!(
+        w.rows(),
+        rows_with("relative", &[]),
+        "another tab's cached view does not move without its own invalidation"
+    );
+    // Its own watcher reports the index write the stage produced; every cached view is dirty
+    // and the shown screen refetches.
+    let gitdir = crate::git::git_dir(&w.root).unwrap();
+    w.sim
+        .app
+        .tab
+        .projects
+        .inject_event(Ok(notify::Event::new(notify::EventKind::Modify(
+            notify::event::ModifyKind::Any,
+        ))
+        .add_path(gitdir.join("index"))));
+    drain(&mut w.sim);
+    assert_eq!(
+        w.rows(),
+        rows_with("relative", &["a-modified"]),
+        "the tab that did not ask still follows the latest change list"
+    );
+}
+
 // The old-hub e2e ports live in their own file but reuse this file's fixtures (child module).
 #[path = "vcs_hub_e2e_port.rs"]
 mod vcs_hub_e2e_port;

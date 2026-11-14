@@ -26148,3 +26148,51 @@ impl super::App {
         self.tab.git_view = false;
     }
 }
+
+/// The project canvas is a paused surface too: a follow file-diff result that lands while the
+/// `p` canvas is shown must not replace it (same contract as the paused legacy hub).
+#[cfg(feature = "git")]
+#[test]
+fn jj_follow_result_does_not_interrupt_the_project_canvas() {
+    if !crate::vcs::jj::available() {
+        eprintln!("skipping: jj unavailable");
+        return;
+    }
+    let Some(dir) = jj_scratch_seeded("konoma_follow_project_canvas") else {
+        return;
+    };
+    std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+    assert!(crate::test_support::run_jj(&dir, &["status"]));
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root, Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_follow_loader(tx);
+    app.toggle_follow();
+    let receive = |rx: &std::sync::mpsc::Receiver<_>| {
+        rx.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("follow worker answers")
+    };
+    assert!(app.apply_follow(receive(&rx)));
+    let path = app.tab.root.join("a.txt");
+    std::fs::write(&path, b"after\n").unwrap();
+    assert!(app.follow_note_change(&path));
+    app.follow_jump(&path);
+    let held = receive(&rx);
+    app.tab.projects.wait_for_result();
+    app.poll_projects();
+    assert!(app.enter_project());
+    for _ in 0..32 {
+        app.poll_projects();
+        if !app.project_jobs_pending() {
+            break;
+        }
+        app.wait_project_job();
+    }
+    assert!(app.project_active(), "the `p` project canvas must be open");
+    assert!(app.apply_follow(held));
+    assert!(
+        app.project_active(),
+        "a late follow result must not replace the project canvas with a diff"
+    );
+    assert!(!app.is_git_diff_preview());
+}

@@ -2775,6 +2775,413 @@ const GROUPS: &[Group] = &[
         &["read-only"],
         "vcs_port_branch_read_only_guard_precedes_all_prompts_and_writes",
     ),
+    // ---- The old-hub WRITE unit tests (96 rows): src/app/tests.rs git_op block + the basic
+    // git-view/worktree/branch/commit tests, write_guard_tests.rs, follow_worker.rs ----
+    (
+        "open_git_view_lists_changes_and_stage_reloads",
+        &["changes:lists-entries", "changes:all-unstaged"],
+        &["app"],
+        "e2e_vcs_changes_git_body_cell_parity_with_staged_unstaged_rename_delete_cjk_and_empty",
+    ),
+    (
+        "open_git_view_lists_changes_and_stage_reloads",
+        &["s:stage-reloads-staged"],
+        &["app"],
+        "vcs_port_write_stage_unstage_each_file_kind_style_and_language",
+    ),
+    (
+        "open_git_view_lists_changes_and_stage_reloads",
+        &["close:leaves-the-list"],
+        &["app"],
+        "e2e_vcs_log_exit_returns_to_origin_and_h_goes_back_like_q",
+    ),
+    (
+        "refresh_in_git_view_refetches_entries",
+        &["refresh:external-change-grows-the-list"],
+        &["app"],
+        "e2e_vcs_changes_linked_worktree_external_index_event_refreshes_the_session",
+    ),
+    (
+        "refresh_in_git_view_refetches_entries",
+        &["r:refetches-the-screen"],
+        &["app"],
+        "e2e_vcs_log_r_refreshes_current_screen_and_remaps_filtered_identity",
+    ),
+    (
+        "git_view_stage_all_then_unstage_all",
+        &["S:all-staged", "U:all-unstaged"],
+        &["app"],
+        "e2e_vcs_writes_all_and_empty_guards_match_without_running_git",
+    ),
+    (
+        "git_diff_discard_confirm_reverts_and_returns_to_view",
+        &[
+            "x-in-diff:confirm-opens",
+            "y:reverts-and-returns",
+            "list:clean-after-discard",
+        ],
+        &["app"],
+        "project_diff_discard_confirm_returns_refreshes_and_keeps_flash",
+    ),
+    (
+        "git_view_unstage_single_file_reloads",
+        &["s:stages-the-row", "u:unstages-and-reloads"],
+        &["app"],
+        "vcs_port_write_stage_unstage_each_file_kind_style_and_language",
+    ),
+    (
+        "git_view_start_discard_opens_confirm_without_destroying",
+        &["x:confirm-opens-file-untouched"],
+        &["app"],
+        "e2e_vcs_writes_discard_confirmation_and_failures",
+    ),
+    (
+        "git_view_start_discard_opens_confirm_without_destroying",
+        &["cancel:closes-the-confirm"],
+        &["app"],
+        "e2e_vcs_writes_discard_cancel_escape_matches_legacy_flash_and_closes",
+    ),
+    (
+        "git_branches_list_checkout_and_create",
+        &["list:feature-shown", "cursor:on-current"],
+        &["app"],
+        "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
+    ),
+    (
+        "git_branches_list_checkout_and_create",
+        &["filter:narrows-and-clears"],
+        &["app"],
+        "vcs_hub_e2e_branches_filter_narrows_to_the_query_and_clears_on_escape",
+    ),
+    (
+        "git_branches_list_checkout_and_create",
+        &["checkout:switches-branch"],
+        &["app"],
+        "e2e_vcs_branches_checkout_current_and_other_branch_reload_and_tree_status",
+    ),
+    (
+        "git_branches_list_checkout_and_create",
+        &["decided:checkout-stays-on-branches-screen"],
+        &["app"],
+        "e2e_vcs_branches_checkout_current_and_other_branch_reload_and_tree_status",
+    ),
+    (
+        "git_branches_list_checkout_and_create",
+        &["c:create-and-switch"],
+        &["app"],
+        "e2e_vcs_branches_create_success_blank_and_failure_keeps_typed_input",
+    ),
+    (
+        "git_branches_list_checkout_and_create",
+        &["d:current-branch-refused", "d:confirm-deletes-feature"],
+        &["app"],
+        "e2e_vcs_branches_delete_dialog_safe_force_cancel_and_current_guard",
+    ),
+    (
+        "worktree_create_flow_creates_a_new_branch_and_switches_into_it",
+        &[
+            "switch:tab-root",
+            "switch:open-dir",
+            "dir:on-disk",
+            "list:closes",
+        ],
+        &["app"],
+        "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+    ),
+    (
+        "worktree_create_flow_creates_a_new_branch_and_switches_into_it",
+        &["repo:worktree-registered", "repo:branch-created"],
+        &["app"],
+        "worktree_create_switch_failure_and_diff_match_host",
+    ),
+    (
+        "worktree_create_flow_checks_out_an_existing_branch_without_creating_a_duplicate",
+        &["existing:checked-out", "existing:no-duplicate-branch"],
+        &["app"],
+        "worktree_create_switch_failure_and_diff_match_host",
+    ),
+    (
+        "worktree_create_flow_checks_out_an_existing_branch_without_creating_a_duplicate",
+        &["switch:tab-root"],
+        &["app"],
+        "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+    ),
+    (
+        "worktree_create_flow_fails_with_gits_message_when_branch_is_already_checked_out_elsewhere",
+        &[
+            "fatal:first-in-flash",
+            "fatal:no-command-string",
+            "root:unchanged",
+            "list:still-open",
+        ],
+        &["app"],
+        "vcs_port_worktree_create_blank_and_git_failure_flash_without_reopen",
+    ),
+    (
+        "git_commit_flow_creates_commit_with_message",
+        &[
+            "c:opens-commit-input",
+            "commit:created-with-message",
+            "dialog:closes-on-success",
+        ],
+        &["app"],
+        "vcs_port_write_commit_blank_success_and_failed_hook_keep_the_prompt",
+    ),
+    (
+        "git_commit_flow_creates_commit_with_message",
+        &["log:subject-shown"],
+        &["app"],
+        "vcs_port_write_commit_then_log_screen_shows_the_subject",
+    ),
+    (
+        "git_commit_empty_message_is_rejected",
+        &["blank:rejected", "blank:flash-empty", "blank:no-commit"],
+        &["app"],
+        "vcs_port_write_commit_blank_success_and_failed_hook_keep_the_prompt",
+    ),
+    (
+        "git_op_runs_in_background_when_runner_attached",
+        &["op:runs-in-background"],
+        &["app"],
+        "vcs_port_write_stage_runs_in_the_background_and_stages_after_drain",
+    ),
+    (
+        "git_op_runs_in_background_when_runner_attached",
+        &["busy:listed", "busy:forced-when-off"],
+        &["app"],
+        "e2e_busy_label_lists_a_held_project_write_and_drops_it_after",
+    ),
+    (
+        "git_op_runs_in_background_when_runner_attached",
+        &["busy:forced-indicator"],
+        &["app"],
+        "e2e_busy_indicator_is_forced_during_a_held_project_write_even_when_off",
+    ),
+    (
+        "git_op_runs_in_background_when_runner_attached",
+        &["watcher:deferred", "watcher:released-once"],
+        &["app"],
+        "e2e_watcher_burst_is_held_during_a_project_write_and_applied_once_after_the_reply",
+    ),
+    (
+        "git_op_runs_in_background_when_runner_attached",
+        &["ui:stays-responsive"],
+        &["app"],
+        "vcs_hub_e2e_ui_keeps_responding_while_a_real_git_commit_is_blocked",
+    ),
+    (
+        "git_op_runs_in_background_when_runner_attached",
+        &[
+            "apply:marks-staged",
+            "repo:index-staged",
+            "flash:reports",
+        ],
+        &["app"],
+        "vcs_port_write_stage_unstage_each_file_kind_style_and_language",
+    ),
+    // No synchronous fallback exists: ProjectRuntime::start always spawns the serial owner worker
+    // (crates/konoma-plugin/src/host/project/runtime.rs:190); acts are sent over its channel.
+    (
+        "git_op_falls_back_to_synchronous_without_a_runner",
+        &["n/a:no-sync-fallback-acts-always-on-owner-worker"],
+        &["app"],
+        "vcs_port_write_stage_runs_in_the_background_and_stages_after_drain",
+    ),
+    (
+        "stale_git_op_result_is_dropped",
+        &["stale:reply-dropped", "stale:pending-kept"],
+        &["app"],
+        "root_replacement_rejects_old_jobs_and_preserves_failure_state",
+    ),
+    (
+        "git_op_result_does_not_disturb_another_tab",
+        &["other-tab:filter-cursor-root-untouched"],
+        &["app"],
+        "e2e_project_reply_landing_on_a_background_tab_disturbs_nothing_shown",
+    ),
+    (
+        "git_op_result_does_not_disturb_another_tab",
+        &["write:still-completes"],
+        &["app"],
+        "vcs_port_write_discard_reply_landing_on_another_tab_still_reverts_the_file",
+    ),
+    (
+        "git_op_result_does_not_disturb_another_tab",
+        &["status:revalidation-requested"],
+        &["app"],
+        "e2e_project_tree_status_queued_effect_marks_dirty_when_its_tab_is_applied",
+    ),
+    (
+        "failed_git_op_keeps_gits_fatal_line_first_and_reopens_the_dialog",
+        &["fatal:first-in-flash", "fatal:no-command-string"],
+        &["app"],
+        "vcs_port_worktree_create_blank_and_git_failure_flash_without_reopen",
+    ),
+    (
+        "failed_git_op_keeps_gits_fatal_line_first_and_reopens_the_dialog",
+        &["dialog:reopens-with-typed-text"],
+        &["app"],
+        "e2e_vcs_branches_create_success_blank_and_failure_keeps_typed_input",
+    ),
+    (
+        "failed_git_op_does_not_clobber_a_dialog_opened_meanwhile",
+        &["host-dialog:not-clobbered", "fatal:still-flashed"],
+        &["app"],
+        "e2e_project_keep_input_host_dialog_is_not_overwritten",
+    ),
+    (
+        "failed_git_op_does_not_clobber_a_dialog_opened_meanwhile",
+        &["project-dialog:not-clobbered"],
+        &["app"],
+        "e2e_project_keep_input_project_dialog_is_not_overwritten",
+    ),
+    (
+        "failed_git_op_does_not_clobber_a_dialog_opened_meanwhile",
+        &["host-input:not-clobbered"],
+        &["app"],
+        "e2e_project_keep_input_host_text_input_is_not_overwritten",
+    ),
+    (
+        "failed_commit_reopens_the_dialog_with_the_message",
+        &[
+            "commit-input:reopens-with-message",
+            "commit:not-created",
+            "flash:failure-reported",
+        ],
+        &["app"],
+        "vcs_port_write_commit_blank_success_and_failed_hook_keep_the_prompt",
+    ),
+    (
+        "failed_commit_reopens_the_dialog_with_the_message",
+        &["typed-text:preserved-for-retry"],
+        &["app"],
+        "e2e_project_keep_input_failure_preserves_text_and_invocation_for_retry",
+    ),
+    (
+        "failed_commit_does_not_clobber_a_dialog_opened_meanwhile",
+        &["host-dialog:not-clobbered"],
+        &["app"],
+        "e2e_project_keep_input_host_dialog_is_not_overwritten",
+    ),
+    (
+        "failed_commit_does_not_clobber_a_dialog_opened_meanwhile",
+        &["project-dialog:not-clobbered"],
+        &["app"],
+        "e2e_project_keep_input_project_dialog_is_not_overwritten",
+    ),
+    (
+        "git_status_is_revalidated_after_a_git_write",
+        &["status:revalidated-after-write"],
+        &["app"],
+        "e2e_vcs_writes_refresh_current_screen_tree_status_and_commit_chip",
+    ),
+    (
+        "git_status_is_revalidated_after_a_git_write",
+        &["status:tree-dirty-marked"],
+        &["app"],
+        "e2e_project_tree_status_effect_of_a_background_tab_marks_the_shown_tree_dirty",
+    ),
+    (
+        "failed_git_op_does_not_restore_over_an_active_filter",
+        &["filter:retry-dropped", "filter:text-preserved"],
+        &["app"],
+        "e2e_project_keep_input_active_filter_is_not_overwritten",
+    ),
+    (
+        "failed_git_op_does_not_restore_over_an_active_filter",
+        &["fatal:still-flashed"],
+        &["app"],
+        "e2e_project_keep_input_host_dialog_is_not_overwritten",
+    ),
+    (
+        "worktree_add_never_relocates_a_tab_that_did_not_ask",
+        &[
+            "other-tab:root-unchanged",
+            "worktree:created",
+            "origin:relocates-when-shown",
+        ],
+        &["app"],
+        "e2e_project_switch_root_reply_relocates_only_the_tab_that_asked",
+    ),
+    (
+        "worktree_add_never_relocates_a_tab_that_did_not_ask",
+        &["flash:created-message"],
+        &["app"],
+        "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+    ),
+    // A text input can never be submitted into a running act: while the runtime acts, its act
+    // keys are disabled (crates/konoma-plugin/src/host/project/actions.rs:232,423 — `request_act`
+    // requires `!acting`), and while a prompt is open every key feeds the dialog, so no act can
+    // start under it (src/app/project_screens.rs:1170-1173). Submitting into a busy view queues
+    // the invocation with its text instead (actions.rs:284-290). No typed text can meet a busy
+    // refusal; the old reopen path has no counterpart to pin. The anchor test fixes the
+    // mechanism from both sides — act keys dead under a running act, act keys typing into an
+    // open prompt — and keeps the one text a running act can meet (the `/` filter) intact.
+    (
+        "refused_git_op_puts_the_typed_text_back",
+        &["n/a:busy-submit-unreachable-prompts-and-running-acts-are-mutually-exclusive"],
+        &["app"],
+        "e2e_project_prompt_and_running_act_are_mutually_exclusive",
+    ),
+    (
+        "same_root_tab_is_refreshed_even_though_it_is_not_the_origin",
+        &["same-root:tree-status-dirty"],
+        &["app"],
+        "e2e_project_tree_status_effect_of_a_background_tab_marks_the_shown_tree_dirty",
+    ),
+    (
+        "same_root_tab_is_refreshed_even_though_it_is_not_the_origin",
+        &["same-root:screen-refreshed"],
+        &["app"],
+        "vcs_port_write_stage_in_another_tab_revalidates_the_same_root_changes_screen",
+    ),
+    (
+        "ui_confirm_jj_sync_gates_the_only_write",
+        &["default:asks", "confirm:on-asks"],
+        &["app"],
+        "vcs_port_write_jj_sync_confirmation_cancel_enter_and_uppercase_y",
+    ),
+    (
+        "ui_confirm_jj_sync_gates_the_only_write",
+        &["confirm:off-acts-and-reports"],
+        &["app"],
+        "vcs_port_write_jj_sync_setting_false_snapshots_without_prompt",
+    ),
+    (
+        "guard_refuses_every_git_job_even_without_an_action_declaration_or_a_repository",
+        &[
+            "each-write:refused-before-dispatch",
+            "each-write:read-only-flash",
+        ],
+        &["app"],
+        "e2e_vcs_writes_read_only_refuses_every_git_write_before_prompt_or_dispatch",
+    ),
+    (
+        "guard_refuses_every_git_job_even_without_an_action_declaration_or_a_repository",
+        &["worktree-add:refused-before-prompt"],
+        &["app"],
+        "e2e_vcs_worktrees_read_only_blocks_create_before_prompt_but_all_navigation_and_diff_work",
+    ),
+    (
+        "guard_refuses_jj_sync_before_a_dialog_or_backend_detection",
+        &[
+            "sync:refused-before-prompt",
+            "sync:read-only-flash",
+            "sync:no-snapshot",
+        ],
+        &["app"],
+        "e2e_vcs_writes_jj_sync_read_only_refuses_before_prompt_or_snapshot",
+    ),
+    (
+        "jj_follow_worker_does_not_interrupt_a_paused_surface",
+        &[
+            "result:lands",
+            "paused-canvas:not-replaced",
+            "diff:not-opened",
+        ],
+        &["app"],
+        "jj_follow_result_does_not_interrupt_the_project_canvas",
+    ),
 ];
 
 // Kept independently from GROUPS so deleting a table entry cannot silently shrink the scope.
@@ -2995,7 +3402,15 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // active-worktree diff 4 + bare diff refusal 4 + diff layout toggle 12 +
             // commit-in-log 8 + background-runner commit 6 + stage round trip 2 + stage-all 2 +
             // read-only checkout 5.
-            + 108,
+            + 108
+            // The old-hub WRITE unit tests (src/app/tests.rs, write_guard_tests.rs,
+            // follow_worker.rs), 96 rows: basic git-view list/refresh/stage/discard/unstage 15 +
+            // branches list/checkout/create/delete 8 + worktree create flows 13 + commit flows 7 +
+            // git_op background/busy/watcher/stale/cross-tab/status/same-root/relocation
+            // machinery 23 + failure fatal-first/reopen/no-clobber/no-filter-hijack 16 +
+            // busy-submit n/a 1 + sync-fallback n/a 1 + jj sync gate 3 + write guard 6 +
+            // follow paused surface 3.
+            + 96,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

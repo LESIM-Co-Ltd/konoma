@@ -2550,6 +2550,168 @@ fn e2e_project_tree_status_queued_effect_marks_dirty_when_its_tab_is_applied() {
     );
 }
 
+/// A project act reply that lands while another tab is shown changes nothing there: the second
+/// tab's filter text, cursor and root are untouched, and the origin tab still shows its project.
+#[test]
+fn e2e_project_reply_landing_on_a_background_tab_disturbs_nothing_shown() {
+    let (mut f, hold, origin) = held_tree_status_act("project_reply_other_tab_undisturbed");
+    // Move the second tab outside the project root and into a committed `/` filter.
+    f.sim.app.tree_leave().unwrap();
+    f.sim.app.start_filter();
+    for c in "a".chars() {
+        f.sim.app.filter_input_push(c);
+    }
+    f.sim.app.filter_commit();
+    f.sim.key('j');
+    f.sim.app.clear_project_tree_dirty();
+    let before = (
+        f.sim.app.tab.root.clone(),
+        f.sim.app.tab.entries.len(),
+        f.sim.app.tab.selected,
+        f.sim.app.filter_query().map(str::to_string),
+    );
+    hold.open();
+    wait_without_drawing(&mut f);
+    assert_eq!(
+        (
+            f.sim.app.tab.root.clone(),
+            f.sim.app.tab.entries.len(),
+            f.sim.app.tab.selected,
+            f.sim.app.filter_query().map(str::to_string),
+        ),
+        before,
+        "a reply landing on a background tab must not touch the shown tab"
+    );
+    assert!(
+        !f.sim.app.project_tree_dirty(),
+        "a write in another repository must not invalidate this tab's tree status"
+    );
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.id, origin);
+    assert!(f.sim.app.project_active());
+}
+
+/// A held SwitchRoot act relocates only the tab that asked: a second tab opened at the same root
+/// keeps its root when the reply lands, and the asking tab relocates when it is shown again.
+#[test]
+fn e2e_project_switch_root_reply_relocates_only_the_tab_that_asked() {
+    let hold = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture(
+        "project_switch_root_other_tab",
+        false,
+        1,
+        None,
+        Some(hold.clone()),
+        Some(started.clone()),
+    );
+    f.log.lock().unwrap().outcome = Some(Outcome::SwitchRoot {
+        root: canon(&f._dir.join("destination")),
+        message: None,
+    });
+    open(&mut f);
+    let origin = f.sim.app.tab.id;
+    let origin_root = f.sim.app.tab.root.clone();
+    f.sim.press(KeyCode::F(11), KeyModifiers::NONE);
+    started.wait();
+    f.sim.key('t');
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    let other = f.sim.app.tab.id;
+    assert_ne!(other, origin);
+    assert_eq!(
+        f.sim.app.tab.root, origin_root,
+        "t opens the tab at the same root"
+    );
+    hold.open();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.sim.app.tab.root, origin_root,
+        "the tab that did not ask must keep its root"
+    );
+    assert!(f._dir.join("destination").is_dir());
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.id, origin);
+    assert_eq!(
+        f.sim.app.tab.root,
+        canon(&f._dir.join("destination")),
+        "the asking tab relocates when its queued effect is applied"
+    );
+    assert!(!f.sim.app.project_active());
+}
+
+/// `refused_git_op_puts_the_typed_text_back` protected a state this path cannot reach: a typed
+/// prompt submitted into a running write. Both directions are mutually exclusive here — an
+/// open prompt feeds every key into its buffer, so no act can start beneath it, and while an
+/// act runs its act keys are disabled, so no prompt can open on top of it. The only text a
+/// running act can meet is the screen's own `/` filter, which keeps its characters across the
+/// act's reply.
+#[test]
+fn e2e_project_prompt_and_running_act_are_mutually_exclusive() {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture(
+        "project_prompt_act_exclusion",
+        false,
+        1,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+    );
+    open(&mut f);
+
+    // With a text prompt open, an act key types into the buffer instead of dispatching.
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    assert!(f.sim.app.project_dialog.is_some());
+    f.sim.keys("partial");
+    f.sim.key('w');
+    assert!(
+        f.log.lock().unwrap().acts.is_empty(),
+        "an act key inside a prompt cannot dispatch a write"
+    );
+    assert!(matches!(
+        &f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. })
+            if buffer.ends_with("partialw")
+    ));
+    f.sim.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(f.sim.app.project_dialog.is_none());
+    assert!(f.log.lock().unwrap().acts.is_empty());
+
+    // With an act held, the prompt's act key is dead, a second act key does not dispatch, and
+    // the `/` filter — the only in-progress text a running act can meet — keeps its text.
+    f.sim.key('w');
+    started.wait();
+    assert_eq!(f.log.lock().unwrap().acts.len(), 1);
+    f.sim.key('w');
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    assert!(
+        f.sim.app.project_dialog.is_none(),
+        "no prompt can open while an act runs"
+    );
+    assert_eq!(
+        f.log.lock().unwrap().acts.len(),
+        1,
+        "a second act key while one runs dispatches nothing"
+    );
+    f.sim.key('/');
+    f.sim.keys("al");
+    assert!(f.sim.app.project_frame().unwrap().filtering);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    assert!(f.sim.app.project_dialog.is_none());
+    assert_eq!(f.sim.app.project_frame().unwrap().query, "al");
+    release.open();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.sim.app.project_frame().unwrap().query,
+        "al",
+        "the in-progress filter text outlives the act's reply"
+    );
+    assert_eq!(f.log.lock().unwrap().acts.len(), 1);
+}
+
 #[test]
 fn e2e_project_no_implicit_refresh_and_one_owner_per_project_across_tabs() {
     let hold = Arc::new(Latch::default());
