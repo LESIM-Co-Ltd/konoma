@@ -202,16 +202,30 @@ fn edge_drawn_rows(buf: &ratatui::buffer::Buffer) -> usize {
         .count()
 }
 
-fn edge_backend(id: &str, screens: &[EdgeScreen]) {
+/// How many screens a backend test must have checked: all of them, or none when jj is absent
+/// (`old_repo` already printed the SKIPPED line). A silent pass over zero screens fails here.
+#[track_caller]
+fn edge_assert_checked(id: &str, checked: usize, per_screen: usize, screens: usize) {
+    if id == "jj" && !crate::vcs::jj::available() {
+        assert_eq!(checked, 0);
+    } else {
+        assert_eq!(checked, per_screen * screens, "{id}: screens actually checked");
+    }
+}
+
+fn edge_backend(id: &str, screens: &[EdgeScreen]) -> usize {
     let Some(root) = edge_repo(id) else {
-        return;
+        return 0;
     };
+    let mut checked = 0;
     for screen in screens {
         for lang in ["en", "ja"] {
+            checked += 1;
             let label = format!("{id} {screen:?} {lang}");
             let mut new = edge_new(&root, id, lang, (200, 14), *screen);
             let buf = edge_buffer(&mut new);
             let title = edge_title(&new);
+            assert!(!title.trim().is_empty(), "{label}: the list declares a title");
             // The wide frame: title at the top left, tabs at the right end, frame all around.
             let tabs = edge_tabs(&buf, &title);
             assert!(!tabs.trim().is_empty(), "{label}: tabs on the top edge");
@@ -247,6 +261,7 @@ fn edge_backend(id: &str, screens: &[EdgeScreen]) {
             }
         }
     }
+    checked
 }
 
 #[test]
@@ -255,7 +270,8 @@ fn vcs_project_frame_git_lists_draw_the_frame_title_left_and_tabs_right_until_th
     if isolated("vcs_project_frame_git_lists_draw_the_frame_title_left_and_tabs_right_until_the_width_is_short") {
         return;
     }
-    edge_backend("git", &GIT_EDGE_SCREENS);
+    let checked = edge_backend("git", &GIT_EDGE_SCREENS);
+    edge_assert_checked("git", checked, 2, GIT_EDGE_SCREENS.len());
 }
 
 #[test]
@@ -263,15 +279,18 @@ fn vcs_project_frame_jj_lists_draw_the_frame_title_left_and_tabs_right_until_the
     if isolated("vcs_project_frame_jj_lists_draw_the_frame_title_left_and_tabs_right_until_the_width_is_short") {
         return;
     }
-    edge_backend("jj", &JJ_EDGE_SCREENS);
+    let checked = edge_backend("jj", &JJ_EDGE_SCREENS);
+    edge_assert_checked("jj", checked, 2, JJ_EDGE_SCREENS.len());
 }
 
-fn edge_same_rows(id: &str, screens: &[EdgeScreen]) {
+fn edge_same_rows(id: &str, screens: &[EdgeScreen]) -> usize {
     let Some(root) = edge_repo(id) else {
-        return;
+        return 0;
     };
+    let mut checked = 0;
     for screen in screens {
         for size in [(120, 10), (60, 8), (160, 14)] {
+            checked += 1;
             let label = format!("{id} {screen:?} at {size:?}");
             let mut old = edge_old(&root, id, size, *screen);
             let old_buf = edge_buffer(&mut old);
@@ -282,6 +301,7 @@ fn edge_same_rows(id: &str, screens: &[EdgeScreen]) {
             assert_eq!(new_rows, old_rows, "{label}: list rows drawn, new vs old hub");
         }
     }
+    checked
 }
 
 #[test]
@@ -289,7 +309,8 @@ fn vcs_project_frame_git_lists_show_as_many_rows_as_the_old_hub() {
     if isolated("vcs_project_frame_git_lists_show_as_many_rows_as_the_old_hub") {
         return;
     }
-    edge_same_rows("git", &GIT_EDGE_SCREENS);
+    let checked = edge_same_rows("git", &GIT_EDGE_SCREENS);
+    edge_assert_checked("git", checked, 3, GIT_EDGE_SCREENS.len());
 }
 
 #[test]
@@ -297,5 +318,6 @@ fn vcs_project_frame_jj_lists_show_as_many_rows_as_the_old_hub() {
     if isolated("vcs_project_frame_jj_lists_show_as_many_rows_as_the_old_hub") {
         return;
     }
-    edge_same_rows("jj", &JJ_EDGE_SCREENS);
+    let checked = edge_same_rows("jj", &JJ_EDGE_SCREENS);
+    edge_assert_checked("jj", checked, 3, JJ_EDGE_SCREENS.len());
 }

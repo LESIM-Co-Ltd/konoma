@@ -37,6 +37,8 @@ fn e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths() {
     for width in [80, 160] {
         for lang in ["en", "ja"] {
             let (mut old, mut new) = open(&dir, lang, width);
+            let edge = super::drawn_top_edge(&mut new, width);
+            assert!(edge.starts_with("┌ Git branches"), "{edge:?}");
             same(&mut old, &mut new, width);
             old.key('j');
             new.key('j');
@@ -610,6 +612,12 @@ fn e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints() {
         old.key('b');
         new.key('b');
         drain(&mut new);
+        let edge = super::drawn_top_edge(&mut new, 160);
+        assert!(edge.starts_with("┌ jj bookmarks"), "{edge:?}");
+        assert!(
+            !edge.contains("Git") && !edge.contains("branches"),
+            "{edge:?}"
+        );
         same(&mut old, &mut new, 160);
         assert!(values(&new).iter().all(|(kind, _)| kind == "branch"));
         let tokens = crate::ops::footer::tokens(&new.app, Context::Canvas);

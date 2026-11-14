@@ -17,6 +17,7 @@ mod paths;
 pub mod standalone;
 #[cfg(all(test, feature = "app"))]
 mod standalone_tests;
+mod titles;
 mod worktrees;
 
 pub struct Git;
@@ -240,7 +241,11 @@ impl Session for Changes {
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktrees") {
             if matches!(self.backend, Backend::Git) {
                 self.worktree_home = project.home_dir.clone();
-                return Ok(worktrees::view(&self.root, project, cx));
+                let mut view = worktrees::view(&self.root, project, cx);
+                if let View::List(list) = &mut view {
+                    list.heading = Some(titles::worktrees());
+                }
+                return Ok(view);
             }
         }
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "detail") {
@@ -259,11 +264,20 @@ impl Session for Changes {
             }
             return Ok(View::Diff(view));
         }
+        let icons = req.project.as_ref().is_none_or(|p| p.icons);
         if req.project.as_ref().is_some_and(|p| p.screen == "log") {
-            return Ok(log::view(self.backend.log(&self.root), cx));
+            let mut view = log::view(self.backend.log(&self.root), cx);
+            if let View::List(list) = &mut view {
+                list.heading = Some(titles::log(&self.backend, &self.root, icons));
+            }
+            return Ok(view);
         }
         if req.project.as_ref().is_some_and(|p| p.screen == "branches") {
-            return Ok(branches::view(konoma_vcs_core::vcs::refs(&self.root), cx));
+            let mut view = branches::view(konoma_vcs_core::vcs::refs(&self.root), cx);
+            if let View::List(list) = &mut view {
+                list.heading = Some(titles::branches(&self.backend));
+            }
+            return Ok(view);
         }
         if req.project.as_ref().is_none_or(|p| p.screen != "changes") {
             return Err(Failure::unsupported(
@@ -316,12 +330,13 @@ impl Session for Changes {
                 .collect();
             return Ok(View::List(ListView {
                 rows,
+                heading: Some(titles::changes(&self.backend, &self.root, icons)),
                 ..Default::default()
             }));
         }
         Ok(View::List(ListView {
             title: None,
-            heading: None,
+            heading: Some(titles::changes(&self.backend, &self.root, icons)),
             bottom: None,
             rows: vec![ListRow::new(
                 "empty",

@@ -305,7 +305,7 @@ impl Graph {
         View::List(ListView {
             rows,
             title: Some(Line::raw(format!(
-                "{}  ({shown}/{})",
+                " {}  ({shown}/{}) ",
                 t!(en: "Graph branches", ja: "グラフのブランチ").get(lang),
                 self.order.len()
             ))),
@@ -422,20 +422,6 @@ impl Graph {
         } else {
             branches.len().saturating_sub(visible.len())
         };
-        let n = self.rows.iter().filter(|row| row.commit.is_some()).count();
-        let mut title = format!(
-            "{} graph  ({n})",
-            if matches!(backend, super::Backend::Git) {
-                "Git"
-            } else {
-                "jj"
-            }
-        );
-        if let Some(label) = &self.label {
-            if matches!(backend, super::Backend::Git) {
-                title.push_str(&format!("  {}base: {label}", if icons { "⌖ " } else { "" }));
-            }
-        }
         let rows = if self
             .rows
             .iter()
@@ -463,8 +449,8 @@ impl Graph {
         self.observe_for_test();
         View::List(ListView {
             rows,
-            title: Some(Line::raw(title)),
-            heading: None,
+            title: None,
+            heading: Some(super::titles::graph(backend, self.label.as_deref(), icons)),
             bottom: (!legend.is_empty()).then(|| legend_strip(&legend, hidden, icons, cx.lang)),
         })
     }
@@ -543,7 +529,9 @@ fn row_view(row: &GraphRow, inline: bool) -> ListRow {
         )
         .name(&row.short)
         .filter_text(filter)
-        .selectable(row.commit.is_some() || row.worktree);
+        .selectable(row.commit.is_some() || row.worktree)
+        // The title counts commits only: the working-tree row is selectable but not a commit.
+        .counted(row.commit.is_some());
     if !inline && !meta.is_empty() {
         result.right(super::log::right_meta(meta))
     } else {

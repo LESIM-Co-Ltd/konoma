@@ -167,7 +167,18 @@ pub fn draw_project(
                     .as_ref()
                     .map(|title| crate::ratatui_draw::into_line(title.clone())),
             },
-            ProjectContent::Diff(diff) => diff.title.clone(),
+            ProjectContent::Diff(diff) => diff.title.clone().map(|mut title| {
+                // A side-by-side layout is marked after the title, as the old hub did
+                // (` title ⇆ `).
+                if values.layout.is_split(body.width) {
+                    if let Some(last) = title.spans.last_mut() {
+                        let kept = last.content.trim_end().to_owned();
+                        last.content = kept.into();
+                    }
+                    title.spans.push(Span::raw(" ⇆ "));
+                }
+                title
+            }),
             ProjectContent::Lines(_) => None,
         };
         let title_width = title.as_ref().map_or(0, Line::width);

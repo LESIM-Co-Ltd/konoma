@@ -127,7 +127,7 @@ fn e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells() {
         drain(&mut new);
         assert!(new.app.project_pushed());
         assert_eq!(new.app.project_frame().unwrap().key.screen, "graph_picker");
-        picker_title_matches(&old, &new);
+        picker_title_matches(&mut old, &mut new);
         same(&mut old, &mut new, 160, 16);
         old.key('q');
         new.key('q');
@@ -141,7 +141,7 @@ fn e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells() {
         old.key('b');
         new.key('b');
         drain(&mut new);
-        picker_title_matches(&old, &new);
+        picker_title_matches(&mut old, &mut new);
         same(&mut old, &mut new, 160, 16);
     }
     for screen in ["changes", "log"] {
@@ -171,7 +171,7 @@ fn e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy(
                 let differences = compare_body(&mut old, &mut new, 160, 16);
                 assert!(differences.is_empty(), "{lang} {key}: {differences:?}");
                 assert_eq!(new.app.flash, old.app.flash, "{lang} {key}");
-                picker_title_matches(&old, &new);
+                picker_title_matches(&mut old, &mut new);
             }
             for key in [
                 KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
@@ -251,7 +251,7 @@ fn e2e_vcs_graph_picker_apply_rebuilds_and_reorder_derives_base() {
             drain(&mut new);
             assert!(!new.app.project_pushed());
             same(&mut old, &mut new, 160, 16);
-            let title = graph_list(&new).title.unwrap().plain();
+            let title = edge_text(&mut new);
             if let Some(label) = old.app.git_graph_base_label() {
                 assert!(title.contains(&format!("base: {label}")));
             } else {
@@ -348,17 +348,32 @@ fn picker_hints_match(old: &Sim, new: &Sim) {
     );
 }
 
-fn picker_title_matches(old: &Sim, new: &Sim) {
+/// The picker's top edge equals the old hub's cell for cell (tabs excepted), and the old hub's
+/// edge shows the shown and total counts the old hub's own data gives.
+fn picker_title_matches(old: &mut Sim, new: &mut Sim) {
     let items = old.app.git_graph_picker_items();
     let shown = items.iter().filter(|(_, _, on)| *on).count();
-    assert_eq!(
-        graph_list(new).title.unwrap().plain(),
-        format!(
-            "{}  ({shown}/{})",
-            crate::i18n::tr(old.app.lang, crate::i18n::Msg::GraphPickerTitle),
-            items.len()
-        )
+    let width = old.term.backend().buffer().area.width;
+    let draw = |sim: &mut Sim| {
+        sim.term
+            .draw(|frame| ui::render(frame, &mut sim.app))
+            .unwrap()
+            .buffer
+            .clone()
+    };
+    let (before, after) = (draw(old), draw(new));
+    let want = format!(
+        " {}  ({shown}/{}) ",
+        crate::i18n::tr(old.app.lang, crate::i18n::Msg::GraphPickerTitle),
+        items.len()
     );
+    let edge = crate::test_support::top_edge::row_text(&after, 1, 0..width);
+    assert!(
+        edge.starts_with(&format!("┌{want}")),
+        "picker title {want:?} at the left of {edge:?}"
+    );
+    let differences = compare_top_edge(&before, &after, width);
+    assert!(differences.is_empty(), "picker top edge: {differences:?}");
 }
 
 #[test]
@@ -383,6 +398,17 @@ fn new_graph_tab(sim: &mut Sim) {
         sim.press(KeyCode::Tab, KeyModifiers::NONE);
         drain(sim);
     }
+}
+
+/// The drawn top edge of the frame (row 1), as text.
+fn edge_text(sim: &mut Sim) -> String {
+    let buf = sim
+        .term
+        .draw(|frame| ui::render(frame, &mut sim.app))
+        .unwrap()
+        .buffer
+        .clone();
+    crate::test_support::top_edge::row_text(&buf, 1, 0..buf.area.width)
 }
 
 fn graph_list(sim: &Sim) -> konoma_plugin::view::ListView {
@@ -475,7 +501,7 @@ fn e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints() {
             new.key('b');
             drain(&mut new);
             let items = old.app.git_graph_picker_items();
-            picker_title_matches(&old, &new);
+            picker_title_matches(&mut old, &mut new);
             let source = crate::git::branches_by_recency(&dir);
             assert_eq!(items.len(), source.len());
             if !colocated {
@@ -665,7 +691,7 @@ fn e2e_vcs_graph_base_visible_order_and_view_cache_are_per_tab() {
     let ProjectContent::List(pinned) = pinned.as_ref() else {
         panic!()
     };
-    assert!(pinned.title.as_ref().unwrap().plain().contains("base:"));
+    assert!(edge_text(&mut new).contains("base:"));
     assert!(pinned
         .bottom
         .as_ref()
@@ -689,7 +715,8 @@ fn e2e_vcs_graph_base_visible_order_and_view_cache_are_per_tab() {
     let ProjectContent::List(unpinned) = content.as_ref() else {
         panic!()
     };
-    assert!(!unpinned.title.as_ref().unwrap().plain().contains("base:"));
+    let _ = unpinned;
+    assert!(!edge_text(&mut new).contains("base:"));
     new.key('r');
     drain(&mut new);
     new.app.tab_goto(0);
@@ -884,6 +911,40 @@ fn vcs_port_graph_help_keys_and_order_equal_legacy() {
     }
 }
 
+/// The jj graph's top edge is the old hub's, in both languages, with no base text (jj has no
+/// base pin) and the commit count only.
+#[test]
+fn e2e_vcs_graph_jj_title_matches_hub_in_both_languages() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let dir = jj_graph_fixture();
+    let _preference = Preference::pin("jj");
+    for lang in ["en", "ja"] {
+        let cfg = plugin_config("jj", "vcs_graph_jj_title", lang);
+        let (mut old, mut new) = pair_config(&dir, "jj", cfg, 160, 16);
+        old.app.open_git_graph();
+        for _ in 0..2 {
+            new.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut new);
+        }
+        let edge = edge_text(&mut new);
+        assert!(edge.starts_with("┌ jj graph  ("), "{lang}: {edge:?}");
+        assert!(!edge.contains("base:"), "{lang}: {edge:?}");
+        let width = new.term.backend().buffer().area.width;
+        let draw = |sim: &mut Sim| {
+            sim.term
+                .draw(|frame| ui::render(frame, &mut sim.app))
+                .unwrap()
+                .buffer
+                .clone()
+        };
+        let (before, after) = (draw(&mut old), draw(&mut new));
+        let differences = compare_top_edge(&before, &after, width);
+        assert!(differences.is_empty(), "{lang}: {differences:?}");
+    }
+}
+
 #[test]
 fn e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys() {
     if !crate::vcs::jj::available() {
@@ -903,7 +964,8 @@ fn e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys() {
         let ProjectContent::List(list) = content.as_ref() else {
             panic!("list required")
         };
-        assert!(list.title.as_ref().unwrap().plain().starts_with("jj graph"));
+        let _ = list;
+        assert!(edge_text(&mut new).starts_with("┌ jj graph"));
         same(&mut old, &mut new, 160, 16);
         hints_match(&old, &new, true);
         let original = rows(&new);

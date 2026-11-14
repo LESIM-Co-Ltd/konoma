@@ -243,7 +243,172 @@ pub(super) fn compare_body(old: &mut Sim, new: &mut Sim, width: u16, height: u16
             }
         }
     }
+    differences.extend(compare_top_edge(&old, &new, width));
     differences
+}
+
+/// The whole top row of the frame (row 1: corners, title, filler) against the old hub's, cell
+/// for cell, with symbols and styles. Only the screen tabs, which the canvas draws at the right
+/// end of the edge and the old hub does not have, are left out; their columns come from the tabs'
+/// drawn width (`top_edge::tabs_columns_of_width`), never from a number.
+pub(super) fn compare_top_edge(
+    old: &ratatui::buffer::Buffer,
+    new: &ratatui::buffer::Buffer,
+    width: u16,
+) -> Vec<String> {
+    use crate::test_support::top_edge;
+    let mut differences = Vec::new();
+    let old_text = top_edge::row_text(old, 1, 0..width);
+    let new_text = top_edge::row_text(new, 1, 0..width);
+    let inner = |text: &str| {
+        text.strip_prefix('┌')
+            .and_then(|t| t.strip_suffix('┐'))
+            .map(str::to_owned)
+    };
+    let (Some(old_inner), Some(new_inner)) = (inner(&old_text), inner(&new_text)) else {
+        return vec![format!(
+            "top edge is not a frame edge: old {old_text:?} new {new_text:?}"
+        )];
+    };
+    let title = old_inner.trim_end_matches('─');
+    let Some(rest) = new_inner.strip_prefix(title) else {
+        return vec![format!(
+            "top edge title differs: old {old_text:?} new {new_text:?}"
+        )];
+    };
+    let tabs = rest.trim_matches('─');
+    let skip = top_edge::tabs_columns_of_width(
+        ratatui::layout::Rect::new(0, 1, width, 1),
+        top_edge::width(title),
+        top_edge::width(tabs),
+    )
+    .unwrap_or(0..0);
+    for x in 0..width {
+        if skip.contains(&x) {
+            continue;
+        }
+        let (a, b) = (&old[(x, 1)], &new[(x, 1)]);
+        let (a, b) = (
+            (a.symbol(), a.fg, a.bg, a.modifier),
+            (b.symbol(), b.fg, b.bg, b.modifier),
+        );
+        if a != b {
+            differences.push(format!("top edge ({x}, 1): {a:?} != {b:?}"));
+        }
+    }
+    differences
+}
+
+/// The first screen's top-edge text of a sim, drawn as the real frame.
+pub(super) fn drawn_top_edge(sim: &mut Sim, width: u16) -> String {
+    let buf = sim
+        .term
+        .draw(|frame| ui::render(frame, &mut sim.app))
+        .unwrap()
+        .buffer
+        .clone();
+    crate::test_support::top_edge::row_text(&buf, 1, 0..width)
+}
+
+fn filtered_pair(
+    dir: &std::path::Path,
+    id: &str,
+    lang: &str,
+    icons: bool,
+    query: &str,
+    width: u16,
+) -> (Sim, Sim) {
+    let mut cfg = plugin_config(id, "vcs_changes_titles", lang);
+    cfg.ui.icons = icons;
+    let (mut old, mut new) = pair_config(dir, id, cfg, width, 12);
+    if !query.is_empty() {
+        for sim in [&mut old, &mut new] {
+            sim.key('/');
+            for c in query.chars() {
+                sim.key(c);
+            }
+            sim.enter();
+        }
+        drain(&mut new);
+    }
+    (old, new)
+}
+
+/// Each matrix cell: the top edge (title, filter, shown count) is the old hub's cell for cell,
+/// and the words are the ones the old hub spoke (English in both languages).
+#[test]
+fn e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states() {
+    use crate::test_support::run_git;
+    let mut checked = 0;
+    for state in ["branch", "detached"] {
+        let dir = git_repo("vcs_changes_titles", true);
+        if state == "detached" {
+            run_git(&dir, &["checkout", "-q", "--detach"]);
+        }
+        for icons in [false, true] {
+            for lang in ["en", "ja"] {
+                for query in ["", "txt", "a-", "zzz-no-hit"] {
+                    let (mut old, mut new) = filtered_pair(&dir, "git", lang, icons, query, 90);
+                    let (want, got) = (drawn_top_edge(&mut old, 90), drawn_top_edge(&mut new, 90));
+                    let marker = if icons { "\u{2387}" } else { "br:" };
+                    assert!(
+                        got.starts_with("┌ Git "),
+                        "state={state} icons={icons} lang={lang} q={query}: {got:?}"
+                    );
+                    if state == "branch" {
+                        assert!(got.starts_with(&format!("┌ Git {marker} ")), "{got:?}");
+                    }
+                    if !query.is_empty() {
+                        assert!(want.contains(query), "old edge shows the filter: {want:?}");
+                        assert!(got.contains(query), "new edge shows the filter: {got:?}");
+                    }
+                    let differences = compare_body(&mut old, &mut new, 90, 12);
+                    assert!(
+                        differences.is_empty(),
+                        "state={state} icons={icons} lang={lang} q={query}: {differences:?}\n{want:?}\n{got:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 32, "every matrix cell ran");
+}
+
+/// A repository with no commit yet has no branch to name; the title is the bare word.
+#[test]
+fn e2e_vcs_changes_title_without_a_branch_matches_hub() {
+    let dir = sandbox("vcs_changes_title_unborn");
+    crate::test_support::init_git_repo(&dir);
+    std::fs::write(dir.join("new.txt"), "x\n").unwrap();
+    let dir = dir.into_canonical().unwrap();
+    for icons in [false, true] {
+        let (mut old, mut new) = filtered_pair(&dir, "git", "en", icons, "", 60);
+        let differences = compare_body(&mut old, &mut new, 60, 10);
+        assert!(differences.is_empty(), "icons={icons}: {differences:?}");
+    }
+}
+
+#[test]
+fn e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin() {
+    let dir = git_repo("vcs_changes_title_words", true);
+    for (icons, marker) in [(false, "br:"), (true, "\u{2387}")] {
+        for lang in ["en", "ja"] {
+            let (mut old, mut new) = filtered_pair(&dir, "git", lang, icons, "", 80);
+            let edge = drawn_top_edge(&mut new, 80);
+            assert!(edge.starts_with(&format!("┌ Git {marker} ")), "{edge:?}");
+            new.press(KeyCode::Tab, KeyModifiers::NONE);
+            old.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut new);
+            let edge = drawn_top_edge(&mut new, 80);
+            assert!(
+                edge.starts_with(&format!("┌ Git log {marker} ")),
+                "{edge:?}"
+            );
+            let differences = compare_body(&mut old, &mut new, 80, 12);
+            assert!(differences.is_empty(), "{differences:?}");
+        }
+    }
 }
 
 #[test]

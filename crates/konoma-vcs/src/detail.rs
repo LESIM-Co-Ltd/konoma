@@ -54,11 +54,23 @@ pub(super) fn read(
         super::Backend::Jj => return (DiffView::default(), None),
     };
     let meta = vcs.commit_meta(root, id);
+    // The old hub titled a revision ` commit <short> ` (` change <short> ` in jj); without a
+    // message it fell back to the first seven characters of the id.
+    let word = if matches!(backend, super::Backend::Jj) {
+        "change"
+    } else {
+        "commit"
+    };
+    let short = meta
+        .as_ref()
+        .map(|m| m.short.clone())
+        .unwrap_or_else(|| id.chars().take(7).collect());
     let view = build(
         meta.clone(),
         vcs.commit_diff(root, id),
         matches!(backend, super::Backend::Jj),
-    );
+    )
+    .title(Line::raw(format!(" {word} {short} ")));
     (view, meta)
 }
 

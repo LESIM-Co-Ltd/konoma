@@ -15,18 +15,9 @@ fn see_title(sim: &Sim, lang: &str) {
     let screen = sim.screen();
     // The title sits on the outer frame's top edge, so look at the first two rows only.
     let buf = sim.term.backend().buffer();
-    let width = usize::from(buf.area.width);
     let mut top = String::new();
-    for row in buf.content().chunks(width).take(2) {
-        let mut skip = 0;
-        for cell in row {
-            if skip > 0 {
-                skip -= 1;
-                continue;
-            }
-            top.push_str(cell.symbol());
-            skip = cell.symbol().width().saturating_sub(1);
-        }
+    for y in 0..2 {
+        top.push_str(&crate::test_support::top_edge::row_text(buf, y, 0..buf.area.width));
         top.push('\n');
     }
     assert!(squash(&top).contains(want), "{lang}: title missing:\n{screen}");

@@ -320,7 +320,8 @@ fn changes(
             });
         }
     }
-    DiffView::new(hunks).header(vec![Line::raw(title)])
+    // The title sits on the frame's top edge, as in the old hub; there is no header line.
+    DiffView::new(hunks).title(Line::raw(format!(" {title} ")))
 }
 
 #[cfg(test)]

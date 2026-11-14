@@ -50,12 +50,14 @@ fn clipped(title: &str, room: u16) -> String {
 /// The whole edge as text: corners, title, `─` filler, tabs.
 pub fn expected_text(edge_width: u16, title: &str, tabs: &str) -> String {
     let room = edge_width.saturating_sub(2);
-    let title = clipped(title, room);
-    let tabs = if tabs_fit(edge_width, &title, tabs) {
+    // The host decides whether the tabs fit from the title's full width, before the block cuts
+    // the title to the room; a title cut to fit never makes room for tabs.
+    let tabs = if tabs_fit(edge_width, title, tabs) {
         tabs
     } else {
         ""
     };
+    let title = clipped(title, room);
     let fill = room - width(&title) - width(tabs);
     format!("┌{title}{}{tabs}┐", "─".repeat(usize::from(fill)))
 }
@@ -83,5 +85,23 @@ pub fn check(buf: &Buffer, area: Rect, title: &str, tabs: &str) -> Result<(), St
         Err(format!(
             "top edge\nexpected: {expected:?}\nactual:   {actual:?}"
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tabs_fit_is_judged_on_the_full_title_width() {
+        // Width 8 title, 7 cells of room: the cut title (6 cells) would leave room for a 1-cell
+        // tab, but the host judged the full title, so the tab is dropped.
+        assert_eq!(expected_text(9, "ああああ", "t"), "┌あああ─┐");
+        // The same title with room for everything keeps the tab.
+        assert_eq!(expected_text(12, "ああああ", "t"), "┌ああああ─t┐");
+        // Tabs of nearly no width still need the full title to fit.
+        assert_eq!(expected_text(10, "ああああ", "t"), "┌ああああ┐");
+        assert_eq!(expected_text(11, "ああああ", "t"), "┌ああああt┐");
+        assert_eq!(expected_text(9, "ああああ", ""), "┌あああ─┐");
     }
 }

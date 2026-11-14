@@ -1,6 +1,8 @@
 //! Linked worktrees through the legacy and project hosts.
 
-use super::super::vcs_changes::{compare_body, drain, pair_config, plugin_config};
+use super::super::vcs_changes::{
+    compare_body, compare_top_edge, drain, pair_config, plugin_config,
+};
 use super::super::*;
 use crate::app::project_screens::ProjectContent;
 use crate::test_support::TmpDir;
@@ -291,11 +293,14 @@ fn same_diff(old: &mut Sim, new: &mut Sim, width: u16) {
         .unwrap()
         .buffer
         .clone();
-    // The legacy title is in the frame; the new diff header and divider occupy two body rows.
+    // The title is on the frame's top edge on both sides (the whole edge, ` ⇆ ` mark included,
+    // is compared), and the body starts at the same row.
+    let differences = compare_top_edge(&before, &after, width);
+    assert!(differences.is_empty(), "diff top edge: {differences:?}");
     for y in 2..16 {
         for x in 0..width - 2 {
             let a = &before[(x + 1, y)];
-            let b = &after[(x + 1, y + 2)];
+            let b = &after[(x + 1, y)];
             assert_eq!(
                 (a.symbol(), a.fg, a.bg, a.modifier),
                 (b.symbol(), b.fg, b.bg, b.modifier),
@@ -808,10 +813,10 @@ fn e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy(
                 let ProjectContent::Diff(diff) = content.as_ref() else {
                     panic!("diff required")
                 };
-                assert_eq!(diff.header.len(), 1);
+                assert!(diff.header.is_empty(), "the title is not a body line");
                 assert_eq!(
-                    diff.header[0].to_string(),
-                    old.app.git_detail_title().unwrap()
+                    diff.title.as_ref().map(|t| t.to_string()),
+                    Some(format!(" {} ", old.app.git_detail_title().unwrap()))
                 );
                 let normalize = |lines: &[crate::git::DiffLine]| {
                     lines
@@ -824,30 +829,6 @@ fn e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy(
                     normalize(old.app.git_detail_lines())
                 );
                 drop(content);
-                let before = old
-                    .term
-                    .draw(|frame| ui::render(frame, &mut old.app))
-                    .unwrap()
-                    .buffer
-                    .clone();
-                let after = new
-                    .term
-                    .draw(|frame| ui::render(frame, &mut new.app))
-                    .unwrap()
-                    .buffer
-                    .clone();
-                let title_width = ratatui::text::Line::raw(old.app.git_detail_title().unwrap())
-                    .width()
-                    .min(usize::from(width - 4)) as u16;
-                for x in 0..title_width {
-                    let a = &before[(x + 2, 1)];
-                    // The diff header is still the first body row, inside the frame.
-                    let b = &after[(x + 1, 2)];
-                    assert_eq!(
-                        (a.symbol(), a.fg, a.bg, a.modifier),
-                        (b.symbol(), b.fg, b.bg, b.modifier)
-                    );
-                }
                 same_diff(&mut old, &mut new, width);
                 for key in ['j', 'l', 's'] {
                     old.key(key);

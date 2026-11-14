@@ -1,6 +1,6 @@
 //! Compare linear log bodies through the legacy hub and the project host.
 
-use super::vcs_changes::{compare_body, drain, pair_config, plugin_config};
+use super::vcs_changes::{compare_body, compare_top_edge, drain, pair_config, plugin_config};
 use super::*;
 use crate::app::list_filter::ListId;
 use crate::app::project_screens::ProjectContent;

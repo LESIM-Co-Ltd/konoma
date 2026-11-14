@@ -3,8 +3,147 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-include!("vcs_port_pending_titles.rs");
 include!("vcs_port_inventory.rs");
+
+const PICKER_STEPS: [&str; 11] = [
+    "step-0-b",
+    "step-1-x",
+    "step-2-j",
+    "step-3-x",
+    "step-4-a",
+    "step-5-c",
+    "step-6-J",
+    "step-7-K",
+    "step-8-G",
+    "step-9-k",
+    "step-10-g",
+];
+
+const CHANGES_TITLE_TEST: &str =
+    "e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states";
+const TITLE_WORDS_TEST: &str =
+    "e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin";
+const PICKER_OPEN_TEST: &str =
+    "e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells";
+const PICKER_STEPS_TEST: &str =
+    "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy";
+const PICKER_JJ_TEST: &str =
+    "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints";
+
+/// The 71 title rows: every title the old hub drew is an ordinary assertion in the named new
+/// test (the old hub's top edge compared cell for cell, plus the words checked in place).
+fn title_rows() -> Vec<(&'static str, String, &'static str)> {
+    let mut rows: Vec<(&'static str, String, &'static str)> = vec![
+        (
+            "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row",
+            "title:filtered-count:one".into(),
+            CHANGES_TITLE_TEST,
+        ),
+        (
+            "e2e_slash_filter_moves_over_the_shown_rows_only",
+            "title:filtered-count:zero".into(),
+            CHANGES_TITLE_TEST,
+        ),
+        (
+            "e2e_git_hub_to_log_shows_commit_subject",
+            "title:git-log-label".into(),
+            TITLE_WORDS_TEST,
+        ),
+        (
+            "e2e_git_graph_shows_commit_nodes",
+            "title:git-graph-label".into(),
+            "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+        ),
+    ];
+    for lang in ["en", "ja"] {
+        rows.push((
+            "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+            format!("title:jj-graph-label:{lang}"),
+            "e2e_vcs_graph_jj_title_matches_hub_in_both_languages",
+        ));
+    }
+    for icons in ["icons-off", "icons-on"] {
+        for step in ["initial", "branch-added"] {
+            rows.push((
+                PICKER_OPEN_TEST,
+                format!("title:picker-count:{icons}:{step}"),
+                PICKER_OPEN_TEST,
+            ));
+        }
+    }
+    for lang in ["en", "ja"] {
+        for icons in ["icons-off", "icons-on"] {
+            for step in PICKER_STEPS {
+                rows.push((
+                    PICKER_STEPS_TEST,
+                    format!("title:picker-count:{lang}:{icons}:{step}"),
+                    PICKER_STEPS_TEST,
+                ));
+            }
+        }
+    }
+    for kind in ["jj", "colocated-jj"] {
+        for lang in ["en", "ja"] {
+            rows.push((
+                PICKER_JJ_TEST,
+                format!("title:picker-count:{kind}:{lang}"),
+                PICKER_JJ_TEST,
+            ));
+        }
+    }
+    for id in [
+        "title:changes:glyph-on",
+        "title:changes:branch-on",
+        "title:changes:glyph-off",
+        "title:changes:ascii-off",
+        "title:changes:branch-off",
+    ] {
+        rows.push((
+            "changes_and_log_titles_gate_branch_marker_by_icons",
+            id.into(),
+            CHANGES_TITLE_TEST,
+        ));
+    }
+    for id in [
+        "title:log:glyph-on",
+        "title:log:glyph-off",
+        "title:log:ascii-off",
+    ] {
+        rows.push((
+            "changes_and_log_titles_gate_branch_marker_by_icons",
+            id.into(),
+            TITLE_WORDS_TEST,
+        ));
+    }
+    rows.extend([
+        (
+            "git_view_renders_marker_and_filename",
+            "title:changes-git-label".into(),
+            CHANGES_TITLE_TEST,
+        ),
+        (
+            "git_log_render_shows_commit_summary",
+            "title:log-git-label".into(),
+            TITLE_WORDS_TEST,
+        ),
+        (
+            "git_branches_render_shows_current_marker",
+            "title:branches-git-label".into(),
+            "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
+        ),
+        (
+            "jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker",
+            "title:jj-bookmarks-label".into(),
+            "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
+        ),
+        (
+            "jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker",
+            "title:jj:not-git-branches".into(),
+            "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
+        ),
+    ]);
+    rows
+}
 
 // Each group expands to (old_test, assertion_id, new_test). The case dimensions are part
 // of the stable id: a cell comparison always means every symbol, fg, bg and modifier.
@@ -1687,11 +1826,7 @@ fn port_map() -> Vec<(&'static str, String, &'static str)> {
             })
         })
         .collect();
-    table.extend(
-        PENDING_TITLES
-            .iter()
-            .map(|(old, id, marker)| (*old, (*id).into(), *marker)),
-    );
+    table.extend(title_rows());
     table
 }
 
@@ -1778,13 +1913,7 @@ fn every_ported_assertion_names_an_existing_new_test() {
         assert!(!assertion.is_empty());
         assert_ne!(old, new, "a port must not refer back to its old test");
         assert!(
-            functions.contains(new)
-                || (matches!(
-                    *new,
-                    "PENDING_DECISION:title-count" | "PENDING_DECISION:title-label"
-                ) && PENDING_TITLES
-                    .iter()
-                    .any(|(o, id, marker)| o == old && *id == assertion.as_str() && marker == new)),
+            functions.contains(new),
             "{old}/{assertion}: missing new test fn {new}"
         );
         old_names.insert(*old);
@@ -1808,7 +1937,7 @@ fn every_ported_assertion_names_an_existing_new_test() {
         OLD_TESTS
             .iter()
             .flat_map(|(_, tests)| tests.iter().copied())
-            .chain(PENDING_TITLES.iter().map(|(old, _, _)| *old))
+            .chain(title_rows().into_iter().map(|(old, _, _)| old))
             .collect::<BTreeSet<_>>()
     );
     assert_eq!(
@@ -1829,21 +1958,18 @@ fn every_ported_assertion_names_an_existing_new_test() {
         1593 + 11 + 4 + 8 + 8 + 12 + 3 - CONTEXT_ROWS_MOVED
             + 21
             + GAP_ROWS
-            + PENDING_TITLES.len()
+            + 71
             // The Log Space minimum, now an ordinary assertion: git and jj.
             + 2,
         "a ported assertion/case row was removed"
     );
-    for (old, id, marker) in PENDING_TITLES {
-        eprintln!("{marker}: {old}/{id}");
-    }
+    assert_eq!(title_rows().len(), 71, "a title row was dropped");
     eprintln!(
         "U9b1: {} old tests; {} assertion/case rows; {} named new tests",
         old_names.len(),
         table.len(),
         table
             .iter()
-            .filter(|(_, _, new)| !new.starts_with("PENDING_DECISION:"))
             .map(|(_, _, new)| new)
             .collect::<BTreeSet<_>>()
             .len()
@@ -1853,7 +1979,7 @@ fn every_ported_assertion_names_an_existing_new_test() {
             "existing parity",
             table
                 .iter()
-                .filter(|(_, _, n)| !n.starts_with("vcs_") && !n.starts_with("PENDING_DECISION:"))
+                .filter(|(_, _, n)| !n.starts_with("vcs_"))
                 .count(),
         ),
         (
