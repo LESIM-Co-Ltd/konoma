@@ -296,13 +296,25 @@ fn preview_help_comparison_rejects_copied_wrong_row() {
     let app = host.clone();
     let fixture = read_snapshot_for_test("vcs_app_chrome");
     let graph = read_snapshot_for_test("vcs_app_graph");
-    frames(&host, &app, (&state, &state), "en", &fixture, &graph, true);
+    // A help popup over a diff: no repository is read and no jj title is drawn.
+    let roots = (Path::new(""), Path::new(""));
+    frames(
+        &host,
+        &app,
+        roots,
+        (&state, &state),
+        "en",
+        &fixture,
+        &graph,
+        true,
+    );
     let mut corrupt = app.clone();
     corrupt[(popup.x + 19, popup.y + 2)].set_symbol("X");
     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         frames(
             &host,
             &corrupt,
+            roots,
             (&state, &state),
             "en",
             &fixture,

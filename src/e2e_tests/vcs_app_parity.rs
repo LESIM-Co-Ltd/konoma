@@ -300,10 +300,43 @@ fn mask_jj_change_id(edge: &str) -> String {
     )
 }
 
+/// The jj change id a top edge shows after `jj @ `, if it shows one.
+fn jj_change_id_on_edge(edge: &str) -> Option<String> {
+    const MARK: &str = "jj @ ";
+    let at = edge.find(MARK)?;
+    let id: String = edge[at + MARK.len()..]
+        .chars()
+        .take_while(char::is_ascii_lowercase)
+        .collect();
+    Some(id)
+}
+
+/// Wherever the masking applies, the id drawn on the top edge is exactly the working-copy change
+/// id of the repository that side looks at (read from that repository with jj itself), so a stale
+/// or foreign id fails here even though the two sides' ids are masked against each other.
+fn assert_own_jj_change_id(edge: &str, repo: &Path, side: &str) {
+    use konoma_vcs_core::vcs::Vcs;
+    let Some(drawn) = jj_change_id_on_edge(edge) else {
+        return;
+    };
+    let label = konoma_vcs_core::vcs::Jj
+        .branch(repo)
+        .unwrap_or_else(|| panic!("{side}: jj reports no working copy for {repo:?}"));
+    let own = label
+        .strip_prefix("@ ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("{side}: unexpected jj label {label:?}"));
+    assert!(!own.is_empty() && own.chars().all(|c| c.is_ascii_lowercase()));
+    assert_eq!(
+        drawn, own,
+        "{side}: the title's jj change id is not the repository's own working-copy id ({edge:?})"
+    );
+}
+
 /// The expected (host) frame takes the standalone frame's jj change id cells on the top edge: the
 /// two sides look at two repositories made from one seed, so only that id differs by construction.
 /// Everything else on the edge, and the rest of the frame, stays compared cell for cell.
-fn align_jj_change_id(expected: &mut Buffer, app: &Buffer) {
+fn align_jj_change_id(expected: &mut Buffer, app: &Buffer, app_root: &Path) {
     const MARK: &str = "jj @ ";
     let width = app.area.width;
     for y in 0..4u16 {
@@ -312,6 +345,7 @@ fn align_jj_change_id(expected: &mut Buffer, app: &Buffer) {
             continue;
         }
         let Some(at) = edge.find(MARK) else { continue };
+        assert_own_jj_change_id(&edge, app_root, "standalone");
         // Everything left of the id is ASCII or a one-cell box glyph: char index == column.
         let start = edge[..at].chars().count() + MARK.len();
         let id_len = edge[at + MARK.len()..]
@@ -326,9 +360,11 @@ fn align_jj_change_id(expected: &mut Buffer, app: &Buffer) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn frames(
     host: &Buffer,
     app: &Buffer,
+    (root, app_root): (&Path, &Path),
     states: (&ProjectStateSnapshot, &ProjectStateSnapshot),
     lang: &str,
     fixture: &serde_json::Value,
@@ -475,6 +511,8 @@ fn frames(
                 mask_jj_change_id(&host_edge),
                 "top edge, standalone vs host ({lang})"
             );
+            assert_own_jj_change_id(&app_edge, app_root, "standalone");
+            assert_own_jj_change_id(&host_edge, root, "host");
             assert!(
                 host_edge.ends_with('┐'),
                 "the list frame's top edge: {host_edge:?}"
@@ -735,7 +773,7 @@ fn frames(
             );
         }
     }
-    align_jj_change_id(&mut expected, app);
+    align_jj_change_id(&mut expected, app, app_root);
     compare_ported_frame(&expected, app).unwrap_or_else(|e| {
         dump_parity_frame("host whole frame", host);
         dump_parity_frame("app whole frame", app);
@@ -1440,6 +1478,7 @@ fn run_roots_with(
             frames(
                 &host_frame,
                 &frame,
+                (root, app_root),
                 (&state, &host_snapshot),
                 &lang,
                 &fixture,

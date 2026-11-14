@@ -32,3 +32,8 @@ required-features = ["app"]
 name = "program"
 path = "tests/program.rs"
 required-features = ["app"]
+
+[[test]]
+name = "child_icons"
+path = "tests/child_icons.rs"
+required-features = ["app"]

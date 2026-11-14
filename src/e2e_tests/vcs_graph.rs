@@ -666,6 +666,25 @@ fn e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority() {
     }
 }
 
+/// The graph's top edge opens with the label ` Git graph` right after the corner, in both
+/// languages (the words stay English), on the old hub's edge as well as the canvas's.
+#[test]
+fn vcs_port_git_graph_title_label_is_git_graph_at_the_title_position() {
+    use super::vcs_changes::drawn_top_edge;
+    let dir = fixture();
+    for lang in ["en", "ja"] {
+        let (mut old, mut new) = graph_pair(&dir, lang, "right", (160, 16), 12, false, true);
+        for (side, sim) in [("old", &mut old), ("new", &mut new)] {
+            let edge = drawn_top_edge(sim, 160);
+            assert!(
+                edge.starts_with("┌ Git graph"),
+                "{side} lang={lang}: the label sits at the title position: {edge:?}"
+            );
+            assert!(edge.contains(" Git graph"), "{side} lang={lang}: {edge:?}");
+        }
+    }
+}
+
 #[test]
 fn e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub() {
     use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};

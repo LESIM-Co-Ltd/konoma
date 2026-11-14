@@ -497,7 +497,8 @@ impl RootJobs {
         frames(
             &host_frame,
             &app_frame,
-            (&app_state,&host_state),
+            (&self.a, &self.app_a),
+            (&app_state, &host_state),
             "en",
             fixture,
             &chrome,

@@ -385,6 +385,62 @@ fn e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_stat
     assert_eq!(checked, 32, "every matrix cell ran");
 }
 
+/// The shown count is drawn as `  (n)` right after the filter, and `n` is the number of rows the
+/// filter leaves, worked out from the data (the repository's entries and the query), not assumed:
+/// one matching row draws exactly `(1)`, none draws `(0)`, and no filter draws every row.
+#[test]
+fn e2e_vcs_changes_title_filtered_count_is_exactly_the_matching_rows() {
+    let dir = git_repo("vcs_changes_title_count", true);
+    for lang in ["en", "ja"] {
+        for icons in [false, true] {
+            for (query, expected) in [("", None), ("e-un", Some(1usize)), ("zzz-no-hit", Some(0))] {
+                let (mut old, mut new) = filtered_pair(&dir, "git", lang, icons, query, 90);
+                let rows = old
+                    .app
+                    .git_view_entries()
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .path
+                            .to_string_lossy()
+                            .to_lowercase()
+                            .contains(&query.to_lowercase())
+                    })
+                    .count();
+                if let Some(expected) = expected {
+                    assert_eq!(
+                        rows, expected,
+                        "the fixture leaves {expected} row(s) for {query:?}"
+                    );
+                } else {
+                    assert!(rows > 1, "no filter shows several rows");
+                }
+                let want = format!("{}  ({rows})", if query.is_empty() { "" } else { query });
+                for (side, sim) in [("old", &mut old), ("new", &mut new)] {
+                    let edge = drawn_top_edge(sim, 90);
+                    let shown = if query.is_empty() {
+                        want.clone()
+                    } else {
+                        format!("/{want}")
+                    };
+                    assert!(
+                        edge.contains(&shown),
+                        "{side} lang={lang} icons={icons} q={query:?}: want {shown:?} in {edge:?}"
+                    );
+                    // Exactly one count is drawn, and it is not a longer number that merely
+                    // starts with the expected digits.
+                    assert_eq!(edge.matches("  (").count(), 1, "{edge:?}");
+                    assert!(
+                        edge.contains(&format!("({rows}) "))
+                            || edge.contains(&format!("({rows})─")),
+                        "{edge:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// A repository with no commit yet has no branch to name; the title is the bare word.
 #[test]
 fn e2e_vcs_changes_title_without_a_branch_matches_hub() {
