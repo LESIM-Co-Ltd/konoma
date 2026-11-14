@@ -67,6 +67,7 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
     (
         "src/e2e_tests/vcs_graph.rs",
         &[
+            "e2e_vcs_graph_jj_title_matches_hub_in_both_languages",
             "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
             "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints",
             "e2e_vcs_graph_jj_repository_tests_guard_optional_binary",
@@ -127,6 +128,7 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
     (
         "src/e2e_tests/vcs_branches.rs",
         &[
+            "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
             "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
             "e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration",
             "e2e_vcs_branches_copy_menu_clipboard_footer_and_help_match_legacy_acts",
@@ -159,6 +161,16 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
     (
         "src/e2e_tests/vcs_worktrees.rs",
         &[
+            "e2e_vcs_worktrees_create_dialog_blank_and_git_failure_flash_without_reopen",
+            "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+            "e2e_vcs_worktrees_enter_each_kind_matches_legacy_root_open_dir_and_flash_including_l",
+            "e2e_vcs_worktrees_ctrl_t_directory_root_open_dir_preserves_original_and_file_target_still_previews",
+            "e2e_vcs_worktree_filter_ignores_control_chords_like_legacy_and_keeps_shift_text",
+            "e2e_vcs_worktree_switch_vanished_after_plugin_check_keeps_screen_and_root",
+            "e2e_vcs_worktrees_ctrl_t_without_target_does_nothing_and_has_no_help_or_footer_hint",
+            "e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages",
+            "e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy",
+            "e2e_vcs_worktrees_help_matches_legacy_action_texts_in_both_languages_with_only_target_exception",
             "e2e_vcs_project_footer_log_changes_and_worktrees_have_one_entry_per_key",
             "e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior",
             "e2e_vcs_worktrees_footer_preserves_legacy_action_priority_and_labels",
@@ -222,7 +234,8 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
             total += 1;
         }
     }
-    // 106 + 14 (vcs_writes.rs) + 5 (vcs_branches.rs D) + 3 (vcs_worktrees.rs D: create, diff, read-only).
-    assert_eq!(total, 128, "frozen B/C/H/S inventory");
+    // 106 + 14 (vcs_writes.rs) + 5 (vcs_branches.rs D) + 3 (vcs_worktrees.rs D: create, diff, read-only)
+    // + 10 (vcs_worktrees.rs E/H) + 1 (vcs_branches.rs cells) + 1 (vcs_graph.rs jj title).
+    assert_eq!(total, 140, "frozen B/C/E/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }

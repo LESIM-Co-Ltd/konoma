@@ -1046,6 +1046,39 @@ fn e2e_vcs_graph_jj_title_matches_hub_in_both_languages() {
     }
 }
 
+/// The jj graph's top edge written out in both languages: the title and commit count, no base
+/// text (jj has no base pin), the filler and the project tabs.
+#[test]
+fn e2e_vcs_graph_jj_top_edge_literal_in_both_languages() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let dir = jj_graph_fixture();
+    let _preference = Preference::pin("jj");
+    for lang in ["en", "ja"] {
+        let cfg = plugin_config("jj", "vcs_graph_jj_edge", lang);
+        let mut sim = Sim::with_config_sized(&dir, cfg, 160, 16);
+        sim.app.tab.projects.wait_for_result();
+        sim.app.poll_projects();
+        sim.key('p');
+        drain(&mut sim);
+        for _ in 0..2 {
+            sim.press(KeyCode::Tab, KeyModifiers::NONE);
+            drain(&mut sim);
+        }
+        let edge = edge_text(&mut sim);
+        assert!(edge.starts_with("┌ jj graph  ("), "{lang}: {edge:?}");
+        assert!(!edge.contains("base:"), "{lang}: {edge:?}");
+        assert!(edge.starts_with("┌ jj graph  (2) ─"), "{lang}: {edge:?}");
+        let tabs = if lang == "en" {
+            "─ p:Changes  Log  Graph  b:Bookmarks ┐"
+        } else {
+            "─ p:変更  ログ  グラフ  b:ブックマーク ┐"
+        };
+        assert!(edge.ends_with(tabs), "{lang}: {edge:?}");
+    }
+}
+
 #[test]
 fn e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys() {
     if !crate::vcs::jj::available() {

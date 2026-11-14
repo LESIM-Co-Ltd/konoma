@@ -60,7 +60,7 @@ fn title_rows() -> Vec<(&'static str, String, &'static str)> {
         rows.push((
             "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
             format!("title:jj-graph-label:{lang}"),
-            "e2e_vcs_graph_jj_title_matches_hub_in_both_languages",
+            "e2e_vcs_graph_jj_top_edge_literal_in_both_languages",
         ));
     }
     for icons in ["icons-off", "icons-on"] {
@@ -130,7 +130,7 @@ fn title_rows() -> Vec<(&'static str, String, &'static str)> {
         (
             "git_branches_render_shows_current_marker",
             "title:branches-git-label".into(),
-            "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
+            "e2e_vcs_branches_top_edge_literal_title_count_and_tabs_at_two_widths",
         ),
         (
             "jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker",
@@ -2002,6 +2002,156 @@ const GROUPS: &[Group] = &[
         &["en,ja"],
         "vcs_port_worktree_read_only_blocks_create_before_prompt_but_navigation_and_diff_work",
     ),
+    // E/H ports (U9b3): the worktrees screens in `vcs_worktrees_port.rs`, written out as values.
+    (
+        "e2e_vcs_worktrees_create_dialog_blank_and_git_failure_flash_without_reopen",
+        &[
+            "create:dialog-prompt-and-empty-buffer",
+            "create:flash",
+            "create:no-dialog-after",
+            "create:root-and-screen-kept",
+        ],
+        &["en,ja:blank,main"],
+        "vcs_port_worktree_create_blank_and_git_failure_flash_without_reopen",
+    ),
+    (
+        "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+        &[
+            "create:target-dir-and-name",
+            "create:root",
+            "create:open-dir",
+            "create:flash",
+            "create:dialog-closed",
+            "create:project-closed-tree-mode",
+            "create:git-file",
+        ],
+        &["en,ja:slash-new-branch,existing-custom-dir"],
+        "vcs_port_worktree_create_switches_with_slash_existing_branch_and_custom_directory",
+    ),
+    (
+        "e2e_vcs_worktrees_enter_each_kind_matches_legacy_root_open_dir_and_flash_including_l",
+        &["enter:root", "enter:open-dir", "enter:flash"],
+        &["en,ja:linked,detached,current,prunable,bare:enter,l"],
+        "vcs_port_worktree_enter_each_kind_root_open_dir_and_flash_including_l",
+    ),
+    (
+        "e2e_vcs_worktrees_enter_each_kind_matches_legacy_root_open_dir_and_flash_including_l",
+        &["enter:refused-keeps-project-screen"],
+        &["en,ja:current,prunable,bare:enter,l"],
+        "vcs_port_worktree_enter_each_kind_root_open_dir_and_flash_including_l",
+    ),
+    (
+        "e2e_vcs_worktrees_ctrl_t_directory_root_open_dir_preserves_original_and_file_target_still_previews",
+        &[
+            "ctrl-t:tab-count",
+            "ctrl-t:new-tab-root-open-dir",
+            "ctrl-t:tree-mode",
+            "ctrl-t:original-tab-root-screen-cursor",
+            "ctrl-t:file-target-previews",
+        ],
+        &["en"],
+        "vcs_port_host_only_worktree_ctrl_t_opens_new_tab_keeps_original_and_file_target_previews",
+    ),
+    (
+        "e2e_vcs_worktree_filter_ignores_control_chords_like_legacy_and_keeps_shift_text",
+        &[
+            "filter:ctrl-chord-not-text",
+            "filter:shift-and-cjk-text",
+            "filter:alt-newline-nul-rejected",
+            "filter:backspace-enter-esc",
+        ],
+        &["en,ja"],
+        "vcs_port_worktree_filter_ignores_control_chords_and_keeps_shift_text",
+    ),
+    (
+        "e2e_vcs_worktree_switch_vanished_after_plugin_check_keeps_screen_and_root",
+        &[
+            "vanished:act-observed",
+            "vanished:root-open-dir-kept",
+            "vanished:screen-frame-kept",
+            "vanished:not-found-flash",
+        ],
+        &["en,ja"],
+        "vcs_port_host_only_worktree_switch_vanished_after_plugin_check_keeps_screen_and_root",
+    ),
+    (
+        "e2e_vcs_worktrees_ctrl_t_without_target_does_nothing_and_has_no_help_or_footer_hint",
+        &[
+            "no-target:no-controls-hint",
+            "no-target:no-help-row",
+            "no-target:inert-tabs-root-cursor-flash",
+        ],
+        &["current,prunable,bare"],
+        "vcs_port_host_only_worktree_ctrl_t_without_target_is_inert_and_unlisted",
+    ),
+    (
+        "e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages",
+        &[
+            "cells:edge-title-count-tabs",
+            "cells:rows-kinds-order",
+            "cells:open-cursor",
+            "cells:move",
+            "cells:filter-hits",
+            "cells:filter-no-match-empty-row",
+        ],
+        &["main,linked:en,ja:80,160"],
+        "vcs_port_worktree_top_edge_open_cursor_move_and_filter_rows",
+    ),
+    (
+        "e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_worktrees_cells",
+    ),
+    (
+        "e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy",
+        &[
+            "diff:screen",
+            "diff:header-empty-title",
+            "diff:lines",
+            "diff:edge-title",
+            "diff:motion-keys",
+            "diff:layout-mark",
+            "diff:back-restores-list-and-cursor",
+        ],
+        &["en,ja:80,160:linked,main"],
+        "vcs_port_worktree_diff_title_body_layout_motion_and_back",
+    ),
+    (
+        "e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_worktrees_diff",
+    ),
+    (
+        "e2e_vcs_worktrees_help_matches_legacy_action_texts_in_both_languages_with_only_target_exception",
+        &[
+            "help:rows-texts",
+            "help:ctrl-t-only-on-target",
+            "help:section-title",
+            "help:no-v-row",
+        ],
+        &["en,ja:main,linked"],
+        "vcs_port_worktree_help_rows_in_both_languages_with_only_target_exception",
+    ),
+    (
+        "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
+        &["edge:title-count-tabs"],
+        &["en,ja:80,160"],
+        "e2e_vcs_branches_top_edge_literal_title_count_and_tabs_at_two_widths",
+    ),
+    (
+        "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
+        &["frozen:cells"],
+        &["fixture"],
+        "e2e_vcs_frozen_replay_branches_cells",
+    ),
+    (
+        "e2e_vcs_graph_jj_title_matches_hub_in_both_languages",
+        &["edge:title-count", "edge:no-base-text", "edge:tabs"],
+        &["en,ja"],
+        "e2e_vcs_graph_jj_top_edge_literal_in_both_languages",
+    ),
 ];
 
 // Kept independently from GROUPS so deleting a table entry cannot silently shrink the scope.
@@ -2200,7 +2350,12 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // vcs_worktrees.rs 20 (2 create + 12 diff + 6 read-only).
             + 298
             + 46
-            + 20,
+            + 20
+            // The E/H ports (U9b3), 279 rows: worktrees create blank/failure 16 + create success
+            // 28 + enter each kind 72 (60 + 12 refused) + Ctrl-t tab 5 + filter chords 8 +
+            // vanished 8 + no-target Ctrl-t 9 + cells 49 (48 + 1 frozen) + diff 57 (56 + 1
+            // frozen) + help 16; branches cells 5 (4 edge + 1 frozen); jj graph title 6.
+            + 279,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

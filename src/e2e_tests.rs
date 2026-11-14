@@ -21506,4 +21506,6 @@ mod vcs_project_port;
 #[cfg(feature = "git")]
 mod vcs_standalone_tool;
 #[cfg(feature = "git")]
+mod vcs_worktrees_port;
+#[cfg(feature = "git")]
 mod vcs_write_port;
