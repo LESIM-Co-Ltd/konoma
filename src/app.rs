@@ -113,7 +113,7 @@ mod text_plugin;
 use md_text::*;
 // Referenced by `main`'s watcher/run loop as `crate::app::FsBurstKinds` (it builds the value; the
 // only consumer is `App::fs_burst_is_build_churn`, which lives with the type).
-pub use bookmark_actions::FsBurstKinds;
+pub use bookmark_actions::{DeferredFsBurst, FsBurstKinds};
 // Only referenced by tests (`crate::app::PreviewSelection`) — `preview_visual` itself uses the
 // type unqualified since it's defined there, so this re-export would be unused_imports outside cfg(test).
 #[cfg(test)]
@@ -3907,7 +3907,7 @@ impl App {
         // A git write is the same class of thing: the user pressed `s`/`c`/Enter and is waiting on
         // it. It comes before the scan label below so a `git commit` stuck in a pre-commit hook is
         // never mistaken for the routine background status scan.
-        if self.git_op_running() {
+        if self.git_write_running() {
             v.push(crate::i18n::Msg::BusyGitOp);
         }
         // Both the ignored set and status are "git scan in progress" = represented by the same label (shown if either is running).
@@ -3963,7 +3963,7 @@ impl App {
         if self.busy_jobs().is_empty() {
             return false;
         }
-        self.cfg.ui.busy_indicator || self.fileop_pending.is_some() || self.git_op_running()
+        self.cfg.ui.busy_indicator || self.fileop_pending.is_some() || self.git_write_running()
     }
 
     /// Advance the spinner by one frame (the run loop calls this periodically while waiting = keeps it spinning).

@@ -30,6 +30,40 @@ impl FsBurstKinds {
     }
 }
 
+/// Watcher bursts held back while one of konoma's own writes runs (`App::should_defer_fs_events`),
+/// applied as **one** merged burst on the first loop after the write ends. The write's own
+/// completion (an old-hub `apply_git_op`, a project act's reply) is what lifts the predicate, so
+/// the flush is not tied to either path: nothing is lost and the tree refreshes once.
+#[derive(Debug, Default)]
+pub struct DeferredFsBurst {
+    pending: bool,
+    kinds: FsBurstKinds,
+}
+
+impl DeferredFsBurst {
+    /// Hold one event's flags back instead of applying the burst now.
+    pub fn hold(&mut self, kinds: FsBurstKinds) {
+        self.pending = true;
+        self.kinds.merge(kinds);
+    }
+
+    /// Whether anything is being held.
+    #[cfg(test)]
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
+
+    /// While `defer` is true nothing is released. Once it is false, the held burst's merged flags
+    /// come out exactly once (`None` when nothing was held or it was already released).
+    pub fn release(&mut self, defer: bool) -> Option<FsBurstKinds> {
+        if defer || !self.pending {
+            return None;
+        }
+        self.pending = false;
+        Some(std::mem::take(&mut self.kinds))
+    }
+}
+
 /// The file each filtered view was sitting on before a tree rebuild, so the cursor can be put back
 /// on the *same file* rather than the same index (see `App::capture_view_anchors`).
 struct ViewAnchors {

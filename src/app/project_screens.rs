@@ -2036,6 +2036,15 @@ impl App {
             .any(|runtime| runtime.write_act_running())
     }
 
+    /// Whether a git write is running right now, whichever path started it: the old hub's
+    /// background `git_op_running()`, or a project act that declares `writes` (the vcs plugin's
+    /// commit / checkout / worktree add / discard / stage / sync). The one answer for the quit
+    /// warning, the busy indicator and the watcher-burst deferral, so they cannot drift apart.
+    /// Reads (refresh, status, log) never count.
+    pub fn git_write_running(&self) -> bool {
+        self.git_op_running() || self.project_write_running()
+    }
+
     #[cfg(test)]
     pub(crate) fn project_jobs_pending(&self) -> bool {
         self.project_runtimes

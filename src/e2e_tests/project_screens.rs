@@ -12,6 +12,9 @@ mod left;
 #[path = "project_quit_guard.rs"]
 mod quit_guard;
 
+#[path = "project_write_busy.rs"]
+mod write_busy;
+
 #[path = "project_frozen_frame.rs"]
 mod frozen_frame;
 

@@ -47,9 +47,9 @@ use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
-    App, FileOpResult, FilterPoolResult, FsBurstKinds, GitOpResult, IgnoredResult, KittyResult,
-    MdDiffResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaDiffResult, MediaResult,
-    RemoteFetch, SortKey, StatusResult,
+    App, DeferredFsBurst, FileOpResult, FilterPoolResult, FsBurstKinds, GitOpResult, IgnoredResult,
+    KittyResult, MdDiffResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaDiffResult,
+    MediaResult, RemoteFetch, SortKey, StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -960,8 +960,7 @@ fn run(
     // fs events produced by an in-progress file operation (a bulk write we caused ourselves)
     // aren't processed on the spot — they're accumulated and applied only once after the
     // operation finishes (should_defer_fs_events below).
-    let mut deferred_fs = false;
-    let mut deferred_kinds = FsBurstKinds::default();
+    let mut deferred_burst = DeferredFsBurst::default();
 
     let mut needs_redraw = true;
     // Keys typed while the startup terminal query was in flight (see `term_query`); replayed after
@@ -1258,8 +1257,7 @@ fn run(
         let defer_fs = app.should_defer_fs_events();
         while let Ok((kinds, paths)) = fs_rx.try_recv() {
             if defer_fs {
-                deferred_fs = true;
-                deferred_kinds.merge(kinds);
+                deferred_burst.hold(kinds);
                 continue;
             }
             fs_changed = true;
@@ -1279,11 +1277,9 @@ fn run(
         // Apply the accumulated burst exactly once, on the first loop after the operation finishes
         // (defer is lifted).
         // changed_paths stays empty = "which paths changed is unknown" = err safe (also reload the preview).
-        if !defer_fs && deferred_fs {
-            deferred_fs = false;
+        if let Some(kinds) = deferred_burst.release(defer_fs) {
             fs_changed = true;
-            burst_kinds.merge(deferred_kinds);
-            deferred_kinds = FsBurstKinds::default();
+            burst_kinds.merge(kinds);
         }
         // Build-churn guard: when every path in the burst is gitignored, the ignore rules
         // themselves haven't changed, and nothing was created/removed/renamed, skip the whole tree

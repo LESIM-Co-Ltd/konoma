@@ -320,8 +320,11 @@ impl App {
     /// A background **git write** is held back for the same reason: `checkout`/`discard`/`worktree
     /// add` rewrite the working tree, and a `pre-commit` hook can churn through it too. Nothing is
     /// missed — `apply_git_op` refreshes on completion, and the deferred burst is flushed right after.
+    /// A project act that declares `writes` (the vcs plugin's writes) counts the same
+    /// ([`App::git_write_running`]); its reply lifts the deferral and `DeferredFsBurst::release`
+    /// flushes the held burst on the next loop.
     pub fn should_defer_fs_events(&self) -> bool {
-        self.fileop_pending.is_some() || self.git_op_running()
+        self.fileop_pending.is_some() || self.git_write_running()
     }
 
     /// Start a filesystem operation in the background, or run it synchronously when no runner is

@@ -130,7 +130,7 @@ impl App {
         let file_op_running = self.fileop_pending.is_some();
         // The old hub's git write, or a project act that declares `writes` (the vcs plugin's
         // commit / checkout / worktree add / discard / stage / sync all run as project acts).
-        let git_op_running = self.git_op_running() || self.project_write_running();
+        let git_op_running = self.git_write_running();
         if !self.cfg.ui.confirm_quit && !file_op_running && !git_op_running {
             return false;
         }
