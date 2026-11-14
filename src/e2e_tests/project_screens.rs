@@ -2465,6 +2465,85 @@ refresh!(
     1
 );
 
+/// Waits for every project worker reply like `drain`, but never draws: a draw refetches the tree
+/// status and clears the dirty flag these tests observe.
+fn wait_without_drawing(f: &mut Fixture) {
+    f.sim.app.poll_projects();
+    while f.sim.app.project_jobs_pending() {
+        f.sim.app.wait_project_job();
+    }
+}
+
+/// A held `tree-status` act of the first tab, then a second tab opened while it runs. Returns the
+/// fixture, the release latch and the first tab's id.
+fn held_tree_status_act(name: &str) -> (Fixture, Arc<Latch>, u64) {
+    let hold = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture(
+        name,
+        false,
+        1,
+        None,
+        Some(hold.clone()),
+        Some(started.clone()),
+    );
+    open(&mut f);
+    let origin = f.sim.app.tab.id;
+    f.sim.press(KeyCode::F(9), KeyModifiers::NONE);
+    started.wait();
+    f.sim.key('t');
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    assert_ne!(f.sim.app.tab.id, origin);
+    (f, hold, origin)
+}
+
+/// The asynchronous path (`ProjectEvent::Effect` in `poll`): the effect of a tab that is not shown
+/// is only queued, so the synchronous `ProjectCommand::TreeStatus` of `apply_effect` has not run;
+/// the tree status of the shown tab (same repository) is marked dirty by the event alone.
+#[test]
+fn e2e_project_tree_status_effect_of_a_background_tab_marks_the_shown_tree_dirty() {
+    let (mut f, hold, origin) = held_tree_status_act("project_tree_status_async_only");
+    f.sim.app.clear_project_tree_dirty();
+    hold.open();
+    wait_without_drawing(&mut f);
+    assert_ne!(
+        f.sim.app.tab.id, origin,
+        "the effect's tab must stay in the background"
+    );
+    assert!(
+        f.sim.app.project_tree_dirty(),
+        "the poll event must mark the dirty flag for the shown tab on the same repository"
+    );
+}
+
+/// The synchronous path (`ProjectCommand::TreeStatus` of `apply_effect`): the effect arrives while
+/// another tab with a root outside the project is shown (so the event's own check does not match),
+/// is queued, and is applied when its tab is shown again.
+#[test]
+fn e2e_project_tree_status_queued_effect_marks_dirty_when_its_tab_is_applied() {
+    let (mut f, hold, origin) = held_tree_status_act("project_tree_status_sync_only");
+    // The second tab leaves the project's directory: its root is no longer under the project root.
+    f.sim.app.tree_leave().unwrap();
+    assert!(!f.sim.app.tab.root.starts_with(canon(&f._dir)));
+    f.sim.app.clear_project_tree_dirty();
+    hold.open();
+    wait_without_drawing(&mut f);
+    assert!(
+        !f.sim.app.project_tree_dirty(),
+        "the event alone must not match a tab rooted outside the project"
+    );
+    f.sim.key('[');
+    assert_eq!(f.sim.app.tab.id, origin);
+    f.sim.app.clear_project_tree_dirty();
+    f.sim.app.poll_projects();
+    wait_without_drawing(&mut f);
+    assert!(
+        f.sim.app.project_tree_dirty(),
+        "applying the queued effect must mark the tree dirty"
+    );
+}
+
 #[test]
 fn e2e_project_no_implicit_refresh_and_one_owner_per_project_across_tabs() {
     let hold = Arc::new(Latch::default());
