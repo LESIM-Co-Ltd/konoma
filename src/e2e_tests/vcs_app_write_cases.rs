@@ -167,8 +167,13 @@ fn normalize_write_frame(frame: &mut Buffer, root: &Path) {
                 }
                 let prefix_matches = needle[..length].iter().enumerate()
                     .all(|(i, c)| frame[(x + i as u16, y)].symbol() == c);
-                let padding = (x + length as u16..frame.area.width)
-                    .all(|x| frame[(x, y)].symbol().trim().is_empty());
+                // What follows the clip is blank padding, then (inside a project frame) the
+                // frame's right border in the last column.
+                let last = frame.area.width - 1;
+                let padding = (x + length as u16..frame.area.width).all(|x| {
+                    let symbol = frame[(x, y)].symbol();
+                    symbol.trim().is_empty() || (x == last && symbol == "│")
+                });
                 if prefix_matches && padding {
                     for (i, c) in "side".chars().take(length - 1).enumerate() {
                         frame[(x + 1 + i as u16, y)].set_symbol(&c.to_string());
@@ -176,6 +181,40 @@ fn normalize_write_frame(frame: &mut Buffer, root: &Path) {
                     break;
                 }
             }
+        }
+    }
+}
+
+/// The identity component can be clipped by the body anywhere in `/host/` or `/apps/`, depending
+/// on how many digits the process id and counter in the sandbox name have. Inside a project frame
+/// the clip is followed by the frame's right border; both sides must still normalize equal.
+#[test]
+fn clipped_identity_component_before_the_frame_border_normalizes() {
+    let parent = std::path::PathBuf::from("/tmp/konoma_e2e_x_1_0");
+    let build = |component: &str, clip: usize, gap: u16, border: bool| {
+        let root = parent.join(component).join("repo");
+        let text = format!("{}/{component}/", parent.display());
+        let clipped: String = text.chars().take(text.chars().count() - 6 + clip).collect();
+        let width = 1 + clipped.chars().count() as u16 + gap + 1;
+        let mut frame = Buffer::empty(Rect::new(0, 0, width, 3));
+        frame.set_string(1, 1, &clipped, Style::default());
+        if border {
+            frame.set_string(width - 1, 1, "│", Style::default());
+        }
+        normalize_write_frame(&mut frame, &root);
+        frame
+    };
+    // Lengths 2..=5 are the clips `/h`, `/ho`, `/hos`, `/host` that the border can follow.
+    for clip in 2..=5 {
+        for gap in 0..=2 {
+            let host = build("host", clip, gap, true);
+            let app = build("apps", clip, gap, true);
+            compare_frames(&host, &app)
+                .unwrap_or_else(|e| panic!("clip {clip} gap {gap} before the border: {e}"));
+            let host = build("host", clip, gap, false);
+            let app = build("apps", clip, gap, false);
+            compare_frames(&host, &app)
+                .unwrap_or_else(|e| panic!("clip {clip} gap {gap} without a border: {e}"));
         }
     }
 }
