@@ -62,13 +62,16 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
     (
         "src/e2e_tests/newkeys.rs",
         &[
+            "e2e_p_and_bang_work_from_the_tree_and_every_preview",
             "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row",
             "e2e_slash_filter_moves_over_the_shown_rows_only",
             "e2e_slash_filters_the_log_by_the_text_shown",
             "e2e_slash_filters_the_graph_and_hides_the_connectors",
             "e2e_tab_walks_the_git_screens_both_ways",
             "e2e_tab_skips_the_worktrees_in_a_jj_repository",
+            "e2e_branch_and_worktree_filters_are_the_same_component",
             "e2e_r_reads_the_lists_again",
+            "e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list",
         ],
     ),
     (
@@ -265,7 +268,9 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
     }
     // 106 + 14 (vcs_writes.rs) + 5 (vcs_branches.rs D) + 3 (vcs_worktrees.rs D: create, diff, read-only)
     // + 10 (vcs_worktrees.rs E/H) + 1 (vcs_branches.rs cells) + 1 (vcs_graph.rs jj title)
-    // + 16 (U9b5a: 8 e2e_tests.rs + 1 speed_tests.rs + 2 ops_keys.rs + 2 lib.rs + 3 default_keys.rs).
-    assert_eq!(total, 156, "frozen B/C/E/H/S inventory");
+    // + 19 (U9b5a: 8 e2e_tests.rs + 1 speed_tests.rs + 2 ops_keys.rs + 2 lib.rs + 3 default_keys.rs
+    // + 3 newkeys.rs: p/! origins, branch/worktree filter component, e/o/ctrl-t; the deleted-row
+    // test stays out of scope until its undecided Ctrl-t difference is decided).
+    assert_eq!(total, 159, "frozen B/C/E/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }

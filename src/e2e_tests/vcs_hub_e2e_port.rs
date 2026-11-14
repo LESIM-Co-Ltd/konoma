@@ -50,6 +50,14 @@ fn vcs_hub_e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list() {
     let mut w = W::git("vcs_hub_e2e_e_o_ctrl_t", true, "en", "relative", false);
     let log = record_launches(&mut w);
     w.select("a-modified");
+    assert!(
+        crate::ops::action_enabled(
+            &w.sim.app,
+            w.sim.app.key_context().unwrap(),
+            crate::keymap::Action::RequestEdit
+        ),
+        "e is offered on the modified row"
+    );
     let row = w.root.join("a-modified");
     w.key('e');
     assert_eq!(w.sim.app.take_pending_edit(), Some((row.clone(), None)));
@@ -78,10 +86,134 @@ fn vcs_hub_e2e_a_deleted_row_offers_neither_e_nor_o() {
     let mut w = W::git("vcs_hub_e2e_deleted_row", true, "en", "relative", false);
     let log = record_launches(&mut w);
     w.select("c-deleted");
+    let ctx = w.sim.app.key_context().unwrap();
+    assert!(
+        !crate::ops::action_enabled(&w.sim.app, ctx, crate::keymap::Action::RequestEdit),
+        "a deleted row offers no edit"
+    );
+    assert!(
+        !crate::ops::action_enabled(&w.sim.app, ctx, crate::keymap::Action::OpenExternal),
+        "a deleted row offers no open"
+    );
+    // UNDECIDED (reported, not pinned): the old hub gated `OpenInNewTab` off for a deleted row
+    // (newkeys.rs:1165); on the canvas ctx is `Context::Canvas`, so the `Context::Screen` gate arm
+    // does not apply and Ctrl-t is offered on the missing file's row.
     w.key('e');
     assert!(w.sim.app.take_pending_edit().is_none());
     w.key('o');
     assert!(log.lock().unwrap().is_empty());
+}
+
+// ---- old newkeys e2e_p_and_bang_work_from_the_tree_and_every_preview ----
+// `p` opens the project's changes screen from the tree and from every kind of preview and `q`
+// comes back to where `p` was pressed; `!` queues the project's tool from the same places. The
+// entry is the host's `p` alone: opening must not reach the old hub.
+
+#[test]
+fn vcs_hub_e2e_p_and_bang_work_from_the_tree_and_every_preview() {
+    let dir = sandbox("vcs_hub_e2e_p_bang").into_canonical().unwrap();
+    seed_repo(&dir);
+    std::fs::write(dir.join("notes.md"), "# T\n\ntext\n").unwrap();
+    std::fs::write(dir.join("data.csv"), "a,b\n1,2\n").unwrap();
+    write_solid_png(&dir.join("pic.png"), 8, 8, [1, 2, 3]);
+    let cfg = super::super::vcs_changes::plugin_config("git", "vcs_hub_e2e_p_bang", "en");
+    for (name, ctx) in [
+        ("", Context::Tree),
+        ("a.rs", Context::Text),
+        ("notes.md", Context::Document),
+        ("data.csv", Context::Table),
+        ("pic.png", Context::Image),
+        ("a.rs:diff", Context::Diff),
+    ] {
+        let mut s = Sim::with_config(&dir, cfg.clone()).with_picker();
+        s.app.tab.projects.wait_for_result();
+        s.app.poll_projects();
+        s.app.ensure_git_status_now();
+        s.draw();
+        match name {
+            "" => {}
+            "a.rs:diff" => {
+                s.select("a.rs");
+                s.key('d');
+            }
+            f => {
+                s.select(f);
+                s.enter();
+            }
+        }
+        assert_eq!(s.app.key_context(), Some(ctx), "{name}");
+        assert!(
+            crate::ops::action_enabled(&s.app, ctx, crate::keymap::Action::OpenGitView),
+            "{name}: p is offered"
+        );
+        assert!(
+            crate::ops::action_enabled(&s.app, ctx, crate::keymap::Action::GitLaunchTool),
+            "{name}: ! is offered"
+        );
+        let mode = s.app.tab.mode;
+        let (_, legacy) = App::count_legacy_hub_opens(|| {
+            s.key('p');
+            drain(&mut s);
+        });
+        assert_eq!(legacy, 0, "{name}: p must not open the old hub");
+        assert!(
+            s.app.project_active(),
+            "{name}: p opens the project's screen"
+        );
+        assert!(!s.app.is_git_view(), "{name}");
+        assert_eq!(
+            s.app.project_frame().unwrap().key.screen,
+            "changes",
+            "{name}"
+        );
+        s.key('q');
+        drain(&mut s);
+        assert!(!s.app.project_active(), "{name}");
+        assert_eq!(
+            s.app.tab.mode, mode,
+            "{name}: q comes back to where p was pressed"
+        );
+        assert_eq!(s.app.key_context(), Some(ctx), "{name}");
+        s.key('!');
+        assert!(s.app.take_launch_git_tool(), "{name}: ! queues the tool");
+    }
+}
+
+// ---- old newkeys e2e_branch_and_worktree_filters_are_the_same_component ----
+// The branch and worktree lists keep their filter through the same project list filter: `/`
+// opens the input on each screen, the typed query narrows the view, Esc drops it and the screen
+// stays.
+
+#[test]
+fn vcs_hub_e2e_branch_and_worktree_filters_are_the_same_component() {
+    let mut w = branches("vcs_hub_e2e_filter_component", "en", false);
+    assert!(w.screen_is("branches"));
+    w.key('/');
+    assert!(w.sim.app.project_frame().unwrap().filtering);
+    w.type_text("alp");
+    let frame = w.sim.app.project_frame().unwrap();
+    assert!(frame.filtering);
+    assert_eq!(frame.query, "alp");
+    assert_eq!(
+        branch_values(&w.sim),
+        vec![("branch".to_string(), "alpha".to_string())]
+    );
+    w.press(KeyCode::Esc);
+    let frame = w.sim.app.project_frame().unwrap();
+    assert!(!frame.filtering);
+    assert_eq!(frame.query, "");
+    assert_eq!(branch_values(&w.sim).len(), 3);
+    w.key('w');
+    assert!(w.screen_is("worktrees"));
+    w.key('/');
+    assert!(w.sim.app.project_frame().unwrap().filtering);
+    w.type_text("zz");
+    assert_eq!(w.sim.app.project_frame().unwrap().query, "zz");
+    w.press(KeyCode::Esc);
+    let frame = w.sim.app.project_frame().unwrap();
+    assert!(!frame.filtering);
+    assert_eq!(frame.query, "");
+    assert!(w.screen_is("worktrees"));
 }
 
 // ---- old default_keys e2e_s_stages_in_a_git_hub_and_syncs_in_a_jj_hub_and_h_l_open_and_close ----
@@ -445,14 +577,13 @@ fn vcs_hub_e2e_jj_tree_diff_discard_is_refused_and_stays_on_the_diff() {
     );
 }
 
-// ---- Open question: old e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list and
-// old e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing ----
+// ---- Decided differences (the user decisions: on a jj repository `w` and on a git repository
+// the jj sync key `R` show nothing): old e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list
+// and old e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing ----
 //
-// What the user sees on the new path today. The old hub flashed `JjWorkspacesUnlisted` for `w` in
-// a jj repository and `JjSyncNotJj` for a bound sync key in a git repository. On the new path the
-// jj screens have no worktree screen and the git plugin has no jj sync operation, so both keys do
-// nothing visible. Neither difference is in the decided list of the design document; this pins
-// the current behaviour and is waiting for a decision.
+// The old hub flashed `JjWorkspacesUnlisted` for `w` in a jj repository and `JjSyncNotJj` for a
+// bound sync key in a git repository. On the new path the jj screens have no worktree screen and
+// the git plugin has no jj sync operation, so both keys do nothing visible.
 
 #[test]
 fn vcs_hub_e2e_jj_worktrees_key_does_nothing_and_opens_no_worktree_screen() {
@@ -482,16 +613,19 @@ fn vcs_hub_e2e_git_repository_has_no_sync_key_that_flashes_or_opens_a_dialog() {
 // old e2e_quit_during_a_git_write_asks_for_confirmation ----
 
 /// A git project whose `commit` is parked inside the repository's pre-commit hook until the test
-/// removes `.git/BLOCK`; the order comes from that file, never from the clock.
-fn blocked_commit(name: &str, message: &str) -> W {
+/// removes `.git/BLOCK`; the order comes from that file, never from the clock. The second half of
+/// the pair is the commit subjects read BEFORE Enter starts the write, so the caller can prove the
+/// parked job landed nothing while it ran.
+fn blocked_commit(name: &str, message: &str) -> (W, Vec<String>) {
     let mut w = W::git(name, true, "en", "relative", false);
     install_blocking_pre_commit_hook(&w.root);
     std::fs::write(w.root.join(".git/BLOCK"), b"").unwrap();
     w.key('c');
     w.type_text(message);
+    let before = commit_subjects(&w.root);
     // Direct press: `W::press` would wait for the parked job.
     w.sim.press(KeyCode::Enter, KeyModifiers::NONE);
-    w
+    (w, before)
 }
 
 fn commit_subjects(root: &std::path::Path) -> Vec<String> {
@@ -503,8 +637,7 @@ fn commit_subjects(root: &std::path::Path) -> Vec<String> {
 
 #[test]
 fn vcs_hub_e2e_ui_keeps_responding_while_a_real_git_commit_is_blocked() {
-    let mut w = blocked_commit("vcs_hub_e2e_blocked_commit", "BLOCKEDCOMMIT");
-    let before = commit_subjects(&w.root);
+    let (mut w, before) = blocked_commit("vcs_hub_e2e_blocked_commit", "BLOCKEDCOMMIT");
     assert!(w.sim.app.project_write_running(), "the commit is running");
     assert!(w.sim.app.git_write_running());
     assert!(!before.contains(&"BLOCKEDCOMMIT".to_string()));
@@ -536,7 +669,7 @@ fn vcs_hub_e2e_ui_keeps_responding_while_a_real_git_commit_is_blocked() {
 
 #[test]
 fn vcs_hub_e2e_quit_during_a_real_git_commit_asks_even_with_confirm_quit_off() {
-    let mut w = blocked_commit("vcs_hub_e2e_quit_commit", "WILLQUIT");
+    let (mut w, _) = blocked_commit("vcs_hub_e2e_quit_commit", "WILLQUIT");
     w.sim.app.cfg.ui.confirm_quit = false;
     assert!(w.sim.app.project_write_running());
     w.sim.key('Q');
