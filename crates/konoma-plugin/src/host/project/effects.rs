@@ -391,6 +391,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                 update.changed = true;
                 runtime.busy = false;
                 runtime.acting = false;
+                runtime.acting_writes = false;
                 // The reply ends the job that carried the start-over, whatever it holds.
                 let top = runtime.top.inflight.take();
                 if let Some(invocation) = runtime.pending_retry.take().filter(|_| reply.act_failed)

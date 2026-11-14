@@ -9,6 +9,9 @@ mod confirmations;
 #[path = "project_left.rs"]
 mod left;
 
+#[path = "project_quit_guard.rs"]
+mod quit_guard;
+
 #[path = "project_frozen_frame.rs"]
 mod frozen_frame;
 

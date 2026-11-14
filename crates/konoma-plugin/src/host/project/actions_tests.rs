@@ -74,6 +74,7 @@ impl Fixture {
             chip_dirty: false,
             busy: false,
             acting: false,
+            acting_writes: false,
             pending_retry: None,
             view_request: None,
             dirty: Default::default(),

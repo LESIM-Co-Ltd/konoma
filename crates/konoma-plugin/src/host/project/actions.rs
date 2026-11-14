@@ -356,6 +356,7 @@ where
         let project = shared.origin.project.clone();
         let action = shared.action.action.clone();
         let act = shared.context.clone();
+        let writes = shared.declaration.writes;
         let runtime = self.runtimes.get_mut(&project).unwrap();
         let job = ProjectJob::Act {
             action,
@@ -368,6 +369,7 @@ where
         if runtime.tx.try_send(job).is_ok() {
             runtime.busy = true;
             runtime.acting = true;
+            runtime.acting_writes = writes;
             runtime.pending_retry = retry;
             if let Some(frame) = context.active.as_mut().and_then(|nav| nav.frame_mut()) {
                 frame.pending.clear();

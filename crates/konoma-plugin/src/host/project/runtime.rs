@@ -130,6 +130,8 @@ pub struct ProjectRuntime<E: Send + 'static, I = ()> {
     pub chip_dirty: bool,
     pub busy: bool,
     pub acting: bool,
+    /// The running act declared `writes` (set with `acting`, cleared with it). Reads never set it.
+    pub acting_writes: bool,
     pub pending_retry: Option<Box<I>>,
     #[cfg(any(test, feature = "test-hooks"))]
     pub view_request: Option<ScreenKey>,
@@ -143,6 +145,12 @@ pub struct ProjectRuntime<E: Send + 'static, I = ()> {
 }
 
 impl<E: Send + 'static, I> ProjectRuntime<E, I> {
+    /// Whether an act whose declaration says `writes` is running on this project's owner now.
+    /// Quitting then would orphan the write (e.g. a `git` process holding `.git/index.lock`).
+    pub fn write_act_running(&self) -> bool {
+        self.acting && self.acting_writes
+    }
+
     /// Read the owner's cached target decision; never stat from a per-frame consumer.
     pub fn can_launch_target(&self, screen: &ScreenKey, path: &Path) -> bool {
         self.launch_targets
@@ -400,6 +408,7 @@ impl<E: Send + 'static, I> ProjectRuntime<E, I> {
             chip_dirty: false,
             busy: true,
             acting: false,
+            acting_writes: false,
             pending_retry: None,
             #[cfg(any(test, feature = "test-hooks"))]
             view_request: None,

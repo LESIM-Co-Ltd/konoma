@@ -2028,6 +2028,14 @@ impl App {
         self.ensure_project_view();
     }
 
+    /// Whether a project act that declares `writes` is running now, in any tab. Reads (refresh,
+    /// status, log) never count: the host knows an act writes from its own declaration.
+    pub fn project_write_running(&self) -> bool {
+        self.project_runtimes
+            .values()
+            .any(|runtime| runtime.write_act_running())
+    }
+
     #[cfg(test)]
     pub(crate) fn project_jobs_pending(&self) -> bool {
         self.project_runtimes
