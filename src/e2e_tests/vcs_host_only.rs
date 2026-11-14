@@ -299,6 +299,7 @@ fn vcs_host_close_notifies_and_discards_only_the_closed_tab() {
         graph(&mut sim);
         let a = sim.app.tab.id;
         let original = list(&sim);
+        let cached_a = sim.app.project_content().unwrap();
         sim.app.tab_new().unwrap();
         enter(&mut sim);
         graph(&mut sim);
@@ -319,6 +320,10 @@ fn vcs_host_close_notifies_and_discards_only_the_closed_tab() {
         let tabs = sim.app.project_cached_tabs_for_test();
         assert!(tabs.contains(&a));
         assert!(!tabs.contains(&b));
+        assert!(
+            std::sync::Arc::ptr_eq(&cached_a, &sim.app.project_content().unwrap()),
+            "closing tab {b} keeps the other tab's cached view (inactive close: {inactive})"
+        );
         assert_eq!(list(&sim), original);
         keys(&mut sim, "r");
         assert!(!sim.app.project_cached_tabs_for_test().contains(&b));
