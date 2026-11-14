@@ -2404,10 +2404,8 @@ const GROUPS: &[Group] = &[
         &["port"],
         "vcs_hub_e2e_filter_input_types_t_and_capital_i_literally_instead_of_opening_a_tab",
     ),
-    // ---- U9b5a: the newkeys.rs old-hub keys (63 rows; 6 more tab-cycle rows sit in the grouped
-    // section with the other e2e_tab_* rows; `e2e_a_deleted_row_offers_neither_e_nor_o` is held
-    // out: the old hub gated `OpenInNewTab` off on a deleted row but the canvas offers Ctrl-t
-    // there — undecided, noted in the port test's comment; return it with a decided: row) ----
+    // ---- U9b5a: the newkeys.rs old-hub keys (72 rows; 6 more tab-cycle rows sit in the grouped
+    // section with the other e2e_tab_* rows) ----
     (
         "e2e_p_and_bang_work_from_the_tree_and_every_preview",
         &[
@@ -2444,6 +2442,8 @@ const GROUPS: &[Group] = &[
             "e:pending-edit",
             "o:launch-count",
             "o:launch-args",
+            "hint:open-in-new-tab",
+            "ctrl-t:hint-shown",
             "ctrl-t:tab-count",
             "ctrl-t:preview-mode",
             "ctrl-t:preview-path",
@@ -2451,6 +2451,20 @@ const GROUPS: &[Group] = &[
         ],
         &["port"],
         "vcs_hub_e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list",
+    ),
+    (
+        "e2e_a_deleted_row_offers_neither_e_nor_o",
+        &[
+            "hint:request-edit",
+            "hint:open-external",
+            "e:no-pending-edit",
+            "o:no-launch",
+            "ctrl-t:gate-off",
+            "ctrl-t:no-hint",
+            "ctrl-t:no-tab",
+        ],
+        &["port"],
+        "vcs_hub_e2e_a_deleted_row_offers_neither_e_nor_o",
     ),
 ];
 
@@ -2656,15 +2670,15 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // vanished 8 + no-target Ctrl-t 9 + cells 49 (48 + 1 frozen) + diff 57 (56 + 1
             // frozen) + help 16; branches cells 5 (4 edge + 1 frozen); jj graph title 6.
             + 279
-            // The U9b5a old-hub e2e ports, 159 rows: branches view 5 + jj write gate 8 (5 changes + 2
+            // The U9b5a old-hub e2e ports, 168 rows: branches view 5 + jj write gate 8 (5 changes + 2
             // bookmarks + 1 tree diff) + colocated pin 6 + blocked commit 9 + quit 10 (6 + 4 guard)
             // + branches filter 6 + jj `w` 3 + git `R` 3 + speed 2 + jj Enter 5 + git Enter 3 +
             // default_keys hub keys 8 + branch y menu 7 + worktree c/n 4 + help 4 + tab/filter 7;
-            // the newkeys.rs old-hub keys 69: p/! origins 48 (8 assertions x 6 origins) +
-            // branch/worktree filter component 7 + e/o/ctrl-t 8 + tab-cycle extras 6
-            // (initial screen, footer token, b/w jumps, jj no-worktrees — in the grouped section;
-            // the deleted-row test's 4 rows stay out until the Ctrl-t difference is decided).
-            + 159,
+            // the newkeys.rs old-hub keys 78: p/! origins 48 (8 assertions x 6 origins) +
+            // branch/worktree filter component 7 + e/o/ctrl-t 10 + deleted-row e/o/ctrl-t 7 +
+            // tab-cycle extras 6 (initial screen, footer token, b/w jumps, jj no-worktrees — in
+            // the grouped section).
+            + 168,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

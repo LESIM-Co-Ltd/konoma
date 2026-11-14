@@ -458,7 +458,9 @@ impl App {
     /// (mirroring `l`). No-op when the tree is empty.
     pub fn tab_new_from_selection(&mut self) -> Result<()> {
         if self.project_active() {
-            if let Some(path) = self.project_row_target() {
+            // The target the owner marked launchable: a deleted file's row opens nothing; a
+            // directory row (a worktree) keeps opening, decided from the same cached state.
+            if let Some(path) = self.project_launch_target() {
                 let is_dir = path.is_dir();
                 return self.tab_new_from_path(path, is_dir);
             }

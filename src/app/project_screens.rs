@@ -717,6 +717,9 @@ impl App {
         nav.visible_rows(&content, self.project_viewport(), self.diff_layout)
     }
 
+    /// The selected row's target exactly as the plugin declared it — no existence check. The
+    /// launch decisions (`e`, `o`, `Ctrl-t`) go through [`project_launch_target`], which filters
+    /// this by the owner's cached decision.
     pub(crate) fn project_row_target(&self) -> Option<PathBuf> {
         self.tab.project_navigation.as_ref()?.selected_target(
             self.project_content()?.as_ref(),
@@ -725,6 +728,11 @@ impl App {
         )
     }
 
+    /// The one answer to "the target a key may open on this row": the row's target only while
+    /// the owner marks it launchable — existence decided off the UI thread and cached in
+    /// `ProjectRuntime::launch_targets`, so a deleted file's row is `None` while an existing
+    /// directory row (a worktree) stays launchable. `e`, `o`, `Ctrl-t`, their gate and their
+    /// hints all read this; never stat the file system here.
     pub(crate) fn project_launch_target(&self) -> Option<PathBuf> {
         let path = self.project_row_target()?;
         let nav = self.tab.project_navigation.as_ref()?;
@@ -1761,7 +1769,9 @@ impl App {
             picker: self.project_picker(),
             graph_jj: self.project_graph_jj(),
             vcs_jj: self.project_vcs_jj(),
-            row_target: self.project_row_target().is_some(),
+            // `row_target` means "Ctrl-t acts on this row": the owner's launchable decision,
+            // like the gate and the handler, so a deleted file's row shows no Ctrl-t hint.
+            row_target: self.project_launch_target().is_some(),
             open: self.project_open_facts(&actions, &bindings),
             motions: ProjectMotionKeys {
                 scroll: motion_keys(&[Motion::Down, Motion::Up]),

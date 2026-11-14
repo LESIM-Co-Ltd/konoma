@@ -50,12 +50,9 @@ fn vcs_hub_e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list() {
     let mut w = W::git("vcs_hub_e2e_e_o_ctrl_t", true, "en", "relative", false);
     let log = record_launches(&mut w);
     w.select("a-modified");
+    let ctx = w.sim.app.key_context().unwrap();
     assert!(
-        crate::ops::action_enabled(
-            &w.sim.app,
-            w.sim.app.key_context().unwrap(),
-            crate::keymap::Action::RequestEdit
-        ),
+        crate::ops::action_enabled(&w.sim.app, ctx, crate::keymap::Action::RequestEdit),
         "e is offered on the modified row"
     );
     let row = w.root.join("a-modified");
@@ -67,7 +64,24 @@ fn vcs_hub_e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list() {
         log.lock().unwrap()[0].args,
         vec![row.to_string_lossy().into_owned()]
     );
-    // Ctrl-t opens the row in a new tab and leaves the list in this one.
+    // Ctrl-t is enabled and its hints are shown (the canvas's own controls and the `?` help; the
+    // changes screen's drawn footer has no `C-t` token on any row), then it opens the row in a
+    // new tab and leaves the list in this one.
+    assert!(
+        crate::ops::action_enabled(&w.sim.app, ctx, crate::keymap::Action::OpenInNewTab),
+        "Ctrl-t is enabled on the modified row"
+    );
+    assert!(
+        w.sim.app.project_controls().unwrap().contains("Ctrl-t"),
+        "the canvas's controls offer Ctrl-t"
+    );
+    assert!(
+        crate::ops::help::sections(&w.sim.app)
+            .iter()
+            .flat_map(|s| &s.rows)
+            .any(|(keys, _)| keys.contains("Ctrl-t")),
+        "the `?` help names Ctrl-t"
+    );
     assert_eq!(w.sim.app.tab_count(), 1);
     w.sim.ctrl('t');
     assert_eq!(w.sim.app.tab_count(), 2);
@@ -95,13 +109,32 @@ fn vcs_hub_e2e_a_deleted_row_offers_neither_e_nor_o() {
         !crate::ops::action_enabled(&w.sim.app, ctx, crate::keymap::Action::OpenExternal),
         "a deleted row offers no open"
     );
-    // UNDECIDED (reported, not pinned): the old hub gated `OpenInNewTab` off for a deleted row
-    // (newkeys.rs:1165); on the canvas ctx is `Context::Canvas`, so the `Context::Screen` gate arm
-    // does not apply and Ctrl-t is offered on the missing file's row.
+    // `Ctrl-t` follows the same owner decision `e`/`o` read (decided: like the old hub's
+    // `OpenInNewTab` gate at newkeys.rs:1165): on the missing file's row it is not enabled, no
+    // Ctrl-t hint is drawn or offered, and pressing it opens nothing.
+    assert!(
+        !crate::ops::action_enabled(&w.sim.app, ctx, crate::keymap::Action::OpenInNewTab),
+        "a deleted row offers no Ctrl-t"
+    );
+    assert!(
+        !w.sim.app.project_controls().unwrap().contains("Ctrl-t"),
+        "the canvas's controls offer no Ctrl-t on a deleted row"
+    );
+    assert!(
+        !crate::ops::help::sections(&w.sim.app)
+            .iter()
+            .flat_map(|s| &s.rows)
+            .any(|(keys, _)| keys.contains("Ctrl-t")),
+        "the `?` help has no Ctrl-t row on a deleted row"
+    );
+    w.sim.dont_see("C-t");
     w.key('e');
     assert!(w.sim.app.take_pending_edit().is_none());
     w.key('o');
     assert!(log.lock().unwrap().is_empty());
+    w.sim.ctrl('t');
+    assert_eq!(w.sim.app.tab_count(), 1, "Ctrl-t opens nothing");
+    assert!(w.screen_is("changes"));
 }
 
 // ---- old newkeys e2e_p_and_bang_work_from_the_tree_and_every_preview ----

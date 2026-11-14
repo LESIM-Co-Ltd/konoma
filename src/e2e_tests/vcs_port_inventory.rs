@@ -72,6 +72,7 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "e2e_branch_and_worktree_filters_are_the_same_component",
             "e2e_r_reads_the_lists_again",
             "e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list",
+            "e2e_a_deleted_row_offers_neither_e_nor_o",
         ],
     ),
     (
@@ -268,9 +269,8 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
     }
     // 106 + 14 (vcs_writes.rs) + 5 (vcs_branches.rs D) + 3 (vcs_worktrees.rs D: create, diff, read-only)
     // + 10 (vcs_worktrees.rs E/H) + 1 (vcs_branches.rs cells) + 1 (vcs_graph.rs jj title)
-    // + 19 (U9b5a: 8 e2e_tests.rs + 1 speed_tests.rs + 2 ops_keys.rs + 2 lib.rs + 3 default_keys.rs
-    // + 3 newkeys.rs: p/! origins, branch/worktree filter component, e/o/ctrl-t; the deleted-row
-    // test stays out of scope until its undecided Ctrl-t difference is decided).
-    assert_eq!(total, 159, "frozen B/C/E/H/S inventory");
+    // + 20 (U9b5a: 8 e2e_tests.rs + 1 speed_tests.rs + 2 ops_keys.rs + 2 lib.rs + 3 default_keys.rs
+    // + 4 newkeys.rs: p/! origins, branch/worktree filter component, e/o/ctrl-t, deleted row).
+    assert_eq!(total, 160, "frozen B/C/E/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }

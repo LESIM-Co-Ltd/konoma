@@ -203,6 +203,13 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         A::OpenInNewTab if matches!(ctx, Context::Screen(..)) => {
             when(matches!(app.verb_target(), VerbTarget::File(_)))
         }
+        // On a project canvas `Ctrl-t` opens the row's target only while the owner marks it
+        // launchable — the same cached decision `e`/`o` read, so a deleted file's row offers
+        // nothing. A target that is a directory (a worktree row) keeps opening: the owner's
+        // launch decision records it as existing too.
+        A::OpenInNewTab if ctx == Context::Canvas && app.project_active() => {
+            when(app.project_launch_target().is_some())
+        }
 
         // --- `!`: the project's tool. The version-control screens always have a repository. ---
         // On a project canvas the base table's `!` is reachable from every screen, but the old
