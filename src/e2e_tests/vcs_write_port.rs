@@ -1410,3 +1410,7 @@ fn vcs_port_worktree_read_only_blocks_create_before_prompt_but_navigation_and_di
         }
     }
 }
+
+// The old-hub e2e ports live in their own file but reuse this file's fixtures (child module).
+#[path = "vcs_hub_e2e_port.rs"]
+mod vcs_hub_e2e_port;
