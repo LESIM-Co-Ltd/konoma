@@ -2152,6 +2152,240 @@ const GROUPS: &[Group] = &[
         &["en,ja"],
         "e2e_vcs_graph_jj_top_edge_literal_in_both_languages",
     ),
+    // ---- U9b5a: the old-hub e2e tests of vcs_hub_e2e_port.rs (90 rows) ----
+    (
+        "e2e_git_branches_view_lists_branches",
+        &[
+            "b:opens-branches",
+            "title:literal",
+            "non-current-branch:shown",
+            "current-marker:shown",
+            "decided:q-leaves-to-origin",
+        ],
+        &["port"],
+        "vcs_hub_e2e_branches_screen_lists_branches_marks_the_current_one_and_q_leaves",
+    ),
+    (
+        "e2e_jj_write_actions_are_gated_by_the_read_only_backend",
+        &[
+            "sanity:read-only",
+            "decided:changes-keys-do-nothing",
+            "changes:no-dialog",
+            "changes:stays-on-screen",
+            "q:leaves-to-origin",
+        ],
+        &["port"],
+        "vcs_hub_e2e_jj_changes_stage_family_keys_do_nothing_and_leave_the_repository_alone",
+    ),
+    (
+        "e2e_jj_write_actions_are_gated_by_the_read_only_backend",
+        &["decided:bookmark-keys-do-nothing", "bookmarks:no-dialog"],
+        &["port"],
+        "vcs_hub_e2e_jj_bookmarks_enter_and_write_keys_dispatch_nothing",
+    ),
+    (
+        "e2e_jj_write_actions_are_gated_by_the_read_only_backend",
+        &["tree-diff:discard-refused"],
+        &["port"],
+        "vcs_hub_e2e_jj_tree_diff_discard_is_refused_and_stays_on_the_diff",
+    ),
+    (
+        "e2e_jj_write_gate_holds_in_a_colocated_repository_pinned_to_jj",
+        &[
+            "sanity:git-state-not-empty",
+            "decided:both-offered-by-chooser",
+            "changes:keys-do-nothing",
+            "bookmarks:keys-do-nothing",
+            "git-status:unchanged",
+            "bookmarks:list-opens",
+        ],
+        &["port"],
+        "vcs_hub_e2e_colocated_repository_pinned_to_jj_offers_both_and_the_jj_choice_never_writes",
+    ),
+    (
+        "e2e_ui_keeps_responding_while_a_git_commit_is_blocked",
+        &[
+            "commit:running",
+            "log:not-committed",
+            "q:leaves",
+            "cursor:moves",
+            "frame:draws",
+            "still:running",
+            "log:unchanged",
+            "flag:cleared-after-release",
+            "commit:completes",
+        ],
+        &["port"],
+        "vcs_hub_e2e_ui_keeps_responding_while_a_real_git_commit_is_blocked",
+    ),
+    (
+        "e2e_quit_during_a_git_write_asks_for_confirmation",
+        &[
+            "write:running",
+            "Q:does-not-quit",
+            "dialog:shown",
+            "dialog:warning-text",
+            "dialog:warning-drawn",
+            "y:quits",
+        ],
+        &["port"],
+        "vcs_hub_e2e_quit_during_a_real_git_commit_asks_even_with_confirm_quit_off",
+    ),
+    (
+        "e2e_quit_during_a_git_write_asks_for_confirmation",
+        &["guard:Q-does-not-quit", "guard:dialog-shown", "guard:warning-text"],
+        &["port"],
+        "e2e_quit_project_write_act_dialog_shows_even_with_confirm_quit_off",
+    ),
+    (
+        "e2e_quit_during_a_git_write_asks_for_confirmation",
+        &["guard:y-quits"],
+        &["port"],
+        "e2e_quit_project_write_act_y_quits_and_n_keeps_the_act_running_to_completion",
+    ),
+    (
+        "e2e_git_branches_filter_narrows_and_clears",
+        &[
+            "list:opens",
+            "list:initial-count",
+            "filter:starts",
+            "query:narrows-to-one",
+            "query:drawn",
+            "esc:clears",
+        ],
+        &["port"],
+        "vcs_hub_e2e_branches_filter_narrows_to_the_query_and_clears_on_escape",
+    ),
+    (
+        "e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list",
+        &[
+            "decided:6-worktrees-key-does-nothing",
+            "no-dialog",
+            "stays-on-changes",
+        ],
+        &["port"],
+        "vcs_hub_e2e_jj_worktrees_key_does_nothing_and_opens_no_worktree_screen",
+    ),
+    (
+        "e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing",
+        &["decided:6-sync-key-does-nothing", "no-dialog", "no-act"],
+        &["port"],
+        "vcs_hub_e2e_git_repository_has_no_sync_key_that_flashes_or_opens_a_dialog",
+    ),
+    (
+        "git_views_and_large_diff_render_is_bounded",
+        &["views:alloc-bounded"],
+        &["port"],
+        "vcs_hub_e2e_project_views_and_large_diff_render_is_bounded",
+    ),
+    (
+        "git_views_and_large_diff_render_is_bounded",
+        &["diff:alloc-scales-linearly"],
+        &["port"],
+        "git_file_diff_and_colorization_scale_linearly_with_the_diff_size",
+    ),
+    (
+        "e2e_enter_on_a_jj_bookmark_list_is_refused_like_every_other_write",
+        &[
+            "list:opens",
+            "footer:no-checkout",
+            "decided:enter-does-nothing",
+            "enter:starts-no-job",
+            "enter:stays-on-list",
+        ],
+        &["port"],
+        "vcs_hub_e2e_jj_bookmarks_enter_and_write_keys_dispatch_nothing",
+    ),
+    (
+        "e2e_enter_on_a_git_branch_list_still_checks_out",
+        &["list:opens", "footer:checkout-token", "enter:checks-out"],
+        &["port"],
+        "vcs_hub_e2e_git_branches_footer_offers_checkout_and_enter_checks_out",
+    ),
+    (
+        "e2e_s_stages_in_a_git_hub_and_syncs_in_a_jj_hub_and_h_l_open_and_close",
+        &["s:stages-in-git", "s:opens-no-dialog"],
+        &["port"],
+        "vcs_port_write_stage_unstage_each_file_kind_style_and_language",
+    ),
+    (
+        "e2e_s_stages_in_a_git_hub_and_syncs_in_a_jj_hub_and_h_l_open_and_close",
+        &[
+            "R:not-bound",
+            "decided:6-jj-sync-key-on-git-repo-does-nothing",
+        ],
+        &["port"],
+        "vcs_hub_e2e_git_repository_has_no_sync_key_that_flashes_or_opens_a_dialog",
+    ),
+    (
+        "e2e_s_stages_in_a_git_hub_and_syncs_in_a_jj_hub_and_h_l_open_and_close",
+        &["jj:s-is-the-sync-and-asks"],
+        &["port"],
+        "vcs_port_write_jj_sync_confirmation_cancel_enter_and_uppercase_y",
+    ),
+    (
+        "e2e_s_stages_in_a_git_hub_and_syncs_in_a_jj_hub_and_h_l_open_and_close",
+        &["l:opens-diff", "q:returns-to-list", "h:leaves-to-tree"],
+        &["port"],
+        "vcs_hub_e2e_l_opens_the_diff_q_returns_to_the_list_and_h_leaves",
+    ),
+    (
+        "e2e_branch_list_y_menu_copies_the_name_and_c_creates",
+        &[
+            "list:opens",
+            "y:opens-copy-leader",
+            "clipboard:untouched-until-n",
+            "n:copies-branch-name",
+            "n:no-dialog",
+            "c:asks-for-name",
+            "decided:h-leaves-to-origin",
+        ],
+        &["port"],
+        "vcs_hub_e2e_branch_list_y_menu_copies_the_name_and_c_creates",
+    ),
+    (
+        "e2e_worktree_list_c_creates_and_n_does_not",
+        &[
+            "list:opens",
+            "n:no-dialog",
+            "c:asks-for-branch",
+            "decided:h-leaves-to-origin",
+        ],
+        &["port"],
+        "vcs_hub_e2e_worktree_list_c_creates_and_n_does_not",
+    ),
+    (
+        "help_opens_in_git_view_and_shows_git_keys",
+        &[
+            "help:opens",
+            "help:git-section",
+            "help:stage-keys",
+            "help:closes",
+        ],
+        &["port"],
+        "vcs_hub_e2e_question_mark_opens_help_on_a_git_project_screen_and_closes_again",
+    ),
+    (
+        "tab_keys_per_tab_git_mode_and_literal_in_filter",
+        &[
+            "tab:t-opens-new-tab",
+            "tab:new-tab-plain",
+            "tab:return-restores-screen",
+        ],
+        &["port"],
+        "vcs_hub_e2e_t_on_a_git_project_screen_opens_a_plain_tab_and_the_first_tab_keeps_its_screen",
+    ),
+    (
+        "tab_keys_per_tab_git_mode_and_literal_in_filter",
+        &[
+            "filter:t-no-tab",
+            "filter:t-query",
+            "filter:I-no-tab",
+            "filter:I-query",
+        ],
+        &["port"],
+        "vcs_hub_e2e_filter_input_types_t_and_capital_i_literally_instead_of_opening_a_tab",
+    ),
 ];
 
 // Kept independently from GROUPS so deleting a table entry cannot silently shrink the scope.
@@ -2355,7 +2589,12 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // 28 + enter each kind 72 (60 + 12 refused) + Ctrl-t tab 5 + filter chords 8 +
             // vanished 8 + no-target Ctrl-t 9 + cells 49 (48 + 1 frozen) + diff 57 (56 + 1
             // frozen) + help 16; branches cells 5 (4 edge + 1 frozen); jj graph title 6.
-            + 279,
+            + 279
+            // The U9b5a old-hub e2e ports, 90 rows: branches view 5 + jj write gate 8 (5 changes + 2
+            // bookmarks + 1 tree diff) + colocated pin 6 + blocked commit 9 + quit 10 (6 + 4 guard)
+            // + branches filter 6 + jj `w` 3 + git `R` 3 + speed 2 + jj Enter 5 + git Enter 3 +
+            // default_keys hub keys 8 + branch y menu 7 + worktree c/n 4 + help 4 + tab/filter 7.
+            + 90,
         "a ported assertion/case row was removed"
     );
     assert_eq!(title_rows().len(), 71, "a title row was dropped");

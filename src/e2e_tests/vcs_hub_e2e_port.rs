@@ -282,6 +282,17 @@ fn vcs_hub_e2e_jj_changes_stage_family_keys_do_nothing_and_leave_the_repository_
         let Some(mut w) = W::jj("vcs_hub_e2e_jj_changes", "en", true, false, colocated) else {
             return;
         };
+        // Sanity (the old `caps().write == false` check): the jj screen itself advertises no stage,
+        // unstage, discard or commit key in its help (its `s` is the sync, which asks first and is
+        // not one of the keys pressed below), so those keys have nothing to dispatch.
+        assert_eq!(
+            write_help(&w.sim.app),
+            pairs(&[
+                ("d", "diff of everything against @-"),
+                ("s", "let jj snapshot the working copy (confirm)")
+            ]),
+            "{colocated}: the jj changes help offers no stage, unstage, discard or commit row"
+        );
         let state = write_jj_state(&w.root);
         let git_before = colocated.then(|| git_status_porcelain(&w.root));
         if let Some(before) = &git_before {
@@ -308,6 +319,101 @@ fn vcs_hub_e2e_jj_changes_stage_family_keys_do_nothing_and_leave_the_repository_
         w.key('q');
         assert_eq!(w.sim.app.tab.mode, Mode::Tree);
     }
+}
+
+// ---- old e2e_jj_write_gate_holds_in_a_colocated_repository_pinned_to_jj ----
+//
+// The old test pinned `[external] vcs = "jj"` and proved no git write could reach the real `.git`.
+// On the project path a colocated repository asks (git or jj) and `[external] vcs` does not narrow
+// the menu; the jj choice is the one the old pin selected, and it must leave `.git` untouched.
+
+#[test]
+fn vcs_hub_e2e_colocated_repository_pinned_to_jj_offers_both_and_the_jj_choice_never_writes() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let dir = sandbox("vcs_hub_e2e_colocated_pinned")
+        .into_canonical()
+        .unwrap();
+    let root = dir.join("repo");
+    seed_jj_write_repository(&root, true);
+    super::super::vcs_changes::add_jj_bookmarks(&root);
+    let before = git_status_porcelain(&root);
+    assert!(
+        !before.is_empty(),
+        "the fixture must leave real uncommitted git state, or a broken gate has nothing to prove itself against"
+    );
+    let mut cfg = Config::default();
+    cfg.external.vcs = "jj".into();
+    let mut sim = Sim::with_config_sized(&root, cfg, 200, 24);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    sim.key('p');
+    drain(&mut sim);
+    let crate::app::project_screens::ProjectDialog::Projects { projects, .. } = sim
+        .app
+        .project_dialog
+        .as_ref()
+        .expect("the project chooser")
+    else {
+        panic!("project chooser required")
+    };
+    assert_eq!(
+        projects
+            .iter()
+            .map(|p| p.plugin.as_str())
+            .collect::<Vec<_>>(),
+        ["git", "jj"]
+    );
+    sim.key('j');
+    sim.enter();
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    assert_eq!(
+        sim.app
+            .tab
+            .project_navigation
+            .as_ref()
+            .unwrap()
+            .project
+            .plugin,
+        "jj"
+    );
+    for key in ['u', 'S', 'U', 'x', 'c'] {
+        sim.key(key);
+        drain(&mut sim);
+        assert_eq!(sim.app.flash, None, "{key}");
+        assert!(!sim.app.is_dialog(), "{key}");
+        assert!(sim.app.project_dialog.is_none(), "{key}");
+        assert!(!sim.app.project_write_running(), "{key}");
+    }
+    // The colocated repository's auto-imported bookmark opens the list, and its keys do nothing.
+    sim.key('b');
+    drain(&mut sim);
+    assert_eq!(sim.app.project_frame().unwrap().key.screen, "branches");
+    for code in [
+        KeyCode::Enter,
+        KeyCode::Char('l'),
+        KeyCode::Char('c'),
+        KeyCode::Char('d'),
+    ] {
+        sim.press(code, KeyModifiers::NONE);
+        drain(&mut sim);
+        assert_eq!(sim.app.flash, None, "{code:?}");
+        assert!(!sim.app.is_dialog(), "{code:?}");
+        assert!(sim.app.project_dialog.is_none(), "{code:?}");
+        assert!(!sim.app.project_write_running(), "{code:?}");
+        assert_eq!(
+            sim.app.project_frame().unwrap().key.screen,
+            "branches",
+            "{code:?}"
+        );
+    }
+    assert_eq!(
+        git_status_porcelain(&root),
+        before,
+        "the real .git is untouched, byte for byte"
+    );
 }
 
 // ---- old e2e_jj_write_actions_are_gated_by_the_read_only_backend (tree diff part) ----
@@ -401,7 +507,12 @@ fn vcs_hub_e2e_ui_keeps_responding_while_a_real_git_commit_is_blocked() {
     let before = commit_subjects(&w.root);
     assert!(w.sim.app.project_write_running(), "the commit is running");
     assert!(w.sim.app.git_write_running());
-    assert!(!commit_subjects(&w.root).contains(&"BLOCKEDCOMMIT".to_string()));
+    assert!(!before.contains(&"BLOCKEDCOMMIT".to_string()));
+    assert_eq!(
+        commit_subjects(&w.root),
+        before,
+        "the parked commit has not reached the log"
+    );
 
     // Keys keep working and every one redraws.
     w.sim.key('q');
@@ -438,10 +549,80 @@ fn vcs_hub_e2e_quit_during_a_real_git_commit_asks_even_with_confirm_quit_off() {
         )),
         "{message}"
     );
+    // The old test also saw the warning on the drawn dialog, not only in its message.
+    w.sim.see(crate::i18n::tr(
+        w.sim.app.lang,
+        crate::i18n::Msg::QuitWhileGitOp,
+    ));
     // The warning only warns: `y` still leaves.
     w.sim.key('y');
     assert!(w.sim.quit);
     std::fs::remove_file(w.root.join(".git/BLOCK")).ok();
+}
+
+// ---- old lib.rs help_opens_in_git_view_and_shows_git_keys ----
+
+#[test]
+fn vcs_hub_e2e_question_mark_opens_help_on_a_git_project_screen_and_closes_again() {
+    let mut w = W::git("vcs_hub_e2e_help", true, "en", "relative", false);
+    assert!(!w.sim.app.show_help);
+    w.key('?');
+    assert!(
+        w.sim.app.show_help,
+        "? opens the help on the project screen"
+    );
+    // The help is the screen's own: the stage family and the commit key are listed.
+    w.sim.see("stage / stage all");
+    w.sim.see("commit (staged)");
+    let titles: Vec<String> = crate::ops::help::sections_for(&w.sim.app, Context::Canvas)
+        .iter()
+        .map(|s| s.title.to_string())
+        .collect();
+    assert_eq!(
+        titles[0], "Git changes (p)",
+        "the git section leads the help"
+    );
+    w.key('?');
+    assert!(!w.sim.app.show_help, "? closes the help again");
+    assert!(w.screen_is("changes"));
+    assert!(w.sim.app.project_active());
+}
+
+// ---- old lib.rs tab_keys_per_tab_git_mode_and_literal_in_filter (the git-view part) ----
+
+#[test]
+fn vcs_hub_e2e_t_on_a_git_project_screen_opens_a_plain_tab_and_the_first_tab_keeps_its_screen() {
+    let mut w = W::git("vcs_hub_e2e_tab", true, "en", "relative", false);
+    let tabs = w.sim.app.tab_count();
+    w.key('t');
+    assert_eq!(w.sim.app.tab_count(), tabs + 1, "t opens a new tab");
+    assert!(
+        !w.sim.app.project_active(),
+        "the new tab starts without a project screen"
+    );
+    // Back on the first tab the project screen is still there.
+    w.key('1');
+    assert!(w.sim.app.project_active(), "returning restores the screen");
+    assert!(w.screen_is("changes"));
+}
+
+// ---- old lib.rs tab_keys_per_tab_git_mode_and_literal_in_filter (the filter part) ----
+
+#[test]
+fn vcs_hub_e2e_filter_input_types_t_and_capital_i_literally_instead_of_opening_a_tab() {
+    let dir = sandbox("vcs_hub_e2e_filter_literal");
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.key('/');
+    let tabs = s.app.tab_count();
+    s.key('t');
+    assert_eq!(s.app.tab_count(), tabs, "t is typed, not a new tab");
+    assert_eq!(s.app.filter_query(), Some("t"));
+    s.key('I');
+    assert_eq!(s.app.tab_count(), tabs, "I is typed, not a new tab");
+    assert_eq!(s.app.filter_query(), Some("tI"));
+    s.esc();
+    assert!(s.app.filter_query().is_none());
 }
 
 // ---- old speed_tests::git_views_and_large_diff_render_is_bounded, part (2) ----

@@ -19,11 +19,40 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
             "e2e_git_graph_toggle_all_differs_between_git_and_jj",
             "e2e_git_graph_set_base_keeps_selection_then_clear",
             "e2e_ui_commit_meta_align_right_vs_inline_moves_author_column",
+            "e2e_git_branches_view_lists_branches",
+            "e2e_jj_write_actions_are_gated_by_the_read_only_backend",
+            "e2e_jj_write_gate_holds_in_a_colocated_repository_pinned_to_jj",
+            "e2e_ui_keeps_responding_while_a_git_commit_is_blocked",
+            "e2e_quit_during_a_git_write_asks_for_confirmation",
+            "e2e_git_branches_filter_narrows_and_clears",
+            "e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list",
+            "e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing",
+        ],
+    ),
+    (
+        "src/speed_tests.rs",
+        &["git_views_and_large_diff_render_is_bounded"],
+    ),
+    (
+        "src/e2e_tests/ops_keys.rs",
+        &[
+            "e2e_enter_on_a_jj_bookmark_list_is_refused_like_every_other_write",
+            "e2e_enter_on_a_git_branch_list_still_checks_out",
+        ],
+    ),
+    (
+        "src/lib.rs",
+        &[
+            "help_opens_in_git_view_and_shows_git_keys",
+            "tab_keys_per_tab_git_mode_and_literal_in_filter",
         ],
     ),
     (
         "src/e2e_tests/default_keys.rs",
         &[
+            "e2e_s_stages_in_a_git_hub_and_syncs_in_a_jj_hub_and_h_l_open_and_close",
+            "e2e_branch_list_y_menu_copies_the_name_and_c_creates",
+            "e2e_worktree_list_c_creates_and_n_does_not",
             "e2e_graph_x_clears_the_base_and_zero_does_not",
             "e2e_graph_panel_c_is_current_only_and_l_applies",
             "e2e_the_hub_g_and_l_are_the_list_keys_not_the_log_and_the_graph",
@@ -235,7 +264,8 @@ fn vcs_port_inventory_names_every_scoped_old_test() {
         }
     }
     // 106 + 14 (vcs_writes.rs) + 5 (vcs_branches.rs D) + 3 (vcs_worktrees.rs D: create, diff, read-only)
-    // + 10 (vcs_worktrees.rs E/H) + 1 (vcs_branches.rs cells) + 1 (vcs_graph.rs jj title).
-    assert_eq!(total, 140, "frozen B/C/E/H/S inventory");
+    // + 10 (vcs_worktrees.rs E/H) + 1 (vcs_branches.rs cells) + 1 (vcs_graph.rs jj title)
+    // + 16 (U9b5a: 8 e2e_tests.rs + 1 speed_tests.rs + 2 ops_keys.rs + 2 lib.rs + 3 default_keys.rs).
+    assert_eq!(total, 156, "frozen B/C/E/H/S inventory");
     eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
 }

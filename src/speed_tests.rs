@@ -900,6 +900,57 @@ fn git_views_and_large_diff_render_is_bounded() {
     );
 }
 
+/// Part (1) of the old `git_views_and_large_diff_render_is_bounded` (the old-hub views of part 2
+/// are ported to `vcs_hub_e2e_project_views_and_large_diff_render_is_bounded`): `file_diff` plus
+/// the stacked and side-by-side colorization allocate roughly linearly in the diff size. The
+/// baseline of `big.txt` is tiny on purpose, so doubling `n` doubles the whole diff.
+#[cfg(feature = "git")]
+#[test]
+fn git_file_diff_and_colorization_scale_linearly_with_the_diff_size() {
+    let dir = crate::test_support::unique_tmp("konoma_speed_git_diff_scaling");
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = |a: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(a)
+            .output()
+            .unwrap();
+    };
+    git(&["init", "-q", "."]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    for c in 0..3 {
+        std::fs::write(dir.join(format!("f{c}.txt")), format!("v{c}\n")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", &format!("commit {c}")]);
+    }
+    std::fs::write(dir.join("big.txt"), diff_body(5, "line")).unwrap();
+    git(&["add", "big.txt"]);
+    git(&["commit", "-qm", "add big"]);
+    let root = dir.canonicalize().unwrap();
+
+    let diff_alloc_for = |n: usize| -> u64 {
+        std::fs::write(dir.join("big.txt"), diff_body(n, "LINE changed")).unwrap();
+        crate::mem_tests::allocated_by(|| {
+            let dl = crate::git::file_diff(&root, &root.join("big.txt"));
+            assert!(!dl.is_empty(), "the diff is read");
+            let lines = crate::preview::gitdiff::diff_lines(&dl, "txt", "TwoDark", 90);
+            assert!(!lines.is_empty(), "stacked diff lines are produced");
+            let _maxh = crate::preview::gitdiff::side_by_side_max_hscroll(&dl, 90);
+            let sbs =
+                crate::preview::gitdiff::diff_lines_side_by_side(&dl, "txt", "TwoDark", 90, 40);
+            assert!(!sbs.is_empty(), "side-by-side diff lines are produced");
+        })
+    };
+    let small_alloc = diff_alloc_for(500);
+    let large_alloc = diff_alloc_for(1000); // 2x changed lines
+    assert!(
+        large_alloc < small_alloc.saturating_mul(5) / 2, // 2.5x margin (measured ratio ~1.9x)
+        "twice the diff lines allocated more than 2.5x (O(n^2) regression?): small={small_alloc} large={large_alloc}"
+    );
+}
+
 // GUARDS: cycling through tabs (save_active + load_active + preview rebuild + render) stays bounded,
 // and — the primary, stronger guard — `load_active` moves each tab's `PerTab` out of its slot via
 // `std::mem::take` rather than cloning it (a regression to `.clone()` would double the per-switch cost
