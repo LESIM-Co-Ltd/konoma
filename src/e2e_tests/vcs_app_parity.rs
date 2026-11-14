@@ -413,6 +413,26 @@ fn frames(
         );
     }
     if normal_root {
+        // The list frame's top edge (below the header row): the same text on both sides, a frame
+        // edge from corner to corner, the screen tabs at its right end.
+        let width = host.area.width;
+        let text =
+            |frame: &Buffer, y: u16| crate::test_support::top_edge::row_text(frame, y, 0..width);
+        let edge_row = (0..4u16).find(|y| text(host, *y).starts_with('┌'));
+        if let Some(y) = edge_row {
+            let (host_edge, app_edge) = (text(host, y), text(app, y));
+            assert_eq!(app_edge, host_edge, "top edge, standalone vs host ({lang})");
+            assert!(
+                host_edge.ends_with('┐'),
+                "the list frame's top edge: {host_edge:?}"
+            );
+        } else {
+            // Not a framed list (a loading or message content): nothing to compare here.
+            assert!(
+                (0..4u16).all(|y| !text(app, y).starts_with('┌')),
+                "the standalone app draws a frame the host does not"
+            );
+        }
         let footer_start = graph_fixture["_footer_start"].as_u64().unwrap_or(0) as u16;
         let footer_width = host.area.width.saturating_sub(footer_start);
         // FEATURE-PLUGIN-ARCHITECTURE.md §4-1:220: "ツリー・タブ・ブックマーク・フォローは無い。`q` で終了。"

@@ -230,6 +230,84 @@ mod transport {
     }
 
     #[test]
+    fn project_list_heading_and_counted_round_trip_and_stay_off_the_old_wire() {
+        use konoma_plugin::view::ListHeading;
+        let dir = konoma_test_support::unique_tmp("project_list_heading");
+        let side = Side::new(dir.as_path(), 'h');
+        let rows = vec![
+            ListRow::new("a", vec![Line::raw("counted")]).counted(true),
+            ListRow::new("b", vec![Line::raw("not counted")]).counted(false),
+            ListRow::new("c", vec![Line::raw("default")]),
+        ];
+        let heading = ListHeading::new(Line::raw(" Changes"))
+            .after(Line::raw(" of 3 "))
+            .query_gap(3);
+        let mut view = View::List(ListView {
+            title: None,
+            bottom: None,
+            heading: Some(heading.clone()),
+            rows: rows.clone(),
+        });
+        let wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
+        assert_eq!(view_protocol(&wire), 2, "a heading needs protocol 2");
+        let json = serde_json::to_value(wire).unwrap();
+        let sent = &json["ListDecorated"];
+        assert_eq!(sent["heading"]["query_gap"], 3);
+        assert_eq!(sent["rows"][0]["counted"], true);
+        assert_eq!(sent["rows"][1]["counted"], false);
+        assert!(sent["rows"][2].get("counted").is_none());
+        let wire = serde_json::from_value(json).unwrap();
+        let View::List(list) = view_from_wire(wire, &mut Dec::new(&side)).unwrap() else {
+            panic!("list required")
+        };
+        assert_eq!(list.heading, Some(heading));
+        assert_eq!(list.rows, rows);
+        assert_eq!(
+            list.rows.iter().map(|r| r.counted).collect::<Vec<_>>(),
+            [Some(true), Some(false), None]
+        );
+
+        // No heading: the key is absent from the wire, and a `ListDecorated` of an old peer
+        // (without `heading`) decodes with none.
+        let mut plain = View::List(ListView {
+            title: Some(Line::raw("Title")),
+            rows: vec![ListRow::new("a", vec![Line::raw("x")])],
+            ..Default::default()
+        });
+        let wire = view_to_wire(&mut plain, &mut Enc::new(&side)).unwrap();
+        let json = serde_json::to_value(wire).unwrap();
+        assert!(json["ListDecorated"].get("heading").is_none());
+        assert!(json["ListDecorated"]["rows"][0].get("counted").is_none());
+        let wire = serde_json::from_value(json).unwrap();
+        let View::List(list) = view_from_wire(wire, &mut Dec::new(&side)).unwrap() else {
+            panic!("list required")
+        };
+        assert_eq!(list.heading, None);
+        assert_eq!(list.rows[0].counted, None);
+    }
+
+    #[test]
+    fn project_list_row_without_counted_from_an_old_peer_decodes_as_none() {
+        let dir = konoma_test_support::unique_tmp("project_list_old_counted");
+        let side = Side::new(dir.as_path(), 'h');
+        let mut view = View::List(ListView {
+            rows: vec![ListRow::new("a", vec![Line::raw("x")]).counted(true)],
+            ..Default::default()
+        });
+        let wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
+        let mut json = serde_json::to_value(wire).unwrap();
+        // What a protocol-1 sender writes: the row has no `counted` key at all.
+        json["List"][0].as_object_mut().unwrap().remove("counted");
+        let wire = serde_json::from_value(json).unwrap();
+        assert_eq!(view_protocol(&wire), 1, "no new field, protocol 1");
+        let View::List(list) = view_from_wire(wire, &mut Dec::new(&side)).unwrap() else {
+            panic!("list required")
+        };
+        assert_eq!(list.rows[0].counted, None);
+        assert!(list.rows[0].counts_toward_heading());
+    }
+
+    #[test]
     fn project_filter_fallback_wire_cannot_be_selected() {
         let dir = konoma_test_support::unique_tmp("project_fallback_wire");
         let side = Side::new(dir.as_path(), 'h');

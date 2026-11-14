@@ -15,6 +15,7 @@ include!("vcs_project_keys_cases.rs");
 include!("vcs_project_help_cases.rs");
 include!("vcs_project_old_screens_cases.rs");
 include!("vcs_project_space_cases.rs");
+include!("vcs_project_frame_cases.rs");
 
 /// The column and row where a list's first body cell sits in a drawn project frame whose canvas
 /// starts at row 1 (below the app's header row), derived from the frame the host draws: the inside

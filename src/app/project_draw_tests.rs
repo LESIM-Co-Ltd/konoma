@@ -20,6 +20,8 @@ use ratatui::{
 };
 use serde_json::{json, Value};
 
+use crate::test_support::top_edge;
+
 fn same_cells(a: &Buffer, b: &Buffer) {
     assert_eq!(a.area, b.area);
     let mut count = 0;
@@ -544,10 +546,11 @@ fn framed_record(name: &str, reference: &Value, expected: &Value, buffer: &Buffe
             - usize::from(area.width) * usize::from(area.height)
     );
     // The cells of the area outside the body follow the rule.
-    let room = usize::from(area.width.saturating_sub(2));
-    let title: Vec<char> = frame.title.chars().collect();
-    let tab_chars: Vec<char> = TABS.chars().collect();
-    let tabs_shown = title.len() + tab_chars.len() <= room;
+    // The whole top edge as text (corners, title, filler, tabs, or no tabs when they do not fit)
+    // and the columns the tabs take, both from the display widths of title and tabs.
+    top_edge::check(buffer, area, &frame.title, TABS).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let tab_columns = top_edge::tabs_columns(area, &frame.title, TABS);
+    let title_cells = top_edge::width(&frame.title).min(area.width.saturating_sub(2));
     let default_cell = |x: u16, y: u16| {
         let c = &buffer[(x, y)];
         (c.fg, c.bg, c.modifier)
@@ -564,20 +567,16 @@ fn framed_record(name: &str, reference: &Value, expected: &Value, buffer: &Buffe
             }
             let c = &buffer[(x, y)];
             let (left, right) = (x == area.x, x == area.right() - 1);
-            let want = if y == area.y {
-                let i = usize::from(x - area.x);
-                if left {
-                    "┌".to_string()
-                } else if right {
-                    "┐".to_string()
-                } else if i - 1 < title.len() {
-                    title[i - 1].to_string()
-                } else if tabs_shown && i > room - tab_chars.len() {
-                    tab_chars[i - 1 - (room - tab_chars.len())].to_string()
-                } else {
-                    "─".to_string()
+            if y == area.y {
+                // The glyphs of the row were checked as text; here the style of the plain cells.
+                let in_title = !left && !right && x - area.x - 1 < title_cells;
+                let in_tabs = tab_columns.as_ref().is_some_and(|r| r.contains(&x));
+                if left || right || !(in_title || in_tabs) {
+                    assert!(default_cell(x, y), "{name}, frame glyph style {x},{y}");
                 }
-            } else if y == area.bottom() - 1 {
+                continue;
+            }
+            let want = if y == area.bottom() - 1 {
                 (if left {
                     "└"
                 } else if right {
@@ -590,31 +589,28 @@ fn framed_record(name: &str, reference: &Value, expected: &Value, buffer: &Buffe
                 "│".to_string()
             };
             assert_eq!(c.symbol(), want, "{name}, frame cell {x},{y}");
-            let plain = y != area.y || left || right || {
-                let i = usize::from(x - area.x) - 1;
-                i >= title.len() && !(tabs_shown && i >= room - tab_chars.len())
-            };
-            if plain {
-                assert!(default_cell(x, y), "{name}, frame glyph style {x},{y}");
-            }
+            assert!(default_cell(x, y), "{name}, frame glyph style {x},{y}");
         }
     }
     // The frozen tab row: the tabs now sit at the right of the top edge. Their text, order and
     // style are compared with the frozen tab cells; the frozen title (beside the tabs) with the
     // title at the left, where the old row showed it at all.
     let frozen_row = |i: u16| frozen_cell(reference, expected, a.width, area.x + i, area.y);
-    if tabs_shown {
-        let start = area.x + 1 + (room - tab_chars.len()) as u16;
+    let tab_chars: Vec<char> = TABS.chars().collect();
+    if let Some(columns) = &tab_columns {
+        assert_eq!(usize::from(columns.end - columns.start), tab_chars.len());
         for (i, ch) in tab_chars.iter().enumerate() {
             let f = frozen_row(i as u16);
             assert_eq!(f[0], json!(ch.to_string()), "{name}, frozen tab text");
             assert_eq!(
-                cell_json(&buffer[(start + i as u16, area.y)]),
+                cell_json(&buffer[(columns.start + i as u16, area.y)]),
                 f,
                 "{name}, tab {i}"
             );
         }
     }
+    let title: Vec<char> = frame.title.chars().collect();
+    let room = usize::from(area.width.saturating_sub(2));
     let old_tab_width = tab_chars.len().min(usize::from(area.width));
     for (j, ch) in title.iter().enumerate() {
         if old_tab_width + j < usize::from(area.width) && j < room {

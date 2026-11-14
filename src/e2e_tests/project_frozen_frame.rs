@@ -225,8 +225,9 @@ fn stage_eq(
         tab_width > 0 && !covered(canvas.x, canvas.y),
         "{path}: tabs in the frozen row"
     );
-    let room = usize::from(canvas.width) - 2;
-    let tabs_at = canvas.right() - 1 - tab_width as u16;
+    // The fixtures' lists have no title; the tabs sit left of the right corner when they fit.
+    let tab_columns =
+        crate::test_support::top_edge::tabs_columns_of_width(canvas, 0, tab_width as u16);
     for y in canvas.y..canvas.bottom() {
         for x in canvas.x..canvas.right() {
             if within(new_body, x, y) || covered(x, y) {
@@ -238,8 +239,8 @@ fn stage_eq(
                     json!(["┌", "Reset", "Reset", 0])
                 } else if right {
                     json!(["┐", "Reset", "Reset", 0])
-                } else if tab_width <= room && x >= tabs_at {
-                    at(&old, canvas.x + (x - tabs_at), canvas.y)
+                } else if let Some(columns) = tab_columns.as_ref().filter(|c| c.contains(&x)) {
+                    at(&old, canvas.x + (x - columns.start), canvas.y)
                 } else {
                     json!(["─", "Reset", "Reset", 0])
                 }
