@@ -45,18 +45,8 @@ fn open_log(
 }
 
 fn selected_id(c: &mut Ctx) -> String {
-    let old = c.is_old();
     let sim = c.sim();
-    if old {
-        sim.app.git_log_selected_id().unwrap()
-    } else {
-        sim.app.project_act_context().selected.unwrap().value
-    }
-}
-
-/// Number of log entries of the old hub (asserted on the old side, constant on the new side).
-fn expect_entries(c: &mut Ctx, expected: usize) {
-    c.on_old(|old| assert_eq!(old.app.git_log_entries().len(), expected));
+    sim.app.project_act_context().selected.unwrap().value
 }
 
 /// The keys of the detail screen, as the old tests press them.
@@ -127,10 +117,6 @@ pub(super) fn detail_missing(c: &mut Ctx) {
             let id = selected_id(c);
             c.enter();
             std::fs::remove_file(dir.join(".git/objects").join(&id[..2]).join(&id[2..])).unwrap();
-            c.on_old(|old| {
-                old.app.close_git_detail();
-                old.enter();
-            });
             c.on_new(|new| new.key('r'));
             let label = format!("w={width} layout={layout}");
             c.body(&format!("{label} open"), width, 12);
@@ -182,14 +168,6 @@ pub(super) fn git_cells(c: &mut Ctx) {
                 .into_iter()
                 .enumerate()
                 {
-                    // The old hub has no PageUp/PageDown binding; it moves to the same cursor by API.
-                    match code {
-                        KeyCode::PageDown => c.on_old(|old| old.app.git_log_move(10)),
-                        KeyCode::PageUp => c.on_old(|old| old.app.git_log_move(-10)),
-                        KeyCode::Home => c.on_old(|old| old.app.git_log_move(-1000)),
-                        KeyCode::End => c.on_old(|old| old.app.git_log_move(1000)),
-                        _ => c.on_old(|old| old.press(code, KeyModifiers::NONE)),
-                    }
                     c.on_new(|new| new.press(code, KeyModifiers::NONE));
                     c.body(&format!("{label} key{i}"), width, height);
                 }
@@ -240,21 +218,9 @@ pub(super) fn unborn(c: &mut Ctx) {
             let head = repository.head().unwrap().name().unwrap().to_string();
             repository.find_reference(&head).unwrap().delete().unwrap();
         };
-        if c.is_old() {
-            // Remove the only ref after opening changes, making HEAD unborn before cycling.
-            let mut old = Sim::with_config_sized(&dir, cfg, 80, 8);
-            old.app.open_git_view();
-            delete_head();
-            old.press(KeyCode::Tab, KeyModifiers::NONE);
-            assert!(!old.app.is_git_log());
-            assert!(old.app.flash.is_some());
-            old.app.show_empty_git_log_for_test();
-            c.set_sim(old);
-        } else {
-            delete_head();
-            c.open(&dir, "git", cfg, 80, 8);
-            c.tab();
-        }
+        delete_head();
+        c.open(&dir, "git", cfg, 80, 8);
+        c.tab();
         c.body(&format!("lang={lang}"), 80, 8);
     }
 }
@@ -295,7 +261,6 @@ pub(super) fn jj_log(c: &mut Ctx) {
             for align in ["right", "inline", "unknown"] {
                 for lang in ["en", "ja"] {
                     open_log(c, &dir, id, lang, align, 72, 7);
-                    expect_entries(c, jj_entries(colocated, id == "git"));
                     for i in 0..jj_entries(colocated, id == "git") {
                         c.body(&format!("{label} align={align} lang={lang} row{i}"), 72, 7);
                         c.key('j');

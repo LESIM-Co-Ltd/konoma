@@ -23,13 +23,10 @@ const CHANGES_TITLE_TEST: &str =
     "e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states";
 const TITLE_WORDS_TEST: &str =
     "e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin";
-const PICKER_OPEN_TEST: &str =
-    "e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells";
-const PICKER_STEPS_TEST: &str =
-    "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy";
+const PICKER_OPEN_TEST: &str = "e2e_vcs_frozen_replay_graph_picker_opens";
+const PICKER_STEPS_TEST: &str = "e2e_vcs_frozen_replay_graph_picker_toggles";
 const PICKER_TITLE_TEST: &str = "vcs_port_picker_title_counts_equal_old_hub_at_every_step";
-const PICKER_JJ_TEST: &str =
-    "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints";
+const PICKER_JJ_TEST: &str = "e2e_vcs_frozen_replay_graph_picker_jj_source";
 
 /// The 71 title rows: every title the old hub drew is an ordinary assertion in the named new
 /// test (the old hub's top edge compared cell for cell, plus the words checked in place).
@@ -53,12 +50,12 @@ fn title_rows() -> Vec<(&'static str, String, &'static str)> {
         (
             "e2e_git_graph_shows_commit_nodes",
             "title:git-graph-label".into(),
-            "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+            "e2e_vcs_frozen_replay_graph_cells",
         ),
     ];
     for lang in ["en", "ja"] {
         rows.push((
-            "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+            "e2e_vcs_frozen_replay_graph_jj_cells",
             format!("title:jj-graph-label:{lang}"),
             "e2e_vcs_graph_jj_top_edge_literal_in_both_languages",
         ));
@@ -135,12 +132,12 @@ fn title_rows() -> Vec<(&'static str, String, &'static str)> {
         (
             "jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker",
             "title:jj-bookmarks-label".into(),
-            "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
+            "e2e_vcs_frozen_replay_branches_jj",
         ),
         (
             "jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker",
             "title:jj:not-git-branches".into(),
-            "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
+            "e2e_vcs_frozen_replay_branches_jj",
         ),
     ]);
     rows
@@ -2781,7 +2778,7 @@ const GROUPS: &[Group] = &[
         "open_git_view_lists_changes_and_stage_reloads",
         &["changes:lists-entries", "changes:all-unstaged"],
         &["app"],
-        "e2e_vcs_changes_git_body_cell_parity_with_staged_unstaged_rename_delete_cjk_and_empty",
+        "e2e_vcs_frozen_replay_changes_git",
     ),
     (
         "open_git_view_lists_changes_and_stage_reloads",
@@ -2793,25 +2790,25 @@ const GROUPS: &[Group] = &[
         "open_git_view_lists_changes_and_stage_reloads",
         &["close:leaves-the-list"],
         &["app"],
-        "e2e_vcs_log_exit_returns_to_origin_and_h_goes_back_like_q",
+        "vcs_host_log_q_escape_and_h_return_to_the_origin",
     ),
     (
         "refresh_in_git_view_refetches_entries",
         &["refresh:external-change-grows-the-list"],
         &["app"],
-        "e2e_vcs_changes_linked_worktree_external_index_event_refreshes_the_session",
+        "vcs_port_watch_head_refs_linked_index_and_refresh_filtered_identity",
     ),
     (
         "refresh_in_git_view_refetches_entries",
         &["r:refetches-the-screen"],
         &["app"],
-        "e2e_vcs_log_r_refreshes_current_screen_and_remaps_filtered_identity",
+        "vcs_port_watch_head_refs_linked_index_and_refresh_filtered_identity",
     ),
     (
         "git_view_stage_all_then_unstage_all",
         &["S:all-staged", "U:all-unstaged"],
         &["app"],
-        "e2e_vcs_writes_all_and_empty_guards_match_without_running_git",
+        "vcs_port_write_all_and_empty_guards_run_no_git",
     ),
     (
         "git_diff_discard_confirm_reverts_and_returns_to_view",
@@ -2833,19 +2830,19 @@ const GROUPS: &[Group] = &[
         "git_view_start_discard_opens_confirm_without_destroying",
         &["x:confirm-opens-file-untouched"],
         &["app"],
-        "e2e_vcs_writes_discard_confirmation_and_failures",
+        "vcs_port_write_discard_confirmation_success_and_failures",
     ),
     (
         "git_view_start_discard_opens_confirm_without_destroying",
         &["cancel:closes-the-confirm"],
         &["app"],
-        "e2e_vcs_writes_discard_cancel_escape_matches_legacy_flash_and_closes",
+        "vcs_port_write_discard_cancel_escape_flashes_and_closes",
     ),
     (
         "git_branches_list_checkout_and_create",
         &["list:feature-shown", "cursor:on-current"],
         &["app"],
-        "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
+        "e2e_vcs_frozen_replay_branches_cells",
     ),
     (
         "git_branches_list_checkout_and_create",
@@ -2857,25 +2854,25 @@ const GROUPS: &[Group] = &[
         "git_branches_list_checkout_and_create",
         &["checkout:switches-branch"],
         &["app"],
-        "e2e_vcs_branches_checkout_current_and_other_branch_reload_and_tree_status",
+        "vcs_port_branch_checkout_current_and_other_branch_reload_and_tree_status",
     ),
     (
         "git_branches_list_checkout_and_create",
         &["decided:checkout-stays-on-branches-screen"],
         &["app"],
-        "e2e_vcs_branches_checkout_current_and_other_branch_reload_and_tree_status",
+        "vcs_port_branch_checkout_current_and_other_branch_reload_and_tree_status",
     ),
     (
         "git_branches_list_checkout_and_create",
         &["c:create-and-switch"],
         &["app"],
-        "e2e_vcs_branches_create_success_blank_and_failure_keeps_typed_input",
+        "vcs_port_branch_create_success_blank_and_failure_keeps_typed_input",
     ),
     (
         "git_branches_list_checkout_and_create",
         &["d:current-branch-refused", "d:confirm-deletes-feature"],
         &["app"],
-        "e2e_vcs_branches_delete_dialog_safe_force_cancel_and_current_guard",
+        "vcs_port_branch_delete_dialog_safe_force_cancel_and_current_guard",
     ),
     (
         "worktree_create_flow_creates_a_new_branch_and_switches_into_it",
@@ -2886,7 +2883,7 @@ const GROUPS: &[Group] = &[
             "list:closes",
         ],
         &["app"],
-        "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+        "vcs_port_worktree_create_switches_with_slash_existing_branch_and_custom_directory",
     ),
     (
         "worktree_create_flow_creates_a_new_branch_and_switches_into_it",
@@ -2904,7 +2901,7 @@ const GROUPS: &[Group] = &[
         "worktree_create_flow_checks_out_an_existing_branch_without_creating_a_duplicate",
         &["switch:tab-root"],
         &["app"],
-        "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+        "vcs_port_worktree_create_switches_with_slash_existing_branch_and_custom_directory",
     ),
     (
         "worktree_create_flow_fails_with_gits_message_when_branch_is_already_checked_out_elsewhere",
@@ -3021,7 +3018,7 @@ const GROUPS: &[Group] = &[
         "failed_git_op_keeps_gits_fatal_line_first_and_reopens_the_dialog",
         &["dialog:reopens-with-typed-text"],
         &["app"],
-        "e2e_vcs_branches_create_success_blank_and_failure_keeps_typed_input",
+        "vcs_port_branch_create_success_blank_and_failure_keeps_typed_input",
     ),
     (
         "failed_git_op_does_not_clobber_a_dialog_opened_meanwhile",
@@ -3073,7 +3070,7 @@ const GROUPS: &[Group] = &[
         "git_status_is_revalidated_after_a_git_write",
         &["status:revalidated-after-write"],
         &["app"],
-        "e2e_vcs_writes_refresh_current_screen_tree_status_and_commit_chip",
+        "vcs_port_write_refresh_current_screen_tree_status_and_commit_chip",
     ),
     (
         "git_status_is_revalidated_after_a_git_write",
@@ -3107,7 +3104,7 @@ const GROUPS: &[Group] = &[
         "worktree_add_never_relocates_a_tab_that_did_not_ask",
         &["flash:created-message"],
         &["app"],
-        "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+        "vcs_port_worktree_create_switches_with_slash_existing_branch_and_custom_directory",
     ),
     // A refused submit puts the typed text back (the `keep_on_failure` retry): the runtime
     // refuses as busy or not ready before the act runs, the notice flashes, and the prompt opens
@@ -3173,13 +3170,13 @@ const GROUPS: &[Group] = &[
             "each-write:read-only-flash",
         ],
         &["app"],
-        "e2e_vcs_writes_read_only_refuses_every_git_write_before_prompt_or_dispatch",
+        "vcs_port_write_read_only_refuses_every_git_write_before_prompt_or_dispatch",
     ),
     (
         "guard_refuses_every_git_job_even_without_an_action_declaration_or_a_repository",
         &["worktree-add:refused-before-prompt"],
         &["app"],
-        "e2e_vcs_worktrees_read_only_blocks_create_before_prompt_but_all_navigation_and_diff_work",
+        "vcs_port_worktree_read_only_blocks_create_before_prompt_but_navigation_and_diff_work",
     ),
     (
         "guard_refuses_jj_sync_before_a_dialog_or_backend_detection",
@@ -3189,7 +3186,7 @@ const GROUPS: &[Group] = &[
             "sync:no-snapshot",
         ],
         &["app"],
-        "e2e_vcs_writes_jj_sync_read_only_refuses_before_prompt_or_snapshot",
+        "vcs_port_write_jj_sync_read_only_refuses_before_prompt_or_snapshot",
     ),
     (
         "jj_follow_worker_does_not_interrupt_a_paused_surface",
@@ -3315,7 +3312,7 @@ const GROUPS: &[Group] = &[
             "picker:all-applied-unhides",
         ],
         &["app"],
-        "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
+        "e2e_vcs_frozen_replay_graph_picker_toggles",
     ),
     // `git_diff_opens_from_view_and_esc_returns_to_view`: `Esc` on a canvas-opened file diff
     // returns to the canvas (the project the diff came from) like `q`, with no stale `project_return`.
@@ -3398,12 +3395,14 @@ const GROUPS: &[Group] = &[
         "current_commit_meta_resolves_per_surface_and_none_in_tree",
         &["meta:log-selected", "meta:detail-full"],
         &["app"],
-        "e2e_vcs_copy_log_and_detail_clipboard_and_flash_match_old_hub_for_all_six_items",
+        "vcs_port_original_log_detail_history_and_six_copy_keys",
     ),
-    // `git_copy_message_and_branch_name_set_flash` is out of scope: the old hub flashed
-    // `NoCopyTarget` when `y` had nothing to copy, while the canvas's `y` leader simply does
-    // not open. That silence is not a decided difference (no design decision covers it), so
-    // the whole test is UNDECIDED rather than half-ported.
+    // `git_copy_message_and_branch_name_set_flash` was deleted with its other assertions pinned
+    // on the project path (the log message copy and its flash in
+    // `vcs_port_log_message_copy_writes_the_clipboard_and_flashes_what_was_copied`, the branch
+    // name copy in `vcs_hub_e2e_branch_list_y_menu_copies_the_name_and_c_creates`). Its no-target
+    // flash is a decided difference: `y` with nothing to copy shows no hint and does nothing
+    // (`vcs_port_branch_empty_repository_y_has_no_hint_and_changes_nothing`).
     (
         "git_copy_branch_name_copies_current_branch",
         &["copy:branch-value", "copy:flash-not-no-target"],
@@ -3453,7 +3452,7 @@ const GROUPS: &[Group] = &[
         "graph_picker_move_jump_toggle_current_only_and_cancel",
         &["picker:toggle-non-head-on"],
         &["app"],
-        "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
+        "e2e_vcs_frozen_replay_graph_picker_toggles",
     ),
     (
         "graph_picker_move_jump_toggle_current_only_and_cancel",
@@ -3571,7 +3570,7 @@ const GROUPS: &[Group] = &[
             "worktree:top-row-selected",
         ],
         &["app"],
-        "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+        "e2e_vcs_frozen_replay_graph_cells",
     ),
     (
         "git_graph_renders_lanes_refs_and_detail",
@@ -3750,8 +3749,8 @@ fn every_ported_assertion_names_an_existing_new_test() {
         let functions = names(&source);
         for test in *tests {
             assert!(
-                functions.contains(test),
-                "old test moved or renamed: {file}::{test}"
+                !functions.contains(test),
+                "old test still present: {file}::{test}"
             );
             assert!(
                 old_names.contains(test),
@@ -3834,8 +3833,8 @@ fn every_ported_assertion_names_an_existing_new_test() {
             // branch filter 4 + graph base/detail scroll 7 + picker
             // move/jump/toggle/cancel 5 + graph close 1 + branch re-verify 4 + repeated
             // draws 1 + refused opens with git off / binary missing 7 (4 + 3) + jj gates 7 +
-            // ui detail 1 + ui graph 10. (git_copy_message_and_branch_name_set_flash stays out:
-            // its no-target flash is UNDECIDED.)
+            // ui detail 1 + ui graph 10. (git_copy_message_and_branch_name_set_flash is deleted too:
+            // see the comment above its former place.)
             + 93
             // git_diff_opens_from_view_and_esc_returns_to_view 6 +
             // diff_view_n_switches_changed_files_and_keeps_return_target 9 (their Esc half is

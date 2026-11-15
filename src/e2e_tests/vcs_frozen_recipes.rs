@@ -1,6 +1,5 @@
-//! One recipe per old test. A recipe is the shared sequence of the old test's `compare_body` / `same`
-//! sites: the generator and the staleness check run it on the old hub, the replay runs it through `p`.
-//! Steps that differ between the two (hub API versus keys) are written with `on_old` / `on_new`.
+//! One recipe per old test. A recipe is the sequence of the old test's comparison sites; the replay
+//! runs it through `p` and compares every captured cell with the frame frozen from the released hub.
 
 use super::super::vcs_changes::{branches_fixture, git_repo_at, plugin_config};
 use super::super::*;
@@ -225,7 +224,6 @@ fn changes_paths(c: &mut Ctx) {
                 .or_default()
                 .insert("path_style".into(), toml::Value::String(style.into()));
             c.open(root, "git", cfg, 200, 20);
-            c.on_old(|old| assert_eq!(old.app.git_view_entries().len(), 7));
             c.body(&format!("tree={tree} style={style}"), 200, 20);
         }
     }
@@ -241,13 +239,8 @@ fn changes_git(c: &mut Ctx) {
                 c.open(&dir, "git", cfg, width, height);
                 // The fixture has 7 changed entries; an unchanged repository still shows one row.
                 let count = if changed { 7 } else { 1 };
-                c.on_old(|old| assert_eq!(old.app.git_view_entries().len().max(1), count));
                 for selected in 0..count {
                     if selected > 0 {
-                        c.on_old(|old| {
-                            old.app.git_view_move(1);
-                            old.draw();
-                        });
                         c.on_new(|new| new.key('j'));
                     }
                     c.body(
@@ -259,7 +252,6 @@ fn changes_git(c: &mut Ctx) {
                     );
                 }
                 for selected in (0..count - 1).rev() {
-                    c.on_old(|old| old.app.git_view_move(-1));
                     c.on_new(|new| new.key('k'));
                     c.body(
                         &format!(

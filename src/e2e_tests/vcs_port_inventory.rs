@@ -1,4 +1,5 @@
-// Frozen scope: dedicated B/C/H/S files, U9a legacy-entry callers, and direct B/C render guards.
+// Old tests of the removed VCS hub, kept as data: each is deleted from its file, and every one
+// is named by `port_map()` rows that point at its replacements.
 const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
     (
         "src/e2e_tests.rs",
@@ -336,53 +337,32 @@ const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
     ),
 ];
 #[test]
-fn vcs_port_inventory_names_every_scoped_old_test() {
+fn vcs_port_inventory_old_tests_are_gone_and_every_one_is_mapped() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let table = port_map();
     let mut total = 0;
-    let mut assertions = 0;
     for (file, tests) in IN_SCOPE_OLD_TESTS {
         let source = std::fs::read_to_string(root.join(file)).unwrap();
         let functions = names(&source);
         for name in *tests {
+            // The old test drove the removed hub: it must be deleted, not renamed away.
             assert!(
-                functions.contains(name),
-                "inventory source function {file}/{name}"
+                !functions.contains(name),
+                "old test still present: {file}/{name}"
+            );
+            assert!(
+                !source.contains(&format!("fn {name}")),
+                "old test still present under another form: {file}/{name}"
             );
             assert!(
                 table.iter().any(|(old, _, _)| old == name),
                 "unregistered scoped old test {file}/{name}"
             );
-            let body = body_tokens(&source, name).unwrap();
-            assertions += body
-                .windows(2)
-                .filter(|t| {
-                    matches!(t[0].as_str(), "assert" | "assert_eq" | "assert_ne") && t[1] == "!"
-                })
-                .count();
             total += 1;
         }
     }
-    // 106 + 14 (vcs_writes.rs) + 5 (vcs_branches.rs D) + 3 (vcs_worktrees.rs D: create, diff, read-only)
-    // + 10 (vcs_worktrees.rs E/H) + 1 (vcs_branches.rs cells) + 1 (vcs_graph.rs jj title)
-    // + 20 (U9b5a: 8 e2e_tests.rs + 1 speed_tests.rs + 2 ops_keys.rs + 2 lib.rs + 3 default_keys.rs
-    // + 4 newkeys.rs: p/! origins, branch/worktree filter component, e/o/ctrl-t, deleted row)
-    // + 19 (the last old-hub drivers: 18 in e2e_tests.rs — diff-preview R/q, changes stage/diff,
-    // branch create/delete, jj sync round trip, worktree list/Ctrl-t/create/refusals (including
-    // Enter on the current worktree)/diff detail+layout, commit-in-log, background-runner commit,
-    // stage round trips — and 1 in e2e_tests/project_host.rs: the read-only checkout Enter).
-    // + 31 (the old-hub WRITE unit tests: 27 in src/app/tests.rs — the git_op runner/lifecycle
-    // block, the worktree/branch/commit flows, the basic git-view list/stage/discard tests, the
-    // second-write refusal and the jj sync gate — + 3 in src/app/write_guard_tests.rs + 1 in
-    // src/app/follow_worker.rs).
-    // + 27 (the old-hub READ/VIEW unit tests: 25 in src/app/tests.rs — list clamps, stale chip,
-    // graph base/legend/picker, diff from tree/worktree, the file diff's open/close and
-    // changed-file cycle, log open/detail, copy, branch filter, refused opens (git switched off /
-    // binary missing / not a repository), per-tab branch title, bounded draws,
-    // jj-opens-despite-git-off — plus git_detail_render_shows_diff in src/ui/git.rs
-    // and git_graph_renders_lanes_refs_and_detail in src/ui/mod.rs. Not in scope:
-    // git_copy_message_and_branch_name_set_flash (its
-    // no-target flash half is an undecided silence-vs-flash difference).
+    // The count of deleted old tests is a literal: removing a name from the list above cannot
+    // silently shrink the record (the breakdown by unit is kept in the git history).
     assert_eq!(total, 237, "frozen B/C/E/H/S inventory");
-    eprintln!("U9b1 inventory: {total} scoped old tests; {assertions} test-body assertion macros; helper and loop cases are named separately in port_map");
+    eprintln!("U9 inventory: {total} old tests are gone; {} port_map rows name them", table.len());
 }

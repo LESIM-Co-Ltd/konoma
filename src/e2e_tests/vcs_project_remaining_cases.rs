@@ -16,6 +16,33 @@ fn shown_values(sim: &Sim) -> Vec<String> {
         .collect()
 }
 
+/// The log's commit-message copy reports what it copied (the old hub's "copied" flash) and
+/// writes the message to the clipboard, on the `p` project path.
+#[test]
+fn vcs_port_log_message_copy_writes_the_clipboard_and_flashes_what_was_copied() {
+    if isolated("vcs_port_log_message_copy_writes_the_clipboard_and_flashes_what_was_copied") {
+        return;
+    }
+    let root = sandbox("port_log_message_copy_flash");
+    seed_repo(&root);
+    let mut sim = open(&root, config("git", "en"), (180, 30));
+    screen(&mut sim, "log");
+    sim.see("init");
+    let meta = crate::git::commit_meta(&root, &selected_value(&sim)).unwrap();
+    clear_test_clipboard();
+    keys(&mut sim, "y");
+    assert_eq!(sim.app.pending_leader, Some(LeaderId::Copy));
+    press(&mut sim, KeyCode::Char('m'));
+    assert_eq!(sim.app.pending_leader, None);
+    assert_eq!(get_test_clipboard(), Some(meta.message.clone()));
+    assert_eq!(
+        sim.app.flash.as_deref(),
+        Some("copied: init…"),
+        "the flash names what was copied (the first line, with an ellipsis for a longer message)"
+    );
+    assert_eq!(sim.app.project_frame().unwrap().key.screen, "log");
+}
+
 #[test]
 fn vcs_port_original_log_detail_history_and_six_copy_keys() {
     if isolated("vcs_port_original_log_detail_history_and_six_copy_keys") {

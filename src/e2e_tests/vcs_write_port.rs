@@ -1520,9 +1520,9 @@ fn vcs_port_branch_empty_repository_allows_create_and_has_no_row_actions() {
     w.no_dialog();
     w.key('d');
     w.no_dialog();
-    // Fact only: the old hub flashed "no copy target" with no branch selected; on the canvas
-    // the `y` leader does not open and nothing is flashed. Whether that silence is intended
-    // is undecided — this test only records what the new path does today.
+    // Decided difference: the old hub flashed "no copy target" with no branch selected; on the
+    // canvas the `y` leader does not open and nothing is flashed (the same rule as `w` in a jj
+    // repository and `R` in a git repository doing nothing).
     w.key('y');
     assert_eq!(w.sim.app.pending_leader, None);
     assert_eq!(w.flash(), None);
@@ -1531,6 +1531,48 @@ fn vcs_port_branch_empty_repository_allows_create_and_has_no_row_actions() {
     assert!(w.sim.app.project_dialog.is_some());
     w.press(KeyCode::Enter);
     assert_eq!(w.flash().as_deref(), Some("name is empty"));
+    w.no_dialog();
+}
+
+#[test]
+fn vcs_port_branch_empty_repository_y_has_no_hint_and_changes_nothing() {
+    use crate::keymap::{Context, LeaderId};
+    let dir = sandbox("vcs_port_branch_empty_y").into_canonical().unwrap();
+    crate::test_support::init_git_repo(&dir);
+    let root = dir.to_path_buf();
+    let mut w = open_repo(
+        dir,
+        root,
+        "git",
+        "vcs_port_branch_empty_y",
+        "en",
+        "relative",
+        false,
+        true,
+    );
+    w.key('b');
+    assert!(w.screen_is("branches"));
+    assert_eq!(branch_values(&w.sim), [("empty".into(), "".into())]);
+    // No hint anywhere: the copy menu does not open, the footer has no `y:` token and the help
+    // has no copy section.
+    assert!(!crate::ops::menu::opens(
+        &w.sim.app,
+        Context::Canvas,
+        LeaderId::Copy
+    ));
+    assert!(!crate::ops::footer::tokens(&w.sim.app, Context::Canvas)
+        .join(" ")
+        .contains("y:"));
+    assert!(
+        crate::ui::help::leader_section(&w.sim.app, Context::Canvas, LeaderId::Copy, "y").is_none()
+    );
+    // `y` changes nothing: no menu, no flash, no clipboard write, the same screen.
+    crate::test_support::clear_test_clipboard();
+    w.key('y');
+    assert_eq!(w.sim.app.pending_leader, None);
+    assert_eq!(w.flash(), None);
+    assert_eq!(crate::test_support::get_test_clipboard(), None);
+    assert!(w.screen_is("branches"));
     w.no_dialog();
 }
 

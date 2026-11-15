@@ -1,12 +1,9 @@
-//! Frozen frames of the old hub, replayed through the real `p` project path.
+//! Frozen frames of the released VCS hub, replayed through the real `p` project path.
 //!
-//! The old tests compare the legacy hub's body cells with the project screen's body cells; that is the
-//! only pin to the released appearance. Each recipe below is the shared sequence of one old test. It is
-//! run on the old hub to generate / check the fixtures (`vcs_frozen/<old test>.txt`) and on the new path
-//! to replay them. A frame stores every compared cell: symbol, fg, bg and modifier.
-//!
-//! Generate with `KONOMA_FREEZE_VCS=1 cargo nextest run -p konoma -E 'test(vcs_frozen_generate)'`.
-//! The generator is the only code that writes the fixture directory.
+//! The fixtures (`vcs_frozen/<name>.txt`) were generated from the released hub and are now fixed
+//! data: the hub that drew them is gone, so nothing regenerates them. Each recipe below is the
+//! sequence of one old comparison test; it is replayed on the project path and every captured
+//! cell (symbol, fg, bg and modifier) is compared with the stored frame.
 
 use super::vcs_changes::drain;
 use super::*;
@@ -19,77 +16,44 @@ mod recipes;
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/e2e_tests/vcs_frozen/");
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Side {
-    Old,
-    New,
-}
-
-/// One side of a recipe run: the old hub or the project path, plus the frames captured so far.
+/// A recipe run on the project path, plus the frames captured so far.
 pub(super) struct Ctx {
-    pub(super) side: Side,
     sim: Option<Sim>,
     frames: Vec<(String, String)>,
 }
 
 impl Ctx {
-    fn new(side: Side) -> Self {
+    fn new() -> Self {
         Self {
-            side,
             sim: None,
             frames: Vec::new(),
         }
-    }
-
-    pub(super) fn is_old(&self) -> bool {
-        self.side == Side::Old
     }
 
     pub(super) fn sim(&mut self) -> &mut Sim {
         self.sim.as_mut().expect("recipe must open a screen first")
     }
 
-    /// Open the first screen: the legacy hub (old) or the project host through `p` (new).
+    /// Open the first screen: the project host through `p`.
     pub(super) fn open(&mut self, root: &Path, id: &str, cfg: Config, width: u16, height: u16) {
-        match self.side {
-            Side::Old => {
-                let mut old_cfg = cfg;
-                old_cfg.plugins.clear();
-                let mut old = Sim::with_config_sized(root, old_cfg, width, height);
-                old.app.open_git_view();
-                assert!(old.app.is_git_view());
-                old.draw();
-                self.sim = Some(old);
-            }
-            Side::New => {
-                let mut new = Sim::with_config_sized(root, cfg, width, height);
-                assert!(
-                    crate::plugins::build_registry(&new.app.cfg.plugin_disabled())
-                        .manifest(id)
-                        .is_some(),
-                    "VCS plugin refused by registry"
-                );
-                new.app.tab.projects.wait_for_result();
-                new.app.poll_projects();
-                new.key('p');
-                drain(&mut new);
-                assert!(new.app.project_active(), "{:?}", new.app.flash);
-                self.sim = Some(new);
-            }
-        }
+        let mut new = Sim::with_config_sized(root, cfg, width, height);
+        assert!(
+            crate::plugins::build_registry(&new.app.cfg.plugin_disabled())
+                .manifest(id)
+                .is_some(),
+            "VCS plugin refused by registry"
+        );
+        new.app.tab.projects.wait_for_result();
+        new.app.poll_projects();
+        new.key('p');
+        drain(&mut new);
+        assert!(new.app.project_active(), "{:?}", new.app.flash);
+        self.sim = Some(new);
     }
 
-    /// Use a screen the recipe opened itself (a recipe whose opening differs from `open`).
-    pub(super) fn set_sim(&mut self, sim: Sim) {
-        self.sim = Some(sim);
-    }
-
-    /// Wait for the project host's workers (new path only; the old hub has none).
+    /// Wait for the project host's workers.
     pub(super) fn settle(&mut self) {
-        let new = self.side == Side::New;
-        if new {
-            drain(self.sim());
-        }
+        drain(self.sim());
     }
 
     pub(super) fn key(&mut self, c: char) {
@@ -122,41 +86,26 @@ impl Ctx {
         self.settle();
     }
 
-    /// Run a step that exists only on the old hub (a hub API instead of keys).
-    pub(super) fn on_old(&mut self, step: impl FnOnce(&mut Sim)) {
-        if self.side == Side::Old {
-            step(self.sim());
-        }
-    }
-
-    /// Run a step that exists only on the project path; settles afterwards.
+    /// Run a step on the project path; settles afterwards.
     pub(super) fn on_new(&mut self, step: impl FnOnce(&mut Sim)) {
-        if self.side == Side::New {
-            step(self.sim());
-            self.settle();
-        }
+        step(self.sim());
+        self.settle();
     }
 
-    /// Capture a region the way `compare_body` compares it: (x, y) of the frame, with a per-side
-    /// offset (the old hub draws inside a border and one title row more).
+    /// Capture a region of the frame: (x, y) of the frame, shifted by `offset`.
     pub(super) fn region(
         &mut self,
         label: &str,
         xs: Range<u16>,
         ys: Range<u16>,
-        old_offset: (u16, u16),
-        new_offset: (u16, u16),
+        offset: (u16, u16),
     ) {
         assert!(
             !self.frames.iter().any(|(l, _)| l == label),
             "duplicate frozen label: {label}"
         );
-        let offset = match self.side {
-            Side::Old => old_offset,
-            Side::New => new_offset,
-        };
         let sim = self.sim();
-        // A fresh draw, as compare_body does: TestBackend keeps stale symbols under wide glyphs.
+        // A fresh draw: TestBackend keeps stale symbols under wide glyphs.
         let buffer = sim
             .term
             .draw(|frame| ui::render(frame, &mut sim.app))
@@ -176,9 +125,9 @@ impl Ctx {
             .push((label.to_string(), encode(&xs, &ys, &rows)));
     }
 
-    /// The body region of `compare_body`: below the two header rows, inside the old hub's border.
+    /// The body region: below the two header rows, inside the border.
     pub(super) fn body(&mut self, label: &str, width: u16, height: u16) {
-        self.region(label, 0..width - 2, 2..height - 2, (1, 0), (1, 0));
+        self.region(label, 0..width - 2, 2..height - 2, (1, 0));
     }
 }
 
@@ -367,8 +316,8 @@ pub(super) struct Recipe {
     pub(super) run: fn(&mut Ctx),
 }
 
-fn run_recipe(recipe: &Recipe, side: Side) -> Vec<(String, String)> {
-    let mut ctx = Ctx::new(side);
+fn run_recipe(recipe: &Recipe) -> Vec<(String, String)> {
+    let mut ctx = Ctx::new();
     (recipe.run)(&mut ctx);
     ctx.frames
 }
@@ -391,7 +340,7 @@ fn replay(name: &str) {
         return;
     }
     let expected = load(name);
-    let actual = run_recipe(recipe, Side::New);
+    let actual = run_recipe(recipe);
     let report = differences(&expected, &actual);
     assert!(
         report.is_empty(),
@@ -405,47 +354,6 @@ fn replay(name: &str) {
             .collect::<Vec<_>>()
             .join("\n")
     );
-}
-
-/// Old hub: the fixture must still be what the old hub draws.
-// U9l deletes this check together with the old hub.
-fn stale(name: &str) {
-    let recipe = find(name);
-    if skipped(recipe) {
-        return;
-    }
-    let expected = load(name);
-    let actual = run_recipe(recipe, Side::Old);
-    let report = differences(&expected, &actual);
-    assert!(
-        report.is_empty(),
-        "frozen fixture {name} is stale: {} differences\n{}",
-        report.len(),
-        report
-            .iter()
-            .take(12)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-}
-
-#[test]
-fn e2e_vcs_frozen_generate_fixtures_only_when_asked() {
-    if std::env::var("KONOMA_FREEZE_VCS").as_deref() != Ok("1") {
-        return;
-    }
-    // The generator runs the recipes that set `HOME`; it gets its own process (it inherits
-    // `KONOMA_FREEZE_VCS`).
-    if isolated("e2e_vcs_frozen_generate_fixtures_only_when_asked") {
-        return;
-    }
-    std::fs::create_dir_all(FIXTURE_DIR).unwrap();
-    for recipe in recipes::RECIPES {
-        assert!(!skipped(recipe), "jj is required to freeze {}", recipe.name);
-        let frames = run_recipe(recipe, Side::Old);
-        std::fs::write(fixture_path(recipe.name), file_text(recipe.name, &frames)).unwrap();
-    }
 }
 
 #[test]
@@ -506,70 +414,8 @@ fn e2e_vcs_frozen_stale_fixture_is_reported_per_cell() {
     assert_eq!(parse_file(&file_text("r", &a)), a);
 }
 
-macro_rules! stale_tests {
-    ($($fn_name:ident => $recipe:expr,)*) => {
-        $(
-            #[test]
-            fn $fn_name() {
-                stale($recipe);
-            }
-        )*
-    };
-}
-
-stale_tests! {
-    e2e_vcs_frozen_stale_changes_git => "e2e_vcs_changes_git_body_cell_parity_with_staged_unstaged_rename_delete_cjk_and_empty",
-    e2e_vcs_frozen_stale_changes_jj => "e2e_vcs_changes_jj_and_colocated_body_cell_parity_and_enter_parent_baseline",
-    e2e_vcs_frozen_stale_branches_cells => "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
-    e2e_vcs_frozen_stale_branches_jj => "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
-    e2e_vcs_frozen_stale_log_detail_cells => "e2e_vcs_detail_cells_motions_layout_empty_and_less_match_legacy",
-    e2e_vcs_frozen_stale_log_detail_missing => "e2e_vcs_detail_missing_commit_empty_without_header_matches_legacy_and_r_reloads",
-    e2e_vcs_frozen_stale_log_git_cells => "e2e_vcs_log_git_cells_alignments_boundaries_cjk_ellipsis_and_scrolling",
-    e2e_vcs_frozen_stale_log_filter => "e2e_vcs_log_filter_uses_legacy_text_and_cursor_for_every_query",
-    e2e_vcs_frozen_stale_log_unborn => "e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order",
-    e2e_vcs_frozen_stale_log_limit => "e2e_vcs_log_limit_matches_hub_at_200_and_omits_201st",
-    e2e_vcs_frozen_stale_log_jj => "e2e_vcs_log_jj_and_both_colocated_backends_match_the_selected_legacy_backend",
-    e2e_vcs_frozen_stale_graph_picker_opens => "e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells",
-    e2e_vcs_frozen_stale_graph_picker_toggles => "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
-    e2e_vcs_frozen_stale_graph_picker_no_filter => "e2e_vcs_graph_picker_has_no_filter",
-    e2e_vcs_frozen_stale_graph_picker_apply => "e2e_vcs_graph_picker_apply_rebuilds_and_reorder_derives_base",
-    e2e_vcs_frozen_stale_graph_picker_cancel => "e2e_vcs_graph_picker_cancel_discards_tentative_and_retains_order",
-    e2e_vcs_frozen_stale_graph_picker_tab_change => "e2e_vcs_graph_picker_tab_change_closes_panel_and_discards_tentative_like_legacy",
-    e2e_vcs_frozen_stale_graph_picker_jj_source => "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints",
-    e2e_vcs_frozen_stale_graph_cells => "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
-    e2e_vcs_frozen_stale_graph_base_reload_detail => "e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub",
-    e2e_vcs_frozen_stale_graph_jj_cells => "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
-    e2e_vcs_frozen_stale_changes_title_matrix => "e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states",
-    e2e_vcs_frozen_stale_changes_title_unborn => "e2e_vcs_changes_title_without_a_branch_matches_hub",
-    e2e_vcs_frozen_stale_changes_title_words => "e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin",
-}
-
 // The recipes below point the process-wide `HOME` at their fixture (`set_home`), so each runs in
 // its own process; the other tests of this binary read `HOME` too.
-#[test]
-fn e2e_vcs_frozen_stale_changes_paths() {
-    if isolated("e2e_vcs_frozen_stale_changes_paths") {
-        return;
-    }
-    stale("e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub");
-}
-
-#[test]
-fn e2e_vcs_frozen_stale_worktrees_cells() {
-    if isolated("e2e_vcs_frozen_stale_worktrees_cells") {
-        return;
-    }
-    stale("e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages");
-}
-
-#[test]
-fn e2e_vcs_frozen_stale_worktrees_diff() {
-    if isolated("e2e_vcs_frozen_stale_worktrees_diff") {
-        return;
-    }
-    stale("e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy");
-}
-
 #[test]
 fn e2e_vcs_frozen_replay_changes_paths() {
     if isolated("e2e_vcs_frozen_replay_changes_paths") {

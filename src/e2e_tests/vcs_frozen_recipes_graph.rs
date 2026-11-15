@@ -10,8 +10,7 @@ use super::super::Ctx;
 use super::log::Pin;
 use konoma_vcs_core::git2;
 
-/// `graph_pair` of `vcs_graph.rs`: the config, then the graph screen (hub API on the old side,
-/// two Tab presses through the project host on the new side).
+/// The config, then the graph screen (two Tab presses through the project host).
 #[allow(clippy::too_many_arguments)]
 fn open_graph(
     c: &mut Ctx,
@@ -58,12 +57,8 @@ fn open_graph(
     enter_graph(c);
 }
 
-/// Old hub: `open_git_graph`; project host: Tab twice (changes -> log -> graph).
+/// Project host: Tab twice (changes -> log -> graph).
 fn enter_graph(c: &mut Ctx) {
-    c.on_old(|old| {
-        old.app.open_git_graph();
-        assert!(old.app.is_git_graph());
-    });
     for _ in 0..2 {
         c.on_new(|new| new.press(KeyCode::Tab, KeyModifiers::NONE));
     }
@@ -85,14 +80,11 @@ fn new_graph_tab(c: &mut Ctx) {
     });
 }
 
-/// The tab-change test also opens a tab on the old hub; the jj graph test does not.
 fn other_tab(c: &mut Ctx) {
-    c.on_old(|old| old.app.tab_new().unwrap());
     new_graph_tab(c);
 }
 
 fn back_to_first_tab(c: &mut Ctx) {
-    c.on_old(|old| old.app.tab_goto(0));
     c.on_new(|new| new.app.tab_goto(0));
 }
 
@@ -264,13 +256,6 @@ pub(super) fn cells(c: &mut Ctx) {
                 let label = format!(
                     "lang={lang} w={width} align={align} cap={cap} prio={priority} icons={icons}"
                 );
-                c.on_old(|old| {
-                    assert!(old
-                        .app
-                        .git_graph_rows()
-                        .iter()
-                        .any(|r| r.commit.is_none() && !r.worktree));
-                });
                 c.body(&format!("{label} open"), width, 16);
                 for i in 0..2 {
                     c.key('j');
@@ -314,19 +299,12 @@ fn side_commit(dir: &std::path::Path) -> String {
     id
 }
 
-/// Move down until the side commit is selected (the old test moves both sides in lockstep).
+/// Move down until the side commit is selected (as the old test did).
 fn select_side(c: &mut Ctx, side: &str) {
     for _ in 0..50 {
-        let old = c.is_old();
         let current = {
             let sim = c.sim();
-            if old {
-                sim.app
-                    .git_graph_selected_row()
-                    .and_then(|r| r.commit.clone())
-            } else {
-                sim.app.project_act_context().selected.map(|s| s.value)
-            }
+            sim.app.project_act_context().selected.map(|s| s.value)
         };
         if current.as_deref() == Some(side) {
             return;

@@ -22,14 +22,8 @@ fn title_edge(c: &mut Ctx, label: &str, width: u16) {
         end += 1;
     }
     assert!(end + 1 < width, "{label}: no filler cell after the title");
-    c.region(&format!("{label} title"), 0..end + 1, 1..2, (0, 0), (0, 0));
-    c.region(
-        &format!("{label} corner"),
-        width - 1..width,
-        1..2,
-        (0, 0),
-        (0, 0),
-    );
+    c.region(&format!("{label} title"), 0..end + 1, 1..2, (0, 0));
+    c.region(&format!("{label} corner"), width - 1..width, 1..2, (0, 0));
 }
 
 fn type_query(c: &mut Ctx, query: &str) {

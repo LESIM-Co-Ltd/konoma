@@ -23,7 +23,6 @@ fn open_worktrees(c: &mut Ctx, root: &Path, lang: &str, width: u16) {
     settings.insert("graph_base_branches".into(), toml::Value::Array(Vec::new()));
     c.open(root, "git", cfg, width, 20);
     c.key('w');
-    c.on_old(|old| assert!(old.app.is_git_worktrees()));
     c.on_new(|new| {
         assert_eq!(new.app.project_frame().unwrap().key.screen, "worktrees");
     });
@@ -45,11 +44,6 @@ pub(super) fn cells(c: &mut Ctx) {
                 for query in ["日本語", "LINKED", "no-match"] {
                     c.press(KeyCode::Esc, KeyModifiers::NONE);
                     // Reopen after Esc closed an unfiltered list.
-                    c.on_old(|old| {
-                        if !old.app.is_git_worktrees() {
-                            old.key('w');
-                        }
-                    });
                     c.on_new(|new| {
                         if !new.app.project_active() {
                             new.key('p');
@@ -71,33 +65,20 @@ pub(super) fn cells(c: &mut Ctx) {
 
 /// Move the cursor to the worktree at `path` (the old test moves both sides in lockstep).
 fn select(c: &mut Ctx, path: &Path) {
-    let old = c.is_old();
     for _ in 0..50 {
         let (index, current) = {
             let sim = c.sim();
-            if old {
-                (
-                    sim.app
-                        .git_worktree_view()
-                        .iter()
-                        .position(|w| w.path == path)
-                        .unwrap(),
-                    sim.app.git_worktree_sel(),
-                )
-            } else {
-                // A project row carries the worktree path as its value.
-                let content = sim.app.project_content().unwrap();
-                let crate::app::project_screens::ProjectContent::List(list) = content.as_ref()
-                else {
-                    panic!("list required")
-                };
-                let index = list
-                    .rows
-                    .iter()
-                    .position(|row| row.value == path.to_string_lossy())
-                    .unwrap();
-                (index, sim.app.project_frame().unwrap().cursor)
-            }
+            // A project row carries the worktree path as its value.
+            let content = sim.app.project_content().unwrap();
+            let crate::app::project_screens::ProjectContent::List(list) = content.as_ref() else {
+                panic!("list required")
+            };
+            let index = list
+                .rows
+                .iter()
+                .position(|row| row.value == path.to_string_lossy())
+                .unwrap();
+            (index, sim.app.project_frame().unwrap().cursor)
         };
         if current == index {
             return;
@@ -109,24 +90,20 @@ fn select(c: &mut Ctx, path: &Path) {
 
 /// Title width the old test compares: the detail title, clipped to the frame.
 fn title_width(c: &mut Ctx, width: u16) -> u16 {
-    let old = c.is_old();
     let sim = c.sim();
-    let title = if old {
-        sim.app.git_detail_title().unwrap().to_string()
-    } else {
-        let content = sim.app.project_content().unwrap();
-        let crate::app::project_screens::ProjectContent::Diff(diff) = content.as_ref() else {
-            panic!("diff required")
-        };
-        // The plugin's title is padded (" title ") like the old hub's drawn edge; the old string
-        // is the text alone, drawn one cell right of the padding.
-        diff.title
-            .as_ref()
-            .expect("diff title")
-            .to_string()
-            .trim()
-            .to_owned()
+    let content = sim.app.project_content().unwrap();
+    let crate::app::project_screens::ProjectContent::Diff(diff) = content.as_ref() else {
+        panic!("diff required")
     };
+    // The plugin's title is padded (" title ") like the old hub's drawn edge; the frozen frame
+    // has the text alone, drawn one cell right of the padding.
+    let title = diff
+        .title
+        .as_ref()
+        .expect("diff title")
+        .to_string()
+        .trim()
+        .to_owned();
     ratatui::text::Line::raw(title)
         .width()
         .min(usize::from(width - 4)) as u16
@@ -154,17 +131,11 @@ pub(super) fn diff(c: &mut Ctx) {
                 c.key('d');
                 let label = format!("lang={lang} w={width} worktree={name}");
                 let tw = title_width(c, width);
-                // Both frames draw the title on the top edge (row 1), its text from x = 2.
-                c.region(&format!("{label} title"), 0..tw, 0..1, (2, 1), (2, 1));
-                // Both frames have the border and the body from row 2: the title is on the edge.
+                // The frame draws the title on the top edge (row 1), its text from x = 2.
+                c.region(&format!("{label} title"), 0..tw, 0..1, (2, 1));
+                // The frame has the border and the body from row 2: the title is on the edge.
                 let diff_region = |c: &mut Ctx, what: &str| {
-                    c.region(
-                        &format!("{label} {what}"),
-                        0..width - 2,
-                        2..16,
-                        (1, 0),
-                        (1, 0),
-                    );
+                    c.region(&format!("{label} {what}"), 0..width - 2, 2..16, (1, 0));
                 };
                 diff_region(c, "diff");
                 for key in ['j', 'l', 's'] {

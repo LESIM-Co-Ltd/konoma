@@ -399,25 +399,4 @@ mod tests {
         );
         assert!(app.diff_media_active());
     }
-
-    #[test]
-    fn jj_follow_worker_does_not_interrupt_a_paused_surface() {
-        let Some((mut app, rx, _dir)) = fixture("jj_follow_worker_paused") else {
-            return;
-        };
-        app.toggle_follow();
-        assert!(app.apply_follow(receive(&rx)));
-        let path = app.tab.root.join("a.txt");
-        std::fs::write(&path, b"after\n").unwrap();
-        assert!(app.follow_note_change(&path));
-        app.follow_jump(&path);
-        let held = receive(&rx);
-        app.open_git_view();
-        assert!(app.is_git_view());
-        assert!(app.apply_follow(held));
-        assert!(
-            app.is_git_view(),
-            "a late result must not replace a paused list with a diff"
-        );
-    }
 }
