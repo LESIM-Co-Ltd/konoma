@@ -637,6 +637,152 @@ fn vcs_hub_e2e_jj_tree_diff_discard_is_refused_and_stays_on_the_diff() {
     );
 }
 
+// ---- A discard confirmed on the diff the tree's `d` opened ----
+// The old hub was the place that discard returned to; the project's changes screen replaced it.
+// After a successful discard the tab shows the changes screen as `p` from the tree opens it, and
+// no state of the old hub is raised.
+
+/// A git repository session whose git writes run on the real background path.
+fn tree_diff_session(name: &str) -> (Sim, std::path::PathBuf, crate::test_support::TmpDir) {
+    let dir = super::super::vcs_changes::git_repo(name, true);
+    let root = dir.to_path_buf();
+    let mut sim = Sim::new(&root).with_async_git_ops();
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    (sim, root, dir)
+}
+
+fn assert_no_old_hub_state(app: &App, why: &str) {
+    assert!(!app.is_git_view(), "{why}: hub");
+    assert!(!app.is_git_log(), "{why}: log");
+    assert!(!app.is_git_branches(), "{why}: branches");
+    assert!(!app.is_git_worktrees(), "{why}: worktrees");
+    assert!(!app.is_git_graph(), "{why}: graph");
+    assert!(!app.is_git_graph_picker(), "{why}: graph picker");
+    assert!(!app.is_git_detail(), "{why}: detail");
+}
+
+#[test]
+fn tree_diff_discard_opens_the_project_changes_screen_like_p_and_q_returns_to_the_tree() {
+    let (mut sim, root, _dir) = tree_diff_session("vcs_hub_e2e_tree_diff_discard");
+    sim.select("b-unstaged.txt");
+    sim.key('d');
+    assert!(sim.app.is_git_diff_preview(), "d opens the file diff");
+    sim.key('x');
+    assert!(sim.app.is_dialog(), "x asks for confirmation");
+    sim.key('y');
+    sim.drain_git_ops();
+    drain(&mut sim);
+    assert_eq!(
+        std::fs::read(root.join("b-unstaged.txt")).unwrap(),
+        b"base\n",
+        "the file is reverted on disk"
+    );
+    assert_no_old_hub_state(&sim.app, "after the discard");
+    assert!(
+        sim.app.project_active(),
+        "the project changes screen is shown, flash {:?}",
+        sim.app.flash
+    );
+    assert_eq!(sim.app.project_frame().unwrap().key.screen, "changes");
+    assert_eq!(
+        sim.app
+            .tab
+            .project_navigation
+            .as_ref()
+            .unwrap()
+            .project
+            .plugin,
+        "git",
+        "the repository's own project"
+    );
+    assert!(
+        sim.app
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.starts_with("Discarded: ") && f.ends_with("b-unstaged.txt")),
+        "the Discarded flash is kept: {:?}",
+        sim.app.flash
+    );
+    // The same entry as `p` from the tree: the list shows the remaining changes only.
+    let rows = |sim: &Sim| match sim.app.project_content().unwrap().as_ref() {
+        ProjectContent::List(list) => list
+            .rows
+            .iter()
+            .map(|r| r.cells[0].plain())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => panic!("the changes list is required"),
+    };
+    let listed = rows(&sim);
+    assert!(listed.contains("a-staged.txt"), "{listed}");
+    assert!(!listed.contains("b-unstaged.txt"), "{listed}");
+    // `q` behaves as after `p` from the tree: back to the tree, nothing of the hub left.
+    sim.key('q');
+    drain(&mut sim);
+    assert!(!sim.app.project_active(), "q leaves the project");
+    assert_no_old_hub_state(&sim.app, "after q");
+    assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree);
+    assert!(!sim.app.is_git_diff_preview());
+    sim.app.ensure_git_status_now();
+    assert!(
+        sim.app
+            .git_status_of(&root.join("b-unstaged.txt"))
+            .is_none(),
+        "the tree row has no change status any more"
+    );
+    assert!(
+        sim.app.git_status_of(&root.join("a-staged.txt")).is_some(),
+        "the other changes stay marked"
+    );
+}
+
+#[test]
+fn tree_diff_discard_failure_keeps_the_diff_and_shows_the_failure() {
+    let (mut sim, root, _dir) = tree_diff_session("vcs_hub_e2e_tree_diff_discard_fail");
+    sim.select("e-untracked.txt");
+    sim.key('d');
+    assert!(sim.app.is_git_diff_preview(), "d opens the untracked diff");
+    sim.key('x');
+    sim.key('y');
+    sim.drain_git_ops();
+    drain(&mut sim);
+    assert!(
+        sim.app
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.starts_with("failed: ")),
+        "{:?}",
+        sim.app.flash
+    );
+    assert!(sim.app.is_git_diff_preview(), "a failed discard stays");
+    assert!(!sim.app.project_active());
+    assert_no_old_hub_state(&sim.app, "after the failure");
+    assert_eq!(
+        std::fs::read(root.join("e-untracked.txt")).unwrap(),
+        b"new\n"
+    );
+    // `q` still returns to the tree (the diff was opened from it).
+    sim.key('q');
+    assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree);
+    assert_no_old_hub_state(&sim.app, "after q");
+}
+
+#[test]
+fn tree_diff_cancelled_discard_then_q_returns_to_the_tree_not_a_hub() {
+    let (mut sim, _root, _dir) = tree_diff_session("vcs_hub_e2e_tree_diff_discard_cancel");
+    sim.select("b-unstaged.txt");
+    sim.key('d');
+    sim.key('x');
+    assert!(sim.app.is_dialog());
+    sim.key('n');
+    assert!(sim.app.is_git_diff_preview(), "cancel keeps the diff");
+    sim.key('q');
+    assert_no_old_hub_state(&sim.app, "after cancel and q");
+    assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree);
+    assert!(!sim.app.project_active());
+}
+
 // ---- Decided differences (the user decisions: on a jj repository `w` and on a git repository
 // the jj sync key `R` show nothing): old e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list
 // and old e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing ----

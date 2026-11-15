@@ -434,8 +434,8 @@ impl App {
             }
             // Git-view discard: git::discard → re-fetch the git status for the list/tree.
             // Runs in the background too (design principle #4) — restoring a large file from the
-            // index is a working-tree write like any other. Returning from the GitDiff preview to
-            // the Git view (came_from_git_view) happens in `apply_git_op`.
+            // index is a working-tree write like any other. Leaving the GitDiff preview for the
+            // project's changes screen happens in `apply_git_op`.
             #[cfg(feature = "git")]
             PendingOp::JjSync => self.jj_run_sync(),
             #[cfg(not(feature = "git"))]

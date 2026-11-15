@@ -465,13 +465,15 @@ impl App {
                 None => {
                     let mut ok = true;
                     // Navigation: only the tab that asked gets pulled out of the diff preview.
+                    // A diff opened from a project screen returns to it; one opened from the tree
+                    // goes to the project's changes screen, as `p` from the tree opens it.
                     if is_origin_tab
                         && self.is_git_diff_preview()
                         && !self.return_to_project_after_discard()
                     {
                         self.tab.came_from_git_view = false;
                         self.back_to_tree();
-                        self.open_git_view();
+                        self.enter_project();
                     }
                     if shows_same_repo {
                         self.git_view_reload();
@@ -879,23 +881,18 @@ impl App {
         self.flash = Some(label.into());
     }
 
-    /// Close the GitDiff preview (q/Esc). Returns to the Git view if it came from there,
-    /// otherwise returns to the tree. Also the return path from the diff's `Preview` representation
+    /// Close the GitDiff preview (q/Esc): returns to the tree. Also the return path from the diff's `Preview` representation
     /// (`main.rs`'s `Action::PreviewBack` routes here whenever `tab.preview_from_diff` is set, not
     /// only for an actual `Surface::PreviewGitDiff`) — `preview_from_diff` is cleared unconditionally
     /// here so either origin ends up in the identical "no longer inside a diff" state.
     pub fn close_git_diff(&mut self) {
-        let return_to_git = self.tab.came_from_git_view;
         self.tab.preview_from_diff = false;
+        self.tab.came_from_git_view = false;
         self.back_to_tree();
-        if return_to_git {
-            self.tab.came_from_git_view = false;
-            self.open_git_view();
-        }
     }
 
     /// `x` in the GitDiff preview = discard all changes to the displayed file. Opens a confirmation dialog
-    /// (on confirm: git::discard then return to the Git view). Uses the same flow as discard from the Git view.
+    /// (on confirm: git::discard then open the project's changes screen). Uses the same flow as discard from the Git view.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_diff_start_discard(&mut self) {
         if !self.allow_write("git", true, true) {
@@ -913,8 +910,6 @@ impl App {
             "{} {name} ?",
             crate::i18n::tr(self.lang, crate::i18n::Msg::DiscardChangesTo)
         );
-        // Since we want to return to the Git view after discarding, set the return-origin flag ahead of time.
-        self.tab.came_from_git_view = true;
         self.dialog = Some(Dialog {
             op: PendingOp::GitDiscard { path },
             kind: DialogKind::Confirm {
