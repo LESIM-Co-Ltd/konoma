@@ -274,16 +274,15 @@ fn e2e_dump_footer_and_help_when_asked() {
         s.key('d');
         shot("diff", &mut s);
         s.key('q');
-        s.open_legacy_hub();
-        shot("git hub", &mut s);
-        s.key('l');
-        shot("git log", &mut s);
-        s.key('q');
-        s.key('g');
-        shot("git graph", &mut s);
-        s.key('q');
-        s.key('b');
-        shot("git branches", &mut s);
+        // The project screens (changes, log, graph, branches) are reached with Tab.
+        s.key('p');
+        super::vcs_changes::drain(&mut s);
+        shot("project changes", &mut s);
+        for label in ["project log", "project graph", "project branches"] {
+            s.tab();
+            super::vcs_changes::drain(&mut s);
+            shot(label, &mut s);
+        }
     }
     std::fs::write(path, out).unwrap();
 }

@@ -1113,32 +1113,160 @@ fn e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_lan
     }
 }
 
-/// The graph help's keys and order are the legacy help's (git, both languages): `g / G`,
-/// `l / Enter`, `s`, `x`, `b`, `/`, `r`, `Tab / ⇧Tab`, `h / Esc  ·  q`, then `j / k` under Movement.
+/// The graph help (git, both languages) and footer are the old hub's, written out: the graph
+/// section's keys and order (`g / G`, `l / Enter`, `s`, `x`, `b`, `/`, `r`, `Tab / ⇧Tab`,
+/// `h / Esc  ·  q`), `j / k` under Movement, the Space menu, Tabs and Global sections, and the
+/// footer labels. (`[Copy commit]` is absent: the graph opens on its uncommitted row, where
+/// `y` copies nothing.)
 #[test]
 fn vcs_port_graph_help_keys_and_order_equal_legacy() {
-    let dir = fixture();
-    for lang in ["en", "ja"] {
-        let (old, new) = graph_pair(&dir, lang, "right", (160, 16), 12, false, true);
-        hints_match(&old, &new, false);
-        let graph = crate::ops::help::sections_for(&new.app, crate::keymap::Context::Canvas);
-        let keys: Vec<_> = graph[0].rows.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(
-            keys,
-            [
-                "g / G",
-                "l / Enter",
-                "s",
-                "x",
-                "b",
-                "/",
-                "r",
-                "Tab / ⇧Tab",
-                "h / Esc  ·  q"
+    type Section = (&'static str, Vec<(&'static str, &'static str)>);
+    let en: Vec<Section> = vec![
+        (
+            "Git graph",
+            vec![
+                ("g / G", "top / bottom"),
+                ("l / Enter", "detail (commit diff / worktree diff)"),
+                (
+                    "s",
+                    "pin the selected commit's branch as the base (leftmost lane)",
+                ),
+                ("x", "clear the pinned base"),
+                ("b", "choose which branches are shown"),
+                ("/", "filter the rows by the text they show"),
+                ("r", "refresh listing & git status"),
+                ("Tab / ⇧Tab", "cycle changes/log/graph/branches/worktrees"),
+                ("h / Esc  ·  q", "back to changes"),
             ],
-            "{lang}"
-        );
-        assert_eq!(graph[1].rows[0].0, "j / k", "{lang}");
+        ),
+        ("Movement", vec![("j / k", "move (commit / uncommitted)")]),
+        (
+            "Actions",
+            vec![
+                ("Space s", "base"),
+                ("Space x", "base off"),
+                ("Space b", "branches"),
+                ("Space a", "detail"),
+            ],
+        ),
+        (
+            "Tabs",
+            vec![
+                ("t", "new tab right of this one"),
+                ("1 - 9", "jump to tab by number"),
+                ("T", "tab list (switch / close)"),
+            ],
+        ),
+        (
+            "Global",
+            vec![
+                (
+                    "P",
+                    "paste a path / GitHub link and jump there (reveal + preview)",
+                ),
+                ("?", "toggle this help"),
+                ("F", "follow mode: auto-preview externally changed files"),
+                ("Q", "quit (back to tree in preview)"),
+            ],
+        ),
+    ];
+    let ja: Vec<Section> = vec![
+        (
+            "Git グラフ",
+            vec![
+                ("g / G", "先頭 / 末尾"),
+                ("l / Enter", "詳細 (コミット差分 / 作業ツリー差分)"),
+                ("s", "選択コミットの枝を基準(左端レーン)に固定"),
+                ("x", "基準の固定を解除"),
+                ("b", "表示するブランチを選ぶ"),
+                ("/", "行の表示文字列で絞り込み"),
+                ("r", "一覧と git status を再読込"),
+                (
+                    "Tab / ⇧Tab",
+                    "画面を巡回: 変更/ログ/グラフ/ブランチ/worktree",
+                ),
+                ("h / Esc  ·  q", "変更ハブへ戻る"),
+            ],
+        ),
+        (
+            "移動 (Movement)",
+            vec![("j / k", "移動 (コミット / 未コミット)")],
+        ),
+        (
+            "操作",
+            vec![
+                ("Space s", "基準"),
+                ("Space x", "基準解除"),
+                ("Space b", "ブランチ"),
+                ("Space a", "詳細"),
+            ],
+        ),
+        (
+            "タブ (Tabs)",
+            vec![
+                ("t", "右隣に新規タブ"),
+                ("1 - 9", "番号でタブへジャンプ"),
+                ("T", "タブ一覧(切替 / 閉じる)"),
+            ],
+        ),
+        (
+            "共通 (Global)",
+            vec![
+                (
+                    "P",
+                    "パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)",
+                ),
+                ("?", "このヘルプの開閉"),
+                ("F", "追尾モード: 外部で変更されたファイルを自動プレビュー"),
+                ("Q", "終了 (プレビュー中はツリーへ戻る)"),
+            ],
+        ),
+    ];
+    let footer_en = [
+        "j/k:nav",
+        "l/Enter:detail",
+        "s:base",
+        "x:base off",
+        "b:branches",
+        "/:search",
+        "Tab/⇧Tab:screens",
+        "h/q/Esc:back",
+    ];
+    let footer_ja = [
+        "j/k:移動",
+        "l/Enter:詳細",
+        "s:基準",
+        "x:基準解除",
+        "b:ブランチ",
+        "/:検索",
+        "Tab/⇧Tab:画面",
+        "h/q/Esc:戻る",
+    ];
+    let dir = fixture();
+    for (lang, want, footer) in [
+        ("en", en, footer_en.as_slice()),
+        ("ja", ja, footer_ja.as_slice()),
+    ] {
+        let new = graph_sim(&dir, lang, "right", (160, 16), 12, false, true);
+        let sections = crate::ops::help::sections_for(&new.app, crate::keymap::Context::Canvas);
+        let got: Vec<(String, Vec<(String, String)>)> = sections
+            .iter()
+            .map(|s| (s.title.clone(), s.rows.clone()))
+            .collect();
+        let want: Vec<(String, Vec<(String, String)>)> = want
+            .into_iter()
+            .map(|(t, rows)| {
+                (
+                    t.to_string(),
+                    rows.into_iter()
+                        .map(|(k, d)| (k.to_string(), d.to_string()))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(got, want, "{lang}: the graph help");
+        let got_footer = crate::ops::footer::tokens(&new.app, crate::keymap::Context::Canvas);
+        assert_eq!(got_footer, footer, "{lang}: the graph footer");
     }
 }
 
@@ -1642,7 +1770,7 @@ fn picker_screen(new: &mut Sim, two: bool, open_graph: impl Fn(&mut Sim)) {
 fn e2e_vcs_graph_picker_tab_keys_are_listed_where_they_act_git() {
     let dir = picker_fixture();
     super::project_screens::check_tab_keys_listed_and_act("git picker", false, &|two| {
-        let (_old, mut new) = graph_pair(&dir, "en", "right", (160, 40), 12, false, false);
+        let mut new = graph_sim(&dir, "en", "right", (160, 40), 12, false, false);
         picker_screen(&mut new, two, |_| {});
         (new, Box::new(()))
     });
@@ -1662,7 +1790,7 @@ fn e2e_vcs_graph_picker_tab_keys_are_listed_where_they_act_jj() {
     let _preference = Preference::pin("jj");
     super::project_screens::check_tab_keys_listed_and_act("jj picker", false, &|two| {
         let cfg = plugin_config("jj", "vcs_picker_tab_keys_jj", "en");
-        let (_old, mut new) = pair_config(&dir, "jj", cfg, 160, 16);
+        let mut new = project_sim(&dir, "jj", cfg, 160, 16);
         picker_screen(&mut new, two, |new| {
             for _ in 0..2 {
                 new.press(KeyCode::Tab, KeyModifiers::NONE);
@@ -1688,7 +1816,7 @@ fn e2e_vcs_graph_picker_help_lists_the_global_rows_and_the_keys_act() {
             .collect()
     };
     for lang in ["en", "ja"] {
-        let (_old, mut new) = graph_pair(&dir, lang, "right", (160, 40), 12, false, false);
+        let mut new = graph_sim(&dir, lang, "right", (160, 40), 12, false, false);
         new.key('b');
         drain(&mut new);
         assert_eq!(new.app.project_frame().unwrap().key.screen, "graph_picker");

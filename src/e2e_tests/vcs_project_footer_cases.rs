@@ -13,51 +13,35 @@ fn screen_footer(sim: &mut Sim, name: &str) -> String {
     footer_line(sim)
 }
 
-/// An empty changes list: the footer equals the old hub's footer on the same empty list (read
-/// live from the old hub), except for hints whose key does nothing on an empty list: git's
-/// `s`/`u`/`x` (the decided difference: `s/S` and `u/U` become `S` and `U`, `x` is gone) and
-/// `l/Enter:diff` (there is no file row to open; both backends).
+/// An empty changes list: the footer is the old hub's footer on the same list (fixed literals,
+/// read from the old hub when they were written) except for hints whose key does nothing on an
+/// empty list: git's `s`/`u`/`x` (the decided difference: `s/S` and `u/U` become `S` and `U`, `x`
+/// is gone) and `l/Enter:diff` (there is no file row to open; both backends).
 #[test]
 fn vcs_port_empty_changes_footer_equals_old_hub_except_the_inert_stage_hints() {
     use crate::i18n::Lang;
     if isolated("vcs_port_empty_changes_footer_equals_old_hub_except_the_inert_stage_hints") {
         return;
     }
-    let old_footer = |root: &std::path::Path, lang: Lang| -> String {
-        let mut app =
-            crate::app::App::new(root.to_path_buf(), crate::config::Config::default()).unwrap();
-        app.lang = lang;
-        app.open_git_view();
-        crate::ui::status::footer_spans(&app, 220)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
-    };
     let clean = super::vcs_changes::git_repo("vcs_footer_oldempty_git", false);
-    for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
-        let old = old_footer(&clean, lang);
-        let kept: Vec<String> = old
-            .split("  ")
-            .filter(|t| !t.starts_with("x:") && !t.starts_with("l/Enter:"))
-            .map(|t| t.replacen("s/S:", "S:", 1).replacen("u/U:", "U:", 1))
-            .collect();
-        assert_eq!(kept.len(), old.split("  ").count() - 2, "{old}");
-        assert!(
-            kept.iter().any(|t| t.starts_with("S:")) && kept.iter().any(|t| t.starts_with("U:")),
-            "{old}"
-        );
+    let git_want = [
+        (Lang::En, "en", "S:stage(all)  U:unstage(all)  c:commit  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"),
+        (Lang::Jp, "ja", "S:ステージ(全)  U:解除(全)  c:コミット  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"),
+    ];
+    for (_, name, want) in git_want {
         let sim = open(&clean, config("git", name), (220, 30));
-        assert_eq!(footer_line(&sim), kept.join("  "), "git {name} empty changes");
+        assert_eq!(footer_line(&sim), want, "git {name} empty changes");
     }
     let Some(jj) = crate::test_support::jj_scratch_bare("vcs_footer_oldempty_jj") else {
         return;
     };
-    for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
-        let old = old_footer(&jj, lang);
-        let kept: Vec<&str> = old.split("  ").filter(|t| !t.starts_with("l/Enter:")).collect();
-        assert_eq!(kept.len(), old.split("  ").count() - 1, "{old}");
+    let jj_want = [
+        (Lang::En, "en", "d:diff-all  b:bookmarks  s:sync  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"),
+        (Lang::Jp, "ja", "d:全差分  b:ブックマーク  s:同期  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる"),
+    ];
+    for (_, name, want) in jj_want {
         let sim = open(&jj, config("jj", name), (220, 30));
-        assert_eq!(footer_line(&sim), kept.join("  "), "jj {name} empty changes");
+        assert_eq!(footer_line(&sim), want, "jj {name} empty changes");
     }
 }
 
@@ -273,38 +257,36 @@ fn vcs_port_left_rebound_moves_and_cleared_drops_the_back_key_and_its_hint() {
 }
 
 /// `[external] git_tool = false`: the changes footer still shows `!:tool` and `!` flashes the
-/// disabled message and queues no launch, exactly as the old hub does (the old hub does not
-/// gate the hint on the flag; its `launch_git_tool` flashes `ExternalGitToolDisabled`).
+/// disabled message and queues no launch, as the old hub did (it did not gate the hint on the
+/// flag; its `launch_git_tool` flashed `ExternalGitToolDisabled`). The footer and flash are
+/// fixed literals read from the old hub when they were written.
 #[test]
 fn vcs_port_tool_off_keeps_the_hint_and_flashes_like_the_old_hub() {
-    use crate::i18n::Lang;
     if isolated("vcs_port_tool_off_keeps_the_hint_and_flashes_like_the_old_hub") {
         return;
     }
     let git = super::vcs_changes::git_repo("vcs_footer_tool_off", true);
-    for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
-        let mut off = crate::config::Config::default();
-        off.external.git_tool = false;
-        let mut old = crate::app::App::new(git.to_path_buf(), off).unwrap();
-        old.lang = lang;
-        old.open_git_view();
-        let old_footer: String = crate::ui::status::footer_spans(&old, 220)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(old_footer.contains("!:"), "old hub hint: {old_footer}");
-        old.launch_git_tool();
-        assert!(!old.take_launch_git_tool());
-        assert!(old.flash.is_some());
-
+    let want = [
+        (
+            "en",
+            "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+            "external git tool is disabled (config: [external] git_tool = false)",
+        ),
+        (
+            "ja",
+            "s/S:ステージ(全)  u/U:解除(全)  x:破棄  c:コミット  l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+            "外部 git ツールは無効です(設定: [external] git_tool = false)",
+        ),
+    ];
+    for (name, footer, flash) in want {
         let mut cfg = config("git", name);
         cfg.external.git_tool = false;
         let mut sim = open(&git, cfg, (220, 30));
         screen(&mut sim, "changes");
-        assert_eq!(footer_line(&sim), old_footer, "{name}: footer with the tool off");
+        assert_eq!(footer_line(&sim), footer, "{name}: footer with the tool off");
         press(&mut sim, KeyCode::Char('!'));
         assert!(!sim.app.take_launch_git_tool());
-        assert_eq!(sim.app.flash, old.flash, "{name}: the `!` flash");
+        assert_eq!(sim.app.flash.as_deref(), Some(flash), "{name}: the `!` flash");
     }
 }
 

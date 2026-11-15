@@ -125,7 +125,7 @@ fn selected_backend_drives_raw_rendered_preview_and_media() {
         let _reset = Reset;
 
         let cfg = vcs_changes::plugin_config(id, &format!("selected_diff_backend_{id}"), "en");
-        let (_, mut sim) = vcs_changes::pair_config(&dir, id, cfg, 100, 20);
+        let mut sim = vcs_changes::project_sim(&dir, id, cfg, 100, 20);
         sim = sim.with_async_md_diff();
         sim.enter();
         vcs_changes::drain(&mut sim);

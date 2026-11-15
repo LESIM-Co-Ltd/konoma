@@ -1,5 +1,16 @@
 // The project canvas's `?` help equals the old hub's, screen by screen.
 
+/// Fixed help expectations (generated once from the old hub, now literal data): sections are
+/// `### <key>` headers followed by the help lines.
+const FIXED_HELP: &str = include_str!("vcs_help_fixed.txt");
+
+fn fixed_help(key: &str) -> Vec<String> {
+    let header = format!("### {key}");
+    let mut lines = FIXED_HELP.lines();
+    assert!(lines.any(|l| l == header), "no fixed help for {key}");
+    lines.take_while(|l| !l.starts_with("### ")).map(str::to_string).collect()
+}
+
 /// The help lines of `sections`, one `[title]` line then one line per row, without the Space
 /// menu section (its rows belong to the shared-operations unit, not to this comparison).
 ///
@@ -25,63 +36,6 @@ fn help_lines_without_actions(
         }
     }
     lines
-}
-
-/// What the old hub's `?` help says on `screen`, read live from the old hub in this tree.
-fn old_hub_help(
-    root: &std::path::Path,
-    lang: crate::i18n::Lang,
-    screen: &str,
-) -> Vec<String> {
-    let mut old = crate::app::App::new(root.to_path_buf(), crate::config::Config::default())
-        .unwrap();
-    old.lang = lang;
-    old.open_git_view();
-    match screen {
-        "changes" => {}
-        "log" => old.open_git_log(),
-        "graph" => old.open_git_graph(),
-        "branches" => old.open_git_branches(),
-        "worktrees" => old.open_git_worktrees(),
-        "detail" => {
-            old.open_git_log();
-            old.open_git_commit_detail();
-        }
-        // The uncommitted-changes detail (the graph's Uncommitted row, `Enter`).
-        "worktree_detail" => {
-            old.open_git_graph();
-            old.open_git_graph_detail();
-            assert!(
-                old.is_git_detail(),
-                "the old graph's Uncommitted detail did not open ({})",
-                root.display()
-            );
-        }
-        other => panic!("unknown screen {other}"),
-    }
-    without_tab_step_row(help_lines_without_actions(
-        crate::ops::help::sections(&old),
-        lang,
-        screen != "changes",
-    ))
-}
-
-/// Excluded difference (rule: a key that does nothing gets no hint): with one tab open `[` and
-/// `]` return at once, so the project canvas's help has no `[ / ]` row (`gate.rs`: they act only
-/// with two tabs or more), while the old hub listed it regardless. The exclusion is itself
-/// checked: the old help must have exactly one such row.
-fn without_tab_step_row(lines: Vec<String>) -> Vec<String> {
-    let before = lines.len();
-    let kept: Vec<String> = lines
-        .into_iter()
-        .filter(|l| l.get(3..19).map(str::trim_end) != Some("[ / ]"))
-        .collect();
-    assert_eq!(
-        kept.len() + 1,
-        before,
-        "the old help no longer has exactly one `[ / ]` row"
-    );
-    kept
 }
 
 /// The screens of one project kind and the fewest help lines (Space menu excluded) each must
@@ -144,7 +98,7 @@ fn vcs_port_help_equals_old_hub_on_every_screen() {
                     // Compared per row in `vcs_port_worktrees_help_equals_old_hub_per_row`.
                     continue;
                 }
-                let old = old_hub_help(root, lang, screen_name);
+                let old = fixed_help(&format!("{id} {name} {screen_name}"));
                 if screen_name == "detail" {
                     screen(&mut sim, "log");
                     press(&mut sim, KeyCode::Enter);
@@ -218,7 +172,7 @@ fn vcs_port_worktree_detail_help_equals_old_hub() {
     let mut compared = 0;
     for (id, root) in &roots {
         for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
-            let old = old_hub_help(root, lang, "worktree_detail");
+            let old = fixed_help(&format!("{id} {name} worktree_detail"));
             // Measured: the commit detail's 26 lines (git), the same screen.
             assert!(old.len() >= 20, "{id} {name}: only {} old lines", old.len());
             let mut sim = open(root, config(id, name), (220, 60));
@@ -252,27 +206,12 @@ fn vcs_port_worktree_detail_help_equals_old_hub() {
     // The current worktree's row (the list opens on it) has something to show.
     std::fs::write(root.join("file.txt"), "changed\n").unwrap();
     for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
-        let mut old = crate::app::App::new(root.to_path_buf(), crate::config::Config::default())
-            .unwrap();
-        old.lang = lang;
-        old.open_git_view();
-        old.open_git_worktrees();
-        old.worktree_show_changes();
-        assert!(old.is_git_detail(), "{name}: the old worktrees `d` did not open a detail");
         // Excluded difference (rule: a key that does nothing gets no hint): the old hub listed a
         // `[Copy commit]` section on this detail, but a worktree's changes have no commit, so the
-        // canvas declares no copy act on `worktree_diff` and the new help has no copy section.
-        // The exclusion is itself checked: the old section must exist, the new must have none.
-        let copy_title = tr(lang, Msg::WkGitCopyTitle);
-        let mut old_sections = crate::ops::help::sections(&old);
-        let before = old_sections.len();
-        old_sections.retain(|s| s.title != copy_title);
-        assert_eq!(
-            old_sections.len() + 1,
-            before,
-            "{name}: the old worktree detail help no longer has a [{copy_title}] section"
-        );
-        let old_lines = without_tab_step_row(help_lines_without_actions(old_sections, lang, true));
+        // canvas declares no copy act on `worktree_diff` and the new help has no copy section
+        // (asserted below). The fixed lines are the old hub's without that section and without
+        // the `[ / ]` row (inert with one tab).
+        let old_lines = fixed_help(&format!("git {name} worktrees_d_detail"));
         let mut sim = open(&root, config("git", name), (220, 60));
         screen(&mut sim, "worktrees");
         keys(&mut sim, "d");
@@ -315,7 +254,7 @@ fn vcs_port_worktrees_help_equals_old_hub_per_row() {
     let is_ctrl_t = |line: &String| line.starts_with("   Ctrl-t ");
     let (mut acting, mut inert, mut compared) = (0, 0, 0);
     for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
-        let old = old_hub_help(&root, lang, "worktrees");
+        let old = fixed_help(&format!("git {name} worktrees"));
         assert_eq!(old.iter().filter(|l| is_ctrl_t(l)).count(), 1, "{old:?}");
         // Measured: 21 compared lines with the `Ctrl-t` row, 20 without (no `[ / ]` row).
         assert!(old.len() >= 21,"only {} old lines compared", old.len());
@@ -591,15 +530,12 @@ fn vcs_port_esc_on_home_closes_the_view_like_the_old_hub() {
         roots.push(("jj", jj.to_path_buf()));
     }
     for (id, root) in &roots {
-        let mut old = Sim::with_config_sized(root, crate::config::Config::default(), 100, 20);
-        old.app.open_git_view();
-        assert!(old.app.is_git_view(), "{id}: old hub opens");
-        press(&mut old, KeyCode::Esc);
-        assert!(!old.app.is_git_view(), "{id}: Esc closes the old hub");
         let mut new = open(root, config(id, "en"), (100, 20));
         assert_eq!(new.app.project_frame().unwrap().key.screen, "changes");
         press(&mut new, KeyCode::Esc);
         assert!(!new.app.project_active(), "{id}: Esc leaves the project");
+        // Back on the tree (the old hub's `Esc` also returned to `Mode::Tree`).
+        assert_eq!(new.app.tab.mode, crate::app::Mode::Tree, "{id}: Esc returns to the tree");
     }
 }
 
@@ -695,46 +631,30 @@ fn vcs_port_empty_changes_help_is_the_old_help_without_the_write_rows() {
     }
     let root = super::vcs_changes::git_repo("vcs_help_empty_changes", false);
     for (lang, name) in [(Lang::En, "en"), (Lang::Jp, "ja")] {
-        let old = old_hub_help(&root, lang, "changes");
-        // Measured: 26 lines on a clean repository (the changes list is empty; no `[ / ]` row).
-        assert!(old.len() >= 26,"only {} old lines compared", old.len());
+        // The empty-list changes help: the old hub's 26 lines on a clean repository without the
+        // per-row write/open rows (no `s`/`u`/`x`/`l / Enter`), `S` and `U` named alone.
+        let kept = fixed_help(&format!("git {name} empty_changes"));
+        assert!(kept.len() >= 24, "only {} lines compared", kept.len());
         let sim = open(&root, config("git", name), (220, 60));
         let new = help_lines_without_actions(crate::ops::help::sections(&sim.app), lang, false);
-        // On an empty list the per-row keys do not act: `s`, `u` and `x` and the open key
+        // The per-row keys do not act on an empty list: `s`, `u`, `x` and the open key
         // `l / Enter` have no row; `S` and `U` (the all-rows variants) keep theirs, named by the
-        // key that is left, with words that describe only that key (a row's words describe
-        // exactly the keys on it). Rows are `   <keys, 16 wide> <description>`.
+        // key that is left, with words that describe only that key. Rows are
+        // `   <keys, 16 wide> <description>`.
         let row = |keys: &str, rest: &str| format!("   {keys:16} {rest}");
         let (stage_all, unstage_all) = if name == "en" {
             ("stage all", "unstage all")
         } else {
             ("全ステージ", "全アンステージ")
         };
-        let mut dropped = 0;
-        let kept: Vec<String> = old
-            .iter()
-            .filter_map(|line| {
-                let (Some(keys), Some(_)) = (line.get(3..19), line.get(20..)) else {
-                    return Some(line.clone());
-                };
-                match keys.trim_end() {
-                    "s / S" => {
-                        dropped += 1;
-                        Some(row("S", stage_all))
-                    }
-                    "u / U" => {
-                        dropped += 1;
-                        Some(row("U", unstage_all))
-                    }
-                    "x" | "l / Enter" => {
-                        dropped += 1;
-                        None
-                    }
-                    _ => Some(line.clone()),
-                }
-            })
-            .collect();
-        assert_eq!(dropped, 4, "{name}: four per-row write/open rows in the old help");
-        assert_eq!(new, kept, "{name}\nNEW:\n{}\nOLD:\n{}", new.join("\n"), old.join("\n"));
+        assert!(kept.contains(&row("S", stage_all)), "{name}: the S row");
+        assert!(kept.contains(&row("U", unstage_all)), "{name}: the U row");
+        for gone in ["s / S", "u / U", "x", "l / Enter"] {
+            assert!(
+                kept.iter().all(|l| l.get(3..19).map(str::trim_end) != Some(gone)),
+                "{name}: the fixed lines still have a `{gone}` row"
+            );
+        }
+        assert_eq!(new, kept, "{name}\nNEW:\n{}\nFIXED:\n{}", new.join("\n"), kept.join("\n"));
     }
 }

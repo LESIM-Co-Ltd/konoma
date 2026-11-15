@@ -84,7 +84,16 @@ fn expected_controls(sim: &Sim) -> Vec<Action> {
     }
 }
 
-fn check_space_shared(sim: &Sim, old: Option<&Sim>, tool_screen: bool, what: &str) {
+/// The host items as the old hub listed them (label and letter; `*` where the canvas hands a free
+/// letter), frozen from the old hub before it was removed.
+const FIXED_HOST: &str = include_str!("vcs_space_host_fixed.txt");
+
+fn host_entry(item: &MenuItem) -> String {
+    let keyless = CONTROL_KEYS.iter().any(|(c, l)| *c == item.action && l.is_none());
+    format!("{}={}", item.label, if keyless { "*".to_string() } else { format!("{:?}", item.key.code) })
+}
+
+fn check_space_shared(sim: &Sim, check_host: bool, tool_screen: bool, what: &str) {
     let items = space_items(&sim.app);
     let shared: Vec<&MenuItem> = items.iter().filter(|i| is_shared(i.action)).collect();
     assert_eq!(
@@ -130,49 +139,14 @@ fn check_space_shared(sim: &Sim, old: Option<&Sim>, tool_screen: bool, what: &st
             "{what}: {action:?} listed iff it acts"
         );
     }
-    if let Some(old) = old {
-        let old_items = space_items(&old.app);
+    if check_host {
         let host: Vec<&MenuItem> = items.iter().filter(|i| is_host(i.action)).collect();
-        // The canvas's controls are not the old hub's actions (they are the canvas's own items),
-        // so each host item is matched to the old hub's item by its words, and then its letter
-        // must be the same; the shared operations are the same actions, matched by identity.
-        let mut positions = Vec::new();
-        for item in &host {
-            let position = old_items
-                .iter()
-                .position(|o| {
-                    if is_control(item.action) {
-                        o.label == item.label
-                    } else {
-                        o.action == item.action
-                    }
-                })
-                .unwrap_or_else(|| {
-                    panic!("{what}: the old hub has {:?}\n{old_items:?}", item.label)
-                });
-            let counterpart = &old_items[position];
-            assert_eq!(item.label, counterpart.label, "{what}: {:?} words", item.action);
-            // The screen cycle has no key of its own to list under: the menu hands it a free
-            // letter, and which letters are free depends on the other items (the old hub's `a`
-            // and `b` were its log and branch jumps, which the canvas does not list). Every other
-            // item keeps the letter it had.
-            let keyless = CONTROL_KEYS
-                .iter()
-                .any(|(c, letter)| *c == item.action && letter.is_none());
-            if !keyless {
-                assert_eq!(
-                    item.key, counterpart.key,
-                    "{what}: {:?} letter\nnew={items:?}\nold={old_items:?}",
-                    item.label
-                );
-            }
-            positions.push(position);
-        }
-        // The old hub's order of the host's items (tool, search, screens, back, then the rest).
-        assert!(
-            positions.windows(2).all(|w| w[0] < w[1]),
-            "{what}: the old hub's order {positions:?}\nnew={host:?}\nold={old_items:?}"
-        );
+        let new_line: String = host.iter().map(|i| host_entry(i)).collect::<Vec<_>>().join(";");
+        let want = FIXED_HOST
+            .lines()
+            .find_map(|l| l.strip_prefix(what)?.strip_prefix('\t'))
+            .unwrap_or_else(|| panic!("{what}: no fixed host items"));
+        assert_eq!(new_line, want, "{what}: the host items as the old hub listed them");
     }
 }
 
@@ -209,21 +183,18 @@ fn vcs_port_project_space_shared_operations() {
             std::fs::write(root.join("dirty.txt"), "x\n").unwrap();
         }
         for lang in ["en", "ja"] {
-            let mut old = Sim::with_config_sized(root, config(id, lang), 160, 20);
-            old.open_legacy_hub();
             let mut sim = open(root, config(id, lang), (160, 20));
             for name in walk_names(is_jj) {
                 screen(&mut sim, name);
                 let what = format!("{id} {lang} {name} dirty={dirty}");
-                check_space_shared(&sim, Some(&old), *name == "changes", &what);
+                check_space_shared(&sim, true, *name == "changes", &what);
                 checked += 1;
-                old.tab();
             }
             // The pushed detail: the old hub's detail has no `Space` items of the shared kind
             // beyond the tail, and no tool.
             screen(&mut sim, "log");
             press(&mut sim, KeyCode::Enter);
-            check_space_shared(&sim, None, false, &format!("{id} {lang} detail"));
+            check_space_shared(&sim, false, false, &format!("{id} {lang} detail"));
             checked += 1;
         }
     }

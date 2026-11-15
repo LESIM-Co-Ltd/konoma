@@ -1,5 +1,5 @@
 // Gap-closing literals (U9b1 fix-5b).
-use super::vcs_log::graph::{fixture as graph_fixture, graph_pair, picker_fixture};
+use super::vcs_log::graph::{fixture as graph_fixture, graph_sim, picker_fixture};
 
 /// (lang, worktree-row `s`, copy s/h/t/m/a/d, base set, base cleared, picker HEAD toggle)
 type FlashLiterals = (
@@ -50,37 +50,27 @@ fn vcs_port_graph_flash_texts_are_literal_in_both_languages() {
     ];
     let dir = graph_fixture();
     for (lang, select, copies, set, cleared, _) in literals {
-        let (mut old, mut new) = graph_pair(&dir, lang, "right", (160, 16), 12, false, true);
-        old.key('s');
+        let mut new = graph_sim(&dir, lang, "right", (160, 16), 12, false, true);
         new.key('s');
         drain(&mut new);
-        assert_eq!(old.app.flash.as_deref(), Some(select), "{lang} old s");
         assert_eq!(new.app.flash.as_deref(), Some(select), "{lang} new s");
-        old.key('j');
         new.key('j');
         drain(&mut new);
         for (key, text) in ['s', 'h', 't', 'm', 'a', 'd'].into_iter().zip(copies) {
             clear_test_clipboard();
-            old.key('y');
-            old.key(key);
             new.key('y');
             new.key(key);
             drain(&mut new);
-            assert_eq!(old.app.flash.as_deref(), Some(text), "{lang} old y{key}");
             assert_eq!(new.app.flash.as_deref(), Some(text), "{lang} new y{key}");
         }
         for (key, text) in [('s', Some(set)), ('x', Some(cleared)), ('x', None)] {
-            old.key(key);
             new.key(key);
             drain(&mut new);
-            assert_eq!(old.app.flash.as_deref(), text, "{lang} old {key}");
             assert_eq!(new.app.flash.as_deref(), text, "{lang} new {key}");
         }
         // Detail `s` toggles the diff layout and says so.
-        old.press(KeyCode::Enter, KeyModifiers::NONE);
         new.press(KeyCode::Enter, KeyModifiers::NONE);
         drain(&mut new);
-        old.key('s');
         new.key('s');
         drain(&mut new);
         let side = if lang == "en" {
@@ -88,12 +78,11 @@ fn vcs_port_graph_flash_texts_are_literal_in_both_languages() {
         } else {
             "diff: 横並び"
         };
-        assert_eq!(old.app.flash.as_deref(), Some(side), "{lang} old detail s");
         assert_eq!(new.app.flash.as_deref(), Some(side), "{lang} new detail s");
     }
     let dir = picker_fixture();
     for (lang, _, _, _, _, head) in literals {
-        let (mut old, mut new) = graph_pair(&dir, lang, "right", (160, 16), 12, true, false);
+        let mut new = graph_sim(&dir, lang, "right", (160, 16), 12, true, false);
         // Only the HEAD toggle speaks; every other picker key is silent.
         for (key, speaks) in [
             ('b', false),
@@ -108,11 +97,9 @@ fn vcs_port_graph_flash_texts_are_literal_in_both_languages() {
             ('k', false),
             ('g', false),
         ] {
-            old.key(key);
             new.key(key);
             drain(&mut new);
             let want = speaks.then_some(head);
-            assert_eq!(old.app.flash.as_deref(), want, "{lang} old picker {key}");
             assert_eq!(new.app.flash.as_deref(), want, "{lang} new picker {key}");
         }
     }
