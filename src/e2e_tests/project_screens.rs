@@ -1078,40 +1078,24 @@ fn e2e_project_hint_group_shared_key_is_deduplicated() {
     );
 }
 
+/// The stage / unstage hint groups of a changes screen are the released hub's: the footer shows
+/// `s/S:stage(all)` and `u/U:unstage(all)`, the help `s / S` and `u / U` rows.
 #[cfg(feature = "git")]
 #[test]
 fn e2e_project_hint_groups_match_old_changes_footer_and_help() {
-    use crate::keymap::{Action, Backend, Context, Screen};
     let f = hint_fixture("project_hint_old_changes", &[], false);
-    let dir = sandbox("project_hint_old_hub");
-    seed_repo(&dir);
-    std::fs::write(dir.join("staged.txt"), "staged\n").unwrap();
-    crate::test_support::run_git(&dir, &["add", "staged.txt"]);
-    std::fs::write(dir.join("unstaged.txt"), "unstaged\n").unwrap();
-    let mut cfg = Config::default();
-    cfg.ui.lang = "en".into();
-    let mut old = Sim::with_config_sized(&canon(&dir), cfg, 160, 24);
-    old.app.open_git_view();
-    let ctx = Context::Screen(Backend::Git, Screen::Changes);
-    let old_tokens: Vec<_> = crate::ops::footer::tokens(&old.app, ctx)
-        .into_iter()
-        .filter(|s| s.ends_with(":stage(all)") || s.ends_with(":unstage(all)"))
-        .collect();
-    assert_eq!(old_tokens.len(), 2);
     let new_tokens: Vec<_> = crate::ui::status::hint_tokens(&f.sim.app)
         .into_iter()
         .filter(|s| s.ends_with(":stage(all)") || s.ends_with(":unstage(all)"))
         .collect();
-    assert_eq!(new_tokens, old_tokens);
-    let old_rows: Vec<_> = crate::ops::help::rows_for(&old.app, ctx)
-        .into_iter()
-        .filter(|r| {
-            r.actions.contains(&Action::GitStage) || r.actions.contains(&Action::GitUnstage)
-        })
-        .map(|r| (r.keys_text, r.desc))
-        .collect();
-    assert_eq!(old_rows.len(), 2);
-    assert_eq!(hint_rows(&f), old_rows);
+    assert_eq!(new_tokens, ["s/S:stage(all)", "u/U:unstage(all)"]);
+    assert_eq!(
+        hint_rows(&f),
+        [
+            ("s / S".to_string(), "stage / stage all".to_string()),
+            ("u / U".to_string(), "unstage / unstage all".to_string()),
+        ]
+    );
 }
 
 #[test]

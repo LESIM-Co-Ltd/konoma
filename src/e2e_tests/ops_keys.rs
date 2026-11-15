@@ -111,6 +111,7 @@ fn e2e_git_hub_key_is_not_offered_outside_a_repository() {
     s.dont_see("p:git");
     s.key('p');
     assert!(!s.app.is_git_view());
+    assert!(!s.app.project_active(), "p opens no project screen");
     assert!(
         s.app.flash.as_deref().is_some_and(
             |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::NotAGitRepo))

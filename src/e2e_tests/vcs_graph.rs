@@ -66,16 +66,8 @@ pub(in crate::e2e_tests) fn picker_fixture() -> TmpDir {
     dir
 }
 
-pub(in crate::e2e_tests) fn graph_pair(
-    root: &std::path::Path,
-    lang: &str,
-    align: &str,
-    size: (u16, u16),
-    cap: usize,
-    priority: bool,
-    icons: bool,
-) -> (Sim, Sim) {
-    let (width, height) = size;
+/// The config the graph parity helpers share.
+fn graph_config(lang: &str, align: &str, cap: usize, priority: bool, icons: bool) -> Config {
     let mut cfg = plugin_config("git", "vcs_graph_parity", lang);
     cfg.ui.commit_meta_align = align.into();
     cfg.ui.graph_max_branches = cap;
@@ -106,6 +98,40 @@ pub(in crate::e2e_tests) fn graph_pair(
                 .collect(),
         ),
     );
+    cfg
+}
+
+/// The project side alone, on the Graph screen (Tab twice from Changes).
+pub(in crate::e2e_tests) fn graph_sim(
+    root: &std::path::Path,
+    lang: &str,
+    align: &str,
+    size: (u16, u16),
+    cap: usize,
+    priority: bool,
+    icons: bool,
+) -> Sim {
+    let cfg = graph_config(lang, align, cap, priority, icons);
+    let mut new = project_sim(root, "git", cfg, size.0, size.1);
+    for _ in 0..2 {
+        new.press(KeyCode::Tab, KeyModifiers::NONE);
+        drain(&mut new);
+    }
+    assert_eq!(new.app.project_frame().unwrap().key.screen, "graph");
+    new
+}
+
+pub(in crate::e2e_tests) fn graph_pair(
+    root: &std::path::Path,
+    lang: &str,
+    align: &str,
+    size: (u16, u16),
+    cap: usize,
+    priority: bool,
+    icons: bool,
+) -> (Sim, Sim) {
+    let (width, height) = size;
+    let cfg = graph_config(lang, align, cap, priority, icons);
     let (mut old, mut new) = pair_config(root, "git", cfg, width, height);
     old.app.open_git_graph();
     for _ in 0..2 {
@@ -195,21 +221,59 @@ fn e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy(
     }
 }
 
-/// The picker's top edge (title, `(shown/total)` count, filler) equals the old hub's at every step
-/// of the picker flows: opening, a branch added, every key of the toggle sequence in en and ja
+/// The picker's top edge (title, `(shown/total)` count, filler, project tabs) is the fixed text
+/// from the released appearance at every step of the picker flows: opening, a branch added, every key of the toggle sequence in en and ja
 /// with icons on and off, and the jj pickers (not colocated: empty; colocated: git branches).
 #[test]
 fn vcs_port_picker_title_counts_equal_old_hub_at_every_step() {
     let dir = picker_fixture();
+    const GIT_TABS_EN: &str = " p:Changes  Log  Graph  b:Branches  w:Worktrees ";
+    const GIT_TABS_JA: &str = " p:変更  ログ  グラフ  b:ブランチ  w:ワークツリー ";
+    let git_tabs = |lang: &str| {
+        if lang == "en" {
+            GIT_TABS_EN
+        } else {
+            GIT_TABS_JA
+        }
+    };
+    // jj has bookmarks and no worktrees.
+    let jj_tabs = |lang: &str| {
+        if lang == "en" {
+            " p:Changes  Log  Graph  b:Bookmarks "
+        } else {
+            " p:変更  ログ  グラフ  b:ブックマーク "
+        }
+    };
+    // (shown, total) after opening the panel and after a branch was added, per `icons`. The
+    // fixture directory is shared, so the second pass sees the branch added by the first.
+    const FIRST: [((usize, usize), (usize, usize)); 2] = [((4, 4), (4, 5)), ((5, 5), (5, 6))];
+    // (shown, total) after each key of b x j x a c J K G k g.
+    const SEQUENCE: [(usize, usize); 11] = [
+        (6, 6),
+        (5, 6),
+        (5, 6),
+        (5, 6),
+        (6, 6),
+        (2, 6),
+        (2, 6),
+        (2, 6),
+        (2, 6),
+        (2, 6),
+        (2, 6),
+    ];
     for icons in [false, true] {
-        let (mut old, mut new) = graph_pair(&dir, "en", "right", (160, 16), 12, false, icons);
+        let mut new = graph_sim(&dir, "en", "right", (160, 16), 12, false, icons);
         let mut seen = 0;
-        old.key('b');
         new.key('b');
         drain(&mut new);
-        picker_title_matches(&mut old, &mut new);
+        picker_edge_is(
+            &mut new,
+            "en",
+            FIRST[usize::from(icons)].0,
+            GIT_TABS_EN,
+            "open",
+        );
         seen += 1;
-        old.key('q');
         new.key('q');
         drain(&mut new);
         let repository = git2::Repository::open(&dir).unwrap();
@@ -217,22 +281,32 @@ fn vcs_port_picker_title_counts_equal_old_hub_at_every_step() {
         repository
             .branch(&format!("title-added-{icons}"), &head, false)
             .unwrap();
-        old.key('b');
         new.key('b');
         drain(&mut new);
-        picker_title_matches(&mut old, &mut new);
+        picker_edge_is(
+            &mut new,
+            "en",
+            FIRST[usize::from(icons)].1,
+            GIT_TABS_EN,
+            "added",
+        );
         seen += 1;
         assert_eq!(seen, 2, "icons={icons}");
     }
     for lang in ["en", "ja"] {
         for icons in [false, true] {
-            let (mut old, mut new) = graph_pair(&dir, lang, "right", (160, 16), 12, true, icons);
+            let mut new = graph_sim(&dir, lang, "right", (160, 16), 12, true, icons);
             let mut seen = 0;
             for key in ['b', 'x', 'j', 'x', 'a', 'c', 'J', 'K', 'G', 'k', 'g'] {
-                old.key(key);
                 new.key(key);
                 drain(&mut new);
-                picker_title_matches(&mut old, &mut new);
+                picker_edge_is(
+                    &mut new,
+                    lang,
+                    SEQUENCE[seen],
+                    git_tabs(lang),
+                    &format!("{lang} {key}"),
+                );
                 seen += 1;
             }
             assert_eq!(seen, 11, "{lang} icons={icons}");
@@ -263,16 +337,22 @@ fn vcs_port_picker_title_counts_equal_old_hub_at_every_step() {
         let _preference = Preference::pin("jj");
         for lang in ["en", "ja"] {
             let cfg = plugin_config("jj", "vcs_picker_title_jj", lang);
-            let (mut old, mut new) = pair_config(&jj_dir, "jj", cfg, 160, 16);
-            old.app.open_git_graph();
+            let mut new = project_sim(&jj_dir, "jj", cfg, 160, 16);
             for _ in 0..2 {
                 new.press(KeyCode::Tab, KeyModifiers::NONE);
                 drain(&mut new);
             }
-            old.key('b');
             new.key('b');
             drain(&mut new);
-            picker_title_matches(&mut old, &mut new);
+            // Not colocated: no git branches to pick; colocated: the one git branch.
+            let count = if colocated { (1, 1) } else { (0, 0) };
+            picker_edge_is(
+                &mut new,
+                lang,
+                count,
+                jj_tabs(lang),
+                &format!("jj {lang} colocated={colocated}"),
+            );
         }
     }
 }
@@ -432,6 +512,58 @@ fn picker_hints_match(old: &Sim, new: &Sim) {
 
 /// The picker's top edge equals the old hub's cell for cell (tabs excepted), and the old hub's
 /// edge shows the shown and total counts the old hub's own data gives.
+/// The picker's top edge as a fixed literal: `┌ <title>  (<shown>/<total>) ──…┐`, every cell
+/// unstyled. Pins the released title/count so the test needs no old screen to compare against.
+fn picker_edge_is(new: &mut Sim, lang: &str, count: (usize, usize), tabs: &str, what: &str) {
+    let title = if lang == "en" {
+        "Graph branches"
+    } else {
+        "グラフのブランチ"
+    };
+    let width = new.term.backend().buffer().area.width;
+    let buffer = new
+        .term
+        .draw(|frame| ui::render(frame, &mut new.app))
+        .unwrap()
+        .buffer
+        .clone();
+    let edge = crate::test_support::top_edge::row_text(&buffer, 1, 0..width);
+    let head = format!("┌ {title}  ({}/{}) ", count.0, count.1);
+    let rest = edge
+        .strip_prefix(&head)
+        .unwrap_or_else(|| panic!("{what}: picker edge {edge:?} must start with {head:?}"));
+    let rest = rest
+        .strip_suffix('┐')
+        .unwrap_or_else(|| panic!("{what}: picker edge {edge:?} must end with ┐"));
+    // The title, a rule, then the project tabs (their own styling) before the corner.
+    let rule = rest.chars().take_while(|c| *c == '─').count();
+    assert!(
+        rule > 0,
+        "{what}: picker edge {edge:?} has a rule after the title"
+    );
+    let rest_tabs = &rest[rule * '─'.len_utf8()..];
+    assert_eq!(rest_tabs, tabs, "{what}: picker edge {edge:?} project tabs");
+    let unstyled = u16::try_from(
+        head.chars()
+            .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum::<usize>()
+            + rule,
+    )
+    .unwrap();
+    for x in 0..unstyled {
+        let cell = &buffer[(x, 1)];
+        assert_eq!(
+            (cell.fg, cell.bg, cell.modifier),
+            (
+                ratatui::style::Color::Reset,
+                ratatui::style::Color::Reset,
+                ratatui::style::Modifier::empty()
+            ),
+            "{what}: picker edge cell {x} is unstyled"
+        );
+    }
+}
+
 fn picker_title_matches(old: &mut Sim, new: &mut Sim) {
     let items = old.app.git_graph_picker_items();
     let shown = items.iter().filter(|(_, _, on)| *on).count();
@@ -667,21 +799,19 @@ fn e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority() {
 }
 
 /// The graph's top edge opens with the label ` Git graph` right after the corner, in both
-/// languages (the words stay English), on the old hub's edge as well as the canvas's.
+/// languages (the words stay English), on the canvas's edge.
 #[test]
 fn vcs_port_git_graph_title_label_is_git_graph_at_the_title_position() {
     use super::vcs_changes::drawn_top_edge;
     let dir = fixture();
     for lang in ["en", "ja"] {
-        let (mut old, mut new) = graph_pair(&dir, lang, "right", (160, 16), 12, false, true);
-        for (side, sim) in [("old", &mut old), ("new", &mut new)] {
-            let edge = drawn_top_edge(sim, 160);
-            assert!(
-                edge.starts_with("┌ Git graph"),
-                "{side} lang={lang}: the label sits at the title position: {edge:?}"
-            );
-            assert!(edge.contains(" Git graph"), "{side} lang={lang}: {edge:?}");
-        }
+        let mut new = graph_sim(&dir, lang, "right", (160, 16), 12, false, true);
+        let edge = drawn_top_edge(&mut new, 160);
+        assert!(
+            edge.starts_with("┌ Git graph"),
+            "lang={lang}: the label sits at the title position: {edge:?}"
+        );
+        assert!(edge.contains(" Git graph"), "lang={lang}: {edge:?}");
     }
 }
 

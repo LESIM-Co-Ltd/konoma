@@ -99,6 +99,30 @@ fn pair(
     pair_config(root, id, cfg, width, height)
 }
 
+/// The project (`p`) side alone: a sim with `cfg`, the VCS plugin registered, and the Changes
+/// screen of the project open. No old hub is opened.
+pub(super) fn project_sim(
+    root: &std::path::Path,
+    id: &str,
+    cfg: Config,
+    width: u16,
+    height: u16,
+) -> Sim {
+    let mut new = Sim::with_config_sized(root, cfg, width, height);
+    assert!(
+        crate::plugins::build_registry(&new.app.cfg.plugin_disabled())
+            .manifest(id)
+            .is_some(),
+        "VCS plugin refused by registry"
+    );
+    new.app.tab.projects.wait_for_result();
+    new.app.poll_projects();
+    new.key('p');
+    drain(&mut new);
+    assert!(new.app.project_active(), "{:?}", new.app.flash);
+    new
+}
+
 pub(super) fn pair_config(
     root: &std::path::Path,
     id: &str,
@@ -113,18 +137,7 @@ pub(super) fn pair_config(
     old.app.open_git_view();
     assert!(old.app.is_git_view());
     old.draw();
-    let mut new = Sim::with_config_sized(root, cfg, width, height);
-    assert!(
-        crate::plugins::build_registry(&new.app.cfg.plugin_disabled())
-            .manifest(id)
-            .is_some(),
-        "VCS plugin refused by registry"
-    );
-    new.app.tab.projects.wait_for_result();
-    new.app.poll_projects();
-    new.key('p');
-    drain(&mut new);
-    assert!(new.app.project_active(), "{:?}", new.app.flash);
+    let new = project_sim(root, id, cfg, width, height);
     (old, new)
 }
 
@@ -336,6 +349,29 @@ pub(super) fn drawn_top_edge(sim: &mut Sim, width: u16) -> String {
     crate::test_support::top_edge::row_text(&buf, 1, 0..width)
 }
 
+/// The project side of [`filtered_pair`] alone.
+fn filtered_new(
+    dir: &std::path::Path,
+    id: &str,
+    lang: &str,
+    icons: bool,
+    query: &str,
+    width: u16,
+) -> Sim {
+    let mut cfg = plugin_config(id, "vcs_changes_titles", lang);
+    cfg.ui.icons = icons;
+    let mut new = project_sim(dir, id, cfg, width, 12);
+    if !query.is_empty() {
+        new.key('/');
+        for c in query.chars() {
+            new.key(c);
+        }
+        new.enter();
+        drain(&mut new);
+    }
+    new
+}
+
 fn filtered_pair(
     dir: &std::path::Path,
     id: &str,
@@ -402,56 +438,34 @@ fn e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_stat
 }
 
 /// The shown count is drawn as `  (n)` right after the filter, and `n` is the number of rows the
-/// filter leaves, worked out from the data (the repository's entries and the query), not assumed:
-/// one matching row draws exactly `(1)`, none draws `(0)`, and no filter draws every row.
+/// filter leaves: the fixture has seven changed files (a-staged, b-unstaged, c-deleted,
+/// d-renamed, e-untracked, f-added, 日本語), so no filter draws `(7)`, `e-un` matches exactly
+/// e-untracked and draws `(1)`, and a miss draws `(0)`.
 #[test]
 fn e2e_vcs_changes_title_filtered_count_is_exactly_the_matching_rows() {
     let dir = git_repo("vcs_changes_title_count", true);
     for lang in ["en", "ja"] {
         for icons in [false, true] {
-            for (query, expected) in [("", None), ("e-un", Some(1usize)), ("zzz-no-hit", Some(0))] {
-                let (mut old, mut new) = filtered_pair(&dir, "git", lang, icons, query, 90);
-                let rows = old
-                    .app
-                    .git_view_entries()
-                    .iter()
-                    .filter(|entry| {
-                        entry
-                            .path
-                            .to_string_lossy()
-                            .to_lowercase()
-                            .contains(&query.to_lowercase())
-                    })
-                    .count();
-                if let Some(expected) = expected {
-                    assert_eq!(
-                        rows, expected,
-                        "the fixture leaves {expected} row(s) for {query:?}"
-                    );
-                } else {
-                    assert!(rows > 1, "no filter shows several rows");
-                }
+            for (query, rows) in [("", 7usize), ("e-un", 1), ("zzz-no-hit", 0)] {
+                let mut new = filtered_new(&dir, "git", lang, icons, query, 90);
                 let want = format!("{}  ({rows})", if query.is_empty() { "" } else { query });
-                for (side, sim) in [("old", &mut old), ("new", &mut new)] {
-                    let edge = drawn_top_edge(sim, 90);
-                    let shown = if query.is_empty() {
-                        want.clone()
-                    } else {
-                        format!("/{want}")
-                    };
-                    assert!(
-                        edge.contains(&shown),
-                        "{side} lang={lang} icons={icons} q={query:?}: want {shown:?} in {edge:?}"
-                    );
-                    // Exactly one count is drawn, and it is not a longer number that merely
-                    // starts with the expected digits.
-                    assert_eq!(edge.matches("  (").count(), 1, "{edge:?}");
-                    assert!(
-                        edge.contains(&format!("({rows}) "))
-                            || edge.contains(&format!("({rows})─")),
-                        "{edge:?}"
-                    );
-                }
+                let edge = drawn_top_edge(&mut new, 90);
+                let shown = if query.is_empty() {
+                    want.clone()
+                } else {
+                    format!("/{want}")
+                };
+                assert!(
+                    edge.contains(&shown),
+                    "lang={lang} icons={icons} q={query:?}: want {shown:?} in {edge:?}"
+                );
+                // Exactly one count is drawn, and it is not a longer number that merely
+                // starts with the expected digits.
+                assert_eq!(edge.matches("  (").count(), 1, "{edge:?}");
+                assert!(
+                    edge.contains(&format!("({rows}) ")) || edge.contains(&format!("({rows})─")),
+                    "{edge:?}"
+                );
             }
         }
     }

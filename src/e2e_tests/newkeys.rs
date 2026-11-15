@@ -489,6 +489,7 @@ fn e2e_p_and_bang_are_not_offered_outside_a_repository() {
         );
         s.key('p');
         assert!(!s.app.is_git_view(), "{name}");
+        assert!(!s.app.project_active(), "{name}: p opens no project screen");
         assert!(flash_is(&s, crate::i18n::Msg::NotAGitRepo), "{name}");
         s.key('!');
         assert!(!s.app.take_launch_git_tool(), "{name}");

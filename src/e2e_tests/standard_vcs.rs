@@ -277,6 +277,9 @@ fn e2e_standard_vcs_colocated_p_shows_the_project_chooser() {
         "jj"
     );
     assert!(!sim.app.is_git_view());
+    // The positive outcome: the chosen project is open on its first screen.
+    assert!(sim.app.project_active(), "the chosen jj project opens");
+    assert_eq!(sim.app.project_frame().unwrap().key.screen, "changes");
 }
 
 #[cfg(feature = "git")]
@@ -309,6 +312,11 @@ fn e2e_standard_vcs_disabling_a_detected_project_blocks_keys_menus_and_a_stale_c
             "disabled cached project must not open on p"
         );
         assert!(!sim.app.is_git_view());
+        assert_eq!(
+            sim.app.flash.as_deref(),
+            Some(tr(Lang::En, Msg::NotAGitRepo)),
+            "disabled cached project: p says there is no repository"
+        );
         assert_not_offered(&sim);
         // A chooser opened before disabling a plugin must recheck the choice at acceptance.
         let project =
@@ -324,6 +332,10 @@ fn e2e_standard_vcs_disabling_a_detected_project_blocks_keys_menus_and_a_stale_c
             "disabled chooser selection must not open"
         );
         assert!(!sim.app.is_git_view());
+        assert!(
+            sim.app.project_dialog.is_none(),
+            "the stale chooser is closed"
+        );
     }
 }
 
@@ -352,6 +364,9 @@ fn e2e_standard_vcs_p_while_detection_is_pending_enters_the_project_or_reports_n
         );
         assert_eq!(sim.app.project_active(), repository);
         assert!(!sim.app.is_git_view());
+        if repository {
+            assert_eq!(sim.app.project_frame().unwrap().key.screen, "changes");
+        }
         if !repository {
             assert_eq!(
                 sim.app.flash.as_deref(),
@@ -391,6 +406,12 @@ fn e2e_standard_vcs_disabled_return_paths_do_not_reopen_project_or_legacy_hub() 
         "disabled project must not reopen from a diff return"
     );
     assert!(!sim.app.is_git_view());
+    assert!(!sim.app.is_git_diff_preview(), "the diff was left");
+    assert_eq!(
+        sim.app.tab.mode,
+        Mode::Tree,
+        "q on the diff returns to the tree, not to a project"
+    );
     sim.app.open_git_view();
     assert!(
         !sim.app.is_git_view(),
