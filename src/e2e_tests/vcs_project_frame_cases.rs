@@ -1,6 +1,6 @@
 // The outer frame of every project list: drawn like the old hub's, the title at the left of the
 // top edge, the screen tabs at its right end (dropped first when the width is short), and no list
-// row fewer than the old hub shows at the same terminal size.
+// row fewer than the old hub showed at the same terminal size.
 
 use crate::test_support::top_edge;
 
@@ -76,27 +76,6 @@ fn edge_repo(id: &str) -> Option<std::path::PathBuf> {
         }
     }
     Some(root)
-}
-
-/// The old hub at the screen.
-fn edge_old(root: &std::path::Path, id: &str, size: (u16, u16), screen: EdgeScreen) -> Sim {
-    let mut cfg = config(id, "en");
-    cfg.plugins.clear();
-    let mut old = Sim::with_config_sized(root, cfg, size.0, size.1);
-    old.open_legacy_hub();
-    match screen {
-        EdgeScreen::Changes => {}
-        EdgeScreen::Log => old.press(KeyCode::Tab, KeyModifiers::NONE),
-        EdgeScreen::Graph => old.app.open_git_graph(),
-        EdgeScreen::Branches => old.key('b'),
-        EdgeScreen::Worktrees => old.key('w'),
-        EdgeScreen::Picker => {
-            old.app.open_git_graph();
-            old.key('b');
-        }
-    }
-    old.draw();
-    old
 }
 
 /// The project canvas at the screen.
@@ -283,22 +262,43 @@ fn vcs_project_frame_jj_lists_draw_the_frame_title_left_and_tabs_right_until_the
     edge_assert_checked("jj", checked, 2, JJ_EDGE_SCREENS.len());
 }
 
-fn edge_same_rows(id: &str, screens: &[EdgeScreen]) -> usize {
+/// The terminal sizes of the row-count check, in the order of the expected counts below.
+const EDGE_ROW_SIZES: [(u16, u16); 3] = [(120, 10), (60, 8), (160, 14)];
+
+/// How many list rows each project screen draws at each of [`EDGE_ROW_SIZES`] (the counts the
+/// released hub drew at the same sizes: the project frame must never show fewer).
+const GIT_EDGE_ROWS: [(EdgeScreen, [usize; 3]); 6] = [
+    (EdgeScreen::Changes, [5, 4, 5]),
+    (EdgeScreen::Log, [6, 4, 9]),
+    (EdgeScreen::Graph, [5, 4, 10]),
+    (EdgeScreen::Branches, [6, 4, 10]),
+    (EdgeScreen::Worktrees, [5, 4, 5]),
+    (EdgeScreen::Picker, [6, 4, 10]),
+];
+
+const JJ_EDGE_ROWS: [(EdgeScreen, [usize; 3]); 4] = [
+    (EdgeScreen::Changes, [6, 4, 8]),
+    (EdgeScreen::Log, [6, 4, 10]),
+    (EdgeScreen::Graph, [6, 4, 10]),
+    (EdgeScreen::Branches, [6, 4, 8]),
+];
+
+fn edge_same_rows<const N: usize>(id: &str, expected: &[(EdgeScreen, [usize; 3]); N]) -> usize {
     let Some(root) = edge_repo(id) else {
         return 0;
     };
     let mut checked = 0;
-    for screen in screens {
-        for size in [(120, 10), (60, 8), (160, 14)] {
+    for (screen, rows) in expected {
+        for (size, want) in EDGE_ROW_SIZES.iter().zip(rows) {
             checked += 1;
             let label = format!("{id} {screen:?} at {size:?}");
-            let mut old = edge_old(&root, id, size, *screen);
-            let old_buf = edge_buffer(&mut old);
-            let mut new = edge_new(&root, id, "en", size, *screen);
+            let mut new = edge_new(&root, id, "en", *size, *screen);
             let new_buf = edge_buffer(&mut new);
-            let (old_rows, new_rows) = (edge_drawn_rows(&old_buf), edge_drawn_rows(&new_buf));
-            assert!(old_rows >= 3, "{label}: the old hub shows rows ({old_rows})");
-            assert_eq!(new_rows, old_rows, "{label}: list rows drawn, new vs old hub");
+            assert_eq!(
+                edge_drawn_rows(&new_buf),
+                *want,
+                "{label}: list rows drawn, project vs the hub's count"
+            );
         }
     }
     checked
@@ -309,7 +309,7 @@ fn vcs_project_frame_git_lists_show_as_many_rows_as_the_old_hub() {
     if isolated("vcs_project_frame_git_lists_show_as_many_rows_as_the_old_hub") {
         return;
     }
-    let checked = edge_same_rows("git", &GIT_EDGE_SCREENS);
+    let checked = edge_same_rows("git", &GIT_EDGE_ROWS);
     edge_assert_checked("git", checked, 3, GIT_EDGE_SCREENS.len());
 }
 
@@ -318,6 +318,6 @@ fn vcs_project_frame_jj_lists_show_as_many_rows_as_the_old_hub() {
     if isolated("vcs_project_frame_jj_lists_show_as_many_rows_as_the_old_hub") {
         return;
     }
-    let checked = edge_same_rows("jj", &JJ_EDGE_SCREENS);
+    let checked = edge_same_rows("jj", &JJ_EDGE_ROWS);
     edge_assert_checked("jj", checked, 3, JJ_EDGE_SCREENS.len());
 }

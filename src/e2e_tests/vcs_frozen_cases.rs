@@ -539,6 +539,9 @@ stale_tests! {
     e2e_vcs_frozen_stale_graph_cells => "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
     e2e_vcs_frozen_stale_graph_base_reload_detail => "e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub",
     e2e_vcs_frozen_stale_graph_jj_cells => "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+    e2e_vcs_frozen_stale_changes_title_matrix => "e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states",
+    e2e_vcs_frozen_stale_changes_title_unborn => "e2e_vcs_changes_title_without_a_branch_matches_hub",
+    e2e_vcs_frozen_stale_changes_title_words => "e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin",
 }
 
 // The recipes below point the process-wide `HOME` at their fixture (`set_home`), so each runs in
@@ -578,6 +581,21 @@ fn e2e_vcs_frozen_replay_changes_paths() {
 #[test]
 fn e2e_vcs_frozen_replay_changes_git() {
     replay("e2e_vcs_changes_git_body_cell_parity_with_staged_unstaged_rename_delete_cjk_and_empty");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_changes_title_matrix() {
+    replay("e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_changes_title_unborn() {
+    replay("e2e_vcs_changes_title_without_a_branch_matches_hub");
+}
+
+#[test]
+fn e2e_vcs_frozen_replay_changes_title_words() {
+    replay("e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin");
 }
 
 #[test]

@@ -10,6 +10,8 @@ use super::{stable_root, Ctx, Recipe};
 mod graph;
 #[path = "vcs_frozen_recipes_log.rs"]
 mod log;
+#[path = "vcs_frozen_recipes_titles.rs"]
+mod titles;
 #[path = "vcs_frozen_recipes_worktrees.rs"]
 mod worktrees;
 
@@ -178,6 +180,27 @@ pub(super) const RECIPES: &[Recipe] = &[
         // languages x widths x paths x (title + diff + 3 keys + back)
         min_cases: 2 * 2 * 2 * (1 + 1 + 3 + 1),
         run: worktrees::diff,
+    },
+    Recipe {
+        name: "e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states",
+        jj: false,
+        // states x icons x languages x queries x (title + corner + body)
+        min_cases: 2 * 2 * 2 * 4 * 3,
+        run: titles::matrix,
+    },
+    Recipe {
+        name: "e2e_vcs_changes_title_without_a_branch_matches_hub",
+        jj: false,
+        // icons x (title + body)
+        min_cases: 2 * 3,
+        run: titles::unborn,
+    },
+    Recipe {
+        name: "e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin",
+        jj: false,
+        // icons x languages x (changes + log) x (title + corner + body)
+        min_cases: 2 * 2 * 2 * 3,
+        run: titles::words,
     },
 ];
 

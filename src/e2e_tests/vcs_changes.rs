@@ -349,7 +349,7 @@ pub(super) fn drawn_top_edge(sim: &mut Sim, width: u16) -> String {
     crate::test_support::top_edge::row_text(&buf, 1, 0..width)
 }
 
-/// The project side of [`filtered_pair`] alone.
+/// A sim on the Changes screen of the project, optionally with a filter applied.
 fn filtered_new(
     dir: &std::path::Path,
     id: &str,
@@ -372,32 +372,9 @@ fn filtered_new(
     new
 }
 
-fn filtered_pair(
-    dir: &std::path::Path,
-    id: &str,
-    lang: &str,
-    icons: bool,
-    query: &str,
-    width: u16,
-) -> (Sim, Sim) {
-    let mut cfg = plugin_config(id, "vcs_changes_titles", lang);
-    cfg.ui.icons = icons;
-    let (mut old, mut new) = pair_config(dir, id, cfg, width, 12);
-    if !query.is_empty() {
-        for sim in [&mut old, &mut new] {
-            sim.key('/');
-            for c in query.chars() {
-                sim.key(c);
-            }
-            sim.enter();
-        }
-        drain(&mut new);
-    }
-    (old, new)
-}
-
-/// Each matrix cell: the top edge (title, filter, shown count) is the old hub's cell for cell,
-/// and the words are the ones the old hub spoke (English in both languages).
+/// Each matrix cell: the title words, the marker and the filter are drawn on the top edge. The
+/// edge and the body of every cell, cell for cell, are the frozen frames of the recipe
+/// `e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states`.
 #[test]
 fn e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states() {
     use crate::test_support::run_git;
@@ -410,8 +387,8 @@ fn e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_stat
         for icons in [false, true] {
             for lang in ["en", "ja"] {
                 for query in ["", "txt", "a-", "zzz-no-hit"] {
-                    let (mut old, mut new) = filtered_pair(&dir, "git", lang, icons, query, 90);
-                    let (want, got) = (drawn_top_edge(&mut old, 90), drawn_top_edge(&mut new, 90));
+                    let mut new = filtered_new(&dir, "git", lang, icons, query, 90);
+                    let got = drawn_top_edge(&mut new, 90);
                     let marker = if icons { "\u{2387}" } else { "br:" };
                     assert!(
                         got.starts_with("┌ Git "),
@@ -419,16 +396,12 @@ fn e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_stat
                     );
                     if state == "branch" {
                         assert!(got.starts_with(&format!("┌ Git {marker} ")), "{got:?}");
+                    } else {
+                        assert!(got.starts_with(&format!("┌ Git {marker} HEAD")), "{got:?}");
                     }
                     if !query.is_empty() {
-                        assert!(want.contains(query), "old edge shows the filter: {want:?}");
                         assert!(got.contains(query), "new edge shows the filter: {got:?}");
                     }
-                    let differences = compare_body(&mut old, &mut new, 90, 12);
-                    assert!(
-                        differences.is_empty(),
-                        "state={state} icons={icons} lang={lang} q={query}: {differences:?}\n{want:?}\n{got:?}"
-                    );
                     checked += 1;
                 }
             }
@@ -471,38 +444,39 @@ fn e2e_vcs_changes_title_filtered_count_is_exactly_the_matching_rows() {
     }
 }
 
-/// A repository with no commit yet has no branch to name; the title is the bare word.
+/// A repository with no commit yet names its unborn branch; the title edge and the body are the
+/// frozen frames of the recipe `e2e_vcs_changes_title_without_a_branch_matches_hub`.
 #[test]
 fn e2e_vcs_changes_title_without_a_branch_matches_hub() {
     let dir = sandbox("vcs_changes_title_unborn");
     crate::test_support::init_git_repo(&dir);
     std::fs::write(dir.join("new.txt"), "x\n").unwrap();
     let dir = dir.into_canonical().unwrap();
-    for icons in [false, true] {
-        let (mut old, mut new) = filtered_pair(&dir, "git", "en", icons, "", 60);
-        let differences = compare_body(&mut old, &mut new, 60, 10);
-        assert!(differences.is_empty(), "icons={icons}: {differences:?}");
+    for (icons, marker) in [(false, "br:"), (true, "\u{2387}")] {
+        let mut new = filtered_new(&dir, "git", "en", icons, "", 60);
+        let edge = drawn_top_edge(&mut new, 60);
+        assert!(edge.starts_with(&format!("┌ Git {marker} ")), "{edge:?}");
+        assert!(edge.contains("  (1) "), "{edge:?}");
     }
 }
 
+/// The Changes and Log titles carry the marker; their cells are the frozen frames of the recipe
+/// `e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin`.
 #[test]
 fn e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin() {
     let dir = git_repo("vcs_changes_title_words", true);
     for (icons, marker) in [(false, "br:"), (true, "\u{2387}")] {
         for lang in ["en", "ja"] {
-            let (mut old, mut new) = filtered_pair(&dir, "git", lang, icons, "", 80);
+            let mut new = filtered_new(&dir, "git", lang, icons, "", 80);
             let edge = drawn_top_edge(&mut new, 80);
             assert!(edge.starts_with(&format!("┌ Git {marker} ")), "{edge:?}");
             new.press(KeyCode::Tab, KeyModifiers::NONE);
-            old.press(KeyCode::Tab, KeyModifiers::NONE);
             drain(&mut new);
             let edge = drawn_top_edge(&mut new, 80);
             assert!(
                 edge.starts_with(&format!("┌ Git log {marker} ")),
                 "{edge:?}"
             );
-            let differences = compare_body(&mut old, &mut new, 80, 12);
-            assert!(differences.is_empty(), "{differences:?}");
         }
     }
 }
