@@ -6,8 +6,6 @@
 pub mod archive;
 pub mod code;
 pub mod command;
-#[cfg(test)]
-pub mod gitdiff;
 pub mod image;
 #[cfg(test)]
 pub mod kitty;

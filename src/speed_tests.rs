@@ -803,7 +803,7 @@ fn diff_body(n: usize, marker: &str) -> String {
 // GUARDS: (1) `file_diff` + diff-line colorization (stacked/side-by-side) stay roughly linear in the
 // diff size, and (2) opening + rendering every git view (hub / log / graph / branches / a large
 // diff) stays within a generous, deterministic ceiling. Covers git.rs (statuses / file_diff / log /
-// graph / branches) + preview/gitdiff.rs + ui/git.rs + the diff render in ui/preview.rs. Converted
+// graph / branches) + konoma-widgets' gitdiff + the diff render in ui/preview.rs. Converted
 // from wall-clock bounds to **deterministic allocation** checks — (1) an allocation-scaling ratio
 // (same technique as the markdown/highlight guards above: doubling the changed lines should roughly
 // double the allocation, not quadruple it), (2) a generous absolute allocation ceiling (bytes
@@ -845,11 +845,11 @@ fn git_file_diff_and_colorization_scale_linearly_with_the_diff_size() {
         crate::mem_tests::allocated_by(|| {
             let dl = crate::git::file_diff(&root, &root.join("big.txt"));
             assert!(!dl.is_empty(), "the diff is read");
-            let lines = crate::preview::gitdiff::diff_lines(&dl, "txt", "TwoDark", 90);
+            let lines = konoma_widgets::gitdiff::diff_lines(&dl, "txt", "TwoDark", 90);
             assert!(!lines.is_empty(), "stacked diff lines are produced");
-            let _maxh = crate::preview::gitdiff::side_by_side_max_hscroll(&dl, 90);
+            let _maxh = konoma_widgets::gitdiff::side_by_side_max_hscroll(&dl, 90);
             let sbs =
-                crate::preview::gitdiff::diff_lines_side_by_side(&dl, "txt", "TwoDark", 90, 40);
+                konoma_widgets::gitdiff::diff_lines_side_by_side(&dl, "txt", "TwoDark", 90, 40);
             assert!(!sbs.is_empty(), "side-by-side diff lines are produced");
         })
     };

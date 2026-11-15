@@ -652,7 +652,7 @@ fn e2e_n_steps_through_the_changed_blocks_of_a_document() {
 #[cfg(feature = "git")]
 fn diff_starts(s: &mut Sim) -> Vec<usize> {
     let lines = s.app.git_diff_lines();
-    crate::preview::gitdiff::change_block_starts(&lines)
+    konoma_widgets::gitdiff::change_block_starts(&lines)
 }
 
 #[cfg(feature = "git")]
@@ -720,10 +720,10 @@ fn e2e_n_in_a_split_diff_lands_on_the_block_rows() {
     s.key('s'); // unified -> split
     assert!(s.app.diff_is_split(88));
     let diff = s.app.git_diff_lines();
-    let starts = crate::preview::gitdiff::change_block_starts(&diff);
+    let starts = konoma_widgets::gitdiff::change_block_starts(&diff);
     s.key('n');
     s.key('n');
-    let want = crate::preview::gitdiff::scroll_row_of_line(&diff, starts[1], true);
+    let want = konoma_widgets::gitdiff::scroll_row_of_line(&diff, starts[1], true);
     assert_eq!(s.app.tab.preview_scroll as usize, want);
 }
 

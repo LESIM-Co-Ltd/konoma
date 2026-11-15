@@ -265,7 +265,7 @@ fn e2e_project_diff_scroll_keeps_top_line_and_last_page_full() {
 
 #[test]
 fn e2e_project_diff_highlighter_reuses_unchanged_window_and_bounds_vertical_scroll() {
-    use crate::preview::gitdiff::highlight_calls_for_test;
+    use konoma_widgets::gitdiff::highlight_calls_for_test;
     let mut f = ScrollFixture::new("project_diff_cache", Screen::Diff);
     let before = highlight_calls_for_test();
     f.body();
@@ -285,7 +285,7 @@ fn e2e_project_diff_highlighter_reuses_unchanged_window_and_bounds_vertical_scro
 
 #[test]
 fn e2e_project_diff_large_draw_highlights_only_window_and_stacked_pan_reuses_it() {
-    use crate::preview::gitdiff::highlight_calls_for_test;
+    use konoma_widgets::gitdiff::highlight_calls_for_test;
     let mut f = ScrollFixture::new("project_large_diff_window", Screen::Lines);
     let before = highlight_calls_for_test();
     f.press(KeyCode::Char('c'));

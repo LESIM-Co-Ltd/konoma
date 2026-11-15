@@ -18,7 +18,7 @@ use std::time::Duration;
 #[test]
 fn project_diff_window_cells_match_full_render_at_headers_and_inside_change_blocks() {
     use crate::git::{DiffLine, DiffLineKind};
-    use crate::preview::gitdiff::{diff_lines, diff_lines_side_by_side};
+    use konoma_widgets::gitdiff::{diff_lines, diff_lines_side_by_side};
     use ratatui::{
         backend::TestBackend,
         layout::Rect,

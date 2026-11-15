@@ -1,3 +1,20 @@
+/// Source files that were deleted whole: they must stay absent and hold none of their old tests.
+/// Any other listed file must exist, so a mistyped path fails instead of passing silently.
+pub(crate) const DELETED_OLD_TEST_FILES: &[&str] = &["src/ui/git.rs"];
+
+/// The text of an old-test file, or empty for a file listed as deleted (which must not exist).
+fn old_test_source(root: &Path, file: &str) -> String {
+    if DELETED_OLD_TEST_FILES.contains(&file) {
+        assert!(
+            !root.join(file).exists(),
+            "file listed as deleted exists again: {file}"
+        );
+        return String::new();
+    }
+    std::fs::read_to_string(root.join(file))
+        .unwrap_or_else(|e| panic!("cannot read old-test file {file}: {e}"))
+}
+
 // Old tests of the removed VCS hub, kept as data: each is deleted from its file, and every one
 // is named by `port_map()` rows that point at its replacements.
 const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
@@ -342,8 +359,7 @@ fn vcs_port_inventory_old_tests_are_gone_and_every_one_is_mapped() {
     let table = port_map();
     let mut total = 0;
     for (file, tests) in IN_SCOPE_OLD_TESTS {
-        // A whole file that was deleted (the old renderers) holds none of its old tests.
-        let source = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+        let source = old_test_source(root, file);
         let functions = names(&source);
         for name in *tests {
             // The old test drove the removed hub: it must be deleted, not renamed away.

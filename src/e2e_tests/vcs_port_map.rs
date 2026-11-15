@@ -3745,8 +3745,7 @@ fn every_ported_assertion_names_an_existing_new_test() {
         old_names.insert(*old);
     }
     for (file, tests) in OLD_TESTS {
-        // A whole file that was deleted (the old renderers) holds none of its old tests.
-        let source = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+        let source = old_test_source(root, file);
         let functions = names(&source);
         for test in *tests {
             assert!(

@@ -9276,9 +9276,9 @@ fn e2e_gitdiff_unified_render_highlights_only_the_visible_rows() {
     // `s.select`/`s.key('d')` above already triggered draws while the highlight counter was
     // running (it's already been counting since Sim::new's very first draw) — reset it and take
     // exactly one more render pass to measure, mirroring the unit tests in gitdiff.rs.
-    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    konoma_widgets::gitdiff::reset_highlight_calls_for_test();
     s.draw();
-    let calls = crate::preview::gitdiff::highlight_calls_for_test();
+    let calls = konoma_widgets::gitdiff::highlight_calls_for_test();
     let vh = s.app.tab.preview_viewport as usize;
     assert!(vh > 0, "diff プレビューの高さが描画で設定されているはず");
     assert!(
@@ -9290,9 +9290,9 @@ fn e2e_gitdiff_unified_render_highlights_only_the_visible_rows() {
     // Scrolling must not break the windowing: after `G` (to the very end), the count must stay in
     // the same order of magnitude, not jump toward `total_rows`.
     s.key('G');
-    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    konoma_widgets::gitdiff::reset_highlight_calls_for_test();
     s.draw();
-    let calls_at_bottom = crate::preview::gitdiff::highlight_calls_for_test();
+    let calls_at_bottom = konoma_widgets::gitdiff::highlight_calls_for_test();
     assert!(
         calls_at_bottom > 0 && calls_at_bottom <= vh * 3,
         "末尾(G)へスクロールしても画面オーダーのはず(全{total_rows}行中{calls_at_bottom}回)"
@@ -9316,7 +9316,7 @@ fn e2e_gitdiff_side_by_side_render_highlights_only_the_visible_rows() {
 
     let diff = s.app.git_diff_lines();
     let ext = s.app.current_preview_ext().to_string();
-    let total_rows = crate::preview::gitdiff::side_by_side_row_count(&diff, &ext);
+    let total_rows = konoma_widgets::gitdiff::side_by_side_row_count(&diff, &ext);
     assert!(
         total_rows > 1000,
         "side-by-side の行数も画面よりずっと大きいはず(実際 {total_rows})"
@@ -9324,9 +9324,9 @@ fn e2e_gitdiff_side_by_side_render_highlights_only_the_visible_rows() {
 
     // Each side-by-side row can highlight up to two halves (old + new) — same 2x headroom the
     // unit tests in gitdiff.rs use.
-    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    konoma_widgets::gitdiff::reset_highlight_calls_for_test();
     s.draw();
-    let calls = crate::preview::gitdiff::highlight_calls_for_test();
+    let calls = konoma_widgets::gitdiff::highlight_calls_for_test();
     let vh = s.app.tab.preview_viewport as usize;
     assert!(vh > 0);
     assert!(
@@ -9336,9 +9336,9 @@ fn e2e_gitdiff_side_by_side_render_highlights_only_the_visible_rows() {
 
     // Scrolling in side-by-side layout must not break the windowing either.
     s.key('G');
-    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    konoma_widgets::gitdiff::reset_highlight_calls_for_test();
     s.draw();
-    let calls_at_bottom = crate::preview::gitdiff::highlight_calls_for_test();
+    let calls_at_bottom = konoma_widgets::gitdiff::highlight_calls_for_test();
     assert!(
         calls_at_bottom > 0 && calls_at_bottom <= vh * 6,
         "side-by-side で末尾(G)へスクロールしても画面オーダーのはず(全{total_rows}行中{calls_at_bottom}回)"
