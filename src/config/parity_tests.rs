@@ -125,21 +125,6 @@ fn vcs_host_quick_scan_of_qualified_git_calls_and_function_imports() {
             let source = std::fs::read_to_string(&path).unwrap();
             let production = source.split("\nmod tests {").next().unwrap();
             for function in vcs_quick_git_scan(production) {
-                // These are the host's local renderers, not repository operations.
-                if path.ends_with("ui/mod.rs")
-                    && [
-                        "render_detail",
-                        "render_graph_picker",
-                        "render_graph",
-                        "render_log",
-                        "render_branches",
-                        "render_worktrees",
-                        "render_changes",
-                    ]
-                    .contains(&function.as_str())
-                {
-                    continue;
-                }
                 violations.push(format!(
                     "{}: git::{function}",
                     path.strip_prefix(env!("CARGO_MANIFEST_DIR"))

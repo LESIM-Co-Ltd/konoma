@@ -38,9 +38,6 @@ fn os_lang() -> Lang {
 /// Keys for display strings. The actual strings live in the per-language tables en()/jp().
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Msg {
-    GitNoBranchesItem,
-    /// Worktree list's empty-state row (shown when a filter narrows the list to zero rows).
-    GitNoWorktreesItem,
     /// `?` help section title for the worktree list.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitWorktreesLabel,
@@ -76,8 +73,6 @@ pub enum Msg {
     NewWorktree,
     /// Flash on a successful `n` (prefixed to the created worktree's path).
     CreatedWorktree,
-    GitNoChangesItem,
-    GitNoCommitsItem,
     BmTitle,
     DlgConfirmTitle,
     DlgDropTitle,
@@ -269,7 +264,6 @@ pub enum Msg {
     GraphClearBaseHelp,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphBranchesHelp,
-    GraphLegendHidden,
     GraphPickerTitle,
     GraphPickerHeadLocked,
     HelpJumpTab,
@@ -1194,8 +1188,6 @@ pub enum Msg {
 fn en(msg: Msg) -> &'static str {
     use Msg::*;
     match msg {
-        GitNoBranchesItem => "  (no branches)",
-        GitNoWorktreesItem => "  (no worktrees)",
         GitWorktreesLabel => "Git worktrees (w)",
         NoWorktrees => "no worktrees",
         WorktreeIsBare => "bare repository — it has no checkout",
@@ -1209,8 +1201,6 @@ fn en(msg: Msg) -> &'static str {
         WorktreeCreateHelp => "new worktree (new or existing branch)",
         NewWorktree => "New worktree: branch name",
         CreatedWorktree => "Created worktree",
-        GitNoChangesItem => "  (no changes)",
-        GitNoCommitsItem => "  (no commits)",
         BmTitle => " Bookmarks ",
         DlgConfirmTitle => " Confirm ",
         DlgDropTitle => " Drop ",
@@ -1390,7 +1380,6 @@ fn en(msg: Msg) -> &'static str {
         GraphSetBaseHelp => "pin the selected commit's branch as the base (leftmost lane)",
         GraphClearBaseHelp => "clear the pinned base",
         GraphBranchesHelp => "choose which branches are shown",
-        GraphLegendHidden => "hidden",
         GraphPickerTitle => "Graph branches",
         GraphPickerHeadLocked => "current branch (HEAD) is always shown",
         HelpJumpTab => "jump to tab by number",
@@ -2054,8 +2043,6 @@ fn en(msg: Msg) -> &'static str {
 fn jp(msg: Msg) -> &'static str {
     use Msg::*;
     match msg {
-        GitNoBranchesItem => "  (ブランチなし)",
-        GitNoWorktreesItem => "  (ワークツリーなし)",
         GitWorktreesLabel => "Git ワークツリー (w)",
         NoWorktrees => "ワークツリーなし",
         WorktreeIsBare => "ベアリポジトリ（実体のチェックアウトがありません）",
@@ -2069,8 +2056,6 @@ fn jp(msg: Msg) -> &'static str {
         WorktreeCreateHelp => "新規ワークツリー（新規/既存ブランチ）",
         NewWorktree => "新規ワークツリーのブランチ名",
         CreatedWorktree => "ワークツリー作成",
-        GitNoChangesItem => "  (変更なし)",
-        GitNoCommitsItem => "  (コミットなし)",
         BmTitle => " ブックマーク ",
         DlgConfirmTitle => " 確認 ",
         DlgDropTitle => " ドロップ ",
@@ -2248,7 +2233,6 @@ fn jp(msg: Msg) -> &'static str {
         GraphSetBaseHelp => "選択コミットの枝を基準(左端レーン)に固定",
         GraphClearBaseHelp => "基準の固定を解除",
         GraphBranchesHelp => "表示するブランチを選ぶ",
-        GraphLegendHidden => "非表示",
         GraphPickerTitle => "グラフのブランチ",
         GraphPickerHeadLocked => "現在ブランチ(HEAD)は常に表示されます",
         HelpJumpTab => "番号でタブへジャンプ",
@@ -3248,10 +3232,10 @@ mod tests {
 
     #[test]
     fn tr_selects_language() {
-        assert_eq!(tr(Lang::En, Msg::GitNoBranchesItem), "  (no branches)");
-        assert_eq!(tr(Lang::Jp, Msg::GitNoBranchesItem), "  (ブランチなし)");
-        assert_eq!(tr(Lang::En, Msg::GitNoChangesItem), "  (no changes)");
-        assert_eq!(tr(Lang::Jp, Msg::GitNoChangesItem), "  (変更なし)");
+        assert_eq!(tr(Lang::En, Msg::NoWorktrees), "no worktrees");
+        assert_eq!(tr(Lang::Jp, Msg::NoWorktrees), "ワークツリーなし");
+        assert_eq!(tr(Lang::En, Msg::BmTitle), " Bookmarks ");
+        assert_eq!(tr(Lang::Jp, Msg::BmTitle), " ブックマーク ");
     }
 
     /// Both tag formats a real OS lookup can hand us must resolve the same: `sys-locale` returns
@@ -3304,8 +3288,6 @@ mod tests {
     // Since the language gate is only allow(dead_code) (not a removed cfg), every variant can be
     // referenced under both features.
     const ALL_MSGS: &[Msg] = &[
-        Msg::GitNoBranchesItem,
-        Msg::GitNoWorktreesItem,
         Msg::GitWorktreesLabel,
         Msg::NoWorktrees,
         Msg::WorktreeIsBare,
@@ -3319,8 +3301,6 @@ mod tests {
         Msg::WorktreeCreateHelp,
         Msg::NewWorktree,
         Msg::CreatedWorktree,
-        Msg::GitNoChangesItem,
-        Msg::GitNoCommitsItem,
         Msg::BmTitle,
         Msg::DlgConfirmTitle,
         Msg::DlgDropTitle,
@@ -3498,7 +3478,6 @@ mod tests {
         Msg::GraphSetBaseHelp,
         Msg::GraphClearBaseHelp,
         Msg::GraphBranchesHelp,
-        Msg::GraphLegendHidden,
         Msg::GraphPickerTitle,
         Msg::GraphPickerHeadLocked,
         Msg::HelpJumpTab,

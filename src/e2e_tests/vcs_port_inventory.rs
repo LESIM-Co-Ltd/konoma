@@ -342,7 +342,8 @@ fn vcs_port_inventory_old_tests_are_gone_and_every_one_is_mapped() {
     let table = port_map();
     let mut total = 0;
     for (file, tests) in IN_SCOPE_OLD_TESTS {
-        let source = std::fs::read_to_string(root.join(file)).unwrap();
+        // A whole file that was deleted (the old renderers) holds none of its old tests.
+        let source = std::fs::read_to_string(root.join(file)).unwrap_or_default();
         let functions = names(&source);
         for name in *tests {
             // The old test drove the removed hub: it must be deleted, not renamed away.

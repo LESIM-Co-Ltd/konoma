@@ -963,11 +963,6 @@ impl App {
         self.tab.git_log.as_deref().unwrap_or(&[])
     }
 
-    /// Cursor position in the git log.
-    pub fn git_log_sel(&self) -> usize {
-        self.tab.git_log_sel
-    }
-
     /// Move the git log cursor by delta (clamped to range).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_log_move(&mut self, delta: i32) {
@@ -1030,10 +1025,6 @@ impl App {
                 .cloned()
                 .collect()
         }
-    }
-    /// Cursor position in the display list.
-    pub fn git_branch_sel(&self) -> usize {
-        self.tab.git_branch_sel
     }
     /// Move the display-list cursor by delta (clamped to range).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -1139,6 +1130,7 @@ impl App {
         self.list_filtering(ListId::Branches)
     }
     /// The current filter query (for the footer prompt).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_branch_query(&self) -> &str {
         self.list_filter_query(ListId::Branches)
     }
@@ -1229,10 +1221,6 @@ impl App {
                 .cloned()
                 .collect()
         }
-    }
-    /// Cursor position in the display list.
-    pub fn git_worktree_sel(&self) -> usize {
-        self.tab.git_worktree_sel
     }
     /// Move the display-list cursor by delta (clamped to range).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -1555,6 +1543,7 @@ impl App {
         self.list_filtering(ListId::Worktrees)
     }
     /// The current filter query (for the footer prompt).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_worktree_query(&self) -> &str {
         self.list_filter_query(ListId::Worktrees)
     }
@@ -1907,21 +1896,6 @@ impl App {
         self.list_filter_changed(ListId::Graph);
     }
 
-    /// The base label (for the title `base: …`). None if unset.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub fn git_graph_base_label(&self) -> Option<&str> {
-        self.tab.git_graph_base_label.as_deref()
-    }
-
-    /// The graph legend (branch ⇄ lane color, for rendering). HEAD first, base next, then in order of appearance.
-    pub fn git_graph_legend(&self) -> &[crate::git::LegendEntry] {
-        &self.tab.git_graph_legend
-    }
-    /// The number of branches hidden by the cap/toggle (for the legend's `(+K hidden)`).
-    pub fn git_graph_hidden_count(&self) -> usize {
-        self.tab.git_graph_hidden
-    }
-
     // --- Branch display panel (`b`: visibility toggle + priority-order reordering for many branches) ----------
     /// Open the panel. Initializes the tentative selection from the current visible set and moves the cursor to the top (= head of priority order).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -1942,10 +1916,6 @@ impl App {
     /// Whether the panel is showing.
     pub fn is_git_graph_picker(&self) -> bool {
         self.git_graph_picker
-    }
-    /// Cursor position in the panel.
-    pub fn git_graph_picker_sel(&self) -> usize {
-        self.git_graph_picker_sel
     }
     /// The current branch (HEAD) name.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -2087,14 +2057,6 @@ impl App {
             || self.is_git_detail()
             || self.is_git_diff_preview()
     }
-    /// All rows of the graph (for rendering). Empty when hidden.
-    pub fn git_graph_rows(&self) -> &[crate::git::GraphRow] {
-        self.tab.git_graph.as_deref().unwrap_or(&[])
-    }
-    /// Cursor position in the graph (row index).
-    pub fn git_graph_sel(&self) -> usize {
-        self.tab.git_graph_sel
-    }
     /// Move the cursor by delta over **commit rows only** (skipping connector rows).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_graph_move(&mut self, delta: i32) {
@@ -2191,24 +2153,9 @@ impl App {
             Some(crate::i18n::tr(self.lang, crate::i18n::Msg::UncommittedChanges).into());
     }
 
-    /// Title override for the detail (git_detail) (e.g. when opening all working-tree changes from the git view).
-    pub fn git_detail_title(&self) -> Option<&str> {
-        self.tab.git_detail_title.as_deref()
-    }
-
     /// Whether the commit detail is showing (for render/key branching).
     pub fn is_git_detail(&self) -> bool {
         self.tab.git_detail.is_some()
-    }
-
-    /// Meta info shown at the top of the commit detail (full message, etc.). None for worktree diffs, etc.
-    pub fn git_detail_meta(&self) -> Option<&crate::git::CommitMeta> {
-        self.tab.git_detail_meta.as_ref()
-    }
-
-    /// Returns the DiffLine sequence of the commit detail (for rendering). Empty when hidden.
-    pub fn git_detail_lines(&self) -> &[crate::git::DiffLine] {
-        self.tab.git_detail.as_deref().unwrap_or(&[])
     }
 
     /// Vertically scroll the commit detail. The bottom is clamped by the viewport the renderer updates.
@@ -2234,11 +2181,6 @@ impl App {
         }
     }
 
-    /// The commit detail's current scroll amount (for rendering).
-    pub fn git_detail_scroll(&self) -> u16 {
-        self.tab.git_detail_scroll
-    }
-
     /// Horizontally scroll the commit detail (h/l). The end is clamped by the renderer's longest line width.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_detail_hscroll_by(&mut self, delta: i32) {
@@ -2253,24 +2195,6 @@ impl App {
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_detail_hscroll_end(&mut self) {
         self.tab.git_detail_hscroll = u16::MAX;
-    }
-    /// The commit detail's current horizontal scroll amount (for rendering).
-    pub fn git_detail_hscroll(&self) -> u16 {
-        self.tab.git_detail_hscroll
-    }
-    /// Clamp the horizontal scroll amount to the maximum `max` (the renderer calls this with the longest line width).
-    pub fn clamp_git_detail_hscroll(&mut self, max: u16) {
-        self.tab.git_detail_hscroll = self.tab.git_detail_hscroll.min(max);
-    }
-
-    /// The renderer records the number of displayable rows (for g/G and scroll clamping).
-    pub fn set_git_detail_viewport(&mut self, h: u16) {
-        self.tab.git_detail_viewport = h;
-    }
-
-    /// The renderer records the total line count (commit message + diff) (for clamping the scroll limit).
-    pub fn set_git_detail_total(&mut self, n: usize) {
-        self.tab.git_detail_total = n;
     }
 
     /// Close the commit detail (q/Esc). Returns to the log behind it.

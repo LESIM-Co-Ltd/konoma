@@ -6,7 +6,6 @@
 pub mod bookmarks;
 pub mod canvas;
 pub mod dialog;
-pub mod git;
 pub mod help;
 pub mod icons;
 pub mod info;
@@ -111,24 +110,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     idx += 1;
     let bottom = areas[idx];
 
-    // Git-related full-screen views go into content in place of tree/preview.
-    // Priority: commit detail > git log > changes hub (detail overlays on top of log).
+    // The content area holds the VCS project screens when one is open, else the tree or preview.
     if app.project_active() {
         project::render(frame, app, content);
-    } else if app.is_git_detail() {
-        git::render_detail(frame, app, content);
-    } else if app.is_git_graph_picker() {
-        git::render_graph_picker(frame, app, content);
-    } else if app.is_git_graph() {
-        git::render_graph(frame, app, content);
-    } else if app.is_git_log() {
-        git::render_log(frame, app, content);
-    } else if app.is_git_branches() {
-        git::render_branches(frame, app, content);
-    } else if app.is_git_worktrees() {
-        git::render_worktrees(frame, app, content);
-    } else if app.is_git_view() {
-        git::render_changes(frame, app, content);
     } else {
         match app.tab.mode {
             Mode::Tree => tree::render(frame, app, content),
