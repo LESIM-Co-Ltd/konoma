@@ -871,7 +871,7 @@ fn vcs_hub_e2e_project_views_and_large_diff_render_is_bounded() {
     let mut steps = Vec::new();
     let p1 = crate::mem_tests::allocated_by(|| {
         for _ in 0..3 {
-            w.press(KeyCode::Tab); // log, graph, branches
+            w.press_settled(KeyCode::Tab); // log, graph, branches
             steps.push(w.sim.app.project_frame().unwrap().key.screen.clone());
         }
     });
@@ -880,13 +880,13 @@ fn vcs_hub_e2e_project_views_and_large_diff_render_is_bounded() {
             if w.screen_is("changes") {
                 break;
             }
-            w.press(KeyCode::Tab);
+            w.press_settled(KeyCode::Tab);
         }
         steps.push(w.sim.app.project_frame().unwrap().key.screen.clone());
-        w.select("big.txt");
+        w.select_settled("big.txt");
     });
     let p3 = crate::mem_tests::allocated_by(|| {
-        w.press(KeyCode::Enter);
+        w.press_settled(KeyCode::Enter);
     });
     let views_alloc = p1 + p2 + p3;
     // Every screen really was opened and drawn (a skipped screen would make the bound vacuous), and
@@ -895,10 +895,14 @@ fn vcs_hub_e2e_project_views_and_large_diff_render_is_bounded() {
     assert_eq!(w.sim.app.tab.mode, Mode::Preview);
     w.sim.see("big.txt");
     w.sim.see("LINE changed 0");
-    // The count is deterministic (same thread, same data; measured: three Tab presses 11.0MB, the
-    // lap back to changes plus the cursor move 17.1MB, the diff open 7.4MB, 35.5MB in all). The old
-    // hub's bound was 60MB (1.7x); each part is held to 1.25x of what it costs, so doing the same
-    // work twice on any part (every frame drawn twice included) is over its ceiling.
+    // The count is deterministic (same thread, same data; measured: three Tab presses 10.1MB, the
+    // lap back to changes plus the cursor move 16.6MB, the diff open 7.4MB, 34.2MB in all). It is
+    // deterministic because every press uses `press_settled`: the worker result lands before the
+    // first frame after the key is drawn. With a plain `drain` the stale screen is drawn too when
+    // the worker loses the race to the first poll (one extra frame, about 3MB for the diff open,
+    // which tripped p3's ceiling about 1 run in 80). The old hub's bound was 60MB (1.7x); each part
+    // is held to about 1.3x of what it costs, so doing the same work twice on any part (every frame
+    // drawn twice included) is over its ceiling.
     assert!(
         p1 < 14_000_000,
         "three screen switches allocated too much on the UI thread: {p1}"

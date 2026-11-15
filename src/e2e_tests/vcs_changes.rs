@@ -51,6 +51,22 @@ pub(super) fn drain(sim: &mut Sim) {
     panic!("VCS project did not become idle");
 }
 
+/// Like `drain`, but every worker result that is already on its way lands BEFORE the first frame is
+/// drawn: the stale screen is never drawn while a job is pending. A plain `drain` draws or skips
+/// that stale frame depending on whether the worker beat the first `poll_projects` (both orders
+/// are legitimate), which makes an allocation count differ by one whole frame between runs. Use
+/// this wherever a byte count is asserted. The wait is on the job's reply channel, never a sleep.
+pub(super) fn drain_settled(sim: &mut Sim) {
+    for _ in 0..32 {
+        sim.app.poll_projects();
+        if !sim.app.project_jobs_pending() {
+            break;
+        }
+        sim.app.wait_project_job();
+    }
+    drain(sim);
+}
+
 pub(super) fn plugin_config(id: &str, name: &str, lang: &str) -> Config {
     let plugin: Arc<dyn Plugin> = match id {
         "git" => Arc::new(konoma_vcs::Git),

@@ -2,7 +2,8 @@
 //! host's `p` entry only. Nothing here opens the old hub or compares against it: rows, flashes,
 //! confirmation texts, repository bytes and call counts are written out as values.
 use super::vcs_changes::{
-    drain, seed_jj_write_repository, seed_write_repository, write_git_output, write_jj_state,
+    drain, drain_settled, seed_jj_write_repository, seed_write_repository, write_git_output,
+    write_jj_state,
 };
 use super::*;
 use crate::app::project_screens::{ProjectContent, ProjectDialog, ProjectPrompt};
@@ -102,6 +103,29 @@ impl W {
     fn press(&mut self, code: KeyCode) {
         self.sim.press(code, KeyModifiers::NONE);
         drain(&mut self.sim);
+    }
+
+    /// `press` for a measured section: the action's result lands before the first frame that follows
+    /// the key is drawn, so the count does not depend on whether the worker beat the first poll.
+    fn press_settled(&mut self, code: KeyCode) {
+        self.sim.press(code, KeyModifiers::NONE);
+        drain_settled(&mut self.sim);
+    }
+
+    /// `select` for a measured section (see `press_settled`).
+    fn select_settled(&mut self, relative: &str) {
+        self.sim.key('g');
+        drain_settled(&mut self.sim);
+        let want = self.root.join(relative).to_string_lossy().into_owned();
+        let index = self
+            .row_values()
+            .iter()
+            .position(|v| *v == want)
+            .unwrap_or_else(|| panic!("missing {relative}; rows={:?}", self.rows()));
+        for _ in 0..index {
+            self.sim.key('j');
+            drain_settled(&mut self.sim);
+        }
     }
 
     /// Press without drawing in between, then land the action's job, so a refresh counter is read
