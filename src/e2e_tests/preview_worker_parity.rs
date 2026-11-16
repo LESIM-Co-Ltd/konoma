@@ -951,3 +951,576 @@ fn a_waiting_landing_is_not_run_on_another_tab_of_the_same_file() {
         s.see("Paragraph 19");
     }
 }
+
+// --- One restore for a covered preview (a project screen) and a left tab (a tab switch).
+
+/// Opens `file` and reads it down to `line` (1-based), settled and drawn.
+#[track_caller]
+fn open_at_line(root: &std::path::Path, file: &str, line: usize, worker: bool) -> Sim {
+    let mut s = road(root, cfg_en(), worker);
+    s.select(file);
+    s.enter();
+    s.settle_inline_images("opened", std::time::Duration::from_secs(60));
+    s.app.paste_jump_to(&root.join(file), Some(line));
+    s.settle_inline_images("jumped", std::time::Duration::from_secs(60));
+    s.draw();
+    s
+}
+
+/// A file that got shorter while covered: the caret stops on the last line that exists (a file of
+/// 10 lines ending with a newline has lines 0..=9), and `Y` names line 10, never a line past the
+/// end. The tab switch puts a tab back through the same function, so it gives the same.
+#[test]
+fn a_file_shortened_while_covered_puts_the_caret_on_its_last_line() {
+    let dir = sandbox("pwp_return_shortened");
+    let root = canon(&dir);
+    for worker in [false, true] {
+        for via_tab in [false, true] {
+            std::fs::write(dir.join("long.txt"), numbered_lines(400)).unwrap();
+            let mut s = open_at_line(&root, "long.txt", 200, worker);
+            assert_eq!(s.app.preview_caret_line(), 199);
+            let what = format!("worker={worker} via_tab={via_tab}");
+            if via_tab {
+                s.key('t');
+                std::fs::write(dir.join("long.txt"), numbered_lines(10)).unwrap();
+                s.key('[');
+            } else {
+                s.app.cover_with_project_screen_for_test();
+                std::fs::write(dir.join("long.txt"), numbered_lines(10)).unwrap();
+                s.app.leave_project_screens_for_test();
+            }
+            s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+            s.draw();
+            s.see("line number 10");
+            assert_eq!(s.app.preview_caret_line(), 9, "{what}");
+            assert_eq!(
+                s.app.selection_ref_string().as_deref(),
+                Some("@long.txt#L10"),
+                "{what}"
+            );
+        }
+    }
+}
+
+/// An unchanged windowed file (same length and mtime) keeps its byte offset: it is put back
+/// without finding the line again (no scan of the file from its start). The seam is the
+/// `LINE_SEEKS` counter in `seek_windowed_line`, the only place that finds a line in a file.
+#[test]
+fn an_unchanged_windowed_file_is_put_back_without_a_line_seek() {
+    let dir = sandbox("pwp_return_unchanged");
+    std::fs::write(dir.join("long.txt"), numbered_lines(400)).unwrap();
+    let root = canon(&dir);
+    for worker in [false, true] {
+        for via_tab in [false, true] {
+            let mut s = open_at_line(&root, "long.txt", 200, worker);
+            let top = s.app.preview_top_line();
+            let body = |s: &Sim| {
+                let r = rows(s);
+                r[2..r.len() - 2].to_vec() // not the tab bar (two tabs after `t`) nor the footer
+            };
+            let before = body(&s);
+            let what = format!("worker={worker} via_tab={via_tab}");
+            crate::app::LINE_SEEKS.with(|c| c.set(0));
+            if via_tab {
+                s.key('t');
+                s.key('[');
+            } else {
+                s.app.cover_with_project_screen_for_test();
+                s.app.leave_project_screens_for_test();
+            }
+            s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+            s.draw();
+            assert_eq!(s.app.preview_top_line(), top, "{what}");
+            assert_eq!(s.app.preview_caret_line(), 199, "{what}");
+            assert_eq!(body(&s), before, "{what}: drawn differently");
+            assert_eq!(
+                crate::app::LINE_SEEKS.with(|c| c.get()),
+                0,
+                "{what}: the unchanged file was scanned for its line again"
+            );
+        }
+    }
+}
+
+/// A document that fails inside the reload of the tab that is put back ends the wait of THAT
+/// tab: the line it had waiting is dropped with the failure, and a later successful reload shows
+/// the document from the top (the restore must not bring the landing back).
+#[test]
+fn a_document_failing_in_the_tab_return_drops_that_tabs_waiting_line() {
+    use crate::app::HoldOpens;
+    use crate::plugins::test_plugins::Latch;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = sandbox("pwp_goto_md_tab_failed");
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, long_markdown()).unwrap();
+    let root = canon(&dir);
+    for worker in [false, true] {
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let gate = std::sync::Arc::new(Latch::default());
+        let _hold = HoldOpens::until(&gate);
+        let mut s = road(&root, cfg_en(), worker);
+        s.app.paste_jump_to(&root.join("doc.md"), Some(40));
+        if worker {
+            take_replies_until_document_loading(&mut s);
+        }
+        assert!(
+            s.app.document_text_missing() && s.app.document_error().is_none(),
+            "worker={worker}: the text must still be on its way"
+        );
+        s.key('t'); // this tab is saved with its line waiting
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o000)).unwrap();
+        gate.open();
+        s.key('['); // back: the reload of the restored tab fails
+        s.settle_inline_images("failed", std::time::Duration::from_secs(120));
+        s.draw();
+        assert!(
+            s.app.document_error().is_some(),
+            "worker={worker}: the document must have failed:\n{}",
+            s.screen()
+        );
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o644)).unwrap();
+        s.app.reload_preview();
+        s.settle_inline_images("reloaded", std::time::Duration::from_secs(120));
+        s.draw();
+        s.see("Paragraph 0");
+        s.dont_see("**bold**");
+        s.dont_see("Paragraph 19");
+        assert_eq!(s.app.preview_top_line(), 0, "worker={worker}");
+    }
+}
+
+// --- The corpus: every kind of preview state comes back the same from a project screen and from a tab.
+
+/// Everything a reader sees (the drawn rows but the tab bar and the footer) and everything the keys act on.
+fn reading_state(s: &Sim) -> String {
+    let r = rows(s);
+    let a = &s.app;
+    format!(
+        "{:#?}\nkind={:?} pos={:?} search={:?}/{:?} fence=({}) page={:?} \
+         table={:?}/{:?} raw={} image={:?} ref={:?} picture={:?}",
+        &r[1..r.len() - 1], // not the tab bar, nor the footer (a notice of the jump that is gone)
+        a.tab.preview_kind,
+        a.reading_position_for_test(),
+        a.search_status(),
+        a.preview_search_query(),
+        a.fence_state_for_test(),
+        a.page_indicator(),
+        a.table_cursor(),
+        a.table_scroll(),
+        a.is_md_raw(),
+        a.tab.image_view,
+        a.selection_ref_string(),
+        a.picture_centre_rgb_for_test(),
+    )
+}
+
+fn settled(s: &mut Sim) {
+    s.settle_inline_images("settled", std::time::Duration::from_secs(120));
+    s.draw();
+}
+
+/// One preview state of the corpus: the files, how a reader gets into the state, and what a
+/// reader does next (the keys act on the state that was put back).
+struct Case {
+    name: &'static str,
+    files: fn(&std::path::Path),
+    cfg: fn() -> Config,
+    open: fn(&mut Sim, &std::path::Path),
+    probe: fn(&mut Sim),
+    /// A check that the state really is the one the case claims (not a state that came out empty).
+    sanity: fn(&Sim),
+}
+
+fn plain_cfg() -> Config {
+    cfg_en()
+}
+
+fn fence_markdown() -> String {
+    let mut src = String::from("# Diagram\n\n```mermaid\ngraph LR\n  A --> B\n  B --> C\n```\n\n");
+    for i in 0..60 {
+        src.push_str(&format!("filler paragraph {i}\n\n"));
+    }
+    src
+}
+
+fn open_file(s: &mut Sim, file: &str) {
+    s.select(file);
+    s.enter();
+    settled(s);
+}
+
+fn open_fence(s: &mut Sim) {
+    open_file(s, "fence.md");
+    s.app.md_focus_move(1);
+    s.draw();
+}
+
+fn pdf_files(dir: &std::path::Path) {
+    let pages: Vec<(u32, u32, &[u8])> = vec![
+        (200, 300, b"1 0 0 rg 0 0 200 300 re f"),
+        (200, 300, b"0 0 1 rg 0 0 200 300 re f"),
+        (200, 300, b"0 1 0 rg 0 0 200 300 re f"),
+        (200, 300, b"1 1 0 rg 0 0 200 300 re f"),
+    ];
+    std::fs::write(dir.join("doc.pdf"), konoma_test_support::build_pdf(&pages)).unwrap();
+}
+
+fn corpus() -> Vec<Case> {
+    vec![
+        Case {
+            name: "zoomed and panned mermaid fence",
+            files: |d| std::fs::write(d.join("fence.md"), fence_markdown()).unwrap(),
+            cfg: plain_cfg,
+            open: |s, _| {
+                open_fence(s);
+                s.app.image_zoom_by(4.0);
+                s.key('l');
+                s.key('j');
+                s.draw();
+            },
+            probe: |s| {
+                s.key('l');
+                s.key('l');
+                s.draw();
+            },
+            sanity: |s| {
+                assert!(s.app.fence_zoom_level() > 3.9);
+                assert!(!s.app.fence_state_for_test().contains("center=(0.5, 0.5)"));
+            },
+        },
+        Case {
+            name: "full-screen mermaid fence",
+            files: |d| std::fs::write(d.join("fence.md"), fence_markdown()).unwrap(),
+            cfg: plain_cfg,
+            open: |s, _| {
+                open_fence(s);
+                s.enter();
+                settled(s);
+            },
+            probe: |s| {
+                s.key('q'); // back to the document, where the reader was
+                settled(s);
+            },
+            sanity: |s| {
+                assert!(s.app.is_full_screen_fence_for_test());
+                assert!(!s.app.fence_state_for_test().contains("return=None"));
+            },
+        },
+        Case {
+            name: "confirmed search",
+            files: |d| std::fs::write(d.join("long.txt"), numbered_lines(400)).unwrap(),
+            cfg: plain_cfg,
+            open: |s, _| {
+                open_file(s, "long.txt");
+                s.key('/');
+                s.keys("number 3");
+                s.enter();
+                s.key('n');
+                s.key('n');
+                s.draw();
+            },
+            probe: |s| {
+                s.key('n');
+                s.key('N');
+                s.key('N');
+                s.draw();
+            },
+            sanity: |s| {
+                let (i, n) = s.app.search_status().expect("a search with hits");
+                assert!(n > 5 && i > 1, "{i}/{n}");
+            },
+        },
+        Case {
+            name: "command text read half way",
+            files: |d| std::fs::write(d.join("app.log"), numbered_lines(300)).unwrap(),
+            cfg: || {
+                let mut cfg = cfg_en();
+                cfg.preview.rules.insert(
+                    0,
+                    crate::config::Rule {
+                        glob: Some("*.log".into()),
+                        command: Some("cat {path}".into()),
+                        ..Default::default()
+                    },
+                );
+                cfg
+            },
+            open: |s, root| {
+                open_file(s, "app.log");
+                s.app.paste_jump_to(&root.join("app.log"), Some(150));
+                settled(s);
+            },
+            probe: |s| {
+                s.key('j');
+                s.key('j');
+                s.draw();
+            },
+            sanity: |s| {
+                assert!(s.app.preview_top_line() > 100);
+                assert_eq!(s.app.preview_caret_line(), 149);
+            },
+        },
+        Case {
+            name: "windowed large text",
+            files: |d| std::fs::write(d.join("long.txt"), numbered_lines(400)).unwrap(),
+            cfg: plain_cfg,
+            open: |s, root| {
+                open_file(s, "long.txt");
+                s.app.paste_jump_to(&root.join("long.txt"), Some(250));
+                settled(s);
+                s.key('j');
+                s.key('l');
+            },
+            probe: |s| {
+                s.key('j');
+                s.key('j');
+                s.draw();
+            },
+            sanity: |s| assert_eq!(s.app.preview_caret_line(), 250),
+        },
+        Case {
+            name: "raw markdown",
+            files: |d| std::fs::write(d.join("doc.md"), long_markdown()).unwrap(),
+            cfg: plain_cfg,
+            open: |s, _| {
+                open_file(s, "doc.md");
+                s.key('R');
+                settled(s);
+                for _ in 0..40 {
+                    s.key('j');
+                }
+                s.draw();
+            },
+            probe: |s| {
+                s.key('j');
+                s.key('R'); // back to the rendered view
+                settled(s);
+            },
+            sanity: |s| assert!(s.app.is_md_raw()),
+        },
+        Case {
+            name: "csv cell",
+            files: |d| {
+                let mut csv = String::new();
+                for r in 0..80 {
+                    let row: Vec<String> = (0..30).map(|c| format!("r{r}c{c}")).collect();
+                    csv.push_str(&row.join(","));
+                    csv.push('\n');
+                }
+                std::fs::write(d.join("grid.csv"), csv).unwrap();
+            },
+            cfg: plain_cfg,
+            open: |s, _| {
+                open_file(s, "grid.csv");
+                s.app.table_cursor_move(50, 20);
+                s.draw();
+            },
+            probe: |s| {
+                s.key('j');
+                s.key('l');
+                s.draw();
+            },
+            sanity: |s| assert_eq!(s.app.table_cursor(), (50, 20)),
+        },
+        Case {
+            name: "pdf on page 3",
+            files: pdf_files,
+            cfg: plain_cfg,
+            open: |s, _| {
+                open_file(s, "doc.pdf");
+                s.app.page_turn(1);
+                settled(s);
+                s.app.page_turn(1);
+                settled(s);
+            },
+            probe: |s| {
+                s.app.page_turn(1);
+                settled(s);
+            },
+            sanity: |s| {
+                assert_eq!(s.app.page_indicator(), Some((3, 4)));
+                // The picture drawn is page 3's (green), not the page the indicator might lie about.
+                let (r, g, b) = s
+                    .app
+                    .picture_centre_rgb_for_test()
+                    .unwrap_or_else(|| panic!("no picture:\n{}", s.screen()));
+                assert!(g > 200 && r < 60 && b < 60, "{:?}", (r, g, b));
+            },
+        },
+        Case {
+            name: "zoomed image",
+            files: |d| {
+                std::fs::copy(
+                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples/sample.png"),
+                    d.join("pic.png"),
+                )
+                .unwrap();
+            },
+            cfg: plain_cfg,
+            open: |s, _| {
+                open_file(s, "pic.png");
+                s.app.image_zoom_by(2.0);
+                s.app.tab.image_view.center = (0.3, 0.7);
+                s.draw();
+            },
+            probe: |s| {
+                s.app.image_pan(1.0, 0.0);
+                s.draw();
+            },
+            sanity: |s| assert!(s.app.tab.image_view.zoom > 1.0),
+        },
+    ]
+}
+
+/// A case on one road: the reading state before, after a project screen, and after a tab round
+/// trip, and the state after the next keys in each.
+fn run_case(case: &Case, root: &std::path::Path, worker: bool) {
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Trip {
+        None,
+        ProjectScreen,
+        Tab,
+    }
+    let mut states: Vec<(Trip, String, String)> = Vec::new();
+    for trip in [Trip::None, Trip::ProjectScreen, Trip::Tab] {
+        let mut s = road(root, (case.cfg)(), worker);
+        (case.open)(&mut s, root);
+        settled(&mut s);
+        (case.sanity)(&s);
+        match trip {
+            Trip::None => {}
+            Trip::ProjectScreen => {
+                s.app.cover_with_project_screen_for_test();
+                s.app.leave_project_screens_for_test();
+            }
+            Trip::Tab => {
+                s.key('t');
+                s.key('[');
+            }
+        }
+        settled(&mut s);
+        let back = reading_state(&s);
+        (case.probe)(&mut s);
+        settled(&mut s);
+        states.push((trip, back, reading_state(&s)));
+    }
+    let (_, before, after_keys) = states[0].clone();
+    for (trip, back, keys) in &states[1..] {
+        assert_eq!(
+            back, &before,
+            "{} (worker={worker}): after {trip:?} the preview is not as it was",
+            case.name
+        );
+        assert_eq!(
+            keys, &after_keys,
+            "{} (worker={worker}): after {trip:?} the keys act differently",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn every_kind_of_preview_state_comes_back_the_same_from_a_project_screen_and_a_tab() {
+    let cases = corpus();
+    assert!(cases.len() >= 9, "the corpus shrank");
+    let mut failures = Vec::new();
+    for case in &cases {
+        let dir = sandbox("pwp_corpus");
+        (case.files)(&dir);
+        let root = canon(&dir);
+        for worker in [false, true] {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_case(case, &root, worker)
+            }));
+            if let Err(e) = r {
+                let msg = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                failures.push(msg.chars().take(1500).collect::<String>());
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n=====\n"));
+}
+
+/// The diff's target kind is answered by the worker too: wait for the answer.
+#[cfg(feature = "git")]
+fn wait_diff_target(s: &mut Sim, worker: bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while worker && !s.app.diff_target_resolved_for_test() {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("the diff view was never decided");
+        let res = s
+            .media_rx
+            .as_ref()
+            .expect("with_media")
+            .recv_timeout(left)
+            .expect("the worker answers");
+        s.app.apply_media(res);
+    }
+}
+
+/// A diff opened from the tree is read again from git on the way back (its own path), at the
+/// scroll it had, on both roads.
+#[cfg(feature = "git")]
+#[test]
+fn a_diff_opened_from_the_tree_comes_back_from_a_project_screen_and_a_tab() {
+    let mut body = String::new();
+    for i in 0..120 {
+        body.push_str(&format!("filler line number {i}\n"));
+    }
+    let original = format!("{body}ORIGINAL MARKER\n");
+    let changed = format!("{body}CHANGED MARKER\n");
+    let root = changed_repo("pwp_corpus_diff", "doc.txt", &original, &changed);
+    for worker in [false, true] {
+        let mut states = Vec::new();
+        for trip in 0..3 {
+            let mut s = road(&root, cfg_en(), worker);
+            s.select("doc.txt");
+            s.key('d');
+            wait_diff_target(&mut s, worker);
+            settled(&mut s);
+            assert!(
+                s.app.is_git_diff_preview(),
+                "worker={worker}:\n{}",
+                s.screen()
+            );
+            s.key('j');
+            s.key('j');
+            s.draw();
+            match trip {
+                1 => {
+                    s.app.cover_with_project_screen_for_test();
+                    s.app.leave_project_screens_for_test();
+                }
+                2 => {
+                    s.key('t');
+                    s.key('[');
+                }
+                _ => {}
+            }
+            wait_diff_target(&mut s, worker);
+            settled(&mut s);
+            assert!(
+                s.app.is_git_diff_preview(),
+                "worker={worker} trip={trip}:\n{}",
+                s.screen()
+            );
+            let back = reading_state(&s);
+            s.key('j');
+            settled(&mut s);
+            states.push((back, reading_state(&s)));
+        }
+        assert_eq!(
+            states[1], states[0],
+            "worker={worker}: after a project screen"
+        );
+        assert_eq!(
+            states[2], states[0],
+            "worker={worker}: after a tab round trip"
+        );
+    }
+}

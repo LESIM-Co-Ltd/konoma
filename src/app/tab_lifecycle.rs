@@ -40,7 +40,20 @@ impl App {
     /// while a tab is active its slot is never read (tab_label/tab_root use the live App fields)
     /// and every switch path calls save_active before the slot is needed again.
     fn load_active(&mut self) {
-        let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
+        let t = std::mem::take(&mut self.tabs[self.active_tab]);
+        self.put_tab_back(t);
+    }
+
+    /// Puts a saved tab back as the working state and brings its preview up to date with the
+    /// files as they are now. The one restore both a tab switch (`load_active`) and the return
+    /// from a project screen that covered the preview (`leave_project_screens`) go through, so a
+    /// field the saved tab carries is put back whichever way the tab comes back.
+    pub(super) fn put_tab_back(&mut self, mut t: PerTab) {
+        // `self.tab` still holds the tab that was showing until the bulk restore below, and so
+        // does its pending landing: a text that lands inside this reload (the windowed reader
+        // opening is one) must not run that one, nor any landing on a tab it was not asked for.
+        // The landing this tab holds runs after the restore, in this tab's own context.
+        self.tab.pending = None;
         // preview_path/preview_kind are read below (table-hits check, media block, setup_windowed,
         // load_plugin) before the bulk `self.tab = t` restore at the end of this function, so they
         // are restored early here (mirroring `self.tab.repr = t.repr.clone();` further down).
@@ -191,12 +204,20 @@ impl App {
         // The representation this tab chose (`R`) is asked for when the plugin is opened (put
         // back above, before the windowed reader), as the page is.
         //
-        // `self.tab` still holds the tab that was showing until the bulk restore below, and so
-        // does its pending landing: a document text that lands inside this reload must not run
-        // that one (nor any landing on a tab it was not asked for). The landing this tab holds
-        // runs after the restore, in this tab's own context.
-        self.tab.pending = None;
         self.load_plugin();
+        // A document that failed inside this reload ends the wait of the landing this tab holds
+        // (the pending is not on `self.tab` while the reload runs, so the failure could not drop
+        // it): a later successful read must not land a position asked of the failed one.
+        if self.document_error().is_some()
+            && t.pending.as_ref().is_some_and(|p| {
+                p.kind_known && t.preview_path.as_deref() == Some(p.path.as_path())
+            })
+        {
+            t.pending = None;
+        }
+        // The reader opened on the file as it is now: its stamp, to compare with the one the
+        // position was saved with.
+        let win_stamp_now = self.tab.preview_win_stamp;
         // A source view that landed on the spot wrote its own temp file: keep that one, not the
         // path the saved tab held (the bulk restore below would put the stale one back).
         if self.holds_document() {
@@ -210,6 +231,10 @@ impl App {
             }
         }
         self.tab = t;
+        let saved_stamp = std::mem::replace(&mut self.tab.preview_win_stamp, win_stamp_now);
+        if self.preview_win.is_some() || self.tab.mode == Mode::Preview {
+            self.settle_windowed_position(saved_stamp);
+        }
         // A tab left while its kind was still being decided holds the provisional kind, and its
         // reply was (or will be) dropped by the generation check: ask again, so the landing
         // kept in the tab is applied when the answer comes.

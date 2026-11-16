@@ -1939,32 +1939,13 @@ pub(crate) enum Landing {
         read_context: konoma_plugin::host::project::DiffReadContext,
         follow_scope: bool,
     },
-    /// Put the reading position back (coming back to a preview from a screen that covered it).
-    Restore(ReadingPosition),
-}
-
-/// Where a preview is being read: the whole position, whichever way the kind shows it (the
-/// scroll of a decorated view, the top line and caret of a windowed one, the focused item of a
-/// Markdown view, the cell of a table, the page and zoom of a picture) and the representation the
-/// tab chose (`R`). Saved when something covers the preview, put back by `Landing::Restore`: the
-/// representation and the page before the kind is opened (as the tab-switch path does), the rest
-/// once the kind is known. A windowed text is kept as a **line**, never as a byte of the file as
-/// it was: the file may have changed meanwhile.
-#[derive(Clone, Debug, PartialEq, Default)]
-pub(crate) struct ReadingPosition {
-    scroll: u16,
-    hscroll: u16,
-    top_line: usize,
-    cursor_line: usize,
-    cursor_col: usize,
-    focused_item: Option<usize>,
-    repr: Option<String>,
-    page: u32,
-    image_view: konoma_widgets::image_view::ImageViewState,
-    table_cur_row: usize,
-    table_cur_col: usize,
-    table_top_row: usize,
-    table_left_col: usize,
+    /// Read the windowed text at a **line** (a position put back on a preview whose text was not
+    /// here yet, or whose file is no longer the one the position was saved in).
+    Line {
+        top_line: usize,
+        cursor_line: usize,
+        cursor_col: usize,
+    },
 }
 
 /// What a file preview still waits for. One value, owned by the preview that asked: it is dropped
@@ -2097,6 +2078,9 @@ pub(crate) struct PerTab {
     pending: Option<PendingResolution>,
     // --- Internal scroll state for a windowed (Code/Text/raw md) preview ---
     preview_byte_top: u64,
+    /// Length and mtime of the file the windowed reader was opened on (see `setup_windowed`): a
+    /// position saved with it is a byte offset only while the file still is that file.
+    preview_win_stamp: Option<(u64, Option<std::time::SystemTime>)>,
     preview_top_line: usize,
     /// Text-mode `PreviewKind::Command`'s generated output (the `{out}` artifact / captured
     /// stdout) — the windowed reader opens **this** instead of `preview_path` (see
@@ -2234,6 +2218,7 @@ impl Default for PerTab {
             preview_from_diff: false,
             pending: None,
             preview_byte_top: 0,
+            preview_win_stamp: None,
             preview_top_line: 0,
             command_out: None,
             preview_cursor_line: 0,
@@ -3545,21 +3530,11 @@ impl App {
         landing: Landing,
     ) {
         // A new file starts in the plugin's default representation (the rendered document for
-        // Markdown, Word and slides), unless a position is put back, and this must hold *before* the load: a document that lands
+        // Markdown, Word and slides), and this must hold *before* the load: a document that lands
         // synchronously decides there whether the source view is the one wanted.
-        self.tab.repr = match &landing {
-            // A position put back after a screen that covered the preview: the representation
-            // the tab chose is asked for when the plugin is opened, as on a tab switch.
-            Landing::Restore(pos) => pos.repr.clone(),
-            _ => None,
-        };
+        self.tab.repr = None;
         self.tab.deck_pending_slide = None;
         self.set_preview_kind(Some(kind.clone()));
-        if let Landing::Restore(pos) = &landing {
-            // The page is in place **before** the load request (a PDF rasterizes that page, a
-            // workbook opens that sheet), as `load_active` does.
-            self.tab.page = pos.page.max(1);
-        }
         self.start_media_load(&kind, path);
         self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
         self.load_plugin();
@@ -3567,10 +3542,10 @@ impl App {
     }
 
     /// Does what the opener wanted once the preview can be positioned. A document whose text has
-    /// not arrived cannot (a Markdown line is found in its source, a first change in its text): the
-    /// landing waits as the tab's pending resolution and `land_pending_document` runs it when the
-    /// text lands.
-    fn land_when_ready(&mut self, path: &Path, landing: Landing) {
+    /// not arrived cannot (a Markdown line is found in its source, a first change in its text), nor
+    /// can a text a command or a plugin is still making: the landing waits as the tab's pending
+    /// resolution and `land_pending_document` runs it when the text lands.
+    pub(super) fn land_when_ready(&mut self, path: &Path, landing: Landing) {
         if landing == Landing::None {
             return;
         }
@@ -3579,85 +3554,174 @@ impl App {
             if self.document_error().is_some() {
                 return;
             }
-            self.tab.pending = Some(PendingResolution {
-                path: path.to_path_buf(),
-                landing,
-                kind_known: true,
-            });
+            self.wait_for_text(path, landing);
+            return;
+        }
+        if self.made_text_awaited() {
+            self.wait_for_text(path, landing);
             return;
         }
         self.run_landing(landing);
     }
 
-    /// The position the preview is being read at.
-    pub(super) fn reading_position(&self) -> ReadingPosition {
-        ReadingPosition {
-            scroll: self.tab.preview_scroll,
-            hscroll: self.tab.preview_hscroll,
-            top_line: self.tab.preview_top_line,
-            cursor_line: self.tab.preview_cursor_line,
-            cursor_col: self.tab.preview_cursor_col,
-            focused_item: self.tab.focused_item,
-            repr: self.tab.repr.clone(),
-            page: self.tab.page,
-            image_view: self.tab.image_view,
-            table_cur_row: self.tab.table_cur_row,
-            table_cur_col: self.tab.table_cur_col,
-            table_top_row: self.tab.table_top_row,
-            table_left_col: self.tab.table_left_col,
+    fn wait_for_text(&mut self, path: &Path, landing: Landing) {
+        self.tab.pending = Some(PendingResolution {
+            path: path.to_path_buf(),
+            landing,
+            kind_known: true,
+        });
+    }
+
+    /// A text a delegated command or a made-text plugin is still producing: the reader cannot be
+    /// opened (and a line cannot be found) before it lands. A failure ends the wait.
+    fn made_text_awaited(&self) -> bool {
+        match self.tab.preview_kind {
+            Some(PreviewKind::Command { ref render_as, .. }) => {
+                render_as.as_deref() != Some("image")
+                    && self.tab.command_out.is_none()
+                    && self.command_err.is_none()
+            }
+            _ => {
+                self.text_plugin_is_generated()
+                    && self.windowed_src().is_none()
+                    && self.plugin_failure().is_none()
+            }
         }
     }
 
-    /// Test-only: [`App::reading_position`] for the tests outside `app`.
+    /// Test-only: the zoom and pan of the focused inline diagram and the stash a full-screen
+    /// diagram returns to.
     #[cfg(test)]
-    pub(crate) fn reading_position_for_test(&self) -> ReadingPosition {
-        self.reading_position()
+    pub(crate) fn fence_state_for_test(&self) -> String {
+        format!(
+            "zoom={} center={:?} return={:?}",
+            self.tab.fence_zoom, self.tab.fence_center, self.tab.fence_return
+        )
     }
 
-    /// Puts back the part of the reading position that needs the kind opened (the
-    /// representation and the page were put back before it was).
-    fn restore_reading_position(&mut self, pos: ReadingPosition) {
-        self.tab.preview_scroll = pos.scroll;
-        self.tab.preview_hscroll = pos.hscroll;
-        self.tab.focused_item = pos.focused_item;
-        self.tab.image_view = pos.image_view;
-        self.tab.table_cur_row = pos.table_cur_row;
-        self.tab.table_cur_col = pos.table_cur_col;
-        self.tab.table_top_row = pos.table_top_row;
-        self.tab.table_left_col = pos.table_left_col;
-        // A table that is still loading keeps the cursor until it lands (and clamps then).
-        self.clamp_table_cursor();
-        // A windowed text is read at a line: the byte of that line is found in the file as it is
-        // now (the same seek the line jump makes), never copied from the file as it was.
-        if let Some(win) = self.preview_win.as_mut() {
-            if let Ok((off, reached)) = win.advance(0, pos.top_line) {
-                self.tab.preview_byte_top = off;
-                self.tab.preview_top_line = reached;
-                // A file that got shorter stops at its last line: the caret is not below it.
-                self.tab.preview_cursor_line = if reached < pos.top_line {
-                    reached
-                } else {
-                    pos.cursor_line
-                };
-                self.tab.preview_cursor_col = pos.cursor_col;
+    /// Test-only: the colour of the middle pixel of the picture the preview holds (the page a PDF
+    /// picture was made for shows in its colour).
+    #[cfg(test)]
+    pub(crate) fn picture_centre_rgb_for_test(&self) -> Option<(u8, u8, u8)> {
+        use image::GenericImageView;
+        let img = self.image_src.as_ref()?;
+        let (w, h) = img.dimensions();
+        let p = img.get_pixel(w / 2, h / 2);
+        Some((p[0], p[1], p[2]))
+    }
+
+    /// Test-only: whether the preview is a full-screen diagram.
+    #[cfg(test)]
+    pub(crate) fn is_full_screen_fence_for_test(&self) -> bool {
+        matches!(self.tab.preview_kind, Some(PreviewKind::MermaidFence(_)))
+    }
+
+    /// Test-only: where the preview is being read, as a value the tests compare.
+    #[cfg(test)]
+    pub(crate) fn reading_position_for_test(
+        &self,
+    ) -> (u16, u16, usize, usize, usize, Option<usize>, u32) {
+        (
+            self.tab.preview_scroll,
+            self.tab.preview_hscroll,
+            self.tab.preview_top_line,
+            self.tab.preview_cursor_line,
+            self.tab.preview_cursor_col,
+            self.tab.focused_item,
+            self.tab.page,
+        )
+    }
+
+    /// Reads the windowed text at a line: the byte of that line is found in the file as it is now
+    /// (the same seek the line jump makes), never copied from the file as it was. A file that got
+    /// shorter stops at its last line: the top is the last page and the caret is on the last line
+    /// that exists.
+    fn seek_windowed_line(&mut self, top_line: usize, cursor_line: usize, cursor_col: usize) {
+        #[cfg(test)]
+        LINE_SEEKS.with(|c| c.set(c.get() + 1));
+        if self.preview_win.is_none() {
+            return;
+        }
+        let Some(total) = self.win_total() else {
+            return;
+        };
+        if total == 0 {
+            self.tab.preview_byte_top = 0;
+            self.tab.preview_top_line = 0;
+            self.tab.preview_cursor_line = 0;
+            self.tab.preview_cursor_col = 0;
+            return;
+        }
+        if top_line >= total {
+            // `reached` counts newlines: the lines are 0..total, and the top shown is the last page.
+            self.preview_to_bottom();
+            self.tab.preview_cursor_col = cursor_col;
+            return;
+        }
+        let Some(win) = self.preview_win.as_mut() else {
+            return;
+        };
+        if let Ok((off, reached)) = win.advance(0, top_line) {
+            self.tab.preview_byte_top = off;
+            self.tab.preview_top_line = reached;
+            self.tab.preview_cursor_line = cursor_line.min(total - 1);
+            self.tab.preview_cursor_col = cursor_col;
+        }
+    }
+
+    /// Settles a windowed position after the tab's saved state was put back. The reader was
+    /// opened afresh by `setup_windowed`: when the file is the one the position was saved in (same
+    /// length and mtime) the saved byte offset stands (no scan); otherwise the position is read at
+    /// the same line. A text that is not here yet gets the line as a landing for when it arrives.
+    fn settle_windowed_position(&mut self, saved: Option<(u64, Option<std::time::SystemTime>)>) {
+        let (top_line, cursor_line, cursor_col) = (
+            self.tab.preview_top_line,
+            self.tab.preview_cursor_line,
+            self.tab.preview_cursor_col,
+        );
+        if self.preview_win.is_some() {
+            let unchanged = saved.is_some() && saved == self.tab.preview_win_stamp;
+            if !unchanged {
+                self.seek_windowed_line(top_line, cursor_line, cursor_col);
+            }
+            return;
+        }
+        if self.tab.pending.is_none()
+            && (top_line > 0 || cursor_line > 0)
+            && (self.made_text_awaited()
+                || (self.document_text_missing() && self.document_error().is_none()))
+        {
+            if let Some(path) = self.tab.preview_path.clone() {
+                self.wait_for_text(
+                    &path,
+                    Landing::Line {
+                        top_line,
+                        cursor_line,
+                        cursor_col,
+                    },
+                );
             }
         }
     }
 
     fn run_landing(&mut self, landing: Landing) {
         match landing {
-            Landing::Restore(pos) => self.restore_reading_position(pos),
             Landing::None => {}
             Landing::GotoLine(line) => self.preview_goto_line(line),
             Landing::FirstChange => self.follow_scroll_to_first_change(),
             #[cfg(feature = "git")]
             Landing::DiffPreview { .. } => self.follow_scroll_to_first_change(),
+            Landing::Line {
+                top_line,
+                cursor_line,
+                cursor_col,
+            } => self.seek_windowed_line(top_line, cursor_line, cursor_col),
         }
     }
 
     /// The document's text has landed: runs the landing that waited for it.
     pub(super) fn land_pending_document(&mut self) {
-        if self.document_text_missing() {
+        if self.document_text_missing() || self.made_text_awaited() {
             return;
         }
         let waiting = self.tab.pending.as_ref().is_some_and(|p| {
@@ -3863,7 +3927,10 @@ impl App {
             return;
         };
         if let Ok(w) = crate::preview::window::FileWindow::open(&path) {
+            self.tab.preview_win_stamp = Some((w.len(), file_mtime(&path)));
             self.preview_win = Some(w);
+            // A landing that waited for this text (a command's output, a made text) runs now.
+            self.land_pending_document();
         }
     }
 
@@ -5608,6 +5675,12 @@ mod cache_root_tests {
             "cache_root が常に Some を返すので md_remote_cache_path も常に Some のはず"
         );
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: how many times a windowed position was found by line (a scan of the file).
+    pub(crate) static LINE_SEEKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The modification time of `path`, or None if it cannot be read. Used by the FS-driven media auto-reload guard.

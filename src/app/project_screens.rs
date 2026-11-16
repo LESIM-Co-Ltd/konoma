@@ -326,7 +326,9 @@ pub(crate) struct ProjectNavigation {
     origin_mode: Mode,
     origin_path: Option<PathBuf>,
     origin_kind: Option<PreviewKind>,
-    origin_position: super::ReadingPosition,
+    /// The tab as it was when the screens covered it, saved the way a tab switch saves it. Leaving
+    /// puts it back through the restore a tab switch uses (`App::put_tab_back`).
+    origin_tab: Option<Box<PerTab>>,
 }
 
 #[cfg(test)]
@@ -352,7 +354,7 @@ mod presentation_frame_tests {
             origin_mode: Mode::Tree,
             origin_path: None,
             origin_kind: None,
-            origin_position: Default::default(),
+            origin_tab: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         for help in [false, true] {
@@ -1149,17 +1151,31 @@ impl App {
     }
 
     /// A navigation that remembers what it covers: the mode, the file and kind of the preview and
-    /// the whole position it was being read at.
+    /// the whole tab as a tab switch would save it. A screen opened over screens that are already
+    /// open keeps what the first of them covered.
     fn navigation_over_here(
-        &self,
+        &mut self,
         state: ProjectScreenState<ProjectInvocation>,
     ) -> ProjectNavigation {
+        if let Some(nav) = &self.tab.project_navigation {
+            return ProjectNavigation {
+                state,
+                origin_mode: nav.origin_mode,
+                origin_path: nav.origin_path.clone(),
+                origin_kind: nav.origin_kind.clone(),
+                origin_tab: nav.origin_tab.clone(),
+            };
+        }
+        // The media this tab shows is about to be put back from the stash, as on a tab switch.
+        self.stash_media_cache();
+        let mut snapshot = self.snapshot_tab();
+        snapshot.project_navigation = None;
         ProjectNavigation {
             state,
             origin_mode: self.tab.mode,
             origin_path: self.tab.preview_path.clone(),
             origin_kind: self.tab.preview_kind.clone(),
-            origin_position: self.reading_position(),
+            origin_tab: Some(Box::new(snapshot)),
         }
     }
 
@@ -1215,6 +1231,12 @@ impl App {
         match (nav.origin_mode, nav.origin_path) {
             (Mode::Preview, Some(path)) => {
                 if matches!(nav.origin_kind, Some(PreviewKind::GitDiff(_))) {
+                    // A diff is read from git again (it is the project's to refresh), at the
+                    // scroll it was left at.
+                    let (scroll, hscroll) = nav
+                        .origin_tab
+                        .as_ref()
+                        .map_or((0, 0), |t| (t.preview_scroll, t.preview_hscroll));
                     self.open_git_diff_with(
                         &path,
                         super::git_view::DiffOpen {
@@ -1222,20 +1244,28 @@ impl App {
                             ..Default::default()
                         },
                     );
-                    self.tab.preview_scroll = nav.origin_position.scroll;
-                    self.tab.preview_hscroll = nav.origin_position.hscroll;
-                } else {
-                    // The project overlays this Preview. Re-entering the file resets the
-                    // diff-only state, which belongs to the retained origin on this return.
-                    let from_diff = self.tab.preview_from_diff;
-                    let read_context = self.tab.diff_read_context;
-                    // The whole reading position goes back once the kind is known (with the
-                    // preview worker that is when its reply lands, not now).
-                    self.enter_preview_landing(&path, Landing::Restore(nav.origin_position));
-                    self.tab.preview_from_diff = from_diff;
-                    if from_diff {
-                        self.tab.diff_read_context = read_context;
+                    self.tab.preview_scroll = scroll;
+                    self.tab.preview_hscroll = hscroll;
+                } else if let Some(origin) = nav.origin_tab {
+                    // The preview comes back as a tab does: the whole saved state, brought up to
+                    // date with the files as they are now (`put_tab_back`). What the screens
+                    // changed meanwhile and must survive is kept from the working state: the
+                    // diff-only state a project diff preview owns, and the size of the area now
+                    // drawn.
+                    let mut origin = *origin;
+                    origin.preview_from_diff = self.tab.preview_from_diff;
+                    origin.diff_read_context = if self.tab.preview_from_diff {
+                        self.tab.diff_read_context
+                    } else {
+                        Default::default()
+                    };
+                    if self.tab.preview_cols != 0 {
+                        origin.preview_cols = self.tab.preview_cols;
+                        origin.preview_viewport = self.tab.preview_viewport;
                     }
+                    self.put_tab_back(origin);
+                } else {
+                    self.enter_preview(&path);
                 }
             }
             _ => self.back_to_tree(),
