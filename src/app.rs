@@ -96,6 +96,8 @@ mod plugin_host;
 pub(crate) use plugin_host::HoldOpens;
 #[cfg(test)]
 pub(crate) use plugin_host::InlineAnswers;
+#[cfg(test)]
+pub(crate) use plugin_host::LongFirstFrame;
 mod plugin_input;
 mod plugin_outcomes;
 mod preview_visual;
@@ -1942,18 +1944,27 @@ pub(crate) enum Landing {
 }
 
 /// Where a preview is being read: the whole position, whichever way the kind shows it (the
-/// scroll of a decorated view, the line-head byte, top line and caret of a windowed one, the
-/// focused item of a Markdown view). Saved when something covers the preview, put back by
-/// `Landing::Restore` once the kind is known.
+/// scroll of a decorated view, the top line and caret of a windowed one, the focused item of a
+/// Markdown view, the cell of a table, the page and zoom of a picture) and the representation the
+/// tab chose (`R`). Saved when something covers the preview, put back by `Landing::Restore`: the
+/// representation and the page before the kind is opened (as the tab-switch path does), the rest
+/// once the kind is known. A windowed text is kept as a **line**, never as a byte of the file as
+/// it was: the file may have changed meanwhile.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub(crate) struct ReadingPosition {
     scroll: u16,
     hscroll: u16,
-    byte_top: u64,
     top_line: usize,
     cursor_line: usize,
     cursor_col: usize,
     focused_item: Option<usize>,
+    repr: Option<String>,
+    page: u32,
+    image_view: konoma_widgets::image_view::ImageViewState,
+    table_cur_row: usize,
+    table_cur_col: usize,
+    table_top_row: usize,
+    table_left_col: usize,
 }
 
 /// What a file preview still waits for. One value, owned by the preview that asked: it is dropped
@@ -3534,11 +3545,21 @@ impl App {
         landing: Landing,
     ) {
         // A new file starts in the plugin's default representation (the rendered document for
-        // Markdown, Word and slides), and this must hold *before* the load: a document that lands
+        // Markdown, Word and slides), unless a position is put back, and this must hold *before* the load: a document that lands
         // synchronously decides there whether the source view is the one wanted.
-        self.tab.repr = None;
+        self.tab.repr = match &landing {
+            // A position put back after a screen that covered the preview: the representation
+            // the tab chose is asked for when the plugin is opened, as on a tab switch.
+            Landing::Restore(pos) => pos.repr.clone(),
+            _ => None,
+        };
         self.tab.deck_pending_slide = None;
         self.set_preview_kind(Some(kind.clone()));
+        if let Landing::Restore(pos) = &landing {
+            // The page is in place **before** the load request (a PDF rasterizes that page, a
+            // workbook opens that sheet), as `load_active` does.
+            self.tab.page = pos.page.max(1);
+        }
         self.start_media_load(&kind, path);
         self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
         self.load_plugin();
@@ -3554,6 +3575,10 @@ impl App {
             return;
         }
         if self.document_text_missing() {
+            // A document that failed has no text on its way: nothing is waited for.
+            if self.document_error().is_some() {
+                return;
+            }
             self.tab.pending = Some(PendingResolution {
                 path: path.to_path_buf(),
                 landing,
@@ -3569,11 +3594,17 @@ impl App {
         ReadingPosition {
             scroll: self.tab.preview_scroll,
             hscroll: self.tab.preview_hscroll,
-            byte_top: self.tab.preview_byte_top,
             top_line: self.tab.preview_top_line,
             cursor_line: self.tab.preview_cursor_line,
             cursor_col: self.tab.preview_cursor_col,
             focused_item: self.tab.focused_item,
+            repr: self.tab.repr.clone(),
+            page: self.tab.page,
+            image_view: self.tab.image_view,
+            table_cur_row: self.tab.table_cur_row,
+            table_cur_col: self.tab.table_cur_col,
+            table_top_row: self.tab.table_top_row,
+            table_left_col: self.tab.table_left_col,
         }
     }
 
@@ -3583,14 +3614,34 @@ impl App {
         self.reading_position()
     }
 
+    /// Puts back the part of the reading position that needs the kind opened (the
+    /// representation and the page were put back before it was).
     fn restore_reading_position(&mut self, pos: ReadingPosition) {
         self.tab.preview_scroll = pos.scroll;
         self.tab.preview_hscroll = pos.hscroll;
-        self.tab.preview_byte_top = pos.byte_top;
-        self.tab.preview_top_line = pos.top_line;
-        self.tab.preview_cursor_line = pos.cursor_line;
-        self.tab.preview_cursor_col = pos.cursor_col;
         self.tab.focused_item = pos.focused_item;
+        self.tab.image_view = pos.image_view;
+        self.tab.table_cur_row = pos.table_cur_row;
+        self.tab.table_cur_col = pos.table_cur_col;
+        self.tab.table_top_row = pos.table_top_row;
+        self.tab.table_left_col = pos.table_left_col;
+        // A table that is still loading keeps the cursor until it lands (and clamps then).
+        self.clamp_table_cursor();
+        // A windowed text is read at a line: the byte of that line is found in the file as it is
+        // now (the same seek the line jump makes), never copied from the file as it was.
+        if let Some(win) = self.preview_win.as_mut() {
+            if let Ok((off, reached)) = win.advance(0, pos.top_line) {
+                self.tab.preview_byte_top = off;
+                self.tab.preview_top_line = reached;
+                // A file that got shorter stops at its last line: the caret is not below it.
+                self.tab.preview_cursor_line = if reached < pos.top_line {
+                    reached
+                } else {
+                    pos.cursor_line
+                };
+                self.tab.preview_cursor_col = pos.cursor_col;
+            }
+        }
     }
 
     fn run_landing(&mut self, landing: Landing) {

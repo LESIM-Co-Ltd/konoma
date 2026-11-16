@@ -190,6 +190,12 @@ impl App {
         }
         // The representation this tab chose (`R`) is asked for when the plugin is opened (put
         // back above, before the windowed reader), as the page is.
+        //
+        // `self.tab` still holds the tab that was showing until the bulk restore below, and so
+        // does its pending landing: a document text that lands inside this reload must not run
+        // that one (nor any landing on a tab it was not asked for). The landing this tab holds
+        // runs after the restore, in this tab's own context.
+        self.tab.pending = None;
         self.load_plugin();
         // A source view that landed on the spot wrote its own temp file: keep that one, not the
         // path the saved tab held (the bulk restore below would put the stale one back).
@@ -210,6 +216,9 @@ impl App {
         // Only for the file preview that asked: a pending resolution of another path (or none)
         // is not this tab's to ask about.
         if self.tab.mode == Mode::Preview {
+            // The text that landed inside the reload above ran no landing (the tab was not
+            // restored yet): the one this tab waits with runs now.
+            self.land_pending_document();
             let ask = self.tab.pending.as_ref().and_then(|p| {
                 (!p.kind_known && self.tab.preview_path.as_ref() == Some(&p.path))
                     .then(|| p.path.clone())

@@ -564,3 +564,390 @@ fn a_markdown_view_is_read_where_it_was_after_a_project_screen_with_and_without_
         );
     }
 }
+
+// --- The pending landing and the reading position belong to one preview.
+
+/// With the worker, takes the preview worker's replies until the plugin is asked for the
+/// document (the kind is decided and the text is on its way).
+#[track_caller]
+fn take_replies_until_document_loading(s: &mut Sim) {
+    while !s.app.is_document_loading() {
+        let res = s
+            .media_rx
+            .as_ref()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the worker answers");
+        s.app.apply_media(res);
+    }
+}
+
+fn long_markdown() -> String {
+    let mut body = String::from("# Title\n\n");
+    for i in 0..60 {
+        body.push_str(&format!("Paragraph {i} with some **bold** words.\n\n"));
+    }
+    body
+}
+
+/// A tab left while its Markdown text was on its way, and come back to after the text is ready
+/// (it lands inside the first wait of the reload): the line the opener asked for lands. The
+/// landing belongs to the tab that holds it, not to the tab that was showing when the text came.
+#[test]
+fn a_line_waiting_for_the_text_lands_after_a_tab_round_trip_with_and_without_the_worker() {
+    use crate::app::{HoldOpens, LongFirstFrame};
+    use crate::plugins::test_plugins::Latch;
+    let dir = sandbox("pwp_goto_md_tabs");
+    std::fs::write(dir.join("doc.md"), long_markdown()).unwrap();
+    let root = canon(&dir);
+    let mut screens = Vec::new();
+    for worker in [false, true] {
+        let gate = std::sync::Arc::new(Latch::default());
+        let _hold = HoldOpens::until(&gate);
+        let mut s = road(&root, cfg_en(), worker);
+        s.app.paste_jump_to(&root.join("doc.md"), Some(40));
+        if worker {
+            take_replies_until_document_loading(&mut s);
+        }
+        assert!(
+            s.app.document_text_missing(),
+            "worker={worker}: the text must still be on its way"
+        );
+        s.key('t'); // another tab: this one is saved with its landing
+        gate.open();
+        let _long = LongFirstFrame::of(std::time::Duration::from_secs(60));
+        s.key('['); // back: the reload's text lands within the first wait
+        s.settle_inline_images("round trip", std::time::Duration::from_secs(120));
+        s.draw();
+        s.see("**bold**");
+        s.see("Paragraph 19");
+        s.dont_see("can not preview");
+        screens.push(s);
+    }
+    assert_same_screen(
+        &screens[0],
+        &screens[1],
+        "markdown file:40 over a tab round trip",
+    );
+}
+
+/// A document that could not be read ends the wait for its text: the line the opener asked for is
+/// dropped with it, and a later successful reload shows the document from the top.
+#[test]
+fn a_line_asked_of_a_document_that_failed_is_not_landed_by_a_later_reload() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = sandbox("pwp_goto_md_failed");
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, long_markdown()).unwrap();
+    let root = canon(&dir);
+    for worker in [false, true] {
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut s = road(&root, cfg_en(), worker);
+        s.app.paste_jump_to(&root.join("doc.md"), Some(40));
+        s.settle_inline_images("failed", std::time::Duration::from_secs(120));
+        s.draw();
+        assert!(
+            s.app.document_error().is_some(),
+            "worker={worker}: the unreadable document must have failed:\n{}",
+            s.screen()
+        );
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o644)).unwrap();
+        s.app.reload_preview();
+        s.settle_inline_images("reloaded", std::time::Duration::from_secs(120));
+        s.draw();
+        s.see("Paragraph 0");
+        s.dont_see("**bold**");
+        s.dont_see("Paragraph 19");
+        assert_eq!(s.app.preview_top_line(), 0, "worker={worker}");
+    }
+}
+
+/// The same when the failure comes after the first wait: the line waits for the text (registered
+/// while the document is still on its way), the read then fails, and the failure drops it.
+#[test]
+fn a_line_waiting_for_a_document_that_then_fails_is_not_landed_by_a_later_reload() {
+    use crate::app::HoldOpens;
+    use crate::plugins::test_plugins::Latch;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = sandbox("pwp_goto_md_late_failed");
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, long_markdown()).unwrap();
+    let root = canon(&dir);
+    for worker in [false, true] {
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let gate = std::sync::Arc::new(Latch::default());
+        let _hold = HoldOpens::until(&gate);
+        let mut s = road(&root, cfg_en(), worker);
+        s.app.paste_jump_to(&root.join("doc.md"), Some(40));
+        if worker {
+            take_replies_until_document_loading(&mut s);
+        }
+        assert!(
+            s.app.document_text_missing() && s.app.document_error().is_none(),
+            "worker={worker}: the text must still be on its way"
+        );
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o000)).unwrap();
+        gate.open();
+        s.settle_inline_images("failed", std::time::Duration::from_secs(120));
+        s.draw();
+        assert!(
+            s.app.document_error().is_some(),
+            "worker={worker}: the document must have failed:\n{}",
+            s.screen()
+        );
+        std::fs::set_permissions(&doc, std::fs::Permissions::from_mode(0o644)).unwrap();
+        s.app.reload_preview();
+        s.settle_inline_images("reloaded", std::time::Duration::from_secs(120));
+        s.draw();
+        s.see("Paragraph 0");
+        s.dont_see("**bold**");
+        s.dont_see("Paragraph 19");
+        assert_eq!(s.app.preview_top_line(), 0, "worker={worker}");
+    }
+}
+
+/// A windowed text is read at a line, not at a byte: the file changed while a project screen
+/// covered it (the lines before the reading position changed length), and the preview comes
+/// back at the same line of the *new* text, its numbers and caret in agreement.
+#[test]
+fn a_windowed_text_changed_under_a_project_screen_is_read_at_the_same_line() {
+    let dir = sandbox("pwp_return_changed");
+    std::fs::write(dir.join("long.txt"), numbered_lines(400)).unwrap();
+    let root = canon(&dir);
+    let mut screens = Vec::new();
+    for worker in [false, true] {
+        std::fs::write(dir.join("long.txt"), numbered_lines(400)).unwrap();
+        let mut s = road(&root, cfg_en(), worker);
+        s.select("long.txt");
+        s.enter();
+        s.settle_inline_images("opened", std::time::Duration::from_secs(60));
+        s.app.paste_jump_to(&root.join("long.txt"), Some(200));
+        s.settle_inline_images("jumped", std::time::Duration::from_secs(60));
+        s.draw();
+        let top = s.app.preview_top_line();
+        assert!(top > 100, "worker={worker}: read down to line {top}");
+        s.app.cover_with_project_screen_for_test();
+        // Every line is longer than before, so no byte of the old file is a line head here.
+        let changed: String = (1..=400)
+            .map(|i| format!("new text of line {i} with a longer tail than before\n"))
+            .collect();
+        std::fs::write(dir.join("long.txt"), changed).unwrap();
+        s.app.leave_project_screens_for_test();
+        s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+        s.draw();
+        assert_eq!(s.app.preview_top_line(), top, "worker={worker}");
+        assert_eq!(s.app.preview_caret_line(), 199, "worker={worker}");
+        s.dont_see("line number");
+        // The first shown row is the head of line `top + 1` of the new text, numbered as it is.
+        let first = format!("new text of line {} with", top + 1);
+        let row = rows(&s)
+            .into_iter()
+            .find(|r| r.contains("new text of line"))
+            .expect("a text row");
+        assert!(
+            row.contains(&first),
+            "worker={worker}: first row is {row:?}, want line {}",
+            top + 1
+        );
+        s.see("new text of line 200 with");
+        screens.push(s);
+    }
+    assert_same_screen(
+        &screens[0],
+        &screens[1],
+        "changed text after a project screen",
+    );
+}
+
+/// The representation a tab chose is part of where it was read: a Markdown file read as raw
+/// source (`R`) comes back from a project screen as raw source, at the same line.
+#[test]
+fn a_raw_markdown_view_is_read_where_it_was_after_a_project_screen_with_and_without_the_worker() {
+    let dir = sandbox("pwp_return_md_raw");
+    std::fs::write(dir.join("doc.md"), long_markdown()).unwrap();
+    let root = canon(&dir);
+    let mut screens = Vec::new();
+    for worker in [false, true] {
+        let mut s = road(&root, cfg_en(), worker);
+        s.select("doc.md");
+        s.enter();
+        s.settle_inline_images("opened", std::time::Duration::from_secs(60));
+        s.key('R');
+        s.settle_inline_images("raw", std::time::Duration::from_secs(60));
+        for _ in 0..60 {
+            s.key('j');
+        }
+        s.draw();
+        assert!(
+            s.app.is_md_raw(),
+            "worker={worker}: R did not show the source"
+        );
+        let before = rows(&s);
+        let top = s.app.preview_top_line();
+        let caret = s.app.preview_caret_line();
+        assert!(top > 10, "worker={worker}: the view did not move ({top})");
+        s.app.cover_with_project_screen_for_test();
+        s.app.leave_project_screens_for_test();
+        s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+        s.draw();
+        assert!(
+            s.app.is_md_raw(),
+            "worker={worker}: back in the rendered view:\n{}",
+            s.screen()
+        );
+        assert_eq!(s.app.preview_top_line(), top, "worker={worker}");
+        assert_eq!(s.app.preview_caret_line(), caret, "worker={worker}");
+        assert_eq!(rows(&s), before, "worker={worker}: drawn differently");
+        screens.push(s);
+    }
+    assert_same_screen(
+        &screens[0],
+        &screens[1],
+        "raw markdown after a project screen",
+    );
+}
+
+/// A table is read at a cell: the cell cursor and the scroll of the view come back after a
+/// project screen, as they do after a tab switch.
+#[test]
+fn a_table_is_read_at_the_same_cell_after_a_project_screen_with_and_without_the_worker() {
+    let dir = sandbox("pwp_return_csv");
+    let mut csv = String::new();
+    for r in 0..80 {
+        let row: Vec<String> = (0..30).map(|c| format!("r{r}c{c}")).collect();
+        csv.push_str(&row.join(","));
+        csv.push('\n');
+    }
+    std::fs::write(dir.join("grid.csv"), csv).unwrap();
+    let root = canon(&dir);
+    let mut screens = Vec::new();
+    for worker in [false, true] {
+        let mut s = road(&root, cfg_en(), worker);
+        s.select("grid.csv");
+        s.enter();
+        s.settle_inline_images("opened", std::time::Duration::from_secs(60));
+        s.app.table_cursor_move(50, 20);
+        s.draw();
+        let cursor = s.app.table_cursor();
+        let scroll = s.app.table_scroll();
+        assert_eq!(cursor, (50, 20), "worker={worker}");
+        assert!(scroll.0 > 0 && scroll.1 > 0, "worker={worker}: {scroll:?}");
+        let before = rows(&s);
+        s.app.cover_with_project_screen_for_test();
+        s.app.leave_project_screens_for_test();
+        s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+        s.draw();
+        assert_eq!(s.app.table_cursor(), cursor, "worker={worker}: cell");
+        assert_eq!(s.app.table_scroll(), scroll, "worker={worker}: scroll");
+        assert_eq!(rows(&s), before, "worker={worker}: drawn differently");
+        screens.push(s);
+    }
+    assert_same_screen(&screens[0], &screens[1], "table after a project screen");
+}
+
+/// A PDF is read at a page: page 3 of a multi-page document comes back as page 3.
+#[test]
+fn a_pdf_is_read_on_the_same_page_after_a_project_screen_with_and_without_the_worker() {
+    let dir = sandbox("pwp_return_pdf");
+    let pages: Vec<(u32, u32, &[u8])> = vec![
+        (200, 300, b"1 0 0 rg 0 0 200 300 re f"),
+        (200, 300, b"0 0 1 rg 0 0 200 300 re f"),
+        (200, 300, b"0 1 0 rg 0 0 200 300 re f"),
+        (200, 300, b"1 1 0 rg 0 0 200 300 re f"),
+    ];
+    std::fs::write(dir.join("doc.pdf"), konoma_test_support::build_pdf(&pages)).unwrap();
+    let root = canon(&dir);
+    for worker in [false, true] {
+        let mut s = road(&root, cfg_en(), worker);
+        s.select("doc.pdf");
+        s.enter();
+        s.settle_inline_images("opened", std::time::Duration::from_secs(60));
+        s.app.page_turn(1);
+        s.settle_inline_images("page 2", std::time::Duration::from_secs(60));
+        s.app.page_turn(1);
+        s.settle_inline_images("page 3", std::time::Duration::from_secs(60));
+        s.draw();
+        assert_eq!(s.app.page_indicator(), Some((3, 4)), "worker={worker}");
+        s.app.cover_with_project_screen_for_test();
+        s.app.leave_project_screens_for_test();
+        s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+        s.draw();
+        assert_eq!(
+            s.app.page_indicator(),
+            Some((3, 4)),
+            "worker={worker}: not on page 3:\n{}",
+            s.screen()
+        );
+    }
+}
+
+/// An image is read at a zoom and a centre: they come back after a project screen.
+#[test]
+fn an_image_is_read_at_the_same_zoom_after_a_project_screen_with_and_without_the_worker() {
+    let dir = sandbox("pwp_return_png");
+    std::fs::copy(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples/sample.png"),
+        dir.join("pic.png"),
+    )
+    .unwrap();
+    let root = canon(&dir);
+    for worker in [false, true] {
+        let mut s = road(&root, cfg_en(), worker);
+        s.select("pic.png");
+        s.enter();
+        s.settle_inline_images("opened", std::time::Duration::from_secs(60));
+        s.app.image_zoom_by(2.0);
+        s.app.tab.image_view.center = (0.3, 0.7);
+        let view = s.app.tab.image_view;
+        assert!(view.zoom > 1.0, "worker={worker}: {view:?}");
+        s.app.cover_with_project_screen_for_test();
+        s.app.leave_project_screens_for_test();
+        s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+        s.draw();
+        assert_eq!(s.app.tab.image_view, view, "worker={worker}");
+    }
+}
+
+/// The landing waiting in the tab that was showing is not run on the tab that is switched to,
+/// even when both show the same file: tab 1 reads `doc.md`, tab 2 has `doc.md:40` waiting for its
+/// text; the text of tab 1's reload lands inside the first wait. Tab 1 stays the rendered view,
+/// and tab 2 still lands its own line when it is back.
+#[test]
+fn a_waiting_landing_is_not_run_on_another_tab_of_the_same_file() {
+    use crate::app::{HoldOpens, LongFirstFrame};
+    use crate::plugins::test_plugins::Latch;
+    let dir = sandbox("pwp_goto_md_two_tabs");
+    std::fs::write(dir.join("doc.md"), long_markdown()).unwrap();
+    let root = canon(&dir);
+    for worker in [false, true] {
+        let gate = std::sync::Arc::new(Latch::default());
+        let _hold = HoldOpens::until(&gate);
+        let mut s = road(&root, cfg_en(), worker);
+        s.select("doc.md");
+        s.enter();
+        if worker {
+            take_replies_until_document_loading(&mut s);
+        }
+        s.key('t');
+        s.app.paste_jump_to(&root.join("doc.md"), Some(40));
+        if worker {
+            take_replies_until_document_loading(&mut s);
+        }
+        assert!(
+            s.app.document_text_missing(),
+            "worker={worker}: the text must still be on its way"
+        );
+        gate.open();
+        let _long = LongFirstFrame::of(std::time::Duration::from_secs(60));
+        s.key('['); // tab 1: its text lands inside the first wait of the reload
+        s.settle_inline_images("tab 1", std::time::Duration::from_secs(120));
+        s.draw();
+        s.see("Paragraph 0 with some bold words");
+        s.dont_see("**bold**");
+        s.key(']'); // tab 2: its own landing runs
+        s.settle_inline_images("tab 2", std::time::Duration::from_secs(120));
+        s.draw();
+        s.see("**bold**");
+        s.see("Paragraph 19");
+    }
+}

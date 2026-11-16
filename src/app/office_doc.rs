@@ -512,6 +512,13 @@ impl App {
         if !self.holds_document() {
             return;
         }
+        // A failed document ends the wait for its text: a landing that waited for it is dropped,
+        // so a later successful read does not land a position asked of the failed one.
+        if self.tab.pending.as_ref().is_some_and(|p| {
+            p.kind_known && self.tab.preview_path.as_deref() == Some(p.path.as_path())
+        }) {
+            self.tab.pending = None;
+        }
         self.set_document(None);
         self.md_cache = None;
         // A raw (`R`) view of the previous text must not outlive the document it came from: drop
