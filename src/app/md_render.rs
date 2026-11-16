@@ -92,6 +92,12 @@ impl App {
     /// layout (row prefix sums via ratatui's own per-line reflow) — all the per-document work, done
     /// once. Frames then only slice the visible range (`md_slice`).
     pub(super) fn ensure_md_cache(&mut self, width: u16) {
+        self.ensure_md_cache_built(width);
+        // A search the tab came back with is found again on the lines now built.
+        self.rescan_stale_search();
+    }
+
+    fn ensure_md_cache_built(&mut self, width: u16) {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };

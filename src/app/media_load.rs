@@ -471,6 +471,9 @@ impl App {
         };
         let was = self.tab.search_matches.get(self.tab.search_idx).copied();
         let pending = std::mem::take(&mut self.tab.search_pending);
+        // The tab came back and its matches were not those of this sheet: the hit nearest the
+        // cursor is the current one, and nothing moves.
+        let stale = std::mem::take(&mut self.tab.search_stale);
         self.table_search_scan(&q);
         if self.tab.search_matches.is_empty() {
             self.tab.search_idx = 0;
@@ -480,6 +483,8 @@ impl App {
         } else if pending {
             self.tab.search_idx = self.first_table_match_from_cursor();
             self.jump_to_match();
+        } else if stale {
+            self.tab.search_idx = self.first_table_match_from_cursor();
         } else {
             let last = self.tab.search_matches.len() - 1;
             self.tab.search_idx = match was {

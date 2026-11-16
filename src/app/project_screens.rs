@@ -1230,40 +1230,13 @@ impl App {
         };
         match (nav.origin_mode, nav.origin_path) {
             (Mode::Preview, Some(path)) => {
-                if matches!(nav.origin_kind, Some(PreviewKind::GitDiff(_))) {
-                    // A diff is read from git again (it is the project's to refresh), at the
-                    // scroll it was left at.
-                    let (scroll, hscroll) = nav
-                        .origin_tab
-                        .as_ref()
-                        .map_or((0, 0), |t| (t.preview_scroll, t.preview_hscroll));
-                    self.open_git_diff_with(
-                        &path,
-                        super::git_view::DiffOpen {
-                            read_context: self.tab.diff_read_context,
-                            ..Default::default()
-                        },
-                    );
-                    self.tab.preview_scroll = scroll;
-                    self.tab.preview_hscroll = hscroll;
-                } else if let Some(origin) = nav.origin_tab {
+                if let Some(origin) = nav.origin_tab {
                     // The preview comes back as a tab does: the whole saved state, brought up to
-                    // date with the files as they are now (`put_tab_back`). What the screens
-                    // changed meanwhile and must survive is kept from the working state: the
-                    // diff-only state a project diff preview owns, and the size of the area now
-                    // drawn.
-                    let mut origin = *origin;
-                    origin.preview_from_diff = self.tab.preview_from_diff;
-                    origin.diff_read_context = if self.tab.preview_from_diff {
-                        self.tab.diff_read_context
-                    } else {
-                        Default::default()
-                    };
-                    if self.tab.preview_cols != 0 {
-                        origin.preview_cols = self.tab.preview_cols;
-                        origin.preview_viewport = self.tab.preview_viewport;
-                    }
-                    self.put_tab_back(origin);
+                    // date with the files as they are now (`put_tab_back`), a diff included (it
+                    // is read from git again there, with the view, page and scroll it was left
+                    // at). What went on moving while it was covered is kept from the working
+                    // state (`PerTab::restored`).
+                    self.put_tab_back(*origin, true);
                 } else {
                     self.enter_preview(&path);
                 }

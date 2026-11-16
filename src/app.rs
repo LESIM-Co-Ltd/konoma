@@ -2169,6 +2169,11 @@ pub(crate) struct PerTab {
     /// nothing yet: when the sheet arrives it is run and the cursor goes to the first hit (the
     /// same as confirming it on a loaded sheet). Cleared with the search.
     search_pending: bool,
+    /// `search_matches` is not the matches of the text now shown (a tab came back from a project
+    /// screen or from another tab: the text may have changed meanwhile): they are found again on
+    /// the current text (`App::rescan_stale_search`) before they are used, and the match nearest
+    /// the caret becomes the current one.
+    search_stale: bool,
 }
 
 impl Default for PerTab {
@@ -2251,6 +2256,7 @@ impl Default for PerTab {
             search_truncated: false,
             search_idx: 0,
             search_pending: false,
+            search_stale: false,
         }
     }
 }
@@ -3679,8 +3685,18 @@ impl App {
             self.tab.preview_cursor_line,
             self.tab.preview_cursor_col,
         );
+        // A diff is read by its own scroll (`preview_scroll`), restored with the tab: it has no
+        // line of a file to seek, and a seek to line 0 would throw that scroll away.
+        if matches!(self.tab.preview_kind, Some(PreviewKind::GitDiff(_))) {
+            return;
+        }
         if self.preview_win.is_some() {
-            let unchanged = saved.is_some() && saved == self.tab.preview_win_stamp;
+            // The stamp is of a file; the text a command or plugin generated is a new file every
+            // time it is made, so the stamp of the one read before says nothing about this one:
+            // it is landed by line, which holds across a change of the text.
+            let generated =
+                self.tab.command_out.is_some() && self.windowed_src() == self.tab.command_out.as_deref();
+            let unchanged = !generated && saved.is_some() && saved == self.tab.preview_win_stamp;
             if !unchanged {
                 self.seek_windowed_line(top_line, cursor_line, cursor_col);
             }
@@ -3826,6 +3842,7 @@ impl App {
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
+        self.tab.search_stale = false;
         // Reset the windowed preview's 2D caret/selection to the start.
         self.tab.preview_cursor_line = 0;
         self.tab.preview_cursor_col = 0;
@@ -3931,6 +3948,8 @@ impl App {
             self.preview_win = Some(w);
             // A landing that waited for this text (a command's output, a made text) runs now.
             self.land_pending_document();
+            // A search the tab came back with is found again on this text.
+            self.rescan_stale_search();
         }
     }
 

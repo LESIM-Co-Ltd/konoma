@@ -141,12 +141,12 @@ impl App {
         // Whatever was waiting for a sheet to arrive is replaced by this confirmation (or, with no
         // query, by no search at all): an old wait must not run when the sheet lands.
         self.tab.search_pending = false;
+        self.tab.search_stale = false;
         if q.is_empty() {
             self.tab.preview_search = None;
             self.tab.search_matches.clear();
             return;
         }
-        let cap = SEARCH_MATCH_CAP;
         let target = self.search_target();
         // A sheet that is being (re)loaded has nothing to search yet (or only cells that are about
         // to be replaced): remember the query and let the arrival run it (`apply_payload`),
@@ -163,17 +163,7 @@ impl App {
             SearchTarget::Markdown => {
                 self.md_search_scan(&q);
             }
-            _ => {
-                // One past the cap, to tell a cut-off search from one with exactly the cap.
-                let mut found = self
-                    .preview_win
-                    .as_mut()
-                    .and_then(|w| w.find_all_matches(&q, cap + 1).ok())
-                    .unwrap_or_default();
-                self.tab.search_truncated = found.len() > cap;
-                found.truncate(cap);
-                self.tab.search_matches = found;
-            }
+            _ => self.windowed_search_scan(&q),
         }
         self.tab.preview_search = Some(q);
         if self.tab.search_matches.is_empty() {
@@ -221,6 +211,7 @@ impl App {
 
     /// `n`/`N`: to the next/previous match (cyclic).
     pub fn search_next(&mut self, dir: i32) {
+        self.rescan_stale_search();
         if self.tab.search_matches.is_empty() {
             return;
         }
@@ -236,6 +227,82 @@ impl App {
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
+        self.tab.search_stale = false;
+    }
+
+    /// Collects the matches of `q` in the windowed text, in reading order, up to the cap.
+    fn windowed_search_scan(&mut self, q: &str) {
+        let cap = SEARCH_MATCH_CAP;
+        // One past the cap, to tell a cut-off search from one with exactly the cap.
+        let mut found = self
+            .preview_win
+            .as_mut()
+            .and_then(|w| w.find_all_matches(q, cap + 1).ok())
+            .unwrap_or_default();
+        self.tab.search_truncated = found.len() > cap;
+        found.truncate(cap);
+        self.tab.search_matches = found;
+    }
+
+    /// Finds the confirmed search again on the text now shown, when the matches the tab holds are
+    /// not those of this text (`PerTab::search_stale`: the tab came back from a project screen or
+    /// another tab, and the text may have changed meanwhile). The current match becomes the one
+    /// nearest the caret; the view does not move. A text that is not here yet leaves the search
+    /// stale: this runs again when it lands, and when `n`/`N` is pressed.
+    pub(super) fn rescan_stale_search(&mut self) {
+        if !self.tab.search_stale {
+            return;
+        }
+        let Some(q) = self.tab.preview_search.clone() else {
+            self.tab.search_stale = false;
+            return;
+        };
+        match self.search_target() {
+            SearchTarget::Table => {
+                // A sheet on its way runs the search when it lands (`rescan_table_search`).
+                if self.sheet_load_in_flight() {
+                    return;
+                }
+                self.table_search_scan(&q);
+                self.tab.search_idx = self.first_table_match_from_cursor();
+            }
+            SearchTarget::Markdown => {
+                // The decorated lines are built by the draw: stale until they are.
+                if self.md_cache.is_none() {
+                    return;
+                }
+                self.md_search_scan(&q);
+                let from = self.md_top_logical_line().unwrap_or(0);
+                self.tab.search_idx = self.nearest_match_to(from, 0);
+            }
+            SearchTarget::Windowed => {
+                self.windowed_search_scan(&q);
+                // The caret, or the top of the view when the caret is above it: a jump to a match
+                // moves the view, not the caret, so the match the reader was on is at the top.
+                let (top, line, col) = (
+                    self.tab.preview_top_line,
+                    self.tab.preview_cursor_line,
+                    self.tab.preview_cursor_col,
+                );
+                self.tab.search_idx = if line >= top {
+                    self.nearest_match_to(line, col)
+                } else {
+                    self.nearest_match_to(top, 0)
+                };
+            }
+            SearchTarget::Unsupported => return,
+        }
+        self.tab.search_stale = false;
+    }
+
+    /// The index of the match nearest the position (line, then column), the earlier one on a tie.
+    fn nearest_match_to(&self, line: usize, col: usize) -> usize {
+        self.tab
+            .search_matches
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (_, l, c))| (l.abs_diff(line), c.abs_diff(col)))
+            .map_or(0, |(i, _)| i)
     }
 
     /// Bring the line of the current occurrence to the top of the display (updates the line-head byte and line number). For moves within the same line,
