@@ -232,7 +232,8 @@ impl App {
                 }
                 self.media_loading = false;
                 let kind = crate::plugins::kind_of(plan, &path);
-                self.apply_resolved_preview(kind, &path);
+                let landing = std::mem::take(&mut self.tab.landing);
+                self.apply_resolved_preview(kind, &path, landing);
                 true
             }
         }

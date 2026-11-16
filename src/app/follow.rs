@@ -299,8 +299,7 @@ impl App {
                 return;
             }
         }
-        self.enter_preview(path);
-        self.follow_scroll_to_first_change();
+        self.enter_preview_landing(path, super::Landing::FirstChange);
     }
 
     /// Whether `path` is a valid follow target: under root, an existing file, not gitignored, and not

@@ -1919,6 +1919,24 @@ pub(crate) use konoma_host_core::project::DiffView;
 /// `Default` is implemented manually (not derived): a few fields have a non-zero "fresh tab" value
 /// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `page` starts
 /// at 1), matching what `App::new` used to initialize them to before this migration.
+/// What a preview's opener wants done once the preview kind is known (the kind decides whether the
+/// view is windowed or decorated, which every one of these needs).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) enum Landing {
+    #[default]
+    None,
+    /// Scroll to this 1-based line (a Markdown preview is switched to its source first).
+    GotoLine(usize),
+    /// Scroll to the first change of the file (a follow jump).
+    FirstChange,
+    /// The diff's own `Preview` representation: tagged as the diff's, then the first change.
+    #[cfg(feature = "git")]
+    DiffPreview {
+        read_context: konoma_plugin::host::project::DiffReadContext,
+        follow_scope: bool,
+    },
+}
+
 #[derive(Clone)]
 pub(crate) struct PerTab {
     /// Identity of this tab, unique for the lifetime of the process and never reused.
@@ -2028,6 +2046,15 @@ pub(crate) struct PerTab {
     /// plain raw-source toggle / tree return. Cleared by `App::enter_preview`'s own reset (so any
     /// *other* way of opening a preview always starts `false`) and by returning to the diff.
     preview_from_diff: bool,
+    /// The preview's kind was handed to the resolution worker and its reply has not landed: the
+    /// kind held in `preview_kind` is the provisional one. A tab saved in this state asks again when
+    /// it becomes active (its reply was dropped by the generation check on the switch).
+    kind_resolving: bool,
+    /// What the opener of this preview wants done once the kind is known (a line to land on, the
+    /// first change). Taken by `App::apply_resolved_preview` on both roads: at once without the
+    /// worker, from the reply with it. Replaced by every `enter_preview`, so a reply for an
+    /// earlier file never finds another file's landing.
+    landing: Landing,
     // --- Internal scroll state for a windowed (Code/Text/raw md) preview ---
     preview_byte_top: u64,
     preview_top_line: usize,
@@ -2165,6 +2192,8 @@ impl Default for PerTab {
             diff_media_page: 1,
             diff_scroll_pending: None,
             preview_from_diff: false,
+            kind_resolving: false,
+            landing: Landing::None,
             preview_byte_top: 0,
             preview_top_line: 0,
             command_out: None,
@@ -3470,19 +3499,37 @@ impl App {
     /// `enter_preview` without a resolution worker, and the worker's reply. (`preview_kind` must
     /// be set **before** `start_media_load`: a sync-fallback media path applies its payload inside
     /// that call and `setup_windowed` reads the kind.)
-    pub(super) fn apply_resolved_preview(&mut self, kind: PreviewKind, path: &Path) {
+    pub(super) fn apply_resolved_preview(
+        &mut self,
+        kind: PreviewKind,
+        path: &Path,
+        landing: Landing,
+    ) {
         // A new file starts in the plugin's default representation (the rendered document for
         // Markdown, Word and slides), and this must hold *before* the load: a document that lands
         // synchronously decides there whether the source view is the one wanted.
         self.tab.repr = None;
         self.tab.deck_pending_slide = None;
+        self.tab.kind_resolving = false;
         self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
         self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
         self.load_plugin();
+        match landing {
+            Landing::None => {}
+            Landing::GotoLine(line) => self.preview_goto_line(line),
+            Landing::FirstChange => self.follow_scroll_to_first_change(),
+            #[cfg(feature = "git")]
+            Landing::DiffPreview { .. } => self.follow_scroll_to_first_change(),
+        }
     }
 
     fn enter_preview(&mut self, path: &Path) {
+        self.enter_preview_landing(path, Landing::None);
+    }
+
+    /// `enter_preview`, then `landing` once the kind is known (see `Landing`).
+    pub(super) fn enter_preview_landing(&mut self, path: &Path, landing: Landing) {
         self.tab.diff_read_context = Default::default();
         // Is this re-entering the same file (returning via `q` from a full-screen fence)? If so,
         // keep the inline-image cache warm: discarding it would restart every fence from Loading
@@ -3600,19 +3647,33 @@ impl App {
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
+        // The diff's own `Preview` representation is tagged before anything resolves.
+        #[cfg(feature = "git")]
+        if let Landing::DiffPreview {
+            read_context,
+            follow_scope,
+        } = &landing
+        {
+            self.tab.diff_read_context = *read_context;
+            self.diff_follow_scope = *follow_scope;
+            self.tab.preview_from_diff = true;
+        }
+        self.tab.mode = Mode::Preview;
         if self.preview_resolution_tx.is_some() {
             // The kind is decided on the worker: until its reply lands the screen shows the
             // provisional kind (which also drops the previous file's plugin show), and
-            // `apply_resolved_preview` runs from the reply.
+            // `apply_resolved_preview` runs from the reply with the landing kept in the tab.
             self.tab.repr = None;
             self.tab.deck_pending_slide = None;
             self.set_preview_kind(Some(kind));
             self.setup_windowed();
+            self.tab.kind_resolving = true;
+            self.tab.landing = landing;
             self.resolve_preview_on_worker(path);
         } else {
-            self.apply_resolved_preview(kind, path);
+            self.tab.landing = Landing::None;
+            self.apply_resolved_preview(kind, path, landing);
         }
-        self.tab.mode = Mode::Preview;
     }
 
     /// Code/Text previews use less-style windowed reading **regardless of size**.

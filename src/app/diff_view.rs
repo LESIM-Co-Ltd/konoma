@@ -62,6 +62,14 @@ impl App {
         self.tab.diff_view
     }
 
+    /// Test-only: the worker's answer for the diff's target kind has landed (without it the
+    /// diff offers no `Preview` representation).
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn diff_target_resolved_for_test(&self) -> bool {
+        self.diff_target_kind_cache.is_some()
+    }
+
     /// Test-only view of `PerTab::diff_view_choice` — the presentation the user actually chose,
     /// distinct from `diff_view_for_test`'s effective, per-file-rounded value. See `diff_view_for_
     /// test`'s own doc comment for why this is `allow(dead_code)`, not `cfg(feature = "git")`, on a
@@ -425,11 +433,13 @@ impl App {
     pub(super) fn enter_diff_preview_representation(&mut self, path: &Path) {
         let read_context = self.tab.diff_read_context;
         let diff_follow_scope = self.diff_follow_scope;
-        self.enter_preview(path);
-        self.tab.diff_read_context = read_context;
-        self.diff_follow_scope = diff_follow_scope;
-        self.tab.preview_from_diff = true;
-        self.follow_scroll_to_first_change();
+        self.enter_preview_landing(
+            path,
+            super::Landing::DiffPreview {
+                read_context,
+                follow_scope: diff_follow_scope,
+            },
+        );
     }
 
     /// The reverse of `enter_diff_preview_representation`: `R` from the `Preview` representation

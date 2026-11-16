@@ -204,6 +204,14 @@ impl App {
             }
         }
         self.tab = t;
+        // A tab left while its kind was still being decided holds the provisional kind, and its
+        // reply was (or will be) dropped by the generation check: ask again, so the landing
+        // kept in the tab is applied when the answer comes.
+        if self.tab.kind_resolving && self.tab.mode == Mode::Preview {
+            if let Some(path) = self.tab.preview_path.clone() {
+                self.resolve_preview_on_worker(&path);
+            }
+        }
         #[cfg(feature = "git")]
         if self.follow_root.as_ref() != Some(&self.tab.root) {
             self.follow_worker.cancel();

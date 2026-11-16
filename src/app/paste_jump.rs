@@ -300,10 +300,12 @@ impl App {
         let revealed = self.reveal_path_deep(path).unwrap_or(false);
         let mut disp = super::home_relative(path);
         if path.is_file() {
-            self.enter_preview(path);
-            if let Some(l) = line {
-                self.preview_goto_line(l);
-                disp.push_str(&format!(":{l}"));
+            match line {
+                Some(l) => {
+                    self.enter_preview_landing(path, super::Landing::GotoLine(l));
+                    disp.push_str(&format!(":{l}"));
+                }
+                None => self.enter_preview(path),
             }
         } else if !revealed && path != self.tab.root {
             // A directory we could not surface in the tree (hidden by the dotfile filter), and it is
