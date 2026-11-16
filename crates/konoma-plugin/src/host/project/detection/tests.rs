@@ -339,3 +339,137 @@ fn project_wait_for_result_returns_when_the_answer_was_already_polled() {
     );
     assert_eq!(detection.poll(), None);
 }
+
+/// A detection for a root that carries a `project.marker` file, with its first answer taken.
+fn detected_root(root: &Path) -> ProjectDetection {
+    std::fs::create_dir_all(root).unwrap();
+    std::fs::write(root.join("project.marker"), "").unwrap();
+    let mut detection = ProjectDetection::default();
+    detection.ensure(
+        root,
+        vec![declaration("gone", "project.marker", MarkerKind::File)],
+    );
+    detection.wait_for_result();
+    assert_eq!(detection.poll(), Some(false));
+    assert_eq!(detection.projects.len(), 1);
+    assert!(detection.uses_injected_events());
+    detection
+}
+
+fn modified(path: PathBuf) -> notify::Result<notify::Event> {
+    Ok(
+        notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any))
+            .add_path(path),
+    )
+}
+
+/// A root that was deleted is not a detection failure: there are no projects, and no failure
+/// flag for the host to announce on top of the tree's own "out of date" notice.
+#[test]
+fn project_root_deleted_answers_no_projects_without_failure() {
+    let dir = unique_tmp("project_root_deleted");
+    let root = dir.canonicalize().unwrap_or(dir.to_path_buf()).join("root");
+    let mut detection = detected_root(&root);
+    std::fs::remove_dir_all(&root).unwrap();
+    detection.inject_event(modified(root.join("project.marker")));
+    assert_eq!(detection.poll(), Some(false), "not a failure");
+    assert!(detection.projects.is_empty(), "the old projects are gone");
+}
+
+/// The worker keeps waiting for the root: it answers again once the root is created again.
+#[test]
+fn project_root_recreated_is_detected_again() {
+    let dir = unique_tmp("project_root_recreated");
+    let root = dir.canonicalize().unwrap_or(dir.to_path_buf()).join("root");
+    let mut detection = detected_root(&root);
+    std::fs::remove_dir_all(&root).unwrap();
+    detection.inject_event(modified(root.join("project.marker")));
+    assert_eq!(detection.poll(), Some(false));
+    assert!(detection.projects.is_empty());
+    // Back with the marker; the event arrives on the directory that still existed.
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("project.marker"), "").unwrap();
+    detection.inject_event(modified(dir.to_path_buf()));
+    assert_eq!(detection.poll(), Some(false));
+    assert_eq!(detection.projects.len(), 1);
+    assert_eq!(detection.projects[0].root, root);
+    // The watch installation of the normal loop is back: a later marker change is noticed.
+    std::fs::remove_file(root.join("project.marker")).unwrap();
+    detection.inject_event(modified(root.join("project.marker")));
+    assert_eq!(detection.poll(), Some(false));
+    assert!(detection.projects.is_empty());
+}
+
+/// The root vanishes, then its parent: the worker's watch moves up to the next existing
+/// ancestor (observed through the injected watcher's log), and the root is detected once back.
+#[test]
+fn project_root_and_parent_deleted_then_recreated_is_detected_again() {
+    let dir = unique_tmp("project_root_parent_recreated");
+    let base = dir.canonicalize().unwrap_or(dir.to_path_buf());
+    let parent = base.join("parent");
+    let root = parent.join("root");
+    let mut detection = detected_root(&root);
+    let watches_in_base = || -> Vec<(PathBuf, bool)> {
+        INJECTED_WATCH_LOG
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| path.starts_with(&base))
+            .cloned()
+            .collect()
+    };
+    std::fs::remove_dir_all(&root).unwrap();
+    detection.inject_event(modified(root.join("project.marker")));
+    assert_eq!(detection.poll(), Some(false));
+    assert!(detection.projects.is_empty());
+    assert_eq!(
+        watches_in_base().last(),
+        Some(&(parent.clone(), true)),
+        "waiting on the root's parent"
+    );
+    // The parent vanishes while waiting: the watch moves up to the base directory.
+    std::fs::remove_dir_all(&parent).unwrap();
+    detection.inject_event(modified(parent.clone()));
+    assert_eq!(detection.poll(), None, "root still missing: no new answer");
+    let log = watches_in_base();
+    assert!(
+        log.contains(&(parent.clone(), false)),
+        "the vanished parent is unwatched: {log:?}"
+    );
+    assert_eq!(
+        log.last(),
+        Some(&(base.clone(), true)),
+        "the watch moved to the next existing ancestor: {log:?}"
+    );
+    // Both come back; the event arrives on the base directory.
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("project.marker"), "").unwrap();
+    detection.inject_event(modified(base.clone()));
+    assert_eq!(detection.poll(), Some(false));
+    assert_eq!(detection.projects.len(), 1);
+}
+
+/// A root that exists but cannot be read is a real failure, unlike a missing root.
+#[cfg(unix)]
+#[test]
+fn project_unreadable_root_still_answers_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = unique_tmp("project_root_unreadable");
+    let root = dir.canonicalize().unwrap_or(dir.to_path_buf()).join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&root).is_ok() {
+        // Running as a user the mode does not bind (uid 0).
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let mut detection = ProjectDetection::default();
+    detection.ensure(
+        &root,
+        vec![declaration("gone", "project.marker", MarkerKind::File)],
+    );
+    detection.wait_for_result();
+    let answer = detection.poll();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(answer, Some(true));
+}

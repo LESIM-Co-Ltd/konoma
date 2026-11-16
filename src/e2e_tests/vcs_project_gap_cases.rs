@@ -621,3 +621,67 @@ fn vcs_port_each_tabs_project_title_reverifies_its_repo_branch() {
     }
 }
 
+
+/// A project root that is deleted is not a detection failure: the host shows no "could not
+/// detect or watch projects" flash, `p` refuses exactly like in a directory with no project, and
+/// once the root exists again as a repository `p` opens the project screen.
+#[test]
+fn vcs_port_deleted_project_root_is_no_project_and_comes_back() {
+    if isolated("vcs_port_deleted_project_root_is_no_project_and_comes_back") {
+        return;
+    }
+    let failed = tr(crate::i18n::Lang::En, Msg::ProjectDetectionFailed);
+    // What `p` says (and does) where there is no project at all.
+    let plain = unique_tmp("vcs_port_deleted_root_plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("a.txt"), "x\n").unwrap();
+    let mut none = Sim::with_config_sized(&plain, config("git", "en"), 100, 20);
+    none.settle_projects();
+    none.key('p');
+    drain(&mut none);
+    assert!(!none.app.project_active());
+    let refusal = none.app.flash.clone();
+    assert!(refusal.is_some(), "p refuses without a project");
+
+    let repo = super::vcs_changes::git_repo("vcs_port_deleted_root", false);
+    let root = repo.to_path_buf();
+    let mut sim = Sim::with_config_sized(&root, config("git", "en"), 100, 20);
+    sim.settle_projects();
+    assert_eq!(sim.app.tab.projects.projects.len(), 1);
+    assert!(sim.app.tab.projects.uses_injected_events());
+
+    std::fs::remove_dir_all(&root).unwrap();
+    sim.app
+        .tab
+        .projects
+        .inject_event(Ok(notify::Event::new(notify::EventKind::Remove(
+            notify::event::RemoveKind::Any,
+        ))
+        .add_path(root.join(".git"))));
+    sim.app.poll_projects();
+    drain(&mut sim);
+    assert_ne!(sim.app.flash.as_deref(), Some(failed), "no failure flash");
+    assert!(sim.app.tab.projects.projects.is_empty());
+    sim.key('p');
+    drain(&mut sim);
+    assert!(!sim.app.project_active());
+    assert_eq!(sim.app.flash, refusal, "p refuses like with no project");
+    assert_ne!(sim.app.flash.as_deref(), Some(failed));
+
+    // The root is created again, as a repository.
+    std::fs::create_dir_all(&root).unwrap();
+    crate::test_support::init_git_repo(&root);
+    sim.app
+        .tab
+        .projects
+        .inject_event(Ok(notify::Event::new(notify::EventKind::Create(
+            notify::event::CreateKind::Any,
+        ))
+        .add_path(root.join(".git"))));
+    sim.app.poll_projects();
+    drain(&mut sim);
+    assert_eq!(sim.app.tab.projects.projects.len(), 1);
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "{:?}", sim.app.flash);
+}

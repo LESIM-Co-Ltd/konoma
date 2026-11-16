@@ -102,7 +102,9 @@ pub fn detect(
 }
 
 /// Search the given directories (in order) for the declared markers. A directory that cannot be
-/// read, or a cancellation, is an error: the caller keeps its previous answer.
+/// read (a missing one included), or a cancellation, is an error. The worker answers a missing
+/// *root* itself as "no projects" rather than as a failure and waits for the root to return; any
+/// other error keeps the caller's previous answer.
 pub fn detect_directories<'a>(
     directories: impl IntoIterator<Item = &'a Path>,
     declarations: &[ProjectDeclaration],
@@ -319,6 +321,12 @@ fn enqueue_event(
     }
 }
 
+/// Every watch (`true`) and unwatch (`false`) an injected-event worker asked for, so tests can
+/// observe where a waiting worker watches. Shared by all tests: filter by a unique directory.
+#[cfg(test)]
+static INJECTED_WATCH_LOG: std::sync::Mutex<Vec<(PathBuf, bool)>> =
+    std::sync::Mutex::new(Vec::new());
+
 enum ProjectWatcher {
     Native(notify::RecommendedWatcher),
     #[cfg(any(test, feature = "test-hooks"))]
@@ -356,7 +364,14 @@ impl ProjectWatcher {
         match self {
             Self::Native(watcher) => watcher.watch(path, mode),
             #[cfg(any(test, feature = "test-hooks"))]
-            Self::Injected => Ok(()),
+            Self::Injected => {
+                #[cfg(test)]
+                INJECTED_WATCH_LOG
+                    .lock()
+                    .unwrap()
+                    .push((path.to_path_buf(), true));
+                Ok(())
+            }
         }
     }
 
@@ -364,7 +379,14 @@ impl ProjectWatcher {
         match self {
             Self::Native(watcher) => watcher.unwatch(path),
             #[cfg(any(test, feature = "test-hooks"))]
-            Self::Injected => Ok(()),
+            Self::Injected => {
+                #[cfg(test)]
+                INJECTED_WATCH_LOG
+                    .lock()
+                    .unwrap()
+                    .push((path.to_path_buf(), false));
+                Ok(())
+            }
         }
     }
 }
@@ -414,6 +436,119 @@ pub fn assert_native_watch_delivery(directory: &Path) {
     }
 }
 
+/// Whether `root` is gone: it does not exist, or it exists but is not a directory. Any other
+/// way a root can fail to scan (permissions, I/O errors) is a real failure and is not this.
+fn root_missing(root: &Path) -> bool {
+    match std::fs::metadata(root) {
+        Ok(meta) => !meta.is_dir(),
+        Err(e) => e.kind() == io::ErrorKind::NotFound,
+    }
+}
+
+/// The nearest existing directory above `root`.
+fn nearest_existing_ancestor(root: &Path) -> Option<PathBuf> {
+    root.ancestors()
+        .skip(1)
+        .find(|p| p.is_dir())
+        .map(Path::to_path_buf)
+}
+
+/// What ended the wait for a missing root.
+enum RootWait {
+    /// The root exists again: the caller scans and installs its watches as usual.
+    Back,
+    /// The worker must end (cancellation, a lost channel, or a watch failure published here).
+    End,
+}
+
+/// Wait for a missing `root` to exist again, watching its nearest existing ancestor
+/// non-recursively; when that ancestor vanishes too, move to the next existing one.
+#[allow(clippy::too_many_arguments)]
+fn wait_for_root(
+    root: &Path,
+    slot: &Slot,
+    cancelled: &AtomicBool,
+    rx: &mpsc::Receiver<WatchMessage>,
+    watcher: &mut ProjectWatcher,
+    watched: &mut BTreeSet<(PathBuf, bool)>,
+    overflow: &AtomicBool,
+    watch_failed: &AtomicBool,
+    #[cfg(any(test, feature = "test-hooks"))] pending_fence: &mut Option<mpsc::SyncSender<()>>,
+    #[cfg(any(test, feature = "test-hooks"))] acknowledge: &dyn Fn(mpsc::SyncSender<()>),
+) -> RootWait {
+    let mut waiting_on: Option<PathBuf> = None;
+    // Publish a failure (like the main loop) and acknowledge a fence that is still owed.
+    macro_rules! fail {
+        () => {{
+            slot.publish(None, true);
+            #[cfg(any(test, feature = "test-hooks"))]
+            if let Some(tx) = pending_fence.take() {
+                acknowledge(tx);
+            }
+            return RootWait::End;
+        }};
+    }
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return RootWait::End;
+        }
+        if !root_missing(root) {
+            return RootWait::Back;
+        }
+        let Some(ancestor) = nearest_existing_ancestor(root) else {
+            fail!();
+        };
+        if waiting_on.as_ref() != Some(&ancestor) {
+            if let Some(old) = waiting_on.take() {
+                let _ = watcher.unwatch(&old);
+                watched.remove(&(old, false));
+            }
+            if watcher
+                .watch(&ancestor, RecursiveMode::NonRecursive)
+                .is_err()
+            {
+                fail!();
+            }
+            watched.insert((ancestor.clone(), false));
+            waiting_on = Some(ancestor);
+            // The root may have come back between the check and the watch installation.
+            continue;
+        }
+        if watch_failed.swap(false, Ordering::Relaxed) {
+            fail!();
+        }
+        if overflow.swap(false, Ordering::Relaxed) {
+            continue;
+        }
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(tx) = pending_fence.take() {
+            acknowledge(tx);
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            // Any change at the watched ancestor may be the root's return: the loop checks.
+            Ok(WatchMessage::Event(Ok(_))) | Ok(WatchMessage::PathsChanged) => {}
+            Ok(WatchMessage::Event(Err(_))) => fail!(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            Ok(WatchMessage::Settled(tx)) => {
+                if watch_failed.swap(false, Ordering::Relaxed) {
+                    slot.publish(None, true);
+                    acknowledge(tx);
+                    return RootWait::End;
+                }
+                // The fence is owed after everything this wait still has to do for the events
+                // before it: a watch moved to a new ancestor, or the scan a returned root needs.
+                // The loop acknowledges it just before it blocks again.
+                // A pending overflow needs no separate handling: the loop re-checks the root.
+                overflow.store(false, Ordering::Relaxed);
+                *pending_fence = Some(tx);
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return RootWait::End,
+        }
+    }
+}
+
 fn run(
     root: PathBuf,
     declarations: Vec<ProjectDeclaration>,
@@ -453,7 +588,7 @@ fn run(
         matches!(watcher, ProjectWatcher::Injected),
         Ordering::Relaxed,
     );
-    let mut watched = BTreeSet::new();
+    let mut watched: BTreeSet<(PathBuf, bool)> = BTreeSet::new();
     #[cfg(any(test, feature = "test-hooks"))]
     let mut pending_fence = None;
     #[cfg(any(test, feature = "test-hooks"))]
@@ -468,6 +603,35 @@ fn run(
         }
         let mut projects = match detect(&root, &declarations, &cancelled) {
             Ok(found) => found,
+            Err(_) if root_missing(&root) => {
+                // A root that is gone is not a failure: there are no projects. Wait for it to
+                // come back instead of ending, so a later re-creation is detected again.
+                slot.publish(Some(Vec::new()), false);
+                // A fence owed for this scan is acknowledged by the wait, once its watch on the
+                // nearest existing ancestor is installed.
+                for (path, _) in &watched {
+                    let _ = watcher.unwatch(path);
+                }
+                watched.clear();
+                let back = wait_for_root(
+                    &root,
+                    &slot,
+                    &cancelled,
+                    &rx,
+                    &mut watcher,
+                    &mut watched,
+                    &overflow,
+                    &watch_failed,
+                    #[cfg(any(test, feature = "test-hooks"))]
+                    &mut pending_fence,
+                    #[cfg(any(test, feature = "test-hooks"))]
+                    &acknowledge,
+                );
+                if matches!(back, RootWait::End) {
+                    return;
+                }
+                continue;
+            }
             Err(_) => {
                 slot.publish(None, true);
                 #[cfg(any(test, feature = "test-hooks"))]
@@ -676,7 +840,9 @@ impl ProjectDetection {
 
     /// Nonblocking: neither discovery nor watch setup holds this lock. `None` means no new answer;
     /// `Some(false)` an answer; `Some(true)` an answer whose scan or watch failed (the previous
-    /// projects are kept when the scan itself failed).
+    /// projects are kept when the scan itself failed). A root that does not exist (or is not a
+    /// directory) is an answer of no projects, not a failure: the worker keeps waiting for the
+    /// root to be created again.
     pub fn poll(&mut self) -> Option<bool> {
         let answer = self
             .worker

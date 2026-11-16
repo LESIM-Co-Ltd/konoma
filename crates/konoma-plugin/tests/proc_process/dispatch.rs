@@ -23,12 +23,19 @@ mod projects {
         id: &'static str,
         fail_open: bool,
         remove: Option<PathBuf>,
+        /// Made unreadable (mode 000) at the same point, after the metadata check.
+        deny: Option<PathBuf>,
     }
 
     impl Plugin for Fixture {
         fn manifest(&self) -> Manifest {
             if let Some(dir) = &self.remove {
                 std::fs::remove_dir(dir).unwrap();
+            }
+            #[cfg(unix)]
+            if let Some(dir) = &self.deny {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
             }
             Manifest::new(self.id, "1.0.0").project(
                 ProjectDecl::new()
@@ -82,6 +89,7 @@ mod projects {
             id: "fixture",
             fail_open: false,
             remove: None,
+            deny: None,
         })
     }
 
@@ -197,23 +205,53 @@ mod projects {
     }
 
     #[test]
-    fn project_cli_detection_failure_exits_one() {
+    fn project_cli_root_removed_before_discovery_is_no_project_and_exits_two() {
         let dir = konoma_test_support::unique_tmp("cli_project_detection");
         std::fs::create_dir_all(&dir).unwrap();
         let plugin = Fixture {
             id: "fixture",
             fail_open: false,
             remove: Some(dir.to_path_buf()),
+            deny: None,
         };
         assert_eq!(
             run(
                 vec![Box::new(plugin)],
                 vec![dir.as_os_str().into()],
                 false,
-                |_| panic!("detection failed before terminal")
+                |_| panic!("no project before terminal")
             ),
-            ExitCode::from(1)
+            ExitCode::from(2)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_cli_unreadable_root_is_a_detection_failure_and_exits_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = konoma_test_support::unique_tmp("cli_project_unreadable");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_dir(&dir).is_ok();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if readable {
+            eprintln!("skipped: mode 000 does not bind this user (uid 0)");
+            return;
+        }
+        let plugin = Fixture {
+            id: "fixture",
+            fail_open: false,
+            remove: None,
+            deny: Some(dir.to_path_buf()),
+        };
+        let code = run(
+            vec![Box::new(plugin)],
+            vec![dir.as_os_str().into()],
+            false,
+            |_| panic!("detection failed before terminal"),
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(code, ExitCode::from(1));
     }
 
     #[test]
@@ -226,6 +264,7 @@ mod projects {
                 id: "fixture",
                 fail_open: !fail_backend,
                 remove: None,
+                deny: None,
             };
             assert_eq!(
                 run(
@@ -285,7 +324,8 @@ mod projects {
                     Box::new(Fixture {
                         id: "second",
                         fail_open: false,
-                        remove: None
+                        remove: None,
+                        deny: None,
                     })
                 ],
                 vec![dir.as_os_str().into()],

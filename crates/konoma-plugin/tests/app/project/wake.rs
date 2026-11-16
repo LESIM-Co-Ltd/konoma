@@ -394,6 +394,57 @@ fn watch_paths_replacement_and_failure_keep_the_current_screen() {
     );
 }
 
+/// The project root is removed while the standalone app runs: detection answers "no projects",
+/// not a failure, so the loop shows no "could not detect or watch projects" notice.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn deleted_project_root_is_not_a_detection_failure() {
+    let (dir, mut prepared, replies, _log) = setup();
+    let detection = prepared.detection.clone();
+    let backend = Arc::new(Mutex::new(TestBackend::new(54, 14)));
+    let mut terminal = Terminal::new(Probe {
+        backend,
+        draws: Arc::new(Mutex::new(0)),
+    })
+    .unwrap();
+    let mut stage = 0;
+    let mut events = IdleEvents {
+        replies,
+        idle: Box::new(|| {
+            let step = stage;
+            stage += 1;
+            match step {
+                0 => {
+                    std::fs::remove_dir_all(&dir).unwrap();
+                    detection.inject_event_with_pending_watch_update(Ok(notify::Event::new(
+                        notify::EventKind::Remove(notify::event::RemoveKind::Any),
+                    )
+                    .add_path(dir.join("project.marker"))));
+                    Next::Timeout
+                }
+                1 => Next::End,
+                _ => unreachable!(),
+            }
+        }),
+    };
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut events,
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    drop(events);
+    assert_eq!(stage, 2);
+    assert!(prepared.detection.projects.is_empty());
+    assert_ne!(
+        prepared.notice.as_deref(),
+        Some("could not detect or watch projects")
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn project_entry_refuses_before_terminal_initialisation() {

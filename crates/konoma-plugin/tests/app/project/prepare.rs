@@ -20,12 +20,19 @@ struct ProjectPlugin {
     seen: OpenLog,
     fail_open: bool,
     remove_on_manifest: Option<PathBuf>,
+    /// Made unreadable (mode 000) at the same point, after the metadata check.
+    deny_on_manifest: Option<PathBuf>,
 }
 
 impl Plugin for ProjectPlugin {
     fn manifest(&self) -> Manifest {
         if let Some(path) = &self.remove_on_manifest {
             let _ = std::fs::remove_dir(path);
+        }
+        #[cfg(unix)]
+        if let Some(path) = &self.deny_on_manifest {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000));
         }
         Manifest::new(self.id, "0.1.0").project(
             ProjectDecl::new()
@@ -103,6 +110,7 @@ fn plugin(id: &'static str, seen: &OpenLog, fail_open: bool) -> Arc<dyn Plugin> 
         seen: seen.clone(),
         fail_open,
         remove_on_manifest: None,
+        deny_on_manifest: None,
     })
 }
 
@@ -184,6 +192,7 @@ fn prepare_projects_rejects_directory_and_project_errors_before_terminal() {
             seen,
             fail_open: false,
             remove_on_manifest: Some(removed.to_path_buf()),
+            deny_on_manifest: None,
         })],
         &removed,
         TermCaps::new(),
@@ -191,7 +200,44 @@ fn prepare_projects_rejects_directory_and_project_errors_before_terminal() {
         service,
     )
     .err()
-    .expect("discovery cannot read the removed directory");
+    .expect("a removed directory has no project");
+    // A root that is gone is no project, not a detection failure (that stays for a root that
+    // exists but cannot be read).
+    assert!(matches!(failure.error, AppError::NoProject(_)));
+    assert_eq!(failure.error.exit_code(), 2);
+}
+
+/// A root that exists but cannot be scanned is a detection failure (exit 1), unlike a removed one.
+#[cfg(unix)]
+#[test]
+fn prepare_projects_unreadable_root_is_a_detection_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let probe = directory();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::read_dir(&probe).is_ok();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        eprintln!("skipped: mode 000 does not bind this user (uid 0)");
+        return;
+    }
+    let seen = Arc::new(Mutex::new(vec![]));
+    let denied = directory();
+    let failure = prepare_projects(
+        vec![Arc::new(ProjectPlugin {
+            id: "denied",
+            seen,
+            fail_open: false,
+            remove_on_manifest: None,
+            deny_on_manifest: Some(denied.to_path_buf()),
+        })],
+        &denied,
+        TermCaps::new(),
+        (SharedConfig::default(), None),
+        services(false),
+    )
+    .err()
+    .expect("an unreadable directory cannot be scanned");
+    std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(failure.error, AppError::ProjectDetection(_)));
     assert_eq!(failure.error.exit_code(), 1);
 }
