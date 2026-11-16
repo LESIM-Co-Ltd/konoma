@@ -403,6 +403,41 @@ fn assert_screen(
     }
 }
 
+/// The standalone app takes the host's effect rule: opening a diff shows no operation name in
+/// the footer, while the result of a write does. (Opening a file or a tab is refused there with
+/// its own notice, so it is not a case of this rule.)
+#[test]
+fn standalone_effects_name_the_operation_only_for_writes() {
+    for (diff, named) in [(true, false), (false, true)] {
+        let (_dir, mut prepared, _term) = setup(false, true);
+        let mut state = ProjectLoopState::new(&mut prepared, false);
+        let info = state.info(&prepared, &ProjectLoopCx::default());
+        let nav = state.screen.as_ref().unwrap();
+        let mut effect = crate::host::project::ProjectEffect::new(
+            ProjectOrigin {
+                context: info.id,
+                project: nav.project.clone(),
+                root: info.root.clone(),
+                screen: nav.frame().map(|f| f.key.clone()),
+                surface: info.surface.clone(),
+            },
+            "Diff",
+        );
+        effect.outcome = diff.then(|| Outcome::OpenDiff {
+            path: prepared.open_dir.join("file.txt"),
+        });
+        let mut update = ProjectUpdate::handled();
+        update.events.push(ProjectEvent::Effect(effect));
+        prepared.notice = None;
+        state.apply(&mut prepared, &info, update);
+        assert_eq!(
+            prepared.notice.as_deref(),
+            named.then_some("Diff"),
+            "diff outcome: {diff}"
+        );
+    }
+}
+
 #[test]
 fn preview_q_restores_exact_opening_project_frame() {
     for screen in ["changes", "log"] {

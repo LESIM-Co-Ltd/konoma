@@ -327,6 +327,30 @@ pub enum Outcome {
     },
 }
 
+impl Outcome {
+    /// Whether this result moves the user somewhere else (another screen, a file, a diff, a root,
+    /// a tab) instead of changing something. The host flashes the operation name only for a result
+    /// that changed something: arriving at the destination is its own feedback.
+    pub fn is_navigation(&self) -> bool {
+        matches!(
+            self,
+            Outcome::PushScreen { .. }
+                | Outcome::PopScreen
+                | Outcome::OpenFile { .. }
+                | Outcome::OpenDiff { .. }
+                | Outcome::SwitchRoot { .. }
+                | Outcome::OpenTab { .. }
+        )
+    }
+
+    /// Whether the host flashes the action's operation name for this result (`None` is a write
+    /// that returned nothing to show). A redraw changed nothing to name, and a navigation is
+    /// answered by the destination itself.
+    pub fn shows_operation_name(outcome: Option<&Outcome>) -> bool {
+        !matches!(outcome, Some(Outcome::Redraw)) && !outcome.is_some_and(Outcome::is_navigation)
+    }
+}
+
 /// Why something failed. The host decides what to do from the kind: for example a
 /// [`FailureKind::TooHeavy`] or [`FailureKind::Timeout`] request may be asked again smaller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

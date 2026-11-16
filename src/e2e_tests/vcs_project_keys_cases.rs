@@ -1447,3 +1447,27 @@ fn vcs_keys_a_table_cell_popup_left_open_is_not_drawn_over_a_project_screen() {
     );
     assert_project_screen_in_front(&sim, "table cell state under", &[]);
 }
+
+/// Opening a diff from a project screen is a navigation: the footer shows no operation name
+/// ("Diff" / "差分"), as the old Git screen's footer did (it flashed only the result of a write).
+#[test]
+fn vcs_keys_opening_a_diff_from_a_screen_flashes_no_operation_name() {
+    if isolated("vcs_keys_opening_a_diff_from_a_screen_flashes_no_operation_name") {
+        return;
+    }
+    for lang in ["en", "ja"] {
+        let repo = super::vcs_changes::git_repo("vcs_keys_diff_no_flash", true);
+        let mut sim = open(&repo, config("git", lang), (140, 30));
+        screen(&mut sim, "changes");
+        press(&mut sim, KeyCode::Enter);
+        assert!(sim.app.is_git_diff_preview() && !sim.app.project_active(), "{lang}");
+        assert_eq!(sim.app.flash, None, "{lang}: opening a diff flashes nothing");
+        let footer = footer_line(&sim);
+        for name in ["diff", "差分"] {
+            assert!(
+                !footer.to_lowercase().starts_with(name),
+                "{lang}: no operation name in the footer: {footer}"
+            );
+        }
+    }
+}

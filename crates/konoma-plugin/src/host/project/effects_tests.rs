@@ -324,7 +324,18 @@ fn non_navigation_effects_keep_existing_acceptance_rules() {
             update.commands.first(),
             Some(ProjectCommand::TreeStatus)
         ));
-        assert!(matches!(&update.commands[1], ProjectCommand::Label(label) if label == "Run"));
+        // A write result names its operation; a navigation (OpenFile) does not.
+        let navigation = matches!(outcome, Some(crate::Outcome::OpenFile { .. }));
+        assert_eq!(
+            update
+                .commands
+                .iter()
+                .any(|c| matches!(c, ProjectCommand::Label(_))),
+            !navigation
+        );
+        if !navigation {
+            assert!(matches!(&update.commands[1], ProjectCommand::Label(label) if label == "Run"));
+        }
         match outcome {
             Some(crate::Outcome::Copy { .. }) => assert!(
                 matches!(&update.commands[2], ProjectCommand::Copy(text) if text == "copied")
@@ -332,6 +343,7 @@ fn non_navigation_effects_keep_existing_acceptance_rules() {
             Some(crate::Outcome::Flash(_)) => assert!(
                 matches!(&update.commands[2], ProjectCommand::Flash(message) if message.get("en") == "message")
             ),
+            Some(crate::Outcome::OpenFile { .. }) => assert_eq!(update.commands.len(), 1),
             _ => assert_eq!(update.commands.len(), 2),
         }
         e.origin.root = "/other".into();
@@ -345,6 +357,58 @@ fn non_navigation_effects_keep_existing_acceptance_rules() {
             .apply_effect(&mut context, &info(7), e)
             .commands
             .is_empty());
+    }
+}
+
+/// Only a write result flashes the operation name; opening something never does. The matching
+/// origin makes the navigation itself run, so the missing label is the rule and not a drop.
+#[test]
+fn navigation_results_show_no_operation_name_and_write_results_do() {
+    use crate::Outcome::*;
+    let navigations = [
+        OpenDiff {
+            path: "/file".into(),
+        },
+        OpenFile {
+            path: "/file".into(),
+            line: None,
+        },
+        SwitchRoot {
+            root: "/root".into(),
+            message: None,
+        },
+        OpenTab {
+            path: "/file".into(),
+        },
+        PushScreen {
+            screen: "detail".into(),
+            selection: None,
+        },
+        PopScreen,
+    ];
+    let writes = [
+        None,
+        Some(Reload),
+        Some(Copy { text: "t".into() }),
+        Some(Flash(crate::Tr::new("m"))),
+    ];
+    let labelled = |outcome: Option<crate::Outcome>| {
+        let mut f = Fixture::new();
+        f.runtimes.get_mut(&project()).unwrap().project.declaration = crate::ProjectDecl::new()
+            .screen(crate::ProjectScreen::new("detail", "Detail").pushed());
+        let mut e = effect();
+        e.outcome = outcome;
+        let (mut host, mut context) = f.parts();
+        host.apply_effect(&mut context, &info(7), e)
+            .commands
+            .iter()
+            .any(|c| matches!(c, ProjectCommand::Label(_)))
+    };
+    for outcome in navigations {
+        assert!(!labelled(Some(outcome.clone())), "{outcome:?}");
+    }
+    for outcome in writes {
+        assert!(labelled(outcome.clone()), "{outcome:?}");
     }
 }
 

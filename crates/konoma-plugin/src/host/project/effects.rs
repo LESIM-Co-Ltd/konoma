@@ -242,24 +242,11 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         if effect.tree_status {
             update.commands.push(ProjectCommand::TreeStatus);
         }
-        if !matches!(
-            effect.outcome,
-            Some(Outcome::Redraw | Outcome::PushScreen { .. } | Outcome::PopScreen)
-        ) {
+        if Outcome::shows_operation_name(effect.outcome.as_ref()) {
             update.commands.push(ProjectCommand::Label(effect.label));
         }
         update.changed = !update.commands.is_empty();
-        let navigation = matches!(
-            effect.outcome,
-            Some(
-                Outcome::PushScreen { .. }
-                    | Outcome::PopScreen
-                    | Outcome::OpenFile { .. }
-                    | Outcome::OpenDiff { .. }
-                    | Outcome::SwitchRoot { .. }
-                    | Outcome::OpenTab { .. }
-            )
-        );
+        let navigation = effect.outcome.as_ref().is_some_and(Outcome::is_navigation);
         if navigation
             && effect.origin.screen.is_some()
             && !context.active.as_ref().is_some_and(|nav| {
