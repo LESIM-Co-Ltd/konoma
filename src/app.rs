@@ -3694,8 +3694,8 @@ impl App {
             // The stamp is of a file; the text a command or plugin generated is a new file every
             // time it is made, so the stamp of the one read before says nothing about this one:
             // it is landed by line, which holds across a change of the text.
-            let generated =
-                self.tab.command_out.is_some() && self.windowed_src() == self.tab.command_out.as_deref();
+            let generated = self.tab.command_out.is_some()
+                && self.windowed_src() == self.tab.command_out.as_deref();
             let unchanged = !generated && saved.is_some() && saved == self.tab.preview_win_stamp;
             if !unchanged {
                 self.seek_windowed_line(top_line, cursor_line, cursor_col);

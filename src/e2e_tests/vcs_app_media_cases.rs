@@ -1804,3 +1804,75 @@ fn media_project_cases(id: &str, lang: &str) {
     );
     assert!(ran >= 16, "media {id}/{lang} ran only {ran} sessions");
 }
+
+/// What a project round trip (`p` then `q`) puts back on a diff: the representation the reader
+/// chose (not the configured one), the media page and the screen the reader was on, on the host
+/// and on the standalone alike (both are compared at every step; the host is also asserted to
+/// keep it, so a reset on one side cannot pass as parity).
+#[test]
+fn diff_representation_and_page_survive_project_round_trip() {
+    if isolated("diff_representation_and_page_survive_project_round_trip") {
+        return;
+    }
+    let id = "git";
+    let path = "pages.pdf";
+    let roots = diff_repositories(|| preview_shape_repo_backend(path, id));
+    let text = config(
+        id,
+        "en",
+        "vim",
+        "relative",
+        "right",
+        &format!("[plugins.{id}]\nread_only=true\n"),
+    );
+    let mut steps = vec![Step::Resize(180, 14), ch('/')];
+    steps.extend(typed(path));
+    steps.extend([
+        key(KeyCode::Enter),
+        key(KeyCode::Enter),
+        ch('J'),
+        ch('p'),
+        ch('q'),
+        ch('J'),
+    ]);
+    // (the diff's representation, its media page) after every step; `None` while the diff is not
+    // the screen (the project's screens are).
+    let mut seen: Vec<Option<(konoma_host_core::project::DiffView, u32)>> = Vec::new();
+    run_roots_with(
+        (&roots.host, &roots.app),
+        id,
+        &text,
+        steps,
+        false,
+        RunOptions {
+            pictures: true,
+            media: true,
+            launches: Some(Arc::new(Mutex::new(Vec::new()))),
+            ..Default::default()
+        },
+        |_, state, host, _| {
+            seen.push(
+                state
+                    .diff
+                    .as_ref()
+                    .map(|d| (d.effective, host.app.diff_media_page())),
+            );
+        },
+    );
+    // The last run of `None` is the project round trip.
+    let away_end = seen.iter().rposition(Option::is_none).expect("the project screens were shown");
+    let away_start = seen[..=away_end]
+        .iter()
+        .rposition(Option::is_some)
+        .expect("the diff was shown before `p`")
+        + 1;
+    let before = seen[away_start - 1].expect("diff before p");
+    let after = seen[away_end + 1].expect("diff after q");
+    assert_eq!(before.1, 2, "`J` turned to page 2 before the round trip");
+    assert_ne!(
+        before.0,
+        konoma_host_core::project::DiffView::Source,
+        "the diff shows a representation other than the configured `source`"
+    );
+    assert_eq!(after, before, "p then q put back the representation and the page");
+}

@@ -362,6 +362,48 @@ fn the_diff_preview_representation_lands_on_the_first_change_with_and_without_th
     assert_same_screen(&screens[0], &screens[1], "diff preview representation");
 }
 
+/// A diff's Preview representation covered by a project screen is landed on the first change of
+/// the content it has when it comes back, not on the first change it had before: the file changed
+/// while covered so its first change moved to the top.
+#[cfg(feature = "git")]
+#[test]
+fn a_revived_diff_preview_lands_on_the_first_change_of_the_current_content() {
+    let mut body = String::from("# Title\n\n");
+    for i in 0..80 {
+        body.push_str(&format!(
+            "Filler paragraph number {i} to take up space.\n\n"
+        ));
+    }
+    let original = format!("{body}ORIGINAL MARKER paragraph.\n");
+    let changed = format!("{body}CHANGED MARKER paragraph.\n");
+    let root = changed_repo("pwp_diff_preview_moved", "doc.md", &original, &changed);
+    for worker in [false, true] {
+        let mut s = road(&root, cfg_en(), worker);
+        s.select("doc.md");
+        s.key('d');
+        wait_diff_target(&mut s, worker);
+        // Covered while the landing is still waiting for the text (the worker has not answered
+        // yet); without the worker the landing has run by then, and the text is read again.
+        s.key('R');
+        s.app.cover_with_project_screen_for_test();
+        // While covered the first change moves to the top of the file.
+        let moved = format!(
+            "# Title EARLY CHANGE\n\n{}",
+            &changed["# Title\n\n".len()..]
+        );
+        std::fs::write(root.join("doc.md"), moved).unwrap();
+        s.app.leave_project_screens_for_test();
+        wait_diff_target(&mut s, worker);
+        s.settle_inline_images("returned", std::time::Duration::from_secs(120));
+        s.draw();
+        assert!(
+            s.find_text("EARLY CHANGE").is_some(),
+            "worker={worker}: not on the first change of the current content:\n{}",
+            s.screen()
+        );
+    }
+}
+
 #[test]
 fn restored_tabs_that_were_previews_are_drawn_when_switched_to_with_the_worker() {
     let dir = sandbox("pwp_restore");

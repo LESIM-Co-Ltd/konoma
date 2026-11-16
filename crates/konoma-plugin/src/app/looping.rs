@@ -3022,6 +3022,23 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                 if let Some(slot) = &preview.observed {
                     let mut slot = slot.lock().unwrap();
                     if let Some(state) = slot.as_mut() {
+                        // The preview's own `Space` menu, item by item (the diff screen reports
+                        // its own list the same way).
+                        state.diff_actions = match st.menu {
+                            Some((c, CoreMenu::Actions)) => keys
+                                .space_items(
+                                    c,
+                                    &cx.lang,
+                                    &acts,
+                                    act_ctx,
+                                    (windowed, project_preview.as_ref()),
+                                    act_on,
+                                )
+                                .iter()
+                                .map(|i| (konoma_host_core::help::help_key(i.key), i.label.clone()))
+                                .collect(),
+                            _ => Vec::new(),
+                        };
                         state.menu = st.menu.map(|(_, menu)| {
                             match menu {
                                 CoreMenu::Options => "options",

@@ -1358,17 +1358,23 @@ fn run_roots_with(
                         title: crate::ops::core_help::help_title(&host.app),
                     });
             }
-            // A preview opened from a diff has its own actions menu (compared through the frame);
-            // the diff's action list is only observed while the diff itself is shown.
-            if host_snapshot
-                .diff
-                .as_ref()
-                .is_some_and(|d| d.preview_context.is_none())
-                && host_snapshot.menu.as_deref() == Some("actions")
-            {
+            // The host's `Space` menu is the one of the screen shown: the diff's while the diff
+            // itself is shown, the preview's (its own context) for a preview opened from a diff.
+            if host_snapshot.diff.is_some() && host_snapshot.menu.as_deref() == Some("actions") {
+                let ctx = if host_snapshot
+                    .diff
+                    .as_ref()
+                    .is_some_and(|d| d.preview_context.is_none())
+                {
+                    crate::keymap::Context::Diff
+                } else {
+                    host.app
+                        .key_context()
+                        .expect("a preview opened from a diff has a context")
+                };
                 host_snapshot.diff_actions = crate::ops::menu::menu(
                     &host.app,
-                    crate::keymap::Context::Diff,
+                    ctx,
                     crate::keymap::LeaderId::Actions,
                     crate::ops::menu::View::Open,
                 )
