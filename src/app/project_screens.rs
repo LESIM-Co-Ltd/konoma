@@ -1162,6 +1162,13 @@ impl App {
             self.ensure_project_view();
             return;
         }
+        self.leave_project_screens();
+    }
+
+    /// Close the project screens and return to where they were opened from (the tree, or the
+    /// Preview they overlaid). Leaving the top screen does this; so does a project that is no
+    /// longer detected.
+    fn leave_project_screens(&mut self) {
         let Some(nav) = self.tab.project_navigation.take() else {
             return;
         };
@@ -1190,6 +1197,60 @@ impl App {
                 self.tab.preview_hscroll = nav.origin_hscroll;
             }
             _ => self.back_to_tree(),
+        }
+    }
+
+    /// A project that the latest detection answer no longer lists: its screens close as when
+    /// leaving them from the top screen, and the flash is the one `p` gives where there is no
+    /// project. Its runtime is dropped by the next poll, which keeps only detected projects.
+    pub(super) fn retire_project(&mut self, key: &ProjectKey) {
+        let mut retired = false;
+        if self
+            .tab
+            .project_return
+            .as_ref()
+            .is_some_and(|nav| &nav.project == key)
+        {
+            self.tab.project_return = None;
+            retired = true;
+        }
+        if self
+            .tab
+            .project_navigation
+            .as_ref()
+            .is_some_and(|nav| &nav.project == key)
+        {
+            self.leave_project_screens();
+            retired = true;
+        }
+        // A chooser that lists it drops that candidate; with none left it closes and the old hub
+        // name that waited for it is dropped.
+        if konoma_plugin::host::project::prompt::retain_projects(
+            &mut self.project_dialog,
+            |candidate| candidate != key,
+        ) {
+            self.tab.project_enter_op = None;
+            retired = true;
+        }
+        // A confirmation or text input of the project closes (its keys would otherwise stay with a
+        // dialog that can no longer act), and its queued invocations are dropped. Another
+        // project's dialog and queue entries stay.
+        if konoma_plugin::host::project::prompt::close_act_dialog_of(&mut self.project_dialog, key)
+        {
+            retired = true;
+        }
+        let queued = self.tab.project_pending_acts.len();
+        self.tab.project_pending_acts.retain(|invocation| {
+            konoma_plugin::host::project::prompt::PromptInvocation::prompt_invocation(invocation)
+                .origin
+                .project
+                != *key
+        });
+        if self.tab.project_pending_acts.len() != queued {
+            retired = true;
+        }
+        if retired {
+            self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
         }
     }
 

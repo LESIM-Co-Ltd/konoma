@@ -217,6 +217,37 @@ impl ProjectLoopState {
                 ProjectPromptUpdate::InvocationReady(invocation) => {
                     self.execute_act(prepared, info, invocation)
                 }
+                ProjectPromptUpdate::ChosenProject(project)
+                    if !prepared
+                        .detection
+                        .projects
+                        .iter()
+                        .any(|p| ProjectKey::from(p) == project) =>
+                {
+                    // The chosen project is no longer detected: refuse it, and ask again among
+                    // the detected ones. With none left the program ends like a start without a
+                    // project, so the loop never holds neither a screen nor a chooser.
+                    prepared.notice = Some(
+                        crate::t!(en: "no project here", ja: "プロジェクトがありません")
+                            .get(prepared.lang)
+                            .into(),
+                    );
+                    let remaining: Vec<ProjectKey> = prepared
+                        .detection
+                        .projects
+                        .iter()
+                        .map(ProjectKey::from)
+                        .filter(|key| self.runtimes.contains_key(key))
+                        .collect();
+                    if remaining.is_empty() {
+                        self.project_gone = true;
+                    } else {
+                        self.dialog = Some(ProjectDialog::Projects {
+                            projects: remaining,
+                            selected: 0,
+                        });
+                    }
+                }
                 ProjectPromptUpdate::ChosenProject(project) => {
                     if let Some(screen) =
                         self.with_host(info, |host, _| host.first_screen(&project, info.id))

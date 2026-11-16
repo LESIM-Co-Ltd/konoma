@@ -231,6 +231,7 @@ mod projects {
         use std::os::unix::fs::PermissionsExt;
         let dir = konoma_test_support::unique_tmp("cli_project_unreadable");
         std::fs::create_dir_all(&dir).unwrap();
+        let _restore = konoma_test_support::RestoreMode::new(&dir);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
         let readable = std::fs::read_dir(&dir).is_ok();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -250,7 +251,6 @@ mod projects {
             false,
             |_| panic!("detection failed before terminal"),
         );
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(code, ExitCode::from(1));
     }
 

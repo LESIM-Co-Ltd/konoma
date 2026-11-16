@@ -158,6 +158,27 @@ pub fn unique_tmp(prefix: &str) -> TmpDir {
     }
 }
 
+/// Restores the unix mode 0o755 on `path` when dropped, a panic included, so a temp directory
+/// that a test made unreadable can still be deleted. It does not set a mode: the test does that
+/// itself, after creating the guard.
+#[cfg(unix)]
+pub struct RestoreMode(PathBuf);
+
+#[cfg(unix)]
+impl RestoreMode {
+    pub fn new(path: &std::path::Path) -> Self {
+        Self(path.to_path_buf())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RestoreMode {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
 /// The repository root (`crates/konoma-test-support/../..`), for tests of the crates under
 /// `crates/` that read `samples/` or write under `docs/` / `site/`: their working directory is
 /// the crate's own directory, not the repository root.

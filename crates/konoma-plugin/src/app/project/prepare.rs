@@ -99,22 +99,33 @@ pub(super) fn prepare_registered(
     )
 }
 
+/// A directory that is gone, or is not one, is the no-project answer (exit 2), at any step: the
+/// directory can vanish between the metadata check and the canonicalization. Other errors are
+/// detection failures.
+fn missing_directory_error(dir: &Path, e: std::io::Error) -> AppError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => AppError::NoDirectory(dir.to_path_buf()),
+        std::io::ErrorKind::NotADirectory => AppError::NotADirectory(dir.to_path_buf()),
+        _ => AppError::ProjectDetection(e.to_string()),
+    }
+}
+
 fn project_dir(dir: &Path) -> Result<std::path::PathBuf, AppError> {
-    let detection_error = |e: std::io::Error| AppError::ProjectDetection(e.to_string());
-    let dir = std::path::absolute(dir).map_err(detection_error)?;
-    let metadata = std::fs::metadata(&dir).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            AppError::NoDirectory(dir.clone())
-        } else if e.kind() == std::io::ErrorKind::NotADirectory {
-            AppError::NotADirectory(dir.clone())
-        } else {
-            detection_error(e)
-        }
-    })?;
+    project_dir_with(dir, |dir| dir.canonicalize())
+}
+
+/// `project_dir` with the canonicalization step injectable, so a directory that vanishes after the
+/// metadata check can be reproduced deterministically.
+fn project_dir_with(
+    dir: &Path,
+    canonicalize: impl FnOnce(&Path) -> std::io::Result<std::path::PathBuf>,
+) -> Result<std::path::PathBuf, AppError> {
+    let dir = std::path::absolute(dir).map_err(|e| AppError::ProjectDetection(e.to_string()))?;
+    let metadata = std::fs::metadata(&dir).map_err(|e| missing_directory_error(&dir, e))?;
     if !metadata.is_dir() {
         return Err(AppError::NotADirectory(dir));
     }
-    dir.canonicalize().map_err(detection_error)
+    canonicalize(&dir).map_err(|e| missing_directory_error(&dir, e))
 }
 
 fn prepare_at(
@@ -364,5 +375,30 @@ mod tests {
             "a successful empty scan is not a scan failure"
         );
         assert_eq!(failure.exit_code(), 2);
+    }
+
+    /// The directory can vanish between the metadata check and the canonicalization: that is the
+    /// no-directory answer (exit 2), like the same loss one step earlier; other errors stay
+    /// detection failures (exit 1).
+    #[test]
+    fn project_dir_classifies_a_loss_during_canonicalization_as_missing() {
+        use std::io::{Error, ErrorKind};
+        let dir = konoma_test_support::unique_tmp("app_project_dir_vanishes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [
+            (ErrorKind::NotFound, 2),
+            (ErrorKind::NotADirectory, 2),
+            (ErrorKind::PermissionDenied, 1),
+        ];
+        for (kind, code) in cases {
+            let error = project_dir_with(&dir, |_| Err(Error::from(kind)))
+                .expect_err("canonicalization failed");
+            assert_eq!(error.exit_code(), code, "{kind:?}: {error}");
+        }
+        assert!(matches!(
+            project_dir_with(&dir, |_| Err(Error::from(ErrorKind::NotFound))),
+            Err(AppError::NoDirectory(_))
+        ));
+        assert!(project_dir_with(&dir, |d| d.canonicalize()).is_ok());
     }
 }

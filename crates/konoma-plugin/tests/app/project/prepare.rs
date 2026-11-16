@@ -213,6 +213,7 @@ fn prepare_projects_rejects_directory_and_project_errors_before_terminal() {
 fn prepare_projects_unreadable_root_is_a_detection_failure() {
     use std::os::unix::fs::PermissionsExt;
     let probe = directory();
+    let _restore_probe = konoma_test_support::RestoreMode::new(&probe);
     std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000)).unwrap();
     let readable = std::fs::read_dir(&probe).is_ok();
     std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -222,6 +223,7 @@ fn prepare_projects_unreadable_root_is_a_detection_failure() {
     }
     let seen = Arc::new(Mutex::new(vec![]));
     let denied = directory();
+    let _restore = konoma_test_support::RestoreMode::new(&denied);
     let failure = prepare_projects(
         vec![Arc::new(ProjectPlugin {
             id: "denied",
@@ -237,7 +239,6 @@ fn prepare_projects_unreadable_root_is_a_detection_failure() {
     )
     .err()
     .expect("an unreadable directory cannot be scanned");
-    std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(failure.error, AppError::ProjectDetection(_)));
     assert_eq!(failure.error.exit_code(), 1);
 }

@@ -272,6 +272,107 @@ fn e2e_standard_vcs_colocated_p_shows_the_project_chooser() {
     assert_eq!(sim.app.project_frame().unwrap().key.screen, "changes");
 }
 
+/// A colocated repository (git and jj at one root) with the chooser open on `p`.
+#[cfg(feature = "git")]
+fn colocated_chooser(name: &str) -> Option<(konoma_test_support::TmpDir, Sim)> {
+    if !crate::vcs::jj::available() {
+        eprintln!("not run: colocated project chooser (jj unavailable)");
+        return None;
+    }
+    let dir = unique_tmp(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    assert!(crate::test_support::run_jj(
+        &dir,
+        &["git", "init", "--colocate", "."]
+    ));
+    let mut sim = Sim::new(&dir);
+    settle(&mut sim);
+    sim.key('p');
+    assert!(sim.app.project_dialog.is_some(), "the chooser is open");
+    Some((dir, sim))
+}
+
+/// Removes `marker` under `root` and lets detection answer again (the injected event is fenced).
+#[cfg(feature = "git")]
+fn lose_marker(sim: &mut Sim, root: &std::path::Path, marker: &str) {
+    std::fs::remove_dir_all(root.join(marker)).unwrap();
+    sim.app
+        .tab
+        .projects
+        .inject_event(Ok(notify::Event::new(notify::EventKind::Remove(
+            notify::event::RemoveKind::Any,
+        ))
+        .add_path(root.join(marker))));
+    sim.app.poll_projects();
+    settle(sim);
+}
+
+#[cfg(feature = "git")]
+fn chooser_plugins(sim: &Sim) -> Vec<String> {
+    match sim.app.project_dialog.as_ref() {
+        Some(crate::app::project_screens::ProjectDialog::Projects { projects, .. }) => {
+            projects.iter().map(|p| p.plugin.clone()).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A candidate the detection answer no longer lists leaves the chooser; with none left the chooser
+/// closes, the old hub name waiting for it is dropped and the flash is the no-project one.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_standard_vcs_chooser_drops_a_candidate_that_vanished() {
+    let Some((dir, mut sim)) = colocated_chooser("standard_vcs_chooser_vanish") else {
+        return;
+    };
+    let root = dir.to_path_buf();
+    assert_eq!(chooser_plugins(&sim), ["git", "jj"]);
+    lose_marker(&mut sim, &root, ".jj");
+    assert_eq!(chooser_plugins(&sim), ["git"], "jj left the chooser");
+    assert!(!sim.app.project_active(), "nothing opens by itself");
+    sim.app.tab.project_enter_op = Some("hub".into());
+    lose_marker(&mut sim, &root, ".git");
+    assert!(sim.app.project_dialog.is_none(), "the empty chooser closes");
+    assert!(sim.app.tab.project_enter_op.is_none());
+    assert_eq!(
+        sim.app.flash.as_deref(),
+        Some(tr(Lang::En, Msg::NotAGitRepo))
+    );
+    assert!(!sim.app.project_active());
+}
+
+/// Choosing a candidate the detection answer no longer lists is refused with the no-project flash
+/// instead of opening screens from a runtime that is not this tab's.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_standard_vcs_choosing_a_vanished_candidate_is_refused() {
+    let Some((dir, mut sim)) = colocated_chooser("standard_vcs_chooser_stale") else {
+        return;
+    };
+    let root = dir.to_path_buf();
+    let both = match sim.app.project_dialog.as_ref() {
+        Some(crate::app::project_screens::ProjectDialog::Projects { projects, .. }) => {
+            projects.clone()
+        }
+        _ => panic!("project chooser required"),
+    };
+    lose_marker(&mut sim, &root, ".jj");
+    // The chooser as it was before the answer: it still lists jj.
+    sim.app.project_dialog = Some(crate::app::project_screens::ProjectDialog::Projects {
+        projects: both,
+        selected: 1,
+    });
+    sim.app.flash = None;
+    sim.enter();
+    settle(&mut sim);
+    assert!(!sim.app.project_active(), "no screens from a vanished jj");
+    assert_eq!(
+        sim.app.flash.as_deref(),
+        Some(tr(Lang::En, Msg::NotAGitRepo))
+    );
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn e2e_standard_vcs_disabling_a_detected_project_blocks_keys_menus_and_a_stale_chooser() {
@@ -481,4 +582,91 @@ fn e2e_standard_vcs_loaded_settings_reach_the_real_plugin_open() {
             );
         }
     }
+}
+
+#[cfg(feature = "git")]
+fn act_dialog_open(sim: &Sim) -> bool {
+    matches!(
+        sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { .. })
+    )
+}
+
+/// A confirmation or a text input of a project that stops being detected is closed with the
+/// screens, so the keys reach the tree again instead of a dialog that can no longer act.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_standard_vcs_vanished_project_closes_its_open_dialog() {
+    for (key, what) in [('c', "text input"), ('x', "confirmation")] {
+        let repo = super::vcs_changes::git_repo("standard_vcs_vanish_dialog", true);
+        let root = repo.to_path_buf();
+        let mut sim = Sim::new(&root);
+        settle(&mut sim);
+        sim.key('p');
+        settle(&mut sim);
+        assert!(sim.app.project_active(), "{what}: the screens open");
+        sim.key(key);
+        assert!(act_dialog_open(&sim), "{what}: the dialog is open");
+        lose_marker(&mut sim, &root, ".git");
+        assert!(!act_dialog_open(&sim), "{what}: the dialog is closed");
+        assert!(sim.app.project_dialog.is_none(), "{what}");
+        assert!(!sim.app.project_active(), "{what}: the screens are closed");
+        assert_eq!(
+            sim.app.flash.as_deref(),
+            Some(tr(Lang::En, Msg::NotAGitRepo)),
+            "{what}"
+        );
+        // The keys reach the tree now: `j` moves the selection.
+        let before = sim.app.tab.selected;
+        sim.key('j');
+        assert_ne!(sim.app.tab.selected, before, "{what}: keys reach the tree");
+    }
+}
+
+/// An answer whose watch failed after a scan that no longer lists the project still retires it: the
+/// screens close, the project is dropped, and the failure notice is shown.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_standard_vcs_a_failed_answer_without_the_project_retires_it() {
+    let repo = super::vcs_changes::git_repo("standard_vcs_failed_answer_retires", true);
+    let root = repo.to_path_buf();
+    let mut sim = Sim::new(&root);
+    settle(&mut sim);
+    sim.key('p');
+    settle(&mut sim);
+    assert!(sim.app.project_active(), "the screens open");
+    sim.app
+        .tab
+        .projects
+        .publish_answer_for_test(Some(Vec::new()), true);
+    assert!(sim.app.poll_projects());
+    assert!(sim.app.tab.projects.projects.is_empty());
+    assert!(
+        !sim.app.project_active(),
+        "the screens of the gone project are closed"
+    );
+    assert_eq!(
+        sim.app.flash.as_deref(),
+        Some(tr(Lang::En, Msg::ProjectDetectionFailed))
+    );
+}
+
+/// Losing only the other project of a colocated root leaves the dialog of the project that stays.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_standard_vcs_losing_the_other_project_keeps_a_dialog() {
+    let Some((dir, mut sim)) = colocated_chooser("standard_vcs_vanish_other_dialog") else {
+        return;
+    };
+    let root = dir.to_path_buf();
+    // The first candidate is git.
+    sim.enter();
+    settle(&mut sim);
+    assert!(sim.app.project_active(), "the git project opens");
+    std::fs::write(root.join("new.txt"), "x\n").unwrap();
+    sim.key('c');
+    assert!(act_dialog_open(&sim), "the git dialog is open");
+    lose_marker(&mut sim, &root, ".jj");
+    assert!(act_dialog_open(&sim), "the git dialog stays");
+    assert!(sim.app.project_active(), "the git screens stay");
 }

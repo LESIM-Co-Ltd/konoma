@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Condvar, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use notify::{RecursiveMode, Watcher};
 
@@ -102,20 +102,51 @@ pub fn detect(
 }
 
 /// Search the given directories (in order) for the declared markers. A directory that cannot be
-/// read (a missing one included), or a cancellation, is an error. The worker answers a missing
-/// *root* itself as "no projects" rather than as a failure and waits for the root to return; any
-/// other error keeps the caller's previous answer.
+/// read (a missing one included), or a cancellation, is an error. The worker classifies that error
+/// itself: when reading the *root* failed with NotFound or NotADirectory it answers "no projects"
+/// rather than a failure and waits for the root to return; any other error keeps the caller's
+/// previous answer.
 pub fn detect_directories<'a>(
     directories: impl IntoIterator<Item = &'a Path>,
     declarations: &[ProjectDeclaration],
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<MatchedProject>> {
+    scan_directories(directories, declarations, cancelled, |_| {}).map_err(|failure| failure.error)
+}
+
+/// A failed scan, with the directory whose read failed (`None` for a cancellation or a bad glob).
+struct ScanFailure {
+    error: io::Error,
+    directory: Option<PathBuf>,
+}
+
+impl From<io::Error> for ScanFailure {
+    fn from(error: io::Error) -> Self {
+        Self {
+            error,
+            directory: None,
+        }
+    }
+}
+
+fn scan_directories<'a>(
+    directories: impl IntoIterator<Item = &'a Path>,
+    declarations: &[ProjectDeclaration],
+    cancelled: &AtomicBool,
+    mut after_read: impl FnMut(&Path),
+) -> Result<Vec<MatchedProject>, ScanFailure> {
     let mut out = Vec::new();
     for directory in directories {
         if cancelled.load(Ordering::Relaxed) {
-            return Err(io::ErrorKind::Interrupted.into());
+            return Err(io::Error::from(io::ErrorKind::Interrupted).into());
         }
-        let mut entries = std::fs::read_dir(directory)?.collect::<io::Result<Vec<_>>>()?;
+        let mut entries = std::fs::read_dir(directory)
+            .and_then(|entries| entries.collect::<io::Result<Vec<_>>>())
+            .map_err(|error| ScanFailure {
+                error,
+                directory: Some(directory.to_path_buf()),
+            })?;
+        after_read(directory);
         entries.sort_by_key(|e| e.file_name());
         for decl in declarations {
             for marker in &decl.project.markers {
@@ -201,15 +232,25 @@ pub fn watch_targets(root: &Path, projects: &[MatchedProject]) -> BTreeSet<(Path
             }
         }
     }
-    // A recursive watch subsumes the non-recursive watch of the same directory.
+    // No desired watch may be nested in another: the backend does not keep them independent. On
+    // inotify, unwatching a recursive path also removes the watches nested below it, and adding a
+    // non-recursive watch below a recursive one overwrites that directory's recursive flag
+    // (notify 8.2.0 inotify.rs, `remove_watch` ~486-499 and `add_single_watch` ~463). A recursive watch
+    // already covers the directory itself and everything below it, so drop every entry it covers.
     let recursive: Vec<_> = out
         .iter()
         .filter(|(_, r)| *r)
         .map(|(p, _)| p.clone())
         .collect();
-    for path in recursive {
-        out.remove(&(path, false));
-    }
+    out.retain(|(path, is_recursive)| {
+        !recursive.iter().any(|covering| {
+            if *is_recursive {
+                path != covering && path.starts_with(covering)
+            } else {
+                path.starts_with(covering)
+            }
+        })
+    });
     out
 }
 
@@ -222,9 +263,39 @@ struct Slot {
     injected: AtomicBool,
     #[cfg(test)]
     checkpoints: Mutex<Option<fence_tests::WorkerCheckpoints>>,
+    /// Runs once on the worker right after a scan failed, before the failure is classified.
+    #[cfg(test)]
+    after_failed_scan: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Runs once on the worker right after the scan read the given directory successfully.
+    #[cfg(test)]
+    after_directory: Mutex<Option<TestHook<PathBuf>>>,
+    /// Runs once on the worker after a successful scan, right before it installs new watches.
+    #[cfg(test)]
+    before_watches: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Runs on the worker right before every single watch is added. It may change the file system
+    /// and may return an error that stands in for the backend's answer to that watch.
+    #[cfg(test)]
+    before_each_watch: Mutex<Option<WatchHook>>,
+    /// While set, every scan ends with the retry of an incomplete set due, as if the scan had taken
+    /// longer than the backoff.
+    #[cfg(test)]
+    scan_makes_retry_due: AtomicBool,
+    /// While set, every turn of the wait for a missing root that follows a rebuild starts with the
+    /// retry of an incomplete set due, as if the existence check and the ancestor search had
+    /// outlasted the backoff.
+    #[cfg(test)]
+    wait_makes_retry_due: AtomicBool,
     #[cfg(all(test, feature = "app"))]
     startup_failure: Option<StartupFailure>,
 }
+
+/// A test hook that receives the directory the scan just read.
+#[cfg(test)]
+type TestHook<T> = Box<dyn FnMut(&T) + Send>;
+
+/// A test hook that runs before a watch is added and may replace the backend's answer.
+#[cfg(test)]
+type WatchHook = Box<dyn FnMut(&Path) -> Option<notify::Error> + Send>;
 
 #[cfg(all(test, feature = "app"))]
 #[derive(Clone, Copy)]
@@ -252,6 +323,61 @@ impl Slot {
         drop(slot);
         self.ready.notify_all();
         drop(previous);
+    }
+}
+
+impl Slot {
+    /// The worker's hook point before each watch it adds; a test may fail the watch from here.
+    fn before_add(&self, path: &Path) -> Option<notify::Error> {
+        #[cfg(test)]
+        {
+            self.run_before_watches();
+            let mut hook = self
+                .before_each_watch
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            hook.as_mut().and_then(|run| run(path))
+        }
+        #[cfg(not(test))]
+        {
+            let _ = path;
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+impl Slot {
+    fn run_after_directory(&self, directory: &Path) {
+        let mut hook = self
+            .after_directory
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(run) = hook.as_mut() {
+            run(&directory.to_path_buf());
+        }
+    }
+
+    fn run_before_watches(&self) {
+        let hook = self
+            .before_watches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    fn run_after_failed_scan(&self) {
+        let hook = self
+            .after_failed_scan
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 }
 
@@ -287,50 +413,134 @@ enum WatchMessage {
     /// Acknowledge only after preceding events and any resulting scan have completed.
     #[cfg(any(test, feature = "test-hooks"))]
     Settled(mpsc::SyncSender<()>),
+    /// Test hook: the backoff of an incomplete set is over now. Acknowledged after the retry (and
+    /// the rescan that follows it) was done, or at once when no retry is owed.
+    #[cfg(test)]
+    RetryDue(mpsc::SyncSender<()>),
 }
 
+/// What the watcher callback and the worker share.
+///
+/// The worker's own queue has capacity 1 and coalesces: a burst of events (saving one file makes
+/// several) drops all but the first. Whether a dropped event was a watch-loss signal must therefore
+/// be decided where nothing is dropped, in the callback ([`enqueue_event`]): it classifies every
+/// event against `installed` and stores `lost` before it tries to queue the event, so a full queue
+/// cannot lose the signal. A full queue by itself (`overflow`) only asks the worker for a rescan.
 #[derive(Clone)]
 struct EventSender {
     tx: mpsc::SyncSender<WatchMessage>,
+    /// The queue was full or a path vanished: scan again (no rebuild).
     overflow: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
+    /// A watch-loss signal arrived (see [`signals_watch_loss`]): the next sync rebuilds.
+    lost: Arc<AtomicBool>,
+    /// The paths the watchers hold, written by [`WatchSet::rebuild`]. While a rebuild replaces a
+    /// watcher, the callbacks of both watchers read this list, so it holds the old and the new
+    /// paths together until the old watcher is dropped.
+    installed: Arc<RwLock<Vec<PathBuf>>>,
 }
 
+impl EventSender {
+    fn new(tx: mpsc::SyncSender<WatchMessage>) -> Self {
+        Self {
+            tx,
+            overflow: Arc::new(AtomicBool::new(false)),
+            failed: Arc::new(AtomicBool::new(false)),
+            lost: Arc::new(AtomicBool::new(false)),
+            installed: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    fn publish_installed(&self, paths: Vec<PathBuf>) {
+        *self.installed.write().unwrap_or_else(|e| e.into_inner()) = paths;
+    }
+}
+
+/// Whether the event says a watch was lost: the watched object (or a directory above it) was
+/// removed or renamed (`Remove(_)` or `Modify(Name(_))` naming a path that some installed path
+/// starts with), or the backend's queue overflowed (`Flag::Rescan`). An event deeper inside a
+/// recursive watch does not count: notify itself removes and re-adds the nested watches on
+/// DELETE, MOVED_FROM, MOVED_TO and CREATE (inotify.rs ~219-262).
+fn signals_watch_loss(installed: &[PathBuf], event: &notify::Event) -> bool {
+    if event.flag() == Some(notify::event::Flag::Rescan) {
+        return true;
+    }
+    matches!(
+        event.kind,
+        notify::EventKind::Remove(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    ) && event
+        .paths
+        .iter()
+        .any(|named| installed.iter().any(|path| path.starts_with(named)))
+}
+
+/// The watcher callback: classify, then queue. A watch-loss signal is stored in `lost` BEFORE the
+/// `try_send`; a full queue only sets `overflow` (rescan), because the dropped event was already
+/// classified here.
 fn enqueue_event(
-    tx: &mpsc::SyncSender<WatchMessage>,
-    overflow: &AtomicBool,
-    failed: &AtomicBool,
+    events: &EventSender,
     event: notify::Result<notify::Event>,
     #[cfg(test)] before_overflow: impl FnOnce(),
 ) {
     if matches!(&event, Ok(event) if matches!(&event.kind, notify::EventKind::Access(_))) {
         return;
     }
-    if event.is_err() {
-        failed.store(true, Ordering::Relaxed);
+    match &event {
+        // A watch error about a path that no longer exists is the race of a deletion, not a
+        // failure: ask for a rescan (the flag survives a full queue, like any lost path).
+        Err(error) if watch_error_says_path_gone(error) => {
+            events.overflow.store(true, Ordering::Relaxed)
+        }
+        Err(_) => events.failed.store(true, Ordering::Relaxed),
+        Ok(event) => {
+            let installed = events.installed.read().unwrap_or_else(|e| e.into_inner());
+            if signals_watch_loss(&installed, event) {
+                events.lost.store(true, Ordering::Relaxed);
+            }
+        }
     }
     if matches!(
-        tx.try_send(WatchMessage::Event(event)),
+        events.tx.try_send(WatchMessage::Event(event)),
         Err(mpsc::TrySendError::Full(_))
     ) {
         #[cfg(test)]
         before_overflow();
-        // A burst occupies one event slot. Losing a named path invalidates everything,
-        // so coalescing cannot miss a relevant marker or declared watch change.
-        overflow.store(true, Ordering::Relaxed);
+        // A burst occupies one event slot. Losing a named path invalidates everything, so
+        // coalescing cannot miss a relevant marker or declared watch change: rescan.
+        events.overflow.store(true, Ordering::Relaxed);
     }
 }
 
-/// Every watch (`true`) and unwatch (`false`) an injected-event worker asked for, so tests can
-/// observe where a waiting worker watches. Shared by all tests: filter by a unique directory.
+/// Every watch an injected-event worker added, as (watcher instance, path, recursive). The
+/// instance number tells a test which fresh watcher an add belongs to, so a rebuild is visible.
+/// Shared by all tests: filter by a unique directory.
 #[cfg(test)]
-static INJECTED_WATCH_LOG: std::sync::Mutex<Vec<(PathBuf, bool)>> =
+static INJECTED_WATCH_LOG: std::sync::Mutex<Vec<(usize, PathBuf, bool)>> =
     std::sync::Mutex::new(Vec::new());
+
+/// The same adds, with the drop of each watcher, in the order they happened: `(instance, Some(path))`
+/// for an add, `(instance, None)` for a drop.
+#[cfg(test)]
+static INJECTED_TRACE: std::sync::Mutex<Vec<(usize, Option<PathBuf>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Test hook: runs on the worker when the injected watcher of the given instance is dropped.
+#[cfg(test)]
+type DropHook = (usize, Box<dyn FnOnce() + Send>);
+#[cfg(test)]
+static INJECTED_DROP_HOOKS: std::sync::Mutex<Vec<DropHook>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+static INJECTED_INSTANCES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 enum ProjectWatcher {
     Native(notify::RecommendedWatcher),
     #[cfg(any(test, feature = "test-hooks"))]
-    Injected,
+    Injected {
+        #[cfg(test)]
+        instance: usize,
+    },
 }
 
 impl ProjectWatcher {
@@ -345,13 +555,14 @@ impl ProjectWatcher {
         }
         #[cfg(any(test, feature = "test-hooks"))]
         if !native {
-            return Ok(Self::Injected);
+            return Ok(Self::Injected {
+                #[cfg(test)]
+                instance: INJECTED_INSTANCES.fetch_add(1, Ordering::Relaxed),
+            });
         }
         notify::recommended_watcher(move |event| {
             enqueue_event(
-                &events.tx,
-                &events.overflow,
-                &events.failed,
+                &events,
                 event,
                 #[cfg(test)]
                 || {},
@@ -364,28 +575,39 @@ impl ProjectWatcher {
         match self {
             Self::Native(watcher) => watcher.watch(path, mode),
             #[cfg(any(test, feature = "test-hooks"))]
-            Self::Injected => {
+            Self::Injected { .. } => {
+                // Like a native backend, watching a path that does not exist is an error.
+                if !path.exists() {
+                    return Err(notify::Error::path_not_found().add_path(path.to_path_buf()));
+                }
                 #[cfg(test)]
-                INJECTED_WATCH_LOG
-                    .lock()
-                    .unwrap()
-                    .push((path.to_path_buf(), true));
+                if let Self::Injected { instance } = self {
+                    let mut trace = INJECTED_TRACE.lock().unwrap();
+                    INJECTED_WATCH_LOG.lock().unwrap().push((
+                        *instance,
+                        path.to_path_buf(),
+                        mode == RecursiveMode::Recursive,
+                    ));
+                    trace.push((*instance, Some(path.to_path_buf())));
+                }
                 Ok(())
             }
         }
     }
+}
 
-    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
-        match self {
-            Self::Native(watcher) => watcher.unwatch(path),
-            #[cfg(any(test, feature = "test-hooks"))]
-            Self::Injected => {
-                #[cfg(test)]
-                INJECTED_WATCH_LOG
-                    .lock()
-                    .unwrap()
-                    .push((path.to_path_buf(), false));
-                Ok(())
+#[cfg(test)]
+impl Drop for ProjectWatcher {
+    fn drop(&mut self) {
+        if let Self::Injected { instance } = self {
+            INJECTED_TRACE.lock().unwrap().push((*instance, None));
+            let hook = {
+                let mut hooks = INJECTED_DROP_HOOKS.lock().unwrap();
+                let position = hooks.iter().position(|(owner, _)| owner == instance);
+                position.map(|position| hooks.remove(position).1)
+            };
+            if let Some(hook) = hook {
+                hook();
             }
         }
     }
@@ -397,11 +619,7 @@ pub fn assert_native_watch_delivery(directory: &Path) {
     let target = directory.join("created-after-watch");
     assert!(!target.exists());
     let (tx, rx) = mpsc::sync_channel(64);
-    let events = EventSender {
-        tx,
-        overflow: Arc::new(AtomicBool::new(false)),
-        failed: Arc::new(AtomicBool::new(false)),
-    };
+    let events = EventSender::new(tx);
     let mut watcher = ProjectWatcher::new(
         events,
         true,
@@ -432,16 +650,352 @@ pub fn assert_native_watch_delivery(directory: &Path) {
                 }
             }
             WatchMessage::Settled(_) => panic!("native watch does not receive test fences"),
+            #[cfg(test)]
+            WatchMessage::RetryDue(_) => panic!("native watch does not receive retry hooks"),
         }
     }
 }
 
-/// Whether `root` is gone: it does not exist, or it exists but is not a directory. Any other
-/// way a root can fail to scan (permissions, I/O errors) is a real failure and is not this.
-fn root_missing(root: &Path) -> bool {
-    match std::fs::metadata(root) {
+/// Whether an error from reading a root says the root is gone: it does not exist, or it (or one
+/// of its parents) is not a directory. Any other failure (permissions, I/O errors) is real.
+fn is_missing_kind(kind: io::ErrorKind) -> bool {
+    matches!(kind, io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
+}
+
+/// Whether the scan failed because `root` is gone: reading the root, or any directory above it
+/// (when an ancestor is gone, the root is gone with it), failed with a missing kind. The scan's
+/// own error decides, not a second look at the file system: the root may have been created
+/// again since.
+fn scan_says_root_missing(failure: &ScanFailure, root: &Path) -> bool {
+    failure
+        .directory
+        .as_deref()
+        .is_some_and(|directory| root.starts_with(directory))
+        && is_missing_kind(failure.error.kind())
+}
+
+/// Whether the error is of a "not found" kind, whatever path it names (or none).
+fn watch_error_kind_is_missing(error: &notify::Error) -> bool {
+    match &error.kind {
+        notify::ErrorKind::PathNotFound => true,
+        notify::ErrorKind::Io(e) => is_missing_kind(e.kind()),
+        _ => false,
+    }
+}
+
+/// Whether an asynchronous watch error says a path vanished: a "not found" kind AND the paths it
+/// names all gone now. An error that names no path cannot be checked and stays a failure. A
+/// "not found" error whose paths still exist (a dangling symlink met inside a recursive walk, a
+/// backend rounding its errors) is not a vanished path. (An error from adding a watch is judged
+/// by its kind alone: see [`WatchSet`].)
+fn watch_error_says_path_gone(error: &notify::Error) -> bool {
+    watch_error_kind_is_missing(error)
+        && !error.paths.is_empty()
+        && error.paths.iter().all(|path| directory_missing(path))
+}
+
+/// Which directory a watch is on: device and inode, from `std::fs::metadata` (symlinks followed,
+/// like the watch itself). A directory deleted and created again is another identity.
+type Identity = (u64, u64);
+
+fn identity_of(path: &Path) -> Option<Identity> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).ok()?;
+    meta.is_dir().then(|| (meta.dev(), meta.ino()))
+}
+
+#[cfg(not(test))]
+const RETRY_FIRST: Duration = Duration::from_millis(100);
+#[cfg(not(test))]
+const RETRY_CAP: Duration = Duration::from_millis(3200);
+/// Tests retry only when a test makes the retry due (`WatchMessage::RetryDue`), never by time.
+#[cfg(test)]
+const RETRY_FIRST: Duration = Duration::from_secs(3600);
+#[cfg(test)]
+const RETRY_CAP: Duration = Duration::from_secs(3600);
+
+/// The longest the worker blocks on its channel: it bounds how late a cancellation is noticed.
+const RECEIVE_SLICE: Duration = Duration::from_millis(100);
+
+fn doubled(delay: Duration, cap: Duration) -> Duration {
+    (delay * 2).min(cap)
+}
+
+/// What [`WatchSet::sync`] did.
+enum Synced {
+    /// The installed watches stay as they were.
+    Unchanged,
+    /// A fresh watcher replaced the old one: the caller scans again and publishes. Changes made
+    /// while no watch covered a place are found only by scanning (inotify and FSEvents with
+    /// `SinceNow` do not replay them), so every rebuild is followed by a rescan.
+    Rebuilt,
+}
+
+/// The test hook point before each watch is added (see [`Slot::before_add`]).
+type BeforeAdd<'a> = &'a mut dyn FnMut(&Path) -> Option<notify::Error>;
+
+/// The watches of one worker. It never edits a watcher: it replaces it.
+///
+/// Why a rebuild and no incremental bookkeeping: the backend changes its own watch state, so a
+/// worker-side mirror of it cannot be kept true. inotify drops the watch of a deleted directory
+/// (notify 8.2.0 inotify.rs ~303, ~315, ~379); unwatching a recursive path also removes the watches
+/// nested below it (~486-499); a failed recursive add keeps the watches it already made and a
+/// failed unwatch stops part way (~492); an add error may name no path (~461). The standard plugins
+/// watch the whole work tree recursively, so on Linux these races happen during ordinary builds.
+/// Instead, when the wanted set changes (or a watch may be lost) the worker creates a fresh
+/// watcher, adds every wanted path to it and only then drops the old one, so the old watches keep
+/// reporting during the walk. What the fresh watcher accepted IS the installed set, with the
+/// identity (device, inode) of each path to notice a directory that was replaced.
+///
+/// What requests a rebuild (`rebuild_requested`), besides a changed wanted set:
+/// - a watch-loss signal. inotify loses a watch when the watched object is deleted or moved
+///   (IN_DELETE_SELF / IN_MOVE_SELF / IN_IGNORED, or the parent's DELETE / MOVED_FROM, which notify
+///   turns into removing that watch: inotify.rs ~232 and ~379) and when its queue overflows
+///   (Q_OVERFLOW, which notify reports as `Flag::Rescan`, ~195). notify reports these as
+///   `Remove(_)` and `Modify(Name(_))` events naming the object, and as the rescan flag: see
+///   [`signals_watch_loss`]. The callback classifies, because the worker's queue coalesces (see
+///   [`EventSender`]); the worker's own queue overflow only rescans. A directory renamed away and
+///   back keeps its inode, so the identity check alone cannot see that its watch is gone. The check
+///   stays as well, after each successful scan.
+/// - a retry that is due (below).
+///
+/// Every rebuild is followed by a rescan (the caller breaks to its outer loop, which scans and
+/// publishes), including one in the idle loop: a place that no watch covered meanwhile is only
+/// found by scanning.
+///
+/// A "not found" add error (named or not) is never a failure: the path is left out, the set is
+/// `incomplete`, and a rebuild is retried only by time: once `retry_at` has passed (100 ms
+/// doubling to 3.2 s, reset after a complete install). Events, `PathsChanged` and fences never
+/// make a retry due. Any other error (permissions, I/O, watcher creation) fails.
+///
+/// A timed retry is taken only by the idle loop and by a wait-for-root turn that follows a receive,
+/// never by the outer (scan) loop nor by the wait's turn right after a rebuild, and the backoff is
+/// measured from when the worker becomes idle ([`WatchSet::enter_idle`]), not from the end of the
+/// rebuild. Why: a scan slower than the backoff would otherwise find the retry due again right after
+/// the rebuild, rebuild again and never reach the publish, so a quiet file system would turn the
+/// retries into continuous work with no answer. Now a retry cycle (rebuild, scan, publish) is always
+/// followed by at least the backoff of idle time, whatever the scan costs. The wait for a missing
+/// root follows the same rule: its existence check and ancestor search may also outlast the backoff,
+/// so it enters idle ([`WatchSet::enter_idle`]) right before each blocking receive.
+///
+/// It cannot spin: a rebuild is requested only by a file system event, a changed wanted set (itself
+/// a file system change), or a due retry, a rebuild causes no event of its own, and a due retry is
+/// bounded by the backoff.
+struct WatchSet {
+    events: EventSender,
+    #[cfg(any(test, feature = "test-hooks"))]
+    native: bool,
+    #[cfg(all(test, feature = "app"))]
+    fail_creation: bool,
+    watcher: ProjectWatcher,
+    /// The watcher has no watch yet, so the first rebuild uses it instead of creating another.
+    fresh: bool,
+    /// What the last rebuild was asked to install.
+    wanted: BTreeSet<(PathBuf, bool)>,
+    /// What that watcher accepted.
+    installed: Vec<(PathBuf, Identity)>,
+    /// Some wanted path was left out (not found); retried when `retry_at` has passed.
+    incomplete: bool,
+    /// A watch-loss signal arrived: the next sync rebuilds.
+    rebuild_requested: bool,
+    retry_at: Instant,
+    delay: Duration,
+    /// The backoff the last rebuild used while it left the set incomplete; [`WatchSet::enter_idle`]
+    /// measures it again from the idle start (once).
+    idle_backoff: Option<Duration>,
+}
+
+impl WatchSet {
+    fn new(
+        events: EventSender,
+        #[cfg(any(test, feature = "test-hooks"))] native: bool,
+        #[cfg(all(test, feature = "app"))] fail_creation: bool,
+    ) -> notify::Result<Self> {
+        let watcher = ProjectWatcher::new(
+            events.clone(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            native,
+            #[cfg(all(test, feature = "app"))]
+            fail_creation,
+        )?;
+        Ok(Self {
+            events,
+            #[cfg(any(test, feature = "test-hooks"))]
+            native,
+            #[cfg(all(test, feature = "app"))]
+            fail_creation,
+            watcher,
+            fresh: true,
+            wanted: BTreeSet::new(),
+            installed: Vec::new(),
+            incomplete: false,
+            rebuild_requested: false,
+            retry_at: Instant::now(),
+            delay: RETRY_FIRST,
+            idle_backoff: None,
+        })
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn is_injected(&self) -> bool {
+        matches!(self.watcher, ProjectWatcher::Injected { .. })
+    }
+
+    /// Whether an incomplete set is due for a retry: only the clock decides.
+    fn retry_due(&self) -> bool {
+        self.incomplete && Instant::now() >= self.retry_at
+    }
+
+    /// Whether a rebuild is due although the wanted set did not change. A due timed retry counts
+    /// only when `take_retry` (the idle loop and the wait for the root).
+    fn rebuild_due(&mut self, take_retry: bool) -> bool {
+        self.absorb_loss();
+        self.rebuild_requested || (take_retry && self.retry_due())
+    }
+
+    /// The worker published an answer and becomes idle: an incomplete set is not retried before its
+    /// backoff has passed counted from now (see the type's doc for why).
+    fn enter_idle(&mut self) {
+        if let Some(backoff) = self.idle_backoff.take() {
+            if self.incomplete {
+                self.retry_at = self.retry_at.max(Instant::now() + backoff);
+            }
+        }
+    }
+
+    /// How long the worker may block on its channel: no longer than the next due retry.
+    fn receive_timeout(&self) -> Duration {
+        if self.incomplete {
+            RECEIVE_SLICE.min(self.retry_at.saturating_duration_since(Instant::now()))
+        } else {
+            RECEIVE_SLICE
+        }
+    }
+
+    /// Take the watch-loss signal the callback stored: the next sync rebuilds. Returns whether
+    /// there was one.
+    fn absorb_loss(&mut self) -> bool {
+        let lost = self.events.lost.swap(false, Ordering::Relaxed);
+        if lost {
+            self.rebuild_requested = true;
+        }
+        lost
+    }
+
+    /// Whether some installed path is gone or replaced since it was accepted.
+    fn lost_a_watch(&self) -> bool {
+        self.installed
+            .iter()
+            .any(|(path, identity)| identity_of(path) != Some(*identity))
+    }
+
+    /// Make the watcher hold exactly `desired`, rebuilding it when the wanted set changed, when a
+    /// watch was lost (`check_lost`: the caller just scanned successfully, or a watch-loss signal
+    /// arrived), or when a retry is due and `take_retry`. Only a non-"not found" error is returned.
+    fn sync(
+        &mut self,
+        desired: &BTreeSet<(PathBuf, bool)>,
+        check_lost: bool,
+        take_retry: bool,
+        before_add: BeforeAdd,
+    ) -> notify::Result<Synced> {
+        self.absorb_loss();
+        if check_lost && self.lost_a_watch() {
+            self.rebuild_requested = true;
+        }
+        if *desired == self.wanted && !self.rebuild_due(take_retry) {
+            return Ok(Synced::Unchanged);
+        }
+        self.rebuild(desired, before_add)?;
+        Ok(Synced::Rebuilt)
+    }
+
+    /// Fill a fresh watcher, then replace the old one with it (dropping the old one removes all of
+    /// its watches, whatever state it was in).
+    fn rebuild(
+        &mut self,
+        desired: &BTreeSet<(PathBuf, bool)>,
+        before_add: BeforeAdd,
+    ) -> notify::Result<()> {
+        let mut replacement = if self.fresh {
+            None
+        } else {
+            Some(ProjectWatcher::new(
+                self.events.clone(),
+                #[cfg(any(test, feature = "test-hooks"))]
+                self.native,
+                #[cfg(all(test, feature = "app"))]
+                self.fail_creation,
+            )?)
+        };
+        // The callbacks classify against the shared list while the fresh watcher is filled: it
+        // holds the old installed paths and every wanted one (a signal about a path the fresh
+        // watcher is about to hold must not be missed), and the union of the old and the new
+        // installed paths until the old watcher is dropped.
+        let old_paths: Vec<PathBuf> = self.installed.iter().map(|(p, _)| p.clone()).collect();
+        let mut union = old_paths.clone();
+        union.extend(desired.iter().map(|(path, _)| path.clone()));
+        self.events.publish_installed(union);
+        let watcher = replacement.as_mut().unwrap_or(&mut self.watcher);
+        let mut installed = Vec::new();
+        let mut missing = false;
+        for (path, recursive) in desired {
+            let mode = if *recursive {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            let before = identity_of(path);
+            let added = match before_add(path) {
+                Some(error) => Err(error),
+                None => watcher.watch(path, mode),
+            };
+            match added {
+                // The directory must be the same one before and after the add: otherwise it was
+                // replaced meanwhile and the watch (if any) belongs to the old one.
+                Ok(()) => match (before, identity_of(path)) {
+                    (Some(a), Some(b)) if a == b => installed.push((path.clone(), a)),
+                    _ => missing = true,
+                },
+                Err(error) if watch_error_kind_is_missing(&error) => missing = true,
+                Err(error) => {
+                    self.events.publish_installed(old_paths);
+                    return Err(error);
+                }
+            }
+        }
+        let new_paths: Vec<PathBuf> = installed.iter().map(|(p, _)| p.clone()).collect();
+        let mut union = old_paths;
+        union.extend(new_paths.iter().cloned());
+        self.events.publish_installed(union);
+        if let Some(replacement) = replacement {
+            // Dropping the old watcher is the end of the window: its callback may still run until
+            // here, and it names the old paths.
+            self.watcher = replacement;
+        }
+        self.events.publish_installed(new_paths);
+        self.fresh = false;
+        self.wanted = desired.clone();
+        self.installed = installed;
+        self.rebuild_requested = false;
+        self.incomplete = missing;
+        if missing {
+            self.retry_at = Instant::now() + self.delay;
+            self.idle_backoff = Some(self.delay);
+            self.delay = doubled(self.delay, RETRY_CAP);
+        } else {
+            self.delay = RETRY_FIRST;
+            self.idle_backoff = None;
+        }
+        Ok(())
+    }
+}
+
+/// Whether `path` is gone right now: it does not exist, or exists but is not a directory.
+fn directory_missing(path: &Path) -> bool {
+    match std::fs::metadata(path) {
         Ok(meta) => !meta.is_dir(),
-        Err(e) => e.kind() == io::ErrorKind::NotFound,
+        Err(e) => is_missing_kind(e.kind()),
     }
 }
 
@@ -462,21 +1016,21 @@ enum RootWait {
 }
 
 /// Wait for a missing `root` to exist again, watching its nearest existing ancestor
-/// non-recursively; when that ancestor vanishes too, move to the next existing one.
+/// non-recursively; when that ancestor vanishes too, the next existing one is chosen. The watch goes
+/// through the same [`WatchSet::sync`] as the main loop.
 #[allow(clippy::too_many_arguments)]
 fn wait_for_root(
     root: &Path,
     slot: &Slot,
     cancelled: &AtomicBool,
+    watches: &SessionWatches,
     rx: &mpsc::Receiver<WatchMessage>,
-    watcher: &mut ProjectWatcher,
-    watched: &mut BTreeSet<(PathBuf, bool)>,
+    set: &mut WatchSet,
     overflow: &AtomicBool,
     watch_failed: &AtomicBool,
     #[cfg(any(test, feature = "test-hooks"))] pending_fence: &mut Option<mpsc::SyncSender<()>>,
     #[cfg(any(test, feature = "test-hooks"))] acknowledge: &dyn Fn(mpsc::SyncSender<()>),
 ) -> RootWait {
-    let mut waiting_on: Option<PathBuf> = None;
     // Publish a failure (like the main loop) and acknowledge a fence that is still owed.
     macro_rules! fail {
         () => {{
@@ -488,46 +1042,64 @@ fn wait_for_root(
             return RootWait::End;
         }};
     }
+    // Whether the turn follows a rebuild: only a turn that follows a receive (the wait was idle) may
+    // take a due timed retry, see the doc of `WatchSet`.
+    let mut just_rebuilt = true;
     loop {
+        // Session watch paths are kept in `watches` and applied by the scan after `Back`; the
+        // dirty flag is consumed here so the host's idle check does not wait for a root that
+        // may never return.
+        watches.dirty.store(false, Ordering::Release);
         if cancelled.load(Ordering::Relaxed) {
             return RootWait::End;
         }
-        if !root_missing(root) {
+        if !directory_missing(root) {
             return RootWait::Back;
+        }
+        #[cfg(test)]
+        if just_rebuilt && slot.wait_makes_retry_due.load(Ordering::Relaxed) {
+            set.retry_at = Instant::now();
         }
         let Some(ancestor) = nearest_existing_ancestor(root) else {
             fail!();
         };
-        if waiting_on.as_ref() != Some(&ancestor) {
-            if let Some(old) = waiting_on.take() {
-                let _ = watcher.unwatch(&old);
-                watched.remove(&(old, false));
+        let desired = BTreeSet::from([(ancestor, false)]);
+        // A rebuild may find the ancestor gone (it is then chosen again) or the root back.
+        let take_retry = !std::mem::take(&mut just_rebuilt);
+        match set.sync(&desired, true, take_retry, &mut |path| {
+            slot.before_add(path)
+        }) {
+            Err(_) => fail!(),
+            Ok(Synced::Rebuilt) => {
+                just_rebuilt = true;
+                continue;
             }
-            if watcher
-                .watch(&ancestor, RecursiveMode::NonRecursive)
-                .is_err()
-            {
-                fail!();
-            }
-            watched.insert((ancestor.clone(), false));
-            waiting_on = Some(ancestor);
-            // The root may have come back between the check and the watch installation.
-            continue;
+            Ok(Synced::Unchanged) => {}
         }
         if watch_failed.swap(false, Ordering::Relaxed) {
             fail!();
         }
-        if overflow.swap(false, Ordering::Relaxed) {
-            continue;
-        }
+        // A full queue asks for a rescan; waiting for the root rescans nothing but the root's own
+        // existence, which the loop checks anyway. A watch-loss signal was classified by the
+        // callback and is taken by the next sync.
+        overflow.store(false, Ordering::Relaxed);
         #[cfg(any(test, feature = "test-hooks"))]
         if let Some(tx) = pending_fence.take() {
             acknowledge(tx);
         }
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            // Any change at the watched ancestor may be the root's return: the loop checks.
-            Ok(WatchMessage::Event(Ok(_))) | Ok(WatchMessage::PathsChanged) => {}
-            Ok(WatchMessage::Event(Err(_))) => fail!(),
+        // About to block: the backoff of an incomplete set counts from here (once per rebuild).
+        set.enter_idle();
+        match rx.recv_timeout(set.receive_timeout()) {
+            // Any change at the watched ancestor may be the root's return: the loop checks. An
+            // event that says the watch was lost was classified by the callback (`lost`).
+            Ok(WatchMessage::Event(Ok(_))) => {}
+            Ok(WatchMessage::PathsChanged) => {}
+            Ok(WatchMessage::Event(Err(_))) => {
+                // A real error was flagged when it arrived; a vanished path only asks to look again.
+                if watch_failed.swap(false, Ordering::Relaxed) {
+                    fail!();
+                }
+            }
             #[cfg(any(test, feature = "test-hooks"))]
             Ok(WatchMessage::Settled(tx)) => {
                 if watch_failed.swap(false, Ordering::Relaxed) {
@@ -536,10 +1108,18 @@ fn wait_for_root(
                     return RootWait::End;
                 }
                 // The fence is owed after everything this wait still has to do for the events
-                // before it: a watch moved to a new ancestor, or the scan a returned root needs.
-                // The loop acknowledges it just before it blocks again.
-                // A pending overflow needs no separate handling: the loop re-checks the root.
+                // before it: a rebuilt watch, or the scan a returned root needs. The loop
+                // acknowledges it just before it blocks again.
+                // A pending watch-loss signal asks for a rebuild, like one the loop saw itself. The
+                // fence starts no retry.
+                set.absorb_loss();
                 overflow.store(false, Ordering::Relaxed);
+                *pending_fence = Some(tx);
+                continue;
+            }
+            #[cfg(test)]
+            Ok(WatchMessage::RetryDue(tx)) => {
+                set.retry_at = Instant::now();
                 *pending_fence = Some(tx);
                 continue;
             }
@@ -570,25 +1150,21 @@ fn run(
     let (rx, watches) = channel;
     let overflow = events.overflow.clone();
     let watch_failed = events.failed.clone();
-    let mut watcher = match ProjectWatcher::new(
+    let mut set = match WatchSet::new(
         events,
         #[cfg(any(test, feature = "test-hooks"))]
         native,
         #[cfg(all(test, feature = "app"))]
         matches!(startup_failure, Some(StartupFailure::WatcherCreation)),
     ) {
-        Ok(watcher) => watcher,
+        Ok(set) => set,
         Err(_) => {
             slot.publish(detect(&root, &declarations, &cancelled).ok(), true);
             return;
         }
     };
     #[cfg(any(test, feature = "test-hooks"))]
-    slot.injected.store(
-        matches!(watcher, ProjectWatcher::Injected),
-        Ordering::Relaxed,
-    );
-    let mut watched: BTreeSet<(PathBuf, bool)> = BTreeSet::new();
+    slot.injected.store(set.is_injected(), Ordering::Relaxed);
     #[cfg(any(test, feature = "test-hooks"))]
     let mut pending_fence = None;
     #[cfg(any(test, feature = "test-hooks"))]
@@ -601,25 +1177,35 @@ fn run(
         if cancelled.load(Ordering::Relaxed) {
             return;
         }
-        let mut projects = match detect(&root, &declarations, &cancelled) {
+        let scan = scan_directories(root.ancestors(), &declarations, &cancelled, |directory| {
+            #[cfg(test)]
+            slot.run_after_directory(directory);
+            #[cfg(not(test))]
+            let _ = directory;
+        });
+        #[cfg(test)]
+        if scan.is_err() {
+            slot.run_after_failed_scan();
+        }
+        #[cfg(test)]
+        if slot.scan_makes_retry_due.load(Ordering::Relaxed) {
+            set.retry_at = Instant::now();
+        }
+        let mut projects = match scan {
             Ok(found) => found,
-            Err(_) if root_missing(&root) => {
+            Err(failure) if scan_says_root_missing(&failure, &root) => {
                 // A root that is gone is not a failure: there are no projects. Wait for it to
                 // come back instead of ending, so a later re-creation is detected again.
                 slot.publish(Some(Vec::new()), false);
                 // A fence owed for this scan is acknowledged by the wait, once its watch on the
                 // nearest existing ancestor is installed.
-                for (path, _) in &watched {
-                    let _ = watcher.unwatch(path);
-                }
-                watched.clear();
                 let back = wait_for_root(
                     &root,
                     &slot,
                     &cancelled,
+                    &watches,
                     &rx,
-                    &mut watcher,
-                    &mut watched,
+                    &mut set,
                     &overflow,
                     &watch_failed,
                     #[cfg(any(test, feature = "test-hooks"))]
@@ -643,17 +1229,17 @@ fn run(
         };
         watches.apply(&mut projects);
         let desired = watch_targets(&root, &projects);
-        let added_watches = desired.difference(&watched).next().is_some();
-        for (path, _) in watched.difference(&desired) {
-            let _ = watcher.unwatch(path);
-        }
-        for (path, recursive) in desired.difference(&watched) {
-            let mode = if *recursive {
-                RecursiveMode::Recursive
-            } else {
-                RecursiveMode::NonRecursive
-            };
-            if watcher.watch(path, mode).is_err() {
+        // The scan succeeded, so a watch that was lost since it was accepted (a directory
+        // deleted and created again) is noticed here, not through events.
+        // A due timed retry is not taken here (`take_retry` false): see the type's doc.
+        match set.sync(&desired, true, false, &mut |path| slot.before_add(path)) {
+            Ok(Synced::Unchanged) => {}
+            // Scan again after the watches were rebuilt: a marker could have changed between the
+            // scan and the watches. The second scan closes that gap without a timer or UI-thread
+            // I/O. A watch left out as "not found" is retried by the idle loop when its backoff is
+            // over, not here.
+            Ok(Synced::Rebuilt) => continue,
+            Err(_) => {
                 slot.publish(Some(projects), true);
                 #[cfg(any(test, feature = "test-hooks"))]
                 if let Some(tx) = pending_fence.take() {
@@ -662,41 +1248,29 @@ fn run(
                 return;
             }
         }
-        watched = desired;
-        // Scan again after installing watches: a marker could have changed between the first
-        // scan and watch setup. The second scan closes that gap without a timer or UI-thread I/O.
-        if added_watches {
-            continue;
-        }
         slot.publish(Some(projects.clone()), false);
         #[cfg(any(test, feature = "test-hooks"))]
         if let Some(tx) = pending_fence.take() {
             acknowledge(tx);
         }
+        set.enter_idle();
         loop {
-            if watches.dirty.swap(false, Ordering::AcqRel) {
+            let dirty = watches.dirty.swap(false, Ordering::AcqRel);
+            if dirty {
                 watches.apply(&mut projects);
+            }
+            if dirty || set.rebuild_due(true) {
                 let desired = watch_targets(&root, &projects);
-                for (path, _) in watched.difference(&desired) {
-                    let _ = watcher.unwatch(path);
-                }
-                for (path, recursive) in desired.difference(&watched) {
-                    if watcher
-                        .watch(
-                            path,
-                            if *recursive {
-                                RecursiveMode::Recursive
-                            } else {
-                                RecursiveMode::NonRecursive
-                            },
-                        )
-                        .is_err()
-                    {
+                match set.sync(&desired, false, true, &mut |path| slot.before_add(path)) {
+                    Ok(Synced::Unchanged) => {}
+                    // Scan again after a rebuild, here too: a change made while no watch covered
+                    // its place is found only by scanning.
+                    Ok(Synced::Rebuilt) => break,
+                    Err(_) => {
                         slot.publish(Some(projects), true);
                         return;
                     }
                 }
-                watched = desired;
             }
             if cancelled.load(Ordering::Relaxed) {
                 return;
@@ -706,11 +1280,14 @@ fn run(
                 return;
             }
             if overflow.swap(false, Ordering::Relaxed) {
+                // The queue overflowed: events were dropped, so scan again. No rebuild: a dropped
+                // watch-loss signal was classified by the callback and is in `lost` (taken by
+                // the sync above or the outer loop's).
                 break;
             }
             #[cfg(test)]
             slot.checkpoint(fence_tests::WorkerCheckpoint::BeforeReceive);
-            match rx.recv_timeout(Duration::from_millis(100)) {
+            match rx.recv_timeout(set.receive_timeout()) {
                 Ok(WatchMessage::PathsChanged) => {}
                 Ok(WatchMessage::Event(Ok(event))) => {
                     if !matches!(event.kind, notify::EventKind::Access(_))
@@ -720,8 +1297,13 @@ fn run(
                     }
                 }
                 Ok(WatchMessage::Event(Err(_))) => {
-                    slot.publish(Some(projects), true);
-                    return;
+                    // A real error was flagged when it arrived; a vanished path asks for a rescan.
+                    if watch_failed.swap(false, Ordering::Relaxed) {
+                        slot.publish(Some(projects), true);
+                        return;
+                    }
+                    overflow.store(false, Ordering::Relaxed);
+                    break;
                 }
                 #[cfg(any(test, feature = "test-hooks"))]
                 Ok(WatchMessage::Settled(tx)) => {
@@ -732,11 +1314,25 @@ fn run(
                         acknowledge(tx);
                         return;
                     }
-                    if overflow.swap(false, Ordering::Relaxed) {
+                    // The fence starts no retry and publishes nothing by itself: it is owed only
+                    // for a pending overflow (a rescan) or watch loss (a rebuild and a rescan),
+                    // which acknowledges it.
+                    let lost = set.absorb_loss();
+                    if overflow.swap(false, Ordering::Relaxed) || lost {
                         pending_fence = Some(tx);
                         break;
                     }
                     acknowledge(tx);
+                }
+                #[cfg(test)]
+                Ok(WatchMessage::RetryDue(tx)) => {
+                    set.retry_at = Instant::now();
+                    if set.retry_due() {
+                        // Owed after the retry and the rescan it causes.
+                        pending_fence = Some(tx);
+                    } else {
+                        acknowledge(tx);
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -804,11 +1400,7 @@ impl ProjectDetection {
         });
         let cancelled = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::sync_channel(1);
-        let events = EventSender {
-            tx,
-            overflow: Arc::new(AtomicBool::new(false)),
-            failed: Arc::new(AtomicBool::new(false)),
-        };
+        let events = EventSender::new(tx);
         let watches = Arc::new(SessionWatches {
             paths: Mutex::default(),
             dirty: AtomicBool::new(false),
@@ -954,16 +1546,17 @@ impl ProjectDetection {
     /// publishing an update.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn inject_event(&self, event: notify::Result<notify::Event>) {
-        let failed = event.is_err();
+        // Like the worker: an error about a vanished path is a rescan request, not a failure.
+        let failed = event
+            .as_ref()
+            .is_err_and(|error| !watch_error_says_path_gone(error));
         let events = self
             .worker
             .as_ref()
             .and_then(|worker| worker.events.as_ref())
             .expect("project tests must use injected events");
         enqueue_event(
-            &events.tx,
-            &events.overflow,
-            &events.failed,
+            events,
             event,
             #[cfg(test)]
             || {},
@@ -1009,6 +1602,31 @@ impl ProjectDetection {
             notify::event::AccessKind::Any,
         ))));
         self.inject_event(event);
+    }
+
+    /// Test hook: make the retry of an incomplete watch set due now and wait until the worker did
+    /// it (and published the rescan it causes). Nothing is retried when the set is complete.
+    #[cfg(test)]
+    pub(crate) fn make_retry_due_for_test(&self) {
+        let worker = self.worker.as_ref().expect("a worker");
+        let (tx, rx) = mpsc::sync_channel(1);
+        worker
+            .watches
+            .wake
+            .send(WatchMessage::RetryDue(tx))
+            .expect("project worker");
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+            Err(e) => panic!("retry hook: {e}"),
+        }
+    }
+
+    /// Test hook: put an answer into the worker's slot as if the worker had published it (for
+    /// example one whose watch failed after a scan that no longer lists a project).
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn publish_answer_for_test(&self, projects: Option<Vec<MatchedProject>>, failed: bool) {
+        let worker = self.worker.as_ref().expect("a worker");
+        worker.slot.publish(projects, failed);
     }
 
     /// Test hook: whether both handles share one worker.

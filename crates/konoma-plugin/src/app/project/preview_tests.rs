@@ -12,6 +12,8 @@ use ratatui::{backend::TestBackend, buffer::Buffer};
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 
+#[path = "chooser_tests.rs"]
+mod chooser_tests;
 #[path = "global_help_tests.rs"]
 mod global_help_tests;
 #[path = "idle_resize_tests.rs"]

@@ -685,3 +685,61 @@ fn vcs_port_deleted_project_root_is_no_project_and_comes_back() {
     drain(&mut sim);
     assert!(sim.app.project_active(), "{:?}", sim.app.flash);
 }
+
+/// A project that is no longer detected while its screens are open: the screens close like leaving
+/// them from the top screen (back to the tree), and the flash is what `p` says where there is no
+/// project. Both ways a project can vanish: the whole root removed, and only `.git` removed.
+#[test]
+fn vcs_port_open_project_screens_close_when_the_project_vanishes() {
+    if isolated("vcs_port_open_project_screens_close_when_the_project_vanishes") {
+        return;
+    }
+    // What `p` says where there is no project at all.
+    let plain = unique_tmp("vcs_port_vanish_plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("a.txt"), "x\n").unwrap();
+    let mut none = Sim::with_config_sized(&plain, config("git", "en"), 100, 20);
+    none.settle_projects();
+    none.key('p');
+    drain(&mut none);
+    let refusal = none.app.flash.clone();
+    assert!(refusal.is_some(), "p refuses without a project");
+
+    for whole_root in [true, false] {
+        let name = if whole_root {
+            "vcs_port_vanish_root"
+        } else {
+            "vcs_port_vanish_dot_git"
+        };
+        let repo = super::vcs_changes::git_repo(name, false);
+        let root = repo.to_path_buf();
+        let mut sim = Sim::with_config_sized(&root, config("git", "en"), 100, 20);
+        sim.settle_projects();
+        sim.key('p');
+        drain(&mut sim);
+        assert!(sim.app.project_active(), "{name}: p opens the screens");
+        sim.app.flash = None;
+
+        if whole_root {
+            std::fs::remove_dir_all(&root).unwrap();
+        } else {
+            std::fs::remove_dir_all(root.join(".git")).unwrap();
+        }
+        sim.app
+            .tab
+            .projects
+            .inject_event(Ok(notify::Event::new(notify::EventKind::Remove(
+                notify::event::RemoveKind::Any,
+            ))
+            .add_path(root.join(".git"))));
+        sim.app.poll_projects();
+        drain(&mut sim);
+        assert!(sim.app.tab.projects.projects.is_empty(), "{name}");
+        assert!(
+            !sim.app.project_active(),
+            "{name}: the screens of a vanished project are closed"
+        );
+        assert_eq!(sim.app.tab.mode, Mode::Tree, "{name}: back at the tree");
+        assert_eq!(sim.app.flash, refusal, "{name}: the no-project message");
+    }
+}

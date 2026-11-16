@@ -1157,7 +1157,10 @@ fn e2e_project_act_replaces_watch_paths_before_next_invalidation() {
     f.sim.key('x');
     drain(&mut f.sim);
     assert_eq!(last_act(&f).0, "capture");
-    assert_eq!(f.log.lock().unwrap().watch_threads.len(), watches + 1);
+    // The act reply replaced the watch paths at once. How many restarts of the session watch have
+    // happened so far depends on whether the drain above already adopted the rescan's answer (see
+    // below), so only the reply's own effect is asserted here.
+    assert!(f.log.lock().unwrap().watch_threads.len() > watches);
     assert_eq!(
         f.sim.app.tab.projects.projects[0].session_watch_paths,
         Some(vec![next.clone()])
@@ -1172,7 +1175,20 @@ fn e2e_project_act_replaces_watch_paths_before_next_invalidation() {
         .inject_event(Ok(notify::Event::new(notify::EventKind::Access(
             notify::event::AccessKind::Any,
         ))));
-    assert_eq!(f.sim.app.tab.projects.poll(), None);
+    // The watch paths changed, so the worker rebuilds its watcher and scans again: that rescan
+    // publishes one answer (every rebuild is followed by a rescan). The fence above returns only
+    // after the worker has done all of that, so the answer is published from here on; whether the
+    // drain before it already adopted it does not matter, because the count is compared only after
+    // one more drain, which adopts it if it is still waiting and finds nothing otherwise. Adopting
+    // it restarts the session watch once, so the total is the same in both orders.
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.projects.poll(), None, "and only once");
+    let after_rescan = f.log.lock().unwrap().watch_threads.len();
+    assert_eq!(
+        after_rescan,
+        watches + 2,
+        "one restart for the act reply and one for the rescan's answer"
+    );
     f.log.lock().unwrap().views.clear();
     let chips = f.log.lock().unwrap().chips;
     f.sim.app.tab.projects.inject_event(Ok(
@@ -1192,7 +1208,7 @@ fn e2e_project_act_replaces_watch_paths_before_next_invalidation() {
     drain(&mut f.sim);
     assert_eq!(f.log.lock().unwrap().views, [view_context(&f, "items")]);
     assert_eq!(f.log.lock().unwrap().chips, chips + 1);
-    assert_eq!(f.log.lock().unwrap().watch_threads.len(), watches + 2);
+    assert_eq!(f.log.lock().unwrap().watch_threads.len(), after_rescan + 1);
 }
 
 fn press(f: &mut Fixture, code: KeyCode) {

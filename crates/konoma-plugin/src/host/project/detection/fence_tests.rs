@@ -110,9 +110,7 @@ fn assert_late_overflow_fence(failed: bool) {
     let marker = root.join(".fence-marker");
     std::fs::create_dir(&marker).unwrap();
     enqueue_event(
-        &events.tx,
-        &events.overflow,
-        &events.failed,
+        events,
         Ok(notify::Event::new(notify::EventKind::Any).add_path(marker)),
         || {
             // Full has already been observed, but overflow has not been stored. Let the

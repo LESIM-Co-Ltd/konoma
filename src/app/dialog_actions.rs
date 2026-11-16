@@ -16,7 +16,23 @@ impl App {
     ) {
         use konoma_plugin::host::project::prompt::ProjectPromptUpdate;
         match update {
-            ProjectPromptUpdate::ChosenProject(project) => self.open_project(project),
+            ProjectPromptUpdate::ChosenProject(project) => {
+                // The chooser may list a project the latest detection dropped: refuse it rather
+                // than open screens from a runtime that is no longer this tab's.
+                let listed = self
+                    .tab
+                    .projects
+                    .projects
+                    .iter()
+                    .any(|p| konoma_plugin::host::project::ProjectKey::from(p) == project);
+                if listed {
+                    self.open_project(project)
+                } else {
+                    self.tab.project_enter_op = None;
+                    self.flash =
+                        Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NotAGitRepo).into());
+                }
+            }
             ProjectPromptUpdate::InvocationReady(invocation) => {
                 self.execute_project_act(invocation)
             }

@@ -351,6 +351,47 @@ fn char_byte(text: &str, cursor: usize) -> usize {
         .map_or(text.len(), |(index, _)| index)
 }
 
+/// Drops the chooser's candidates that `keep` refuses (projects the latest detection no longer
+/// lists), keeping the selection on the same project where it survives. Returns whether a chooser
+/// was open and had no candidate left; it is then closed. Any other dialog is left alone.
+pub fn retain_projects<I>(
+    dialog: &mut Option<ProjectDialog<I>>,
+    keep: impl Fn(&ProjectKey) -> bool,
+) -> bool {
+    let Some(ProjectDialog::Projects { projects, selected }) = dialog else {
+        return false;
+    };
+    let current = projects.get(*selected).cloned();
+    projects.retain(|key| keep(key));
+    if projects.is_empty() {
+        *dialog = None;
+        return true;
+    }
+    *selected = current
+        .and_then(|key| projects.iter().position(|p| *p == key))
+        .unwrap_or((*selected).min(projects.len() - 1));
+    false
+}
+
+/// Closes an act dialog (confirmation, text or choice input) whose invocation belongs to
+/// `project`, for a project that is no longer detected: its keys must not stay with a dialog that
+/// can no longer act. Returns whether one was closed. The chooser and the dialog of another
+/// project stay.
+pub fn close_act_dialog_of<I: PromptInvocation>(
+    dialog: &mut Option<ProjectDialog<I>>,
+    project: &ProjectKey,
+) -> bool {
+    let belongs = matches!(
+        dialog,
+        Some(ProjectDialog::Act { invocation, .. })
+            if invocation.prompt_invocation().origin.project == *project
+    );
+    if belongs {
+        *dialog = None;
+    }
+    belongs
+}
+
 /// No candidates are unhandled; one opens directly; several open the chooser.
 pub fn choose_projects<I>(
     dialog: &mut Option<ProjectDialog<I>>,

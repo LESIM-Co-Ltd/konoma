@@ -101,6 +101,9 @@ struct ProjectLoopState {
     root_switch: Option<root_switch::PendingRootSwitch>,
     /// The "quit while a write runs?" question is open (see `quit_guard`).
     quit_confirm: bool,
+    /// A project this loop shows is no longer detected: the program ends with the no-project
+    /// error as soon as no write is running (see `Self::no_project_exit`).
+    project_gone: bool,
 }
 
 impl ProjectLoopState {
@@ -128,16 +131,68 @@ impl ProjectLoopState {
             presentation: None,
             root_switch: prepared.root_switch.take(),
             quit_confirm: false,
+            project_gone: false,
         }
     }
+
+    /// Whether the loop ends now because its project is gone. A running write is waited for, not
+    /// asked about: ending would orphan it.
+    fn no_project_exit(&self) -> bool {
+        self.project_gone && !self.runtimes.values().any(|r| r.write_act_running())
+    }
+
     fn poll_detection(
         &mut self,
         prepared: &mut PreparedProjects,
         info: &ProjectContextInfo<StandaloneSurface>,
     ) -> bool {
         let previously_ready = !prepared.detection.pending();
+        let keys = |projects: &[crate::host::project::detection::MatchedProject]| {
+            projects.iter().map(ProjectKey::from).collect::<Vec<_>>()
+        };
+        let before = keys(&prepared.detection.projects);
         let detection = prepared.detection.poll();
-        if previously_ready && detection == Some(false) {
+        let after = keys(&prepared.detection.projects);
+        // An adopted answer retires the projects it no longer lists, failed or not (a watch failure
+        // after a successful scan still carries the new list). A failed scan keeps the previous
+        // projects, so nothing differs then.
+        if previously_ready
+            && (detection == Some(false) || (detection.is_some() && before != after))
+        {
+            // A project that is no longer listed is retired. This program shows projects only:
+            // when the one on screen (or the last one) is gone, it ends like a start in a
+            // directory with no project. A gone project that is not shown is just dropped.
+            for gone in before.iter().filter(|key| !after.contains(key)) {
+                let shown = self
+                    .screen
+                    .as_ref()
+                    .into_iter()
+                    .chain(self.diff_return.as_ref())
+                    .any(|nav| &nav.project == gone);
+                // A confirmation or text input of the gone project can no longer act; it must
+                // not keep the keys while a running write of that project is waited for.
+                if crate::host::project::prompt::close_act_dialog_of(&mut self.dialog, gone) {
+                    self.project_gone = true;
+                }
+                self.pending_acts
+                    .retain(|invocation| &invocation.prompt_invocation().origin.project != gone);
+                if shown {
+                    self.project_gone = true;
+                } else if !self
+                    .runtimes
+                    .get(gone)
+                    .is_some_and(|r| r.write_act_running())
+                {
+                    self.runtimes.remove(gone);
+                }
+            }
+            // A chooser that lists a gone project drops it; with none left nothing can be opened.
+            let emptied = crate::host::project::prompt::retain_projects(&mut self.dialog, |key| {
+                after.contains(key)
+            });
+            if emptied || self.runtimes.is_empty() || after.is_empty() {
+                self.project_gone = true;
+            }
             for project in &prepared.detection.projects {
                 self.with_host(info, |host, _| {
                     host.invalidate(&ProjectKey::from(project), ProjectInvalidation::Detection)
@@ -329,6 +384,9 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 host.resize(context, previous, info.viewport)
             });
             redraw |= state.poll_detection(prepared, &info);
+            if state.no_project_exit() {
+                return Err(AppError::NoProject(prepared.open_dir.clone()));
+            }
             redraw |= state
                 .launch
                 .poll(terminal, prepared, cx, pictures.as_mut())?;

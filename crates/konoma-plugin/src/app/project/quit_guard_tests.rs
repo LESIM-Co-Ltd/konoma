@@ -55,6 +55,17 @@ impl Plugin for QuitPlugin {
             )
             .action(act("write", "w").writes())
             .action(act("read", "x"))
+            .action(
+                Act::new("ask")
+                    .key("a")
+                    .label(crate::t!(en: "ask", ja: "確認"))
+                    .help(crate::t!(en: "ask", ja: "確認"))
+                    .project_context(ActContext::screen("changes", Vec::<String>::new()))
+                    .confirmation(Confirmation::new(
+                        "Sure?",
+                        vec![ConfirmChoice::new('y', "yes", "Yes")],
+                    )),
+            )
     }
     fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
         Ok(Box::new(QuitSession(self.0.clone())))
@@ -106,6 +117,7 @@ fn open_project(lang: &str) -> Held {
     for runtime in p.runtimes.values_mut() {
         runtime.enabled.insert("write".into(), true);
         runtime.enabled.insert("read".into(), true);
+        runtime.enabled.insert("ask".into(), true);
     }
     Held {
         _dir: dir,
@@ -358,4 +370,188 @@ fn an_idle_project_quits_at_once() {
         assert_eq!(events.read, keys.len(), "{name}");
         assert!(!events.ended, "{name}");
     }
+}
+
+/// The project vanishes while a write runs: the loop does not end (nor ask) until the write has
+/// finished, then ends with the no-project error. The write is released by the event source after
+/// the loop has already seen the answer, so the order comes from the latch, not the clock.
+#[test]
+fn a_vanished_project_ends_the_loop_only_after_the_running_write_finished() {
+    let mut h = held("en", 'w', false);
+    assert!(write_running(&h));
+    let shared = h.shared.clone();
+    let detection = h.p.detection.clone();
+    struct Owned {
+        shared: Arc<Shared>,
+        detection: crate::host::project::detection::ProjectDetection,
+        root: PathBuf,
+        step: usize,
+        steps_before_open: Arc<AtomicUsize>,
+    }
+    impl EventSource for Owned {
+        fn next(&mut self, _: Option<Duration>) -> Next {
+            let step = self.step;
+            self.step += 1;
+            match step {
+                0 => {
+                    std::fs::remove_dir_all(&self.root).unwrap();
+                    self.detection
+                        .inject_event(Ok(notify::Event::new(notify::EventKind::Remove(
+                            notify::event::RemoveKind::Any,
+                        ))
+                        .add_path(self.root.join("project.marker"))));
+                    Next::Timeout
+                }
+                1..=200 => {
+                    std::thread::yield_now();
+                    Next::Timeout
+                }
+                201 => {
+                    self.steps_before_open.store(self.step, Ordering::SeqCst);
+                    self.shared.hold.open();
+                    Next::Timeout
+                }
+                // The write finishes on its own thread once the latch is open. The bound only
+                // turns a hang into a failure (2 ms per step, 2000 steps); it orders nothing.
+                202..=2201 => {
+                    std::thread::sleep(Duration::from_millis(2));
+                    Next::Timeout
+                }
+                _ => Next::End,
+            }
+        }
+    }
+    let opened_at = Arc::new(AtomicUsize::new(0));
+    let mut events = Owned {
+        shared,
+        detection,
+        // The canonical path, as the detection worker watches it.
+        root: h._dir.canonicalize().unwrap(),
+        step: 0,
+        steps_before_open: opened_at.clone(),
+    };
+    let result = run_project_with(
+        &mut h.t,
+        &mut h.p,
+        &mut events,
+        &ProjectLoopCx::default(),
+        None,
+    );
+    let error = result.expect_err("the project is gone, so the loop ends");
+    assert!(matches!(error, AppError::NoProject(_)), "{error:?}");
+    assert_eq!(error.exit_code(), 2);
+    assert_eq!(
+        opened_at.load(Ordering::SeqCst),
+        202,
+        "the loop kept running while the write was held"
+    );
+    assert_eq!(
+        h.shared.finished.load(Ordering::SeqCst),
+        1,
+        "the loop ended only after the write finished"
+    );
+    std::fs::create_dir_all(&h._dir).unwrap();
+}
+
+/// A confirmation of the shown project is open while its write runs. The UI cannot open an act
+/// while one runs, so the dialog is opened first (an idle run of the loop keeps it in `prepared`),
+/// then the write is started in a second run, with the dialog set aside, and the dialog is put
+/// back: the state the loop must handle. Returns the held project after a third run in which the
+/// event source presses `j`, optionally makes the project vanish, and releases the write.
+fn dialog_scenario(vanish: bool) -> (Result<(), AppError>, Held) {
+    let mut h = open_project("en");
+    drive(&mut h.p, &mut h.t, vec![Key::char('a')]);
+    // Every run of the loop starts with a fresh viewport, so it re-reads the screen first; a key
+    // read before that reply is taken waits in the screen's queue and acts once it is.
+    settle(&mut h, "the confirmation opened", |h| h.p.dialog.is_some());
+    let dialog = h.p.dialog.take();
+    assert!(dialog.is_some(), "the confirmation opened");
+    drive(&mut h.p, &mut h.t, vec![Key::char('w')]);
+    settle(&mut h, "the write is running", write_running);
+    h.p.dialog = dialog;
+    struct Owned {
+        shared: Arc<Shared>,
+        detection: crate::host::project::detection::ProjectDetection,
+        root: PathBuf,
+        vanish: bool,
+        step: usize,
+    }
+    impl EventSource for Owned {
+        fn next(&mut self, _: Option<Duration>) -> Next {
+            let step = self.step;
+            self.step += 1;
+            match step {
+                0 => {
+                    if self.vanish {
+                        std::fs::remove_dir_all(&self.root).unwrap();
+                        self.detection.inject_event(Ok(notify::Event::new(
+                            notify::EventKind::Remove(notify::event::RemoveKind::Any),
+                        )
+                        .add_path(self.root.join("project.marker"))));
+                    }
+                    Next::Timeout
+                }
+                1..=200 => {
+                    std::thread::yield_now();
+                    Next::Timeout
+                }
+                201 => Next::Event(AppEvent::Key(Key::char('j'))),
+                202..=250 => {
+                    std::thread::yield_now();
+                    Next::Timeout
+                }
+                251 => {
+                    self.shared.hold.open();
+                    Next::Timeout
+                }
+                // The bound only turns a hang into a failure; it orders nothing.
+                252..=2251 => {
+                    if !self.vanish && self.shared.finished.load(Ordering::SeqCst) == 1 {
+                        return Next::End;
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                    Next::Timeout
+                }
+                _ => Next::End,
+            }
+        }
+    }
+    let mut events = Owned {
+        shared: h.shared.clone(),
+        detection: h.p.detection.clone(),
+        root: h._dir.canonicalize().unwrap(),
+        vanish,
+        step: 0,
+    };
+    let result = run_project_with(
+        &mut h.t,
+        &mut h.p,
+        &mut events,
+        &ProjectLoopCx::default(),
+        None,
+    );
+    (result, h)
+}
+
+#[test]
+fn a_confirmation_of_a_vanished_project_is_closed_while_its_write_runs() {
+    let (result, h) = dialog_scenario(false);
+    result.expect("nothing vanished");
+    assert!(
+        h.p.dialog.is_some(),
+        "control: the confirmation stays open and keeps the keys"
+    );
+    let (result, h) = dialog_scenario(true);
+    let error = result.expect_err("the project is gone, so the loop ends");
+    assert!(matches!(error, AppError::NoProject(_)), "{error:?}");
+    assert!(
+        h.p.dialog.is_none(),
+        "the confirmation of the gone project was closed"
+    );
+    assert_eq!(
+        h.shared.finished.load(Ordering::SeqCst),
+        1,
+        "the loop ended only after the write finished"
+    );
+    std::fs::create_dir_all(&h._dir).unwrap();
 }

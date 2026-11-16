@@ -395,7 +395,8 @@ fn watch_paths_replacement_and_failure_keep_the_current_screen() {
 }
 
 /// The project root is removed while the standalone app runs: detection answers "no projects",
-/// not a failure, so the loop shows no "could not detect or watch projects" notice.
+/// not a failure, so the loop shows no "could not detect or watch projects" notice. The project it
+/// shows is gone, so the loop ends like a start in a directory with no project (exit code 2).
 #[cfg(feature = "test-hooks")]
 #[test]
 fn deleted_project_root_is_not_a_detection_failure() {
@@ -422,21 +423,27 @@ fn deleted_project_root_is_not_a_detection_failure() {
                     .add_path(dir.join("project.marker"))));
                     Next::Timeout
                 }
-                1 => Next::End,
-                _ => unreachable!(),
+                // Bounded: the loop must end by itself once the answer arrives.
+                1..=2000 => Next::Timeout,
+                _ => Next::End,
             }
         }),
     };
-    run_project_with(
+    let error = run_project_with(
         &mut terminal,
         &mut prepared,
         &mut events,
         &ProjectLoopCx::default(),
         None,
     )
-    .unwrap();
+    .expect_err("the project is gone, so the loop ends");
     drop(events);
-    assert_eq!(stage, 2);
+    assert!(
+        matches!(error, konoma_plugin::app::AppError::NoProject(_)),
+        "{error:?}"
+    );
+    assert_eq!(error.exit_code(), 2);
+    assert!(stage < 2000, "ended by the no-project exit, not the bound");
     assert!(prepared.detection.projects.is_empty());
     assert_ne!(
         prepared.notice.as_deref(),
