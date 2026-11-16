@@ -19899,6 +19899,8 @@ mod project_frames;
 mod project_host;
 #[cfg(feature = "git")]
 mod project_launch_bridge;
+#[cfg(feature = "git")]
+mod project_return_parity;
 #[path = "e2e_tests/project_screens.rs"]
 mod project_screens;
 #[cfg(feature = "git")]

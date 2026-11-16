@@ -4515,6 +4515,16 @@ impl App {
         self.tab.preview_top_line
     }
 
+    /// The file names in the tab's tree-filter pool. Test-only.
+    #[cfg(test)]
+    pub fn filter_pool_names_for_test(&self) -> Vec<String> {
+        self.tab
+            .filter_pool
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
     /// The windowed preview's caret line (0-based). Test-only.
     #[cfg(test)]
     pub fn preview_caret_line(&self) -> usize {
