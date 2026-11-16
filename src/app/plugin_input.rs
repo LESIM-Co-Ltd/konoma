@@ -242,7 +242,7 @@ impl App {
     fn canvas_is_covered(&self) -> bool {
         !matches!(
             self.frontmost_layer(|_| true),
-            UiLayer::Base(_) | UiLayer::PluginInput
+            UiLayer::Base(_) | UiLayer::Project | UiLayer::PluginInput
         )
     }
 

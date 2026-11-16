@@ -117,25 +117,16 @@ impl ProjectLoopState {
                 Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
             ),
         }];
-        let diff_open = self.diff.as_ref().is_some_and(|d| d.closed)
-            || (self.preview_project && self.file_preview.is_none());
-        // Help and the diff view are modes in front of the screen, and take its place as the
-        // inner chip (the host shows the mode in front, not the screen behind it).
+        // Help is a mode in front of the screen and takes its place as the inner chip; the
+        // project screen, when it is in front, always shows its own chip. A diff that was left
+        // behind (closed, or the project screen opened over it) is not in front, so it never
+        // names the chip.
         if let Some(screen) = vcs
             .as_ref()
             .and_then(|chips| chips.screen.as_ref())
-            .filter(|_| self.help.is_none() && !diff_open)
+            .filter(|_| self.help.is_none())
         {
             header.extend([Span::raw(" "), vcs_chip(screen)]);
-        }
-        if diff_open {
-            header.extend([
-                Span::raw(" "),
-                Span::styled(
-                    format!(" {} ", t("DIFF", "差分")),
-                    Style::new().fg(Color::White).bg(Color::Blue).bold(),
-                ),
-            ]);
         }
         if self.help.is_some() {
             header.extend([

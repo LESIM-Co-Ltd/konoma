@@ -209,6 +209,14 @@ pub struct BaseLayer {
 /// were separate hand-written cascades that had to be kept in step by hand, and they drifted: the
 /// `?` help overlay reached `surface()` but not `internal_mode()`, so the chip and footer
 /// advertised keys that did nothing.
+///
+/// A project screen ([`UiLayer::Project`]) covers the whole screen under it (the tree, a file
+/// diff, a preview), so while it is in front the layers that belong to that screen — the diff, the
+/// filter / search / mark inputs, the outline, a table cell, a visual selection, a plugin's text
+/// input — are masked: they can neither receive keys nor name the chip. What stays in front of the
+/// project screen are the dialogs, help, the bookmark list, the tab list and info, which are drawn
+/// over it. The state under the project screen is untouched: it is what leaving the screens
+/// returns to.
 // `Ord` follows the declaration order, which lets
 // `the_walk_visits_the_layers_in_their_declaration_order` check mechanically that the walk really
 // does go front to back in the order written below.
@@ -257,6 +265,11 @@ pub enum UiLayer {
     /// A plugin's canvas that asked for text input is on screen and has not been left with
     /// `Esc`. Just above the base: every overlay and dialog sits in front of it.
     PluginInput,
+
+    /// A project screen (git / jj changes, log, ...) is on screen. It covers the base screen and
+    /// every layer that belongs to it, so it sits right above the base and those layers are
+    /// masked while it is active (see [`App::frontmost_layer`]).
+    Project,
 
     /// The base full screen. Always active, so the walk ends here.
     Base(BaseLayer),
@@ -318,6 +331,8 @@ impl UiLayer {
             Self::Info => S::Info,
             Self::TableCell => S::TableCell,
             Self::Visual => S::Visual,
+            // A project canvas is a canvas whatever plugin screen it shows.
+            Self::Project => S::PreviewCanvas,
             Self::Base(b) => b.surface(),
         })
     }
@@ -348,6 +363,8 @@ impl UiLayer {
             Self::Info => InternalMode::Info,
             Self::TableCell => InternalMode::TableCell,
             Self::Visual => InternalMode::Visual,
+            // The project screen names the chip itself (`project_vcs_chips`).
+            Self::Project => return None,
             Self::Base(b) => return b.internal_mode(),
         })
     }
@@ -2788,6 +2805,14 @@ impl App {
     ///
     /// Off the render path in the sense that it only reads existing `bool` predicates — the same
     /// work the two hand-written cascades did.
+    /// Whether a project screen is in front and so covers the screen under it (the file diff, the
+    /// tree and preview inputs, the outline, the table cell popup, the visual selection, the
+    /// plugin input). The one predicate the layer walk, the gate of the keys that act on that
+    /// screen and the draw of its overlays share.
+    pub fn project_screen_covers(&self) -> bool {
+        self.project_active()
+    }
+
     fn frontmost_layer(&self, visible: impl Fn(UiLayer) -> bool) -> UiLayer {
         macro_rules! layer {
             ($active:expr, $l:expr) => {
@@ -2818,13 +2843,17 @@ impl App {
         // --- Help, above everything but the dialogs ---
         layer!(self.show_help, UiLayer::Help);
 
+        // A project screen covers the screen under it: the layers marked below as masked are not
+        // in front while it is, however their state was left (see [`UiLayer`]).
+        let project = self.project_screen_covers();
+
         // --- The file diff ---
-        layer!(self.is_git_diff_preview(), UiLayer::GitDiff);
+        layer!(!project && self.is_git_diff_preview(), UiLayer::GitDiff);
 
         // --- Input surfaces / menus / lists / popups ---
-        layer!(self.is_filtering(), UiLayer::Filter);
-        layer!(self.is_searching(), UiLayer::Search);
-        layer!(self.is_marking(), UiLayer::Mark);
+        layer!(!project && self.is_filtering(), UiLayer::Filter);
+        layer!(!project && self.is_searching(), UiLayer::Search);
+        layer!(!project && self.is_marking(), UiLayer::Mark);
         let bookmarks = self.is_bookmark_list();
         layer!(
             bookmarks && self.list_filtering(list_filter::ListId::Bookmarks),
@@ -2839,14 +2868,15 @@ impl App {
         layer!(tabs, UiLayer::Tabs);
         let outline = self.is_outline();
         layer!(
-            outline && self.list_filtering(list_filter::ListId::Outline),
+            !project && outline && self.list_filtering(list_filter::ListId::Outline),
             UiLayer::OutlineFilter
         );
-        layer!(outline, UiLayer::Outline);
+        layer!(!project && outline, UiLayer::Outline);
         layer!(self.is_info(), UiLayer::Info);
-        layer!(self.is_table_cell_open(), UiLayer::TableCell);
-        layer!(self.is_visual(), UiLayer::Visual);
-        layer!(self.is_plugin_input(), UiLayer::PluginInput);
+        layer!(!project && self.is_table_cell_open(), UiLayer::TableCell);
+        layer!(!project && self.is_visual(), UiLayer::Visual);
+        layer!(!project && self.is_plugin_input(), UiLayer::PluginInput);
+        layer!(project, UiLayer::Project);
 
         UiLayer::Base(self.base_layer())
     }
@@ -2859,18 +2889,9 @@ impl App {
 
     /// The **frontmost surface** that currently receives keys (the single source of truth for Run2
     /// keymap dispatch). A projection of the frontmost layer that has a surface on this build — see
-    /// [`UiLayer`] for the priority order and [`UiLayer::surface`] for the one case that has none.
+    /// [`UiLayer`] for the priority order.
     pub fn surface(&self) -> crate::keymap::Surface {
         let layer = self.frontmost_layer(|l| l.surface().is_some());
-        if self.project_active()
-            && !self.show_help
-            && !self.is_bookmark_list()
-            && !self.is_tab_list()
-            && !self.is_info()
-            && self.dialog.is_none()
-        {
-            return crate::keymap::Surface::PreviewCanvas;
-        }
         match layer.surface() {
             Some(s) => s,
             // Unreachable: `frontmost_layer` only returns layers that just answered `Some`, and the

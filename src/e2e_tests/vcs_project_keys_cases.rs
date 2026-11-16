@@ -901,3 +901,393 @@ fn vcs_keys_esc_clears_a_preview_search_first_then_returns_to_the_project() {
         assert_eq!(l.screen.as_deref(), Some("changes"), "{id}");
     }
 }
+
+// ---- a project screen in front hides the layers of the screen under it ----
+// The status line's chip, the footer and the keys of the project screen come from one answer
+// (`App::frontmost_layer`): a diff the screen was opened from, or the tree's changed-only filter,
+// is under the screen and must not name the chip while the screen is in front.
+
+/// A session on the tree of `repo` with the projects detected, and no project screen yet.
+fn open_tree(repo: &std::path::Path, id: &str) -> Sim {
+    let mut sim = Sim::with_config_sized(repo, config(id, "en"), 140, 30);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    assert!(!sim.app.project_active(), "{id}: tree first");
+    sim
+}
+
+/// The project screen is the frontmost layer: no internal mode, the canvas keys, and the screen's
+/// own chip is drawn (and none of the chips of the screen under it).
+#[track_caller]
+fn assert_project_screen_in_front(sim: &Sim, what: &str, not: &[&str]) {
+    assert!(sim.app.project_active(), "{what}: project screen is up");
+    assert_eq!(sim.app.internal_mode(), None, "{what}: internal_mode");
+    assert_eq!(
+        sim.app.surface(),
+        crate::keymap::Surface::PreviewCanvas,
+        "{what}: surface"
+    );
+    let screen = sim
+        .app
+        .project_vcs_chips()
+        .and_then(|c| c.screen)
+        .unwrap_or_else(|| panic!("{what}: the project has a screen chip"));
+    let chips = mode_chips(sim);
+    assert!(
+        chips.iter().any(|c| *c == screen.text.trim()),
+        "{what}: the screen's chip {:?} must be drawn: {chips:?}",
+        screen.text
+    );
+    for word in not {
+        assert!(
+            chips.iter().all(|c| c != word),
+            "{what}: the chip {word:?} of the screen under must not be drawn: {chips:?}"
+        );
+    }
+}
+
+#[test]
+fn vcs_keys_returning_from_a_diff_shows_the_screens_chip_not_the_diffs() {
+    if isolated("vcs_keys_returning_from_a_diff_shows_the_screens_chip_not_the_diffs") {
+        return;
+    }
+    for id in ["git", "jj"] {
+        let Some(repo) = esc_repo(id, "vcs_keys_return_chip") else {
+            continue;
+        };
+        for (name, code) in [("q", KeyCode::Char('q')), ("Esc", KeyCode::Esc)] {
+            let mut sim = open_changed_diff(&repo, id, 0);
+            // The diff itself is named DIFF, with the diff's own layer in front.
+            assert!(mode_chips(&sim).iter().any(|c| c == "DIFF"), "{id}");
+            press(&mut sim, code);
+            let what = format!("{id} {name}");
+            assert_eq!(frame_screen(&sim), "changes", "{what}");
+            // The diff preview is still the state under the screen (`return_to_project` restores
+            // only the navigation); it must not answer for the screen.
+            assert!(sim.app.is_git_diff_preview(), "{what}: the state under is kept");
+            assert_project_screen_in_front(&sim, &what, &["DIFF"]);
+            assert!(mode_chips(&sim).iter().any(|c| c == "CHANGES"), "{what}");
+            // Leaving the screens: the tree, as it was opened from.
+            press(&mut sim, KeyCode::Char('h'));
+            assert!(!sim.app.project_active(), "{what}: left");
+            assert_eq!(sim.app.tab.mode, Mode::Tree, "{what}: back on the tree");
+            assert!(!sim.app.is_git_diff_preview(), "{what}");
+            assert_eq!(sim.app.internal_mode(), None, "{what}");
+            assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree, "{what}");
+        }
+    }
+}
+
+#[test]
+fn vcs_keys_a_screen_over_a_tree_diff_shows_the_screens_chip_and_leaving_shows_the_diff() {
+    if isolated("vcs_keys_a_screen_over_a_tree_diff_shows_the_screens_chip_and_leaving_shows_the_diff") {
+        return;
+    }
+    for (id, file) in [("git", "b-unstaged.txt"), ("jj", "b-two.txt")] {
+        let Some(repo) = esc_repo(id, "vcs_keys_tree_diff_chip") else {
+            continue;
+        };
+        let mut sim = open_tree(&repo, id);
+        sim.select(file);
+        sim.key('d');
+        drain(&mut sim);
+        assert!(sim.app.is_git_diff_preview(), "{id}: the tree's d opens the diff");
+        assert_eq!(sim.app.internal_mode(), Some(crate::app::InternalMode::GitDiff), "{id}");
+        assert!(mode_chips(&sim).iter().any(|c| c == "DIFF"), "{id}");
+        sim.key('p');
+        drain(&mut sim);
+        assert_project_screen_in_front(&sim, &format!("{id} over a diff"), &["DIFF"]);
+        // Leaving returns to the diff, and its chip is the diff's again.
+        screen(&mut sim, "changes");
+        press(&mut sim, KeyCode::Char('h'));
+        assert!(!sim.app.project_active(), "{id}: left");
+        assert!(sim.app.is_git_diff_preview(), "{id}: back on the diff");
+        assert_eq!(sim.app.internal_mode(), Some(crate::app::InternalMode::GitDiff), "{id}");
+        assert!(mode_chips(&sim).iter().any(|c| c == "DIFF"), "{id}");
+    }
+}
+
+#[test]
+fn vcs_keys_a_screen_over_the_changed_only_filter_shows_the_screens_chip() {
+    if isolated("vcs_keys_a_screen_over_the_changed_only_filter_shows_the_screens_chip") {
+        return;
+    }
+    for id in ["git", "jj"] {
+        let Some(repo) = esc_repo(id, "vcs_keys_changed_filter_chip") else {
+            continue;
+        };
+        let mut sim = open_tree(&repo, id);
+        sim.app.toggle_changed_filter();
+        sim.draw();
+        assert!(sim.app.changed_filter(), "{id}: the filter is on");
+        assert_eq!(
+            sim.app.internal_mode(),
+            Some(crate::app::InternalMode::ChangedFilter),
+            "{id}"
+        );
+        assert!(mode_chips(&sim).iter().any(|c| c == "CHANGED"), "{id}");
+        sim.key('p');
+        drain(&mut sim);
+        assert!(sim.app.changed_filter(), "{id}: the state under is kept");
+        assert_project_screen_in_front(&sim, &format!("{id} over the filter"), &["CHANGED"]);
+        screen(&mut sim, "changes");
+        press(&mut sim, KeyCode::Char('h'));
+        assert!(!sim.app.project_active(), "{id}: left");
+        assert!(sim.app.changed_filter(), "{id}: the filter is still on");
+        assert_eq!(
+            sim.app.internal_mode(),
+            Some(crate::app::InternalMode::ChangedFilter),
+            "{id}"
+        );
+        assert!(mode_chips(&sim).iter().any(|c| c == "CHANGED"), "{id}");
+    }
+}
+
+// ---- the canvas keys never act on the screen under the project screen ----
+// A project screen opened from a file preview leaves that preview under it. Its layers are masked
+// (`App::frontmost_layer`), so a key resolved on the canvas must not open or act on them either:
+// the gate, the footer, the help and the draw answer as the walk does.
+
+const HEADINGS_MD: &str = "# Title\n\nintro\n\n## Section\n\nbody\n";
+
+/// A session whose preview shows a Markdown file with headings, then the project screen opened
+/// over it with `p`.
+fn project_over_md_preview(repo: &std::path::Path, id: &str) -> Sim {
+    std::fs::write(repo.join("notes.md"), HEADINGS_MD).unwrap();
+    let mut sim = open_tree(repo, id);
+    sim.select("notes.md");
+    sim.enter();
+    drain(&mut sim);
+    assert_eq!(sim.app.tab.mode, Mode::Preview, "{id}: preview first");
+    assert!(!sim.app.project_active(), "{id}");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "{id}: p opens the project over the preview");
+    sim
+}
+
+/// The state the keys below must leave alone, read from the screen under the project screen.
+fn under_state(sim: &Sim) -> (Option<std::path::PathBuf>, Mode, bool, bool, bool, bool, usize) {
+    (
+        sim.app.tab.preview_path.clone(),
+        sim.app.tab.mode,
+        sim.app.is_outline(),
+        sim.app.is_marking(),
+        sim.app.is_raw_source(),
+        sim.app.is_visual(),
+        sim.app.tab.selected,
+    )
+}
+
+#[test]
+fn vcs_keys_o_over_a_preview_opens_no_outline_and_is_not_advertised() {
+    if isolated("vcs_keys_o_over_a_preview_opens_no_outline_and_is_not_advertised") {
+        return;
+    }
+    for id in ["git", "jj"] {
+        let Some(repo) = esc_repo(id, "vcs_keys_o_outline") else {
+            continue;
+        };
+        let mut sim = project_over_md_preview(&repo, id);
+        let hint = crate::i18n::tr(sim.app.lang, crate::i18n::Msg::HintOutline);
+        let before = under_state(&sim);
+        sim.app.flash = None;
+        press(&mut sim, KeyCode::Char('O'));
+        assert!(!sim.app.is_outline(), "{id}: O opened the outline under the screen");
+        assert_eq!(under_state(&sim), before, "{id}");
+        assert!(sim.app.flash.is_none(), "{id}: no flash from the screen under: {:?}", sim.app.flash);
+        assert_project_screen_in_front(&sim, &format!("{id} after O"), &[]);
+        // The gate, the footer and the help of the canvas do not offer it.
+        assert!(
+            !crate::ops::action_enabled(&sim.app, Context::Canvas, crate::keymap::Action::ToggleOutline),
+            "{id}: gate"
+        );
+        let footer = crate::ops::footer::tokens(&sim.app, Context::Canvas).join(" ");
+        assert!(!footer.contains(hint), "{id}: footer {footer:?} names {hint:?}");
+        let rows = crate::ops::help::rows_for(&sim.app, Context::Canvas);
+        assert!(
+            rows.iter().all(|r| !r.actions.contains(&crate::keymap::Action::ToggleOutline)),
+            "{id}: help rows list the outline"
+        );
+        // Leaving the screens returns to the preview, where O opens its outline as before.
+        press(&mut sim, KeyCode::Char('h'));
+        assert!(!sim.app.project_active(), "{id}: left");
+        assert!(
+            crate::ops::action_enabled(&sim.app, Context::Text, crate::keymap::Action::ToggleOutline)
+                || crate::ops::action_enabled(&sim.app, Context::Document, crate::keymap::Action::ToggleOutline),
+            "{id}: the preview offers the outline again"
+        );
+        press(&mut sim, KeyCode::Char('O'));
+        assert!(sim.app.is_outline(), "{id}: O opens the outline on the preview");
+    }
+}
+
+#[test]
+fn vcs_keys_the_other_canvas_keys_do_not_act_on_the_preview_under() {
+    if isolated("vcs_keys_the_other_canvas_keys_do_not_act_on_the_preview_under") {
+        return;
+    }
+    // R cycles the representation, Y copies the selection's reference, m waits for a mark letter,
+    // Ctrl-n / Ctrl-p turn to the next / previous file: all of the preview under the screen.
+    let keys: [(&str, KeyCode, KeyModifiers, crate::keymap::Action); 5] = [
+        ("R", KeyCode::Char('R'), KeyModifiers::NONE, crate::keymap::Action::CycleRepresentation),
+        ("Y", KeyCode::Char('Y'), KeyModifiers::NONE, crate::keymap::Action::PreviewCopySelectionRef),
+        ("m", KeyCode::Char('m'), KeyModifiers::NONE, crate::keymap::Action::MarkSet),
+        ("C-n", KeyCode::Char('n'), KeyModifiers::CONTROL, crate::keymap::Action::PreviewFileNext),
+        ("C-p", KeyCode::Char('p'), KeyModifiers::CONTROL, crate::keymap::Action::PreviewFilePrev),
+    ];
+    for id in ["git", "jj"] {
+        let Some(repo) = esc_repo(id, "vcs_keys_other_under") else {
+            continue;
+        };
+        for (name, code, mods, action) in keys {
+            let mut sim = project_over_md_preview(&repo, id);
+            let what = format!("{id} {name}");
+            // The key resolves to the action on the canvas, and the gate refuses it there.
+            let kp = crate::keymap::KeyPress::norm(&crossterm::event::KeyEvent::new(code, mods));
+            assert_eq!(
+                sim.app.keymaps.resolve_on(Context::Canvas, sim.app.screen_keys_for(Context::Canvas), kp),
+                crate::keymap::Resolution::Action(action),
+                "{what}: resolves on the canvas"
+            );
+            let before = under_state(&sim);
+            crate::test_support::clear_test_clipboard();
+            sim.app.flash = None;
+            sim.press(code, mods);
+            drain(&mut sim);
+            assert_eq!(under_state(&sim), before, "{what}: the screen under changed");
+            assert_eq!(crate::test_support::get_test_clipboard(), None, "{what}: clipboard");
+            assert!(sim.app.flash.is_none(), "{what}: flash {:?}", sim.app.flash);
+            assert_project_screen_in_front(&sim, &what, &[]);
+            assert!(!crate::ops::action_enabled(&sim.app, Context::Canvas, action), "{what}: gate");
+            let rows = crate::ops::help::rows_for(&sim.app, Context::Canvas);
+            assert!(rows.iter().all(|r| !r.actions.contains(&action)), "{what}: help rows");
+        }
+    }
+}
+
+/// Every key the Canvas keymap binds to an action that the gate leaves on over a project screen,
+/// as `"key Action"` lines. The gate masks the actions of the screen under by an enumerated list
+/// (`acts_on_screen_under`), so an action added to the canvas later is on by default: this set
+/// pins what is on, and a new entry fails the test until someone decides it is fine here.
+fn canvas_on_set(sim: &Sim) -> Vec<String> {
+    let mut codes: Vec<(String, KeyCode, KeyModifiers)> = Vec::new();
+    for c in (0x20u8..0x7f).map(char::from) {
+        codes.push((c.to_string(), KeyCode::Char(c), KeyModifiers::NONE));
+        codes.push((format!("C-{c}"), KeyCode::Char(c), KeyModifiers::CONTROL));
+    }
+    for (n, k) in [
+        ("Enter", KeyCode::Enter),
+        ("Esc", KeyCode::Esc),
+        ("Tab", KeyCode::Tab),
+        ("BackTab", KeyCode::BackTab),
+        ("Up", KeyCode::Up),
+        ("Down", KeyCode::Down),
+        ("Left", KeyCode::Left),
+        ("Right", KeyCode::Right),
+        ("PageUp", KeyCode::PageUp),
+        ("PageDown", KeyCode::PageDown),
+        ("Home", KeyCode::Home),
+        ("End", KeyCode::End),
+    ] {
+        codes.push((n.to_string(), k, KeyModifiers::NONE));
+    }
+    let mut on = Vec::new();
+    for (name, code, mods) in codes {
+        let kp = crate::keymap::KeyPress::norm(&crossterm::event::KeyEvent::new(code, mods));
+        if let crate::keymap::Resolution::Action(a) = sim.app.keymaps.resolve_on(
+            Context::Canvas,
+            sim.app.screen_keys_for(Context::Canvas),
+            kp,
+        ) {
+            if crate::ops::gate(&sim.app, Context::Canvas, a).is_on() {
+                on.push(format!("{name} {a:?}"));
+            }
+        }
+    }
+    on.sort();
+    on
+}
+
+#[test]
+fn vcs_keys_pin_the_canvas_actions_that_stay_on_over_a_project_screen() {
+    if isolated("vcs_keys_pin_the_canvas_actions_that_stay_on_over_a_project_screen") {
+        return;
+    }
+    let Some(repo) = esc_repo("git", "vcs_keys_pin_on_set") else {
+        return;
+    };
+    let sim = project_over_md_preview(&repo, "git");
+    let on = canvas_on_set(&sim);
+    // Each entry is fine over a project screen because it does not read the layers of the screen
+    // under it (or the project screen handles the key itself first).
+    let expected: Vec<&str> = vec![
+        "! GitLaunchTool",  // gated to the screens that have a tool, by the project
+        "' MarkJump",       // opens the bookmark list, which is drawn over the screen
+        "1 TabGoto(0)",     // tab switches act on the tab list, not on a layer
+        "2 TabGoto(1)",
+        "3 TabGoto(2)",
+        "4 TabGoto(3)",
+        "5 TabGoto(4)",
+        "6 TabGoto(5)",
+        "7 TabGoto(6)",
+        "8 TabGoto(7)",
+        "9 TabGoto(8)",
+        "? ToggleHelp",     // help is in front of the screen
+        "F ToggleFollow",   // a session-wide mode, not a layer
+        "P PasteJump",      // jumps by the clipboard path
+        "Q Quit",           // quits the session (confirm dialog in front)
+        "T ToggleTabList",  // the tab list is in front of the screen
+        "e RequestEdit",    // acts on the screen's own launch target (`verb_target`)
+        "o OpenExternal",   // same target as `e`
+        "p OpenGitView",    // the project key
+        "q PreviewBack",    // the project screen's back, handled by it first
+        "r Refresh",        // refreshes the project (`project_refresh`)
+        "t TabNewAfter",    // opens a tab
+    ];
+    assert_eq!(
+        on, expected,
+        "a canvas action reached the project screen: decide whether it acts on the screen under \
+         (then add it to `acts_on_screen_under`) or is fine (then list it here)"
+    );
+}
+
+/// A session on `repo` with the preview of `file` up (media loaded), then the project screen over it.
+fn project_over_file_preview(repo: &std::path::Path, file: &str) -> Sim {
+    let mut sim = Sim::with_config_sized(repo, config("git", "en"), 140, 30);
+    sim = sim.with_media();
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.select(file);
+    sim.enter();
+    assert_eq!(sim.app.tab.mode, Mode::Preview, "{file}: preview first");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "{file}: p opens the project over the preview");
+    sim
+}
+
+#[test]
+fn vcs_keys_a_table_cell_popup_left_open_is_not_drawn_over_a_project_screen() {
+    if isolated("vcs_keys_a_table_cell_popup_left_open_is_not_drawn_over_a_project_screen") {
+        return;
+    }
+    let Some(repo) = esc_repo("git", "vcs_keys_cell") else {
+        return;
+    };
+    std::fs::write(repo.join("t.csv"), "name,value\nalpha,1\nbeta,2\n").unwrap();
+    let mut sim = project_over_file_preview(&repo, "t.csv");
+    sim.app.toggle_table_cell_view();
+    assert!(sim.app.is_table_cell_open(), "the popup state is left open under the screen");
+    assert!(sim.app.table_cell_view().is_some(), "the table has a cell to show");
+    sim.draw();
+    let title = crate::i18n::tr(sim.app.lang, crate::i18n::Msg::TableCellTitle).trim();
+    assert!(
+        !sim.screen().contains(title),
+        "the cell popup {title:?} is drawn over the project screen:\n{}",
+        sim.screen()
+    );
+    assert_project_screen_in_front(&sim, "table cell state under", &[]);
+}

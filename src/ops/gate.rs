@@ -61,6 +61,13 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
             return verdict;
         }
     }
+    // A project screen in front covers the screen under it (`App::project_screen_covers`): the
+    // actions that open or act on that screen's preview, outline or marks are not available, so
+    // the keys, the footer and the help agree with the layer walk. The project screen's own keys
+    // are handled before the gate is asked.
+    if ctx != Context::Diff && app.project_screen_covers() && acts_on_screen_under(a) {
+        return Gate::Off(None);
+    }
     match a {
         A::Navigate(
             m @ (crate::keymap::Motion::Left
@@ -339,6 +346,23 @@ fn gate_plugin(app: &App, ctx: Context, p: crate::plugins::PluginAct) -> Gate {
         return Gate::Off(None);
     }
     super::write_guard::write_guard(app, p.plugin(), binding.writes, false)
+}
+
+/// The actions that read or change the preview, outline, selection or marks of the screen a
+/// project screen was opened over.
+fn acts_on_screen_under(a: Action) -> bool {
+    use Action as A;
+    matches!(
+        a,
+        A::ToggleOutline
+            | A::PageNext
+            | A::PagePrev
+            | A::CycleRepresentation
+            | A::PreviewCopySelectionRef
+            | A::PreviewFileNext
+            | A::PreviewFilePrev
+            | A::MarkSet
+    )
 }
 
 /// `e`: the target and whether opening it is possible (mirrors `App::request_edit`).

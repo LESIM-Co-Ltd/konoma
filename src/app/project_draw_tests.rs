@@ -809,3 +809,147 @@ fn project_resize_request_precedes_chip_reservation() {
     };
     assert_eq!((req.cols, req.rows), (28, 8));
 }
+
+// ---- the project screen is a layer of the walk ----
+
+/// The layers that belong to the screen under a project screen, each turned on in turn: the project
+/// screen is still the frontmost layer, and the projections follow it (the keys are a canvas's, the
+/// chip is the screen's own).
+#[test]
+fn project_layer_masks_the_layers_of_the_screen_under_it() {
+    use crate::keymap::Surface;
+    type Setup = fn(&mut App);
+    let masked: Vec<(&str, Setup)> = vec![
+        ("file diff", |a| {
+            a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("x.txt")));
+            a.tab.mode = Mode::Preview;
+        }),
+        ("tree filter input", |a| {
+            a.tab.filter_input = Some(String::new())
+        }),
+        ("preview search input", |a| {
+            a.tab.search_input = Some(String::new())
+        }),
+        ("mark wait", |a| a.mark_set_pending = true),
+        ("changed-only filter", |a| a.tab.changed_filter = true),
+        ("tree visual", |a| a.tab.visual_anchor = Some(0)),
+        ("outline", |a| a.outline_open = true),
+        ("outline filter", |a| {
+            a.outline_open = true;
+            a.outline_filtering = true;
+        }),
+        ("table cell", |a| a.table_cell_open = true),
+    ];
+    for (name, setup) in masked {
+        let (mut app, _dir) = app();
+        assert!(app.project_active());
+        assert_eq!(app.frontmost_layer(|_| true), UiLayer::Project, "none");
+        setup(&mut app);
+        assert_eq!(
+            app.frontmost_layer(|_| true),
+            UiLayer::Project,
+            "{name}: the screen under the project screen must not be in front"
+        );
+        assert_eq!(app.internal_mode(), None, "{name}: no chip of its own");
+        assert_eq!(app.surface(), Surface::PreviewCanvas, "{name}");
+    }
+
+    // What is drawn over the project screen stays in front of it.
+    let in_front: Vec<(&str, Setup, UiLayer)> = vec![
+        ("help", |a| a.show_help = true, UiLayer::Help),
+        (
+            "bookmark list",
+            |a| a.bookmark_list = true,
+            UiLayer::Bookmarks,
+        ),
+        (
+            "bookmark list filter",
+            |a| {
+                a.bookmark_list = true;
+                a.bookmark_list_filtering = true;
+            },
+            UiLayer::BookmarksFilter,
+        ),
+        ("tab list", |a| a.tab_list = true, UiLayer::Tabs),
+        (
+            "tab list filter",
+            |a| {
+                a.tab_list = true;
+                a.tab_list_filtering = true;
+            },
+            UiLayer::TabsFilter,
+        ),
+        ("info", |a| a.show_info = true, UiLayer::Info),
+        (
+            "confirm dialog",
+            |a| {
+                a.dialog = Some(Dialog {
+                    op: PendingOp::Quit,
+                    kind: DialogKind::Confirm {
+                        message: "message".into(),
+                        allow_permanent: false,
+                    },
+                })
+            },
+            UiLayer::ConfirmQuit,
+        ),
+    ];
+    for (name, setup, layer) in in_front {
+        let (mut app, _dir) = app();
+        // The masked state is on as well: the overlay still wins.
+        app.tab.filter_input = Some(String::new());
+        app.tab.visual_anchor = Some(0);
+        setup(&mut app);
+        assert_eq!(app.frontmost_layer(|_| true), layer, "{name}");
+        assert_eq!(app.internal_mode(), layer.internal_mode(), "{name}");
+    }
+
+    // Without a project screen the same states are in front again.
+    let (mut app, _dir) = app();
+    app.tab.filter_input = Some(String::new());
+    app.tab.project_navigation = None;
+    assert_eq!(app.frontmost_layer(|_| true), UiLayer::Filter);
+}
+
+/// The keys that turn the pages of the preview under a project screen are not available on it, and
+/// a state the screen under left open (the outline, the cell popup) is not drawn over the screen.
+#[test]
+fn project_screen_does_not_page_or_draw_the_masked_overlays_of_the_screen_under() {
+    use crate::keymap::{Action, Context};
+    let (mut app, _dir) = app();
+    app.tab.page_count = Some(3);
+    for a in [Action::PageNext, Action::PagePrev] {
+        assert!(
+            !crate::ops::action_enabled(&app, Context::Canvas, a),
+            "{a:?}: not on a project canvas"
+        );
+    }
+    // The same preview, with no project screen over it, turns pages.
+    let covered = app.tab.project_navigation.take();
+    assert!(!app.project_screen_covers());
+    for a in [Action::PageNext, Action::PagePrev] {
+        assert!(
+            crate::ops::action_enabled(&app, Context::Canvas, a),
+            "{a:?}: acts on the preview itself"
+        );
+    }
+    app.tab.project_navigation = covered;
+    assert!(app.project_screen_covers());
+
+    // A state left open under the screen is not drawn over it.
+    app.outline_open = true;
+    let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    let text = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>();
+    let outline_title = crate::i18n::tr(app.lang, crate::i18n::Msg::PageListTitle);
+    assert!(
+        !text.contains(outline_title),
+        "the outline popup is drawn over the screen"
+    );
+}

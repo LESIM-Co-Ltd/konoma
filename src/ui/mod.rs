@@ -160,7 +160,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         tab_list::render(frame, app, frame.area());
     }
     // The heading outline overlay (`o`).
-    if app.is_outline() {
+    // A project screen covers the screen under it, so a state left open there is not drawn.
+    if app.is_outline() && !app.project_screen_covers() {
         outline::render(frame, app, frame.area());
     }
     // The file info popup.
@@ -168,7 +169,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         info::render(frame, app, frame.area());
     }
     // The table cell full-text popup (`Enter`).
-    if app.is_table_cell_open() {
+    if app.is_table_cell_open() && !app.project_screen_covers() {
         table::render_cell_popup(frame, app, frame.area());
     }
     // `?` help sits above every other overlay (bookmarks, tab list, outline, info, cell popup),
