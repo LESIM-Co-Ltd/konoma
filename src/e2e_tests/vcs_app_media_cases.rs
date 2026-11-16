@@ -1359,23 +1359,51 @@ fn diff_chrome_cases(id: &str) {
 }
 
 #[test]
-fn media_both_sides_pages_keys_and_previews_match_host() {
-    if isolated("media_both_sides_pages_keys_and_previews_match_host") {
+fn media_both_sides_pages_keys_and_previews_match_host_git_en() {
+    if isolated("media_both_sides_pages_keys_and_previews_match_host_git_en") {
         return;
     }
-    media_project_cases("git");
-    if !crate::vcs::jj::available() {
-        eprintln!("NOT RUN: U8g media real jj cases; 0 fake parity cases");
-    }
-    if !crate::vcs::jj::available() {
-        return;
-    }
-    jj_media_project_cases();
+    media_project_cases("git", "en");
     report_cases();
 }
 
-fn jj_media_project_cases() {
-    media_project_cases("jj");
+#[test]
+fn media_both_sides_pages_keys_and_previews_match_host_git_ja() {
+    if isolated("media_both_sides_pages_keys_and_previews_match_host_git_ja") {
+        return;
+    }
+    media_project_cases("git", "ja");
+    report_cases();
+}
+
+#[test]
+fn media_both_sides_pages_keys_and_previews_match_host_jj_en() {
+    if !crate::vcs::jj::available() {
+        eprintln!("NOT RUN: U8g media real jj cases; 0 fake parity cases");
+        return;
+    }
+    if isolated("media_both_sides_pages_keys_and_previews_match_host_jj_en") {
+        return;
+    }
+    jj_media_project_cases("en");
+    report_cases();
+}
+
+#[test]
+fn media_both_sides_pages_keys_and_previews_match_host_jj_ja() {
+    if !crate::vcs::jj::available() {
+        eprintln!("NOT RUN: U8g media real jj cases; 0 fake parity cases");
+        return;
+    }
+    if isolated("media_both_sides_pages_keys_and_previews_match_host_jj_ja") {
+        return;
+    }
+    jj_media_project_cases("ja");
+    report_cases();
+}
+
+fn jj_media_project_cases(lang: &str) {
+    media_project_cases("jj", lang);
 }
 
 #[test]
@@ -1664,19 +1692,22 @@ fn diff_refresh_reloads_working_bytes_in_source_rendered_and_media() {
     }
 }
 
-fn media_project_cases(id: &str) {
-    for lang in ["en", "ja"] {
-        for width in [48, 180] {
-            for path in [
-                "image.png",
-                "image.svg",
-                "image.gif",
-                "pages.pdf",
-                "added.png",
-                "deleted.png",
-                "broken.png",
-                "crop.png",
-            ] {
+fn media_project_cases(id: &str, lang: &str) {
+    let widths = [48, 180];
+    let paths = [
+        "image.png",
+        "image.svg",
+        "image.gif",
+        "pages.pdf",
+        "added.png",
+        "deleted.png",
+        "broken.png",
+        "crop.png",
+    ];
+    let mut ran = 0usize;
+    {
+        for width in widths {
+            for path in paths {
                 eprintln!("RUN: media {id}/{lang}/{width}/{path}");
                 let roots = diff_repositories(|| preview_shape_repo_backend(path, id));
                 let text = config(
@@ -1762,7 +1793,14 @@ fn media_project_cases(id: &str) {
                     },
                 );
                 coverage.complete();
+                ran += 1;
             }
         }
     }
+    assert_eq!(
+        ran,
+        widths.len() * paths.len(),
+        "every width x path session of media {id}/{lang} must run"
+    );
+    assert!(ran >= 16, "media {id}/{lang} ran only {ran} sessions");
 }

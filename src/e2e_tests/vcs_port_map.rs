@@ -4063,7 +4063,8 @@ fn jj_guarded_tests() -> Vec<(&'static str, Vec<&'static str>)> {
             "vcs_app_media_cases.rs",
             vec![
                 "wrapped_diff_hides_horizontal_moves_in_footer_help_and_menu",
-                "media_both_sides_pages_keys_and_previews_match_host",
+                "media_both_sides_pages_keys_and_previews_match_host_jj_en",
+                "media_both_sides_pages_keys_and_previews_match_host_jj_ja",
                 "colocated_backend_selection_is_consistent_across_all_representations",
                 "diff_screen_help_and_project_keys_match_host_in_every_representation",
                 "jj_deleted_media_keeps_the_same_keys_after_project_and_refresh",
