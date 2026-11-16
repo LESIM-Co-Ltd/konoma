@@ -179,7 +179,7 @@ pub fn clear_cells_hidden_by_wide_symbols(buf: &mut Buffer) {
 /// current.diff_option` (lines 129-142: the `Skip` arm at 130, the `is_skip` arm at 131, the
 /// `ForcedWidth` arm at 133, the `None | AlwaysUpdate` arm at 142) and `is_skip` (lines 203-206),
 /// which honours `skip` only while the option is `None`.
-fn diff_treats_as_text(cell: &ratatui::buffer::Cell) -> bool {
+pub(crate) fn diff_treats_as_text(cell: &ratatui::buffer::Cell) -> bool {
     use ratatui::buffer::CellDiffOption;
     #[allow(deprecated)]
     let skipped_by_flag = cell.skip && cell.diff_option == CellDiffOption::None;

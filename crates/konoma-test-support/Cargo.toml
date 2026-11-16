@@ -11,7 +11,8 @@ description = "Test-only helpers shared by konoma and its crates (temp-dir guard
 # published crate, optional ones included, to be published too.
 
 [dependencies]
-ratatui.workspace = true
+# `scrolling-regions`: `TermScreen` implements the two scroll methods the feature adds to `Backend`.
+ratatui = { workspace = true, features = ["scrolling-regions"] }
 unicode-width.workspace = true
 # `frozen_frame`: the cells of a frozen fixture.
 serde_json.workspace = true

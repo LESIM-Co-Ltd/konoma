@@ -75,7 +75,9 @@ ureq = { workspace = true, optional = true }
 ratatui-image = { workspace = true, optional = true }
 
 # Drawing (`ratatui` feature) and the terminal of the standalone app (`app` feature).
-ratatui = { workspace = true, optional = true }
+# `scrolling-regions`: only `Terminal::insert_before` with an inline viewport changes (konoma has none);
+# `ratatui_backend` implements the two scroll methods the feature adds to `Backend`.
+ratatui = { workspace = true, optional = true, features = ["scrolling-regions"] }
 crossterm = { workspace = true, optional = true }
 # The key layers 0-3 the app shares with the host (`app` feature): one declaration, so a key means
 # the same in konoma and in a plugin program.

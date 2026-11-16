@@ -123,6 +123,20 @@ mod projects {
         fn clear_region(&mut self, _: ratatui::backend::ClearType) -> Result<(), Self::Error> {
             Ok(())
         }
+        fn scroll_region_up(
+            &mut self,
+            _region: std::ops::Range<u16>,
+            _line_count: u16,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn scroll_region_down(
+            &mut self,
+            _region: std::ops::Range<u16>,
+            _line_count: u16,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
         fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
             Ok((60, 15).into())
         }

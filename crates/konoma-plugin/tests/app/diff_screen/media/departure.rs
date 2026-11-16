@@ -48,6 +48,20 @@ impl Backend for Probe {
         }
         self.inner.clear_region(t)
     }
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.inner.scroll_region_up(region, line_count)
+    }
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.inner.scroll_region_down(region, line_count)
+    }
     fn size(&self) -> Result<Size, Self::Error> {
         self.inner.size()
     }

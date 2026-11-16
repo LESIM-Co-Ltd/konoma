@@ -133,7 +133,9 @@ rmp-serde = "1.3"
 # TUI コア (ratatui 0.30 はモジュラー構成。アプリは main crate を使う)
 # unstable-rendered-line-info: 折返し後の表示行数 (Paragraph::line_count) を取得し、
 #   プレビューの縦スクロールを末尾でクランプするのに使う。システム依存ではなく cargo feature。
-ratatui.workspace = true
+# scrolling-regions: テスト用 Backend 実装が scroll_region_* を持つ。変わるのは inline viewport の
+#   `Terminal::insert_before` だけで、konoma は使わない。
+ratatui = { workspace = true, features = ["scrolling-regions"] }
 crossterm.workspace = true
 
 # 画像 (kitty graphics protocol 等を統一して扱う)

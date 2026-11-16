@@ -578,6 +578,20 @@ impl ratatui::backend::Backend for TermScreen {
     fn clear_region(&mut self, c: ratatui::backend::ClearType) -> Result<(), Self::Error> {
         self.0.clear_region(c)
     }
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.0.scroll_region_up(region, line_count)
+    }
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.0.scroll_region_down(region, line_count)
+    }
     fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
         self.0.size()
     }

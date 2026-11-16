@@ -89,11 +89,17 @@ fn reorder<'a>(content: impl Iterator<Item = Item<'a>>) -> Vec<Item<'a>> {
     out
 }
 
-/// Whether the terminal cursor is known to be at `cur` after `prev` was written.
+/// Whether the terminal cursor is known to be at `cur` after `prev` was written: only after a plain
+/// text cell that holds no VS16. An escape-sequence cell (a kitty image is a `ForcedWidth` cell whose
+/// symbol moves the cursor itself) leaves it somewhere its diff width does not say.
 fn cursor_known(prev: Item<'_>, cur: Item<'_>) -> bool {
     let (px, py, pcell) = prev;
     let (x, y, _) = cur;
-    py == y && !has_vs16(pcell) && u32::from(px) + u32::from(pcell.cell_width()) == u32::from(x)
+    py == y
+        && crate::ratatui_draw::diff_treats_as_text(pcell)
+        && !pcell.symbol().contains('\u{1b}')
+        && !has_vs16(pcell)
+        && u32::from(px) + u32::from(pcell.cell_width()) == u32::from(x)
 }
 
 /// Whether the inner backend would skip the cursor move before `cur` although the cursor is not
@@ -151,6 +157,22 @@ impl<B: Backend> Backend for WideSafeBackend<B> {
     fn flush(&mut self) -> Result<(), Self::Error> {
         Backend::flush(&mut self.inner)
     }
+    // `scrolling-regions` is turned on in this crate's `ratatui` dependency, so the trait requires
+    // these. Only `Terminal::insert_before` with an inline viewport calls them (konoma has none).
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.inner.scroll_region_up(region, line_count)
+    }
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.inner.scroll_region_down(region, line_count)
+    }
 }
 
 #[cfg(test)]
@@ -176,6 +198,8 @@ mod tests {
         row: usize,
         fg: String,
         bg: String,
+        attrs: std::collections::BTreeSet<u32>,
+        saved: (usize, usize),
         moves: usize,
     }
 
@@ -188,6 +212,8 @@ mod tests {
                 row: 0,
                 fg: String::new(),
                 bg: String::new(),
+                attrs: Default::default(),
+                saved: (0, 0),
                 moves: 0,
             }
         }
@@ -202,7 +228,10 @@ mod tests {
 
         fn put(&mut self, cluster: &str) {
             let w = self.width_of(cluster);
-            let (x, sgr) = (self.col, format!("{}/{}", self.fg, self.bg));
+            let (x, sgr) = (
+                self.col,
+                format!("{}/{}/{:?}", self.fg, self.bg, self.attrs),
+            );
             if self.row < self.rows.len() && x < self.rows[self.row].len() {
                 let row = &mut self.rows[self.row];
                 if row[x].1 && x > 0 {
@@ -259,6 +288,7 @@ mod tests {
                                     0 if params.is_empty() || t[i] == "0" => {
                                         self.fg.clear();
                                         self.bg.clear();
+                                        self.attrs.clear();
                                     }
                                     38 | 48 => {
                                         let (len, text) = take(i);
@@ -269,6 +299,12 @@ mod tests {
                                         }
                                         i += len - 1;
                                     }
+                                    1..=9 => {
+                                        self.attrs.insert(n);
+                                    }
+                                    22..=29 => {
+                                        self.attrs.remove(&(if n == 22 { 1 } else { n - 20 }));
+                                    }
                                     39 => self.fg.clear(),
                                     49 => self.bg.clear(),
                                     30..=37 | 90..=97 => self.fg = t[i].to_string(),
@@ -278,6 +314,11 @@ mod tests {
                                 i += 1;
                             }
                         }
+                        // Save / restore the cursor, and the relative moves (0 means 1).
+                        's' => self.saved = (self.row, self.col),
+                        'u' => (self.row, self.col) = self.saved,
+                        'C' => self.col += params.parse::<usize>().unwrap_or(1).max(1),
+                        'B' => self.row += params.parse::<usize>().unwrap_or(1).max(1),
                         _ => {}
                     }
                     rest = &csi[end + 1..];
@@ -323,7 +364,7 @@ mod tests {
         width: u16,
         frames: &[Buffer],
     ) -> (Model, Vec<Vec<u8>>) {
-        let mut model = Model::new(usize::from(width), 1, vs16_width);
+        let mut model = Model::new(usize::from(width), 2, vs16_width);
         let mut written = Vec::new();
         let area = Rect::new(0, 0, width, 1);
         let paint = |f: &mut ratatui::Frame, frame: &Buffer| {
@@ -474,36 +515,70 @@ mod tests {
         assert_eq!(wrapped.row_text(0).trim_end(), "変ab漢c");
     }
 
-    #[test]
-    fn a_coloured_cell_after_a_vs16_emoji_keeps_its_colour() {
-        let area = Rect::new(0, 0, 6, 1);
-        let mut frame = Buffer::empty(area);
-        frame[(0, 0)].set_symbol(HEART).set_fg(Color::Blue);
-        frame[(1, 0)].set_symbol("q");
-        frame[(2, 0)].set_symbol("R").set_fg(Color::Red);
-        frame[(3, 0)].set_symbol("g").set_fg(Color::Green);
-        // The reference: the same cells where no split happens.
-        let mut plain = Buffer::empty(area);
-        plain[(2, 0)].set_symbol("R").set_fg(Color::Red);
-        plain[(3, 0)].set_symbol("g").set_fg(Color::Green);
-        let (reference, _) = draw_frames(false, 2, 6, &[plain]);
-        let (model, _) = draw_frames(true, 2, 6, &[frame]);
-        for x in [2, 3] {
-            assert!(
-                model.rows[0][x].2.starts_with("38;5;"),
-                "column {x} is coloured"
-            );
-            assert_eq!(model.rows[0][x].2, reference.rows[0][x].2, "column {x}");
-        }
-        assert_ne!(model.rows[0][2].2, model.rows[0][3].2);
-        assert_eq!(model.rows[0][0].2, reference_blue(), "the heart is blue");
-    }
-
-    /// The SGR parameters crossterm writes for a blue foreground over the default background.
-    fn reference_blue() -> String {
+    /// The style crossterm writes for one cell of this colour and modifier, as the model sees it
+    /// (drawn alone, so no run is split).
+    fn reference_style(fg: Color, modifier: ratatui::style::Modifier) -> String {
         let mut b = Buffer::empty(Rect::new(0, 0, 2, 1));
-        b[(0, 0)].set_symbol("x").set_fg(Color::Blue);
+        b[(0, 0)].set_symbol("x").set_fg(fg);
+        b[(0, 0)].modifier = modifier;
         let (m, _) = draw_frames(false, 2, 2, &[b]);
         m.rows[0][0].2.clone()
+    }
+
+    #[test]
+    fn colour_and_modifier_survive_a_run_split_after_a_vs16_cluster() {
+        use ratatui::style::Modifier;
+        let area = Rect::new(0, 0, 6, 1);
+        let mut frame = Buffer::empty(area);
+        // One column wide for the buffer, but a terminal may draw it two wide: the cell after it
+        // must start a new run (a cursor move, then the style from the reset state).
+        frame[(0, 0)].set_symbol("a\u{fe0f}").set_fg(Color::Blue);
+        frame[(0, 0)].modifier = Modifier::BOLD;
+        frame[(1, 0)].set_symbol("R").set_fg(Color::Red);
+        frame[(1, 0)].modifier = Modifier::REVERSED;
+        frame[(2, 0)].set_symbol("g").set_fg(Color::Green);
+        let red = reference_style(Color::Red, Modifier::REVERSED);
+        let green = reference_style(Color::Green, Modifier::empty());
+        assert!(red.contains("38;5;"), "{red}");
+        assert!(red.contains('7'), "reversed is in {red}");
+        assert_ne!(red, green);
+        let (plain, _) = draw_frames(false, 1, 6, std::slice::from_ref(&frame));
+        for vs16_width in [2, 1] {
+            let (model, _) = draw_frames(true, vs16_width, 6, std::slice::from_ref(&frame));
+            assert!(
+                model.moves >= 2 && model.moves > plain.moves,
+                "the draw was split into runs: {} moves, {} without the wrapper",
+                model.moves,
+                plain.moves
+            );
+            assert_eq!(model.rows[0][1].0, "R", "vs16 width {vs16_width}");
+            assert_eq!(model.rows[0][1].2, red, "vs16 width {vs16_width}");
+            assert_eq!(model.rows[0][2].2, green, "vs16 width {vs16_width}");
+        }
+    }
+
+    #[test]
+    fn a_cell_after_a_kitty_image_cell_gets_its_own_cursor_move() {
+        use std::num::NonZeroU16;
+        // The shape of konoma's native kitty cell: save the cursor, print the placeholder, restore it
+        // and walk right and down (`\x1b[0C` moves one column), so the cursor ends up on the next
+        // row although the diff counts the cell one column wide.
+        let image = "\u{1b}[sI\u{1b}[u\u{1b}[0C\u{1b}[1B";
+        let area = Rect::new(0, 0, 6, 1);
+        let mut frame = Buffer::empty(area);
+        frame[(0, 0)].set_symbol(HEART);
+        frame[(2, 0)]
+            .set_symbol(image)
+            .set_diff_option(CellDiffOption::ForcedWidth(NonZeroU16::new(1).unwrap()));
+        frame[(3, 0)].set_symbol("Z");
+        let (plain, _) = draw_frames(false, 2, 6, std::slice::from_ref(&frame));
+        assert_ne!(
+            plain.rows[0][3].0, "Z",
+            "the inner backend alone misplaces Z"
+        );
+        for vs16_width in [2, 1] {
+            let (model, _) = draw_frames(true, vs16_width, 6, std::slice::from_ref(&frame));
+            assert_eq!(model.rows[0][3].0, "Z", "vs16 width {vs16_width}");
+        }
     }
 }

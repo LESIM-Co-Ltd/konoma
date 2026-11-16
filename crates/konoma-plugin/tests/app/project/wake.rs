@@ -133,6 +133,26 @@ impl ratatui::backend::Backend for Probe {
     fn clear_region(&mut self, region: ratatui::backend::ClearType) -> Result<(), Self::Error> {
         self.backend.lock().unwrap().clear_region(region)
     }
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.backend
+            .lock()
+            .unwrap()
+            .scroll_region_up(region, line_count)
+    }
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.backend
+            .lock()
+            .unwrap()
+            .scroll_region_down(region, line_count)
+    }
     fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
         self.backend.lock().unwrap().size()
     }
