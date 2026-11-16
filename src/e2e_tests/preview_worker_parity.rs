@@ -1524,3 +1524,41 @@ fn a_diff_opened_from_the_tree_comes_back_from_a_project_screen_and_a_tab() {
         );
     }
 }
+
+/// The saved top line still exists but the caret's line was deleted: the caret stops on the last
+/// line that exists (the clamp of the line seek itself, not the "top is past the end" branch),
+/// and `Y` names that line. Through a project screen and through a tab switch.
+#[test]
+fn a_caret_line_deleted_while_covered_stops_on_the_last_line_that_exists() {
+    let dir = sandbox("pwp_return_caret_deleted");
+    let root = canon(&dir);
+    for worker in [false, true] {
+        for via_tab in [false, true] {
+            std::fs::write(dir.join("long.txt"), numbered_lines(400)).unwrap();
+            let mut s = open_at_line(&root, "long.txt", 200, worker);
+            assert_eq!(s.app.preview_caret_line(), 199);
+            let top = s.app.preview_top_line();
+            assert!(top > 100, "top {top}");
+            let total = top + 2; // the top line is still there, the caret's line is gone
+            let what = format!("worker={worker} via_tab={via_tab}");
+            if via_tab {
+                s.key('t');
+                std::fs::write(dir.join("long.txt"), numbered_lines(total)).unwrap();
+                s.key('[');
+            } else {
+                s.app.cover_with_project_screen_for_test();
+                std::fs::write(dir.join("long.txt"), numbered_lines(total)).unwrap();
+                s.app.leave_project_screens_for_test();
+            }
+            s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+            s.draw();
+            // (the top may move up so the last page is full; the caret is what is under test)
+            assert_eq!(s.app.preview_caret_line(), total - 1, "{what}");
+            assert_eq!(
+                s.app.selection_ref_string().as_deref(),
+                Some(format!("@long.txt#L{total}").as_str()),
+                "{what}"
+            );
+        }
+    }
+}
