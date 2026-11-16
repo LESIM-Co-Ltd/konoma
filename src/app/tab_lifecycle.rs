@@ -332,6 +332,7 @@ impl App {
         self.tab.project_return = None;
         self.tab.project_effects.clear();
         self.tab.project_enter_pending = false;
+        self.tab.project_enter_op = None;
         self.project_dialog = None;
         self.tab.open_dir = root.clone();
         self.tab.root = root;

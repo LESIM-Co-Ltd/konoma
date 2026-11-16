@@ -1001,10 +1001,47 @@ impl App {
     /// An old hub action name bound on a surface that is not a project canvas. The names that
     /// opened an old screen or acted on the whole repository are read like they are on a screen
     /// table: open the project the way `p` does, then run the operation `old_screens::ROWS` maps
-    /// the name to for the backend (a screen jump switches the screen in place). A name with no
-    /// operation for the backend does nothing; a name that needed a hub row is not routed here.
+    /// the name to for the project's backend (a screen jump switches the screen in place). A name
+    /// with no operation for a backend that is already known does nothing and opens no project; a
+    /// name that needed a hub row is not routed here. While the project is not open yet
+    /// (detection pending, or the chooser up) the name waits in `project_enter_op` and runs when
+    /// the project opens (see `open_project`); it is dropped when none does.
     #[cfg(feature = "git")]
     pub(crate) fn run_old_hub_name(&mut self, name: &str) {
+        use crate::plugins::old_screens::{Target, ROWS};
+        let Some(row) = ROWS.iter().find(|row| row.old == name) else {
+            return;
+        };
+        let detected = if self.git_vcs == crate::vcs::VcsKind::Jj {
+            "jj"
+        } else {
+            "git"
+        };
+        let several = self
+            .tab
+            .projects
+            .projects
+            .iter()
+            .filter(|p| !p.declaration.screens.is_empty() && self.project_is_enabled(&p.plugin))
+            .count()
+            > 1;
+        let known = !self.tab.projects.pending() && !several;
+        let target = if detected == "jj" { &row.jj } else { &row.git };
+        if known && !matches!(target, Target::Op(_)) {
+            return;
+        }
+        self.tab.project_enter_op = Some(name.to_string());
+        if !self.enter_project() {
+            self.tab.project_enter_op = None;
+            self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
+        }
+        // A project that opened ran the name (`open_project`); a pending or chooser entry keeps it.
+    }
+
+    /// Run the old hub name a key asked for, in the project that has just opened. The row is read
+    /// for that project's plugin, not for the backend the tab was detected as.
+    #[cfg(feature = "git")]
+    fn run_old_hub_name_in_project(&mut self, name: &str) {
         use crate::plugins::old_screens::{act_screen, Target, ROWS};
         let Some(row) = ROWS.iter().find(|row| row.old == name) else {
             return;
@@ -1013,18 +1050,6 @@ impl App {
             "jj" => &row.jj,
             _ => &row.git,
         };
-        let detected = if self.git_vcs == crate::vcs::VcsKind::Jj {
-            "jj"
-        } else {
-            "git"
-        };
-        if !matches!(target(detected), Target::Op(_)) {
-            return;
-        }
-        if !self.enter_project() {
-            self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
-            return;
-        }
         let Some(plugin) = self
             .tab
             .project_navigation
@@ -1080,6 +1105,8 @@ impl App {
     }
 
     pub(super) fn open_project(&mut self, key: ProjectKey) {
+        // The old hub name that waited for this project (taken whether or not it opens).
+        let op = self.tab.project_enter_op.take();
         if !self.project_is_enabled(&key.plugin) {
             return;
         }
@@ -1099,6 +1126,12 @@ impl App {
             return;
         };
         self.show_project_screen(key, screen);
+        #[cfg(feature = "git")]
+        if let Some(name) = op {
+            self.run_old_hub_name_in_project(&name);
+        }
+        #[cfg(not(feature = "git"))]
+        let _ = op;
     }
 
     fn show_project_screen(&mut self, key: ProjectKey, screen: ScreenKey) {
@@ -1632,6 +1665,7 @@ impl App {
                     if self.tab.project_enter_pending && !self.tab.projects.pending() {
                         self.tab.project_enter_pending = false;
                         if !self.enter_project() {
+                            self.tab.project_enter_op = None;
                             self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
                         }
                         changed = true;

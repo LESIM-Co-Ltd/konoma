@@ -1822,6 +1822,15 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
     }
 }
 
+/// `p`: enter the project, or say that there is none. A name still waiting for a project is
+/// replaced by this newer key.
+fn open_project_like_p(app: &mut App) {
+    app.tab.project_enter_op = None;
+    if !app.enter_project() {
+        app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::NotAGitRepo).into());
+    }
+}
+
 /// Central dispatch that runs a resolved `Action`. Only `Quit` requests exit, returning `Ok(true)`.
 /// Surface-dependent behavior (motion amount, the q/Esc return target) branches on `sfc` (§5).
 fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> {
@@ -1926,11 +1935,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         {
             app.run_old_hub_name(&keymap::action_name(action));
         }
-        Action::OpenGitView => {
-            if !app.enter_project() {
-                app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::NotAGitRepo).into());
-            }
-        }
+        Action::OpenGitView => open_project_like_p(app),
         // On a project canvas the key `r` is the host's own refresh; the menu item runs that path.
         Action::Refresh if ctx == keymap::Context::Canvas && app.project_active() => {
             app.project_refresh()
@@ -2162,9 +2167,14 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         // The worktree list's close returns to the hub underneath it. A project canvas has no such
         // hub (its own back is the project key handler's), so the operation bound to another key
         // there must not open one behind it: leaving the canvas would show the hub over the tree.
+        //
+        // Off a canvas the name did what `p` does in the released hub (it reopened the hub, and
+        // the project's changes screen replaced the hub).
         Action::WorktreeClose => {
             if sfc == Surface::PreviewCanvas {
                 app.project_worktree_close_elsewhere()
+            } else if !matches!(ctx, keymap::Context::Canvas | keymap::Context::Screen(..)) {
+                open_project_like_p(app)
             } else {
                 app.close_git_worktrees()
             }

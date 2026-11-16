@@ -2064,7 +2064,10 @@ pub(crate) struct PerTab {
     /// Selected project backend for the current diff and its ordinary Preview presentation.
     diff_read_context: konoma_plugin::host::project::DiffReadContext,
     pub(crate) project_return: Option<project_screens::ProjectNavigation>,
-    project_enter_pending: bool,
+    pub(crate) project_enter_pending: bool,
+    /// The old hub action name a key asked for while the project was not open yet (detection
+    /// pending, or the chooser up): it runs once that project opens, and is dropped when none does.
+    pub(crate) project_enter_op: Option<String>,
     project_effects: Vec<project_screens::ProjectEffect>,
     project_pending_acts: std::collections::VecDeque<project_screens::ProjectInvocation>,
     /// Extra repository watch, resolved once for this root/backend and carried across tab switches.
@@ -2301,6 +2304,7 @@ impl Default for PerTab {
             diff_read_context: Default::default(),
             project_return: None,
             project_enter_pending: false,
+            project_enter_op: None,
             project_effects: Vec::new(),
             project_pending_acts: Default::default(),
             entries: Vec::new(),
@@ -3556,6 +3560,7 @@ impl App {
         self.tab.project_return = None;
         self.project_dialog = None;
         self.tab.project_enter_pending = false;
+        self.tab.project_enter_op = None;
         self.tab.project_pending_acts.clear();
         #[cfg(feature = "git")]
         self.follow_worker.cancel();

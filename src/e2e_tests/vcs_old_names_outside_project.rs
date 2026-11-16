@@ -209,9 +209,9 @@ fn tree_cases() -> Vec<(&'static str, String, String)> {
     v.into_iter().map(|(n, (g, j))| (n, g, j)).collect()
 }
 
-/// Names that are not in the table above on purpose (see the report): `worktree_close` opens the
-/// old hub's changes screen today and has no counterpart row that says what to do instead.
-const EXCLUDED: &[&str] = &["worktree_close"];
+/// Names that are not in the table above on purpose. `worktree_close` is not one of them: it has
+/// its own cases below (it does what `p` does off a canvas).
+const EXCLUDED: &[&str] = &[];
 
 #[test]
 fn vcs_old_names_table_covers_every_row_of_the_old_screens_table() {
@@ -219,6 +219,9 @@ fn vcs_old_names_table_covers_every_row_of_the_old_screens_table() {
     let mut seen = 0;
     for row in ROWS {
         if EXCLUDED.contains(&row.old) {
+            continue;
+        }
+        if row.old == "worktree_close" {
             continue;
         }
         assert!(
@@ -230,6 +233,7 @@ fn vcs_old_names_table_covers_every_row_of_the_old_screens_table() {
     }
     assert_eq!(cases.len(), seen, "a case without a row");
     assert_eq!(seen, 49, "the number of names under test");
+    assert!(ROWS.iter().any(|r| r.old == "worktree_close"));
 }
 
 fn run_tree(id: &str) {
@@ -311,5 +315,308 @@ fn vcs_old_names_outside_a_repository_answer_like_p() {
         drain(&mut sim);
         assert_eq!(effect(&mut sim), effect(&mut p_sim), "`{name}` vs p");
         assert_eq!(sim.app.flash.as_deref(), Some("not a git repo"), "`{name}`");
+    }
+}
+
+// ---- worktree_close: off a canvas it does what `p` does ----
+
+const P_NAME: &str = "open_git_view";
+
+#[test]
+fn vcs_old_names_worktree_close_off_a_canvas_does_what_p_does() {
+    if isolated("vcs_old_names_worktree_close_off_a_canvas_does_what_p_does") {
+        return;
+    }
+    for id in ["git", "jj"] {
+        if repo(id, "probe").is_none() {
+            eprintln!("SKIPPED: jj is not installed");
+            continue;
+        }
+        for (table, preview) in [("tree", false), ("preview_text", true)] {
+            let got = press_bound(id, table, "worktree_close", preview).unwrap();
+            let p = press_bound(id, table, P_NAME, preview).unwrap();
+            assert_eq!(got, p, "{id} `worktree_close` in [keys.{table}] vs p");
+            assert_eq!(
+                got,
+                canvas("changes", None, false),
+                "{id} `worktree_close` in [keys.{table}]"
+            );
+        }
+    }
+}
+
+#[test]
+fn vcs_old_names_worktree_close_outside_a_repository_answers_like_p() {
+    if isolated("vcs_old_names_worktree_close_outside_a_repository_answers_like_p") {
+        return;
+    }
+    let dir = crate::test_support::unique_tmp("vcs_old_names_close_no_repo");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+    let mut got = Vec::new();
+    for name in ["worktree_close", P_NAME] {
+        let mut sim = Sim::with_config_sized(&dir, cfg_for("git", "tree", name), 120, 30);
+        sim.app.tab.projects.wait_for_result();
+        sim.app.poll_projects();
+        sim.key(KEY);
+        drain(&mut sim);
+        got.push(effect(&mut sim));
+    }
+    assert_eq!(got[0], got[1], "worktree_close vs p");
+    assert_eq!(got[0], stays("Tree", Some("not a git repo")));
+}
+
+// ---- the project is not known yet when the key is pressed ----
+
+fn both_enabled(keys: &[(&str, &str)]) -> Config {
+    let mut cfg = Config::default();
+    cfg.ui.lang = "en".into();
+    cfg.ui.tabbar = "hidden".into();
+    cfg.ui.statusbar = "split".into();
+    for (key, action) in keys {
+        cfg.keys
+            .surfaces
+            .entry("tree".into())
+            .or_default()
+            .insert(key.to_string(), action.to_string());
+    }
+    cfg
+}
+
+/// The action bound to `KEY` dispatched without `handle_key` (which takes a finished detection
+/// answer first) and without the redraw that `Sim::press` ends with: detection stays pending.
+fn press_undrawn(sim: &mut Sim, _key: char) {
+    let name = sim
+        .app
+        .cfg
+        .keys
+        .surfaces
+        .get("tree")
+        .and_then(|t| t.get(&KEY.to_string()))
+        .cloned()
+        .unwrap();
+    let action = crate::keymap::action_from_str(&name).unwrap();
+    crate::dispatch_action(&mut sim.app, action, crate::keymap::Surface::Tree).unwrap();
+}
+
+fn plugin_of(sim: &Sim) -> String {
+    sim.app
+        .tab
+        .project_navigation
+        .as_ref()
+        .map(|n| n.project.plugin.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn vcs_old_names_pressed_while_detection_is_pending_run_when_the_project_opens() {
+    if isolated("vcs_old_names_pressed_while_detection_is_pending_run_when_the_project_opens") {
+        return;
+    }
+    for (name, screen, flash) in [
+        ("git_stage_all", "changes", Some("Staged all (7)")),
+        ("git_open_log", "log", None),
+        ("git_open_worktrees", "worktrees", None),
+    ] {
+        let root = repo("git", "pending").unwrap();
+        let mut sim = Sim::with_config_sized(&root, cfg_for("git", "tree", name), 120, 30);
+        // The worker has answered but the host has not taken the answer: detection is pending.
+        sim.app.tab.projects.wait_for_result();
+        assert!(sim.app.tab.projects.pending(), "{name}: the seam holds");
+        press_undrawn(&mut sim, KEY);
+        assert!(!sim.app.project_active(), "{name}: not open yet");
+        assert!(sim.app.tab.project_enter_pending, "{name}: queued");
+        drain(&mut sim);
+        assert!(!sim.app.tab.project_enter_pending);
+        assert_eq!(
+            effect(&mut sim),
+            canvas(screen, flash, false),
+            "git `{name}` pressed while detection was pending"
+        );
+    }
+}
+
+#[test]
+fn vcs_old_names_pending_name_that_has_no_operation_in_the_detected_backend_is_dropped() {
+    if isolated(
+        "vcs_old_names_pending_name_that_has_no_operation_in_the_detected_backend_is_dropped",
+    ) {
+        return;
+    }
+    let Some(root) = repo("jj", "pending") else {
+        eprintln!("SKIPPED: jj is not installed");
+        return;
+    };
+    let mut sim =
+        Sim::with_config_sized(&root, cfg_for("jj", "tree", "git_open_worktrees"), 120, 30);
+    sim.app.tab.projects.wait_for_result();
+    assert!(sim.app.tab.projects.pending());
+    press_undrawn(&mut sim, KEY);
+    assert!(sim.app.tab.project_enter_pending);
+    drain(&mut sim);
+    // The project opens like `p` opens it; the operation jj has no row for is dropped.
+    assert_eq!(effect(&mut sim), canvas("changes", None, false));
+    assert_eq!(plugin_of(&sim), "jj");
+}
+
+fn colocated(tag: &str) -> Option<std::path::PathBuf> {
+    if !crate::vcs::jj::available() {
+        return None;
+    }
+    let dir = super::vcs_changes::git_repo(&format!("vcs_old_names_colo_{tag}"), true);
+    let path = dir.to_path_buf();
+    std::mem::forget(dir);
+    assert!(crate::test_support::run_jj(
+        &path,
+        &["git", "init", "--colocate", "."]
+    ));
+    Some(path)
+}
+
+fn chooser_sim(root: &std::path::Path, keys: &[(&str, &str)]) -> Sim {
+    let mut sim = Sim::with_config_sized(root, both_enabled(keys), 120, 30);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    sim
+}
+
+fn chooser_open(sim: &Sim) -> bool {
+    matches!(
+        sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Projects { .. })
+    )
+}
+
+#[test]
+fn vcs_old_names_chooser_runs_the_operation_of_the_chosen_project() {
+    if isolated("vcs_old_names_chooser_runs_the_operation_of_the_chosen_project") {
+        return;
+    }
+    // (name, picks jj (`j` first), plugin, screen)
+    for (name, jj, plugin, screen) in [
+        ("git_open_log", true, "jj", "log"),
+        ("git_open_log", false, "git", "log"),
+        ("git_open_worktrees", false, "git", "worktrees"),
+        // jj has no worktrees screen: the project opens, the operation is dropped.
+        ("git_open_worktrees", true, "jj", "changes"),
+    ] {
+        let Some(root) = colocated("choose") else {
+            eprintln!("SKIPPED: jj is not installed");
+            return;
+        };
+        let mut sim = chooser_sim(&root, &[(&KEY.to_string(), name)]);
+        sim.key(KEY);
+        assert!(chooser_open(&sim), "{name}: the chooser is up");
+        assert!(!sim.app.project_active());
+        if jj {
+            sim.key('j');
+        }
+        sim.enter();
+        drain(&mut sim);
+        assert_eq!(plugin_of(&sim), plugin, "{name} jj={jj}");
+        assert_eq!(
+            effect(&mut sim),
+            canvas(screen, None, false),
+            "{name} jj={jj}"
+        );
+    }
+}
+
+#[test]
+fn vcs_old_names_cancelled_chooser_drops_the_operation() {
+    if isolated("vcs_old_names_cancelled_chooser_drops_the_operation") {
+        return;
+    }
+    let Some(root) = colocated("cancel") else {
+        eprintln!("SKIPPED: jj is not installed");
+        return;
+    };
+    let keys = [
+        (KEY.to_string(), "git_open_worktrees"),
+        ("Y".into(), P_NAME),
+    ];
+    let keys: Vec<(&str, &str)> = keys.iter().map(|(k, a)| (k.as_str(), *a)).collect();
+    let mut sim = chooser_sim(&root, &keys);
+    sim.key(KEY);
+    assert!(chooser_open(&sim));
+    sim.esc();
+    drain(&mut sim);
+    assert_eq!(
+        effect(&mut sim),
+        stays("Tree", Some("canceled")).replace("Some(\"canceled\")", "None"),
+    );
+    // Opening the project afterwards (a menu entry) runs nothing.
+    assert!(sim.app.enter_project());
+    assert!(chooser_open(&sim));
+    sim.enter();
+    drain(&mut sim);
+    assert_eq!(plugin_of(&sim), "git");
+    assert_eq!(effect(&mut sim), canvas("changes", None, false));
+}
+
+#[test]
+fn vcs_old_names_pending_operation_does_not_leak_to_another_tab() {
+    if isolated("vcs_old_names_pending_operation_does_not_leak_to_another_tab") {
+        return;
+    }
+    let root = repo("git", "leak").unwrap();
+    let mut cfg = cfg_for("git", "tree", "git_stage_all");
+    cfg.keys
+        .surfaces
+        .get_mut("tree")
+        .unwrap()
+        .insert("Y".into(), P_NAME.into());
+    let mut sim = Sim::with_config_sized(&root, cfg, 120, 30);
+    sim.app.tab.projects.wait_for_result();
+    assert!(sim.app.tab.projects.pending());
+    press_undrawn(&mut sim, KEY);
+    assert!(sim.app.tab.project_enter_pending);
+    // A new tab is a fresh tab: nothing queued in it.
+    sim.app.tab_new().unwrap();
+    assert!(!sim.app.tab.project_enter_pending);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    // The entry that is not a key (a menu item) opens the project the same way.
+    assert!(sim.app.enter_project());
+    drain(&mut sim);
+    assert_eq!(effect(&mut sim), canvas("changes", None, false));
+    assert_eq!(sim.app.tab.project_enter_op, None);
+}
+
+// ---- the file diff surface ----
+
+fn diff_sim(root: &std::path::Path, name: &str) -> Sim {
+    let mut sim = Sim::with_config_sized(root, cfg_for("git", "diff", name), 120, 30);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    sim.select("b-unstaged.txt");
+    sim.key('d');
+    assert_eq!(sim.app.surface(), crate::keymap::Surface::PreviewGitDiff);
+    sim
+}
+
+#[test]
+fn vcs_old_names_on_the_file_diff_open_the_project_over_the_diff() {
+    if isolated("vcs_old_names_on_the_file_diff_open_the_project_over_the_diff") {
+        return;
+    }
+    for (name, screen, prompt) in [
+        ("git_open_log", "log", false),
+        ("git_commit", "changes", true),
+    ] {
+        let root = repo("git", "diff").unwrap();
+        let mut sim = diff_sim(&root, name);
+        sim.key(KEY);
+        drain(&mut sim);
+        assert_eq!(
+            effect(&mut sim),
+            canvas(screen, None, prompt),
+            "`{name}` bound in [keys.diff]"
+        );
+        // The diff is kept underneath: it is still the tab's preview.
+        assert!(
+            sim.app.is_git_diff_preview(),
+            "`{name}`: the diff is still the preview"
+        );
     }
 }

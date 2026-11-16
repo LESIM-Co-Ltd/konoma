@@ -20,8 +20,13 @@ impl App {
             ProjectPromptUpdate::InvocationReady(invocation) => {
                 self.execute_project_act(invocation)
             }
-            ProjectPromptUpdate::Cancelled { notice: true } => {
-                self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Canceled).into());
+            ProjectPromptUpdate::Cancelled { notice } => {
+                // A cancelled chooser drops the old hub name that waited for it.
+                self.tab.project_enter_op = None;
+                if notice {
+                    self.flash =
+                        Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Canceled).into());
+                }
             }
             _ => {}
         }
