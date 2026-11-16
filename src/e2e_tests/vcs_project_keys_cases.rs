@@ -1080,6 +1080,33 @@ fn under_state(sim: &Sim) -> (Option<std::path::PathBuf>, Mode, bool, bool, bool
     )
 }
 
+/// The actions (among the candidates of the preview under the screen) whose help description is
+/// on a row of the real `?` help of the front screen: the same sections the overlay draws
+/// (`help::sections`, which reaches `project_sections` over a project screen).
+fn real_help_words(sim: &Sim) -> Vec<crate::keymap::Action> {
+    use crate::keymap::Action as A;
+    let rows: Vec<String> = crate::ops::help::sections(&sim.app)
+        .into_iter()
+        .flat_map(|s| s.rows.into_iter().map(|(_, desc)| desc))
+        .collect();
+    assert!(!rows.is_empty(), "the project screen's help has rows");
+    [
+        A::ToggleOutline,
+        A::CycleRepresentation,
+        A::PreviewCopySelectionRef,
+        A::MarkSet,
+        A::PreviewFileNext,
+        A::PreviewFilePrev,
+    ]
+    .into_iter()
+    .filter(|a| {
+        crate::ops::decl::decl(*a)
+            .help
+            .is_some_and(|m| rows.iter().any(|d| d == crate::i18n::tr(sim.app.lang, m)))
+    })
+    .collect()
+}
+
 #[test]
 fn vcs_keys_o_over_a_preview_opens_no_outline_and_is_not_advertised() {
     if isolated("vcs_keys_o_over_a_preview_opens_no_outline_and_is_not_advertised") {
@@ -1105,10 +1132,9 @@ fn vcs_keys_o_over_a_preview_opens_no_outline_and_is_not_advertised() {
         );
         let footer = crate::ops::footer::tokens(&sim.app, Context::Canvas).join(" ");
         assert!(!footer.contains(hint), "{id}: footer {footer:?} names {hint:?}");
-        let rows = crate::ops::help::rows_for(&sim.app, Context::Canvas);
         assert!(
-            rows.iter().all(|r| !r.actions.contains(&crate::keymap::Action::ToggleOutline)),
-            "{id}: help rows list the outline"
+            !real_help_words(&sim).contains(&crate::keymap::Action::ToggleOutline),
+            "{id}: the `?` help of the project screen lists the outline"
         );
         // Leaving the screens returns to the preview, where O opens its outline as before.
         press(&mut sim, KeyCode::Char('h'));
@@ -1161,96 +1187,224 @@ fn vcs_keys_the_other_canvas_keys_do_not_act_on_the_preview_under() {
             assert!(sim.app.flash.is_none(), "{what}: flash {:?}", sim.app.flash);
             assert_project_screen_in_front(&sim, &what, &[]);
             assert!(!crate::ops::action_enabled(&sim.app, Context::Canvas, action), "{what}: gate");
-            let rows = crate::ops::help::rows_for(&sim.app, Context::Canvas);
-            assert!(rows.iter().all(|r| !r.actions.contains(&action)), "{what}: help rows");
+            assert!(!real_help_words(&sim).contains(&action), "{what}: the `?` help lists it");
         }
     }
 }
 
-/// Every key the Canvas keymap binds to an action that the gate leaves on over a project screen,
-/// as `"key Action"` lines. The gate masks the actions of the screen under by an enumerated list
-/// (`acts_on_screen_under`), so an action added to the canvas later is on by default: this set
-/// pins what is on, and a new entry fails the test until someone decides it is fine here.
-fn canvas_on_set(sim: &Sim) -> Vec<String> {
-    let mut codes: Vec<(String, KeyCode, KeyModifiers)> = Vec::new();
-    for c in (0x20u8..0x7f).map(char::from) {
-        codes.push((c.to_string(), KeyCode::Char(c), KeyModifiers::NONE));
-        codes.push((format!("C-{c}"), KeyCode::Char(c), KeyModifiers::CONTROL));
-    }
-    for (n, k) in [
-        ("Enter", KeyCode::Enter),
-        ("Esc", KeyCode::Esc),
-        ("Tab", KeyCode::Tab),
-        ("BackTab", KeyCode::BackTab),
-        ("Up", KeyCode::Up),
-        ("Down", KeyCode::Down),
-        ("Left", KeyCode::Left),
-        ("Right", KeyCode::Right),
-        ("PageUp", KeyCode::PageUp),
-        ("PageDown", KeyCode::PageDown),
-        ("Home", KeyCode::Home),
-        ("End", KeyCode::End),
-    ] {
-        codes.push((n.to_string(), k, KeyModifiers::NONE));
-    }
-    let mut on = Vec::new();
-    for (name, code, mods) in codes {
-        let kp = crate::keymap::KeyPress::norm(&crossterm::event::KeyEvent::new(code, mods));
-        if let crate::keymap::Resolution::Action(a) = sim.app.keymaps.resolve_on(
-            Context::Canvas,
-            sim.app.screen_keys_for(Context::Canvas),
-            kp,
-        ) {
-            if crate::ops::gate(&sim.app, Context::Canvas, a).is_on() {
-                on.push(format!("{name} {a:?}"));
-            }
+/// Every name the config parser accepts for an action (`keymap::action_from_str`): the shared
+/// table of the core actions and the host's own match arms, read from the parser's source, so an
+/// action added to the parser is walked without touching this test.
+fn every_assignable_action() -> Vec<(String, crate::keymap::Action)> {
+    let src = include_str!("../keymap.rs");
+    let start = src.find("pub fn action_from_str").expect("parser");
+    let end = start + src[start..].find("pub fn action_name").expect("end of parser");
+    let mut names: Vec<String> = konoma_host_core::keymap::CoreAction::all()
+        .into_iter()
+        .map(|c| c.name())
+        .collect();
+    names.extend(konoma_host_core::keymap::HostOp::ALL.into_iter().map(|h| h.name().to_string()));
+    for line in src[start..end].lines() {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix('"') else {
+            continue;
+        };
+        let Some(q) = rest.find('"') else { continue };
+        if rest[q + 1..].trim_start().starts_with("=>")
+            || rest[q + 1..].trim_start().starts_with("| \"")
+        {
+            names.push(rest[..q].to_string());
         }
     }
-    on.sort();
-    on
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .filter_map(|n| crate::keymap::action_from_str(&n).map(|a| (n, a)))
+        .collect()
 }
 
 #[test]
-fn vcs_keys_pin_the_canvas_actions_that_stay_on_over_a_project_screen() {
-    if isolated("vcs_keys_pin_the_canvas_actions_that_stay_on_over_a_project_screen") {
+fn vcs_keys_only_the_listed_actions_stay_on_over_a_project_screen() {
+    if isolated("vcs_keys_only_the_listed_actions_stay_on_over_a_project_screen") {
         return;
     }
-    let Some(repo) = esc_repo("git", "vcs_keys_pin_on_set") else {
+    let Some(repo) = esc_repo("git", "vcs_keys_allow_list") else {
         return;
     };
     let sim = project_over_md_preview(&repo, "git");
-    let on = canvas_on_set(&sim);
-    // Each entry is fine over a project screen because it does not read the layers of the screen
-    // under it (or the project screen handles the key itself first).
-    let expected: Vec<&str> = vec![
-        "! GitLaunchTool",  // gated to the screens that have a tool, by the project
-        "' MarkJump",       // opens the bookmark list, which is drawn over the screen
-        "1 TabGoto(0)",     // tab switches act on the tab list, not on a layer
-        "2 TabGoto(1)",
-        "3 TabGoto(2)",
-        "4 TabGoto(3)",
-        "5 TabGoto(4)",
-        "6 TabGoto(5)",
-        "7 TabGoto(6)",
-        "8 TabGoto(7)",
-        "9 TabGoto(8)",
-        "? ToggleHelp",     // help is in front of the screen
-        "F ToggleFollow",   // a session-wide mode, not a layer
-        "P PasteJump",      // jumps by the clipboard path
-        "Q Quit",           // quits the session (confirm dialog in front)
-        "T ToggleTabList",  // the tab list is in front of the screen
-        "e RequestEdit",    // acts on the screen's own launch target (`verb_target`)
-        "o OpenExternal",   // same target as `e`
-        "p OpenGitView",    // the project key
-        "q PreviewBack",    // the project screen's back, handled by it first
-        "r Refresh",        // refreshes the project (`project_refresh`)
-        "t TabNewAfter",    // opens a tab
+    let all = every_assignable_action();
+    // A floor on the walk: the parser has well over a hundred names.
+    assert!(all.len() > 100, "only {} action names were walked", all.len());
+    // Over the project screen the gate allows an explicit list; every other action is off, by
+    // name, whatever key the config binds it to. Some listed actions have a rule of their own
+    // (a tab count, a launch target), so a listed action may still be off.
+    let allowed: &[&str] = &[
+        "noop",
+        "tab_new",
+        "tab_new_after",
+        "tab_close",
+        "close_tab_or_quit",
+        "tab_prev",
+        "tab_next",
+        "open_in_new_tab",
+        "toggle_tab_list",
+        "toggle_help",
+        "toggle_follow",
+        "paste_jump",
+        "quit",
+        "refresh",
+        "preview_back",
+        "open_git_view",
+        "request_edit",
+        "open_external",
+        "mark_jump",
+        "git_launch_tool",
+        // The old hub names, read for the open project when bound on a canvas.
+        "git_open_log",
+        "git_open_graph",
+        "git_open_branches",
+        "git_open_worktrees",
+        "git_worktree_diff",
+        "git_commit",
+        "git_stage_all",
+        "git_unstage_all",
+        "jj_sync",
+        "git_graph_toggle_all",
+        "branch_create",
+        "worktree_create",
+        "worktree_close",
     ];
-    assert_eq!(
-        on, expected,
-        "a canvas action reached the project screen: decide whether it acts on the screen under \
-         (then add it to `acts_on_screen_under`) or is fine (then list it here)"
+    let motion = |n: &str| {
+        matches!(
+            crate::keymap::action_from_str(n),
+            Some(crate::keymap::Action::Navigate(_))
+        )
+    };
+    let mut on_names = Vec::new();
+    for (name, action) in &all {
+        let on = crate::ops::gate(&sim.app, Context::Canvas, *action).is_on();
+        if on {
+            on_names.push(name.clone());
+        }
+        assert!(
+            !on || allowed.contains(&name.as_str()) || motion(name),
+            "{name} ({action:?}) is on over a project screen: it can act on the screen under"
+        );
+    }
+    // The actions the config cannot name (`tab_goto` is fixed to the digit keys) are reached
+    // through the default keymaps: only the tab switch may be on among them.
+    let named: Vec<crate::keymap::Action> = all.iter().map(|(_, a)| *a).collect();
+    let mut bound: Vec<crate::keymap::Action> = Vec::new();
+    {
+        let km = &sim.app.keymaps;
+        let mut grab = |m: &std::collections::HashMap<crate::keymap::KeyPress, crate::keymap::Binding>| {
+            for b in m.values() {
+                if let crate::keymap::Binding::Run(a) = b {
+                    bound.push(*a);
+                }
+            }
+        };
+        km.contexts.values().for_each(&mut grab);
+        km.types.values().for_each(&mut grab);
+        grab(&km.basic);
+        grab(&km.global);
+    }
+    let mut unnamed_on = 0;
+    for a in bound.into_iter().filter(|a| !named.contains(a)) {
+        if crate::ops::gate(&sim.app, Context::Canvas, a).is_on() {
+            assert!(
+                matches!(a, crate::keymap::Action::TabGoto(_)),
+                "{a:?} has no config name and is on over a project screen"
+            );
+            unnamed_on += 1;
+        }
+    }
+    assert!(unnamed_on >= 9, "the digit keys stay on: {unnamed_on}");
+    // Floor on the on side, so an allow list emptied by mistake cannot pass: these have no rule
+    // of their own, so they are on.
+    for name in [
+        "tab_new",
+        "tab_new_after",
+        "toggle_tab_list",
+        "toggle_help",
+        "toggle_follow",
+        "paste_jump",
+        "quit",
+        "refresh",
+        "preview_back",
+        "mark_jump",
+    ] {
+        assert!(on_names.iter().any(|n| n == name), "{name} must stay on: {on_names:?}");
+    }
+    // The names that the preview under owns are off.
+    for name in [
+        "preview_copy_selection",
+        "preview_copy_selection_ref",
+        "search_start",
+        "toggle_table_cell",
+        "toggle_outline",
+        "page_next",
+        "page_prev",
+        "cycle_representation",
+        "mark_set",
+        "preview_next_file",
+        "preview_prev_file",
+        "preview_enter_visual",
+        "toggle_wrap",
+    ] {
+        assert!(
+            all.iter().any(|(n, _)| n == name),
+            "{name} is missing from the parser walk"
+        );
+        assert!(!on_names.iter().any(|n| n == name), "{name} is on over a project screen");
+    }
+}
+
+#[test]
+fn vcs_keys_a_config_remap_to_a_preview_action_does_not_reach_the_preview_under() {
+    if isolated("vcs_keys_a_config_remap_to_a_preview_action_does_not_reach_the_preview_under") {
+        return;
+    }
+    let Some(repo) = esc_repo("git", "vcs_keys_remap") else {
+        return;
+    };
+    std::fs::write(repo.join("notes.md"), HEADINGS_MD).unwrap();
+    let mut cfg = config("git", "en");
+    cfg.keys.surfaces.entry("canvas".to_string()).or_default().insert(
+        "ctrl-a".to_string(),
+        "preview_copy_selection".to_string(),
     );
+    let mut sim = Sim::with_config_sized(&repo, cfg, 140, 30);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.select("notes.md");
+    sim.enter();
+    drain(&mut sim);
+    assert_eq!(sim.app.tab.mode, Mode::Preview);
+    // The binding is live on the preview itself: Ctrl-a copies there.
+    let kp = crate::keymap::KeyPress::norm(&crossterm::event::KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(
+        sim.app.keymaps.resolve_on(Context::Canvas, sim.app.screen_keys_for(Context::Canvas), kp),
+        crate::keymap::Resolution::Action(crate::keymap::Action::PreviewCopySelection),
+        "the remap is live on the canvas"
+    );
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p opens the project over the preview");
+    crate::test_support::clear_test_clipboard();
+    let before = under_state(&sim);
+    sim.app.flash = None;
+    sim.press(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    drain(&mut sim);
+    assert_eq!(crate::test_support::get_test_clipboard(), None, "the hidden line was copied");
+    assert_eq!(under_state(&sim), before);
+    assert!(sim.app.flash.is_none(), "flash {:?}", sim.app.flash);
+    assert_project_screen_in_front(&sim, "after the remapped key", &[]);
 }
 
 /// A session on `repo` with the preview of `file` up (media loaded), then the project screen over it.

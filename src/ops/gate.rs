@@ -61,11 +61,12 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
             return verdict;
         }
     }
-    // A project screen in front covers the screen under it (`App::project_screen_covers`): the
-    // actions that open or act on that screen's preview, outline or marks are not available, so
-    // the keys, the footer and the help agree with the layer walk. The project screen's own keys
-    // are handled before the gate is asked.
-    if ctx != Context::Diff && app.project_screen_covers() && acts_on_screen_under(a) {
+    // A project screen in front covers the screen under it (`App::project_screen_covers`): only
+    // the actions on an explicit allow list stay available, so a key bound by config to any other
+    // action cannot reach the preview, outline, selection or marks under the screen, and the
+    // keys, the footer and the help agree with the layer walk. The project screen's own keys are
+    // handled before the gate is asked.
+    if app.project_screen_covers() && !allowed_over_a_project_screen(app, a) {
         return Gate::Off(None);
     }
     match a {
@@ -348,21 +349,64 @@ fn gate_plugin(app: &App, ctx: Context, p: crate::plugins::PluginAct) -> Gate {
     super::write_guard::write_guard(app, p.plugin(), binding.writes, false)
 }
 
-/// The actions that read or change the preview, outline, selection or marks of the screen a
-/// project screen was opened over.
-fn acts_on_screen_under(a: Action) -> bool {
+/// The actions that stay available while a project screen covers the screen under it. Everything
+/// else is off there, so an action added later cannot act on the hidden preview by default.
+fn allowed_over_a_project_screen(app: &App, a: Action) -> bool {
     use Action as A;
-    matches!(
-        a,
-        A::ToggleOutline
-            | A::PageNext
-            | A::PagePrev
-            | A::CycleRepresentation
-            | A::PreviewCopySelectionRef
-            | A::PreviewFileNext
-            | A::PreviewFilePrev
-            | A::MarkSet
-    )
+    match a {
+        // A key the user disabled does nothing anywhere.
+        A::Noop => true,
+        // The screen's own motions (it reads them through the same table).
+        A::Navigate(_) => true,
+        // Tab-level and application-level commands: they never read the screen under.
+        A::TabNew
+        | A::TabNewAfter
+        | A::TabClose
+        | A::CloseTabOrQuit
+        | A::TabPrev
+        | A::TabNext
+        | A::OpenInNewTab
+        | A::ToggleTabList
+        | A::ToggleHelp
+        | A::ToggleFollow
+        | A::PasteJump
+        | A::Quit
+        | A::Refresh => true,
+        // The digit keys: switch to a tab.
+        A::TabGoto(_) => true,
+        // Leaving the screen, and launching from its own rows.
+        A::PreviewBack | A::OpenGitView | A::RequestEdit | A::OpenExternal => true,
+        // A control chosen from the project screen's own `Space` menu.
+        A::ProjectControl(_) => true,
+        // `worktree_close` bound on a project canvas runs the project's own close.
+        #[cfg(feature = "git")]
+        A::WorktreeClose => true,
+        // The bookmark list opens in front of the screen.
+        A::MarkJump => true,
+        #[cfg(feature = "git")]
+        A::GitLaunchTool => true,
+        // An old hub name bound on a canvas is read for the open project (never for the screen
+        // under): `run_old_hub_name_in_project`.
+        #[cfg(feature = "git")]
+        A::GitOpenLog
+        | A::GitOpenGraph
+        | A::GitOpenBranches
+        | A::GitOpenWorktrees
+        | A::GitWorktreeDiff
+        | A::GitCommit
+        | A::GitStageAll
+        | A::GitUnstageAll
+        | A::JjSync
+        | A::GitGraphToggleAll
+        | A::BranchCreate
+        | A::WorktreeCreate => true,
+        // A plugin's action only where the plugin declares a project context (its own screen).
+        A::Plugin(p) => app
+            .plugin_keys
+            .declaration(p)
+            .is_some_and(|d| d.project_context.is_some()),
+        _ => false,
+    }
 }
 
 /// `e`: the target and whether opening it is possible (mirrors `App::request_edit`).
