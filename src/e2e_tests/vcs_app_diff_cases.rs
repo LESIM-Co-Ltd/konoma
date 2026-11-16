@@ -506,7 +506,40 @@ fn project_diff_preview_project_key_uses_project_footer_host() {
                     crate::keymap::Context::Canvas
                 )
             );
-            host.esc();
+            // Over the project screen every Options item is off, so `,` opens no menu, and the
+            // footer and the `?` help offer none either (only the frontmost layer acts).
+            assert!(
+                host.app.pending_leader.is_none(),
+                "`,` opened a menu over a project screen"
+            );
+            let options = crate::ops::menu::menu(
+                &host.app,
+                crate::keymap::Context::Canvas,
+                crate::keymap::LeaderId::Options,
+                crate::ops::menu::View::Open,
+            );
+            assert!(
+                options.is_some_and(|m| m.items.is_empty()),
+                "the Options menu has an item over a project screen"
+            );
+            let footer = crate::ops::footer::tokens(&host.app, crate::keymap::Context::Canvas);
+            assert!(
+                !footer.iter().any(|t| t.trim_start().starts_with(',')),
+                "the footer offers `,` over a project screen: {footer:?}"
+            );
+            host.key('?');
+            let help = rows(crate::ops::help::sections_for(
+                &host.app,
+                crate::ops::help::help_context(&host.app),
+            ));
+            assert!(
+                !help
+                    .iter()
+                    .flat_map(|(_, r)| r.iter())
+                    .any(|(k, _)| k.split_whitespace().any(|w| w == ",")),
+                "the help lists `,` over a project screen"
+            );
+            host.key('q');
             host.key('q');
             drain(&mut host);
             assert!(!host.app.project_active(), "q closes the project overlay");
