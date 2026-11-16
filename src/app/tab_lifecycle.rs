@@ -418,6 +418,10 @@ impl App {
             // what it showed. Never reverted to its value at the cover: the project detection
             // and what hangs on it, the project work queued or consumed, the one-shot
             // reservations consumed meanwhile, the settings and measures of the tree.
+            // `filter_pool` is live, not derived: the return starts a scan of its own
+            // (`refresh_fs_after_tab_switch`), but that scan lands later on the worker, and until
+            // then the pool the tab shows is the one a scan delivered while covered, not the older
+            // one saved at the cover.
             live: [
                 projects, project_navigation, project_return, project_enter_pending,
                 project_enter_op, project_effects, project_pending_acts, vcs_watch,

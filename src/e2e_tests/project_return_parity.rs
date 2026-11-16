@@ -329,6 +329,174 @@ fn a_markdown_diff_comes_back_with_its_representation_and_scroll() {
     }
 }
 
+// --- (d2) A diff's Preview representation: a landing still pending is made on the current
+// content; a landing that was consumed is not made again, the reader's scroll is put back.
+
+fn long_doc(first: &str, last: &str) -> String {
+    let mut body = format!("# Title{first}\n\n");
+    for i in 0..80 {
+        body.push_str(&format!(
+            "Filler paragraph number {i} to take up space.\n\n"
+        ));
+    }
+    format!("{body}{last}\n")
+}
+
+/// Waits for the project detection and the project jobs only: the replies of the preview worker
+/// are left where they are (a landing waiting for the text must still be waiting).
+fn settle_projects_leaving_media(s: &mut Sim) {
+    if s.app.tab.projects.pending() {
+        s.app.tab.projects.wait_for_result();
+    }
+    for _ in 0..32 {
+        s.app.poll_projects();
+        if !s.app.project_jobs_pending() {
+            s.draw();
+            return;
+        }
+        s.app.wait_project_job();
+    }
+    panic!("the project did not settle");
+}
+
+/// Opens `doc.md`'s diff and chooses its Preview representation (`R`), with the text of that
+/// representation not read yet when the worker reads it.
+fn diff_preview_asked(root: &std::path::Path, worker: bool) -> Sim {
+    let mut s = road(root, cfg_en(), worker);
+    s.select("doc.md");
+    s.key('d');
+    wait_diff_target(&mut s, worker);
+    settled(&mut s);
+    s.key('R');
+    s
+}
+
+/// With no worker the landing of `R` has run, and the draw that follows the key has consumed its
+/// reservation, before anything can cover the screen: a landing still pending cannot be reached.
+#[test]
+fn without_the_worker_a_diff_previews_landing_is_over_before_the_screen_can_be_covered() {
+    let root = repo(
+        "prp_diff_landing_sync",
+        &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+    );
+    std::fs::write(
+        root.join("doc.md"),
+        long_doc("", "CHANGED MARKER paragraph."),
+    )
+    .unwrap();
+    let s = diff_preview_asked(&root, false);
+    assert!(s.app.preview_is_diff_representation(), "{}", s.screen());
+    assert!(
+        !s.app.has_pending_landing_for_test(),
+        "the landing is still pending"
+    );
+    assert!(
+        !s.app.diff_landing_state_for_test().1,
+        "the reservation is still armed"
+    );
+    s.see("CHANGED MARKER");
+}
+
+/// (i) Covered while the landing is still pending (the worker has not answered): back on the first
+/// change of the content it has now, without a key.
+#[test]
+fn a_revived_diff_preview_lands_on_the_first_change_of_the_current_content() {
+    for away in BOTH {
+        let root = repo(
+            "prp_diff_landing_pending",
+            &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+        );
+        std::fs::write(
+            root.join("doc.md"),
+            long_doc("", "CHANGED MARKER paragraph."),
+        )
+        .unwrap();
+        let mut s = diff_preview_asked(&root, true);
+        assert!(
+            s.app.diff_landing_state_for_test().0,
+            "{away:?}: the landing is not pending:\n{}",
+            s.screen()
+        );
+        match away {
+            Away::ProjectScreen => {
+                s.key('p');
+                settle_projects_leaving_media(&mut s);
+            }
+            Away::Tab => s.key('t'),
+        }
+        // While covered the first change moves to the top of the file.
+        std::fs::write(
+            root.join("doc.md"),
+            long_doc(" EARLY CHANGE", "CHANGED MARKER paragraph."),
+        )
+        .unwrap();
+        match away {
+            Away::ProjectScreen => {
+                s.key('q');
+                settle_projects_leaving_media(&mut s);
+            }
+            Away::Tab => s.key('['),
+        }
+        settled(&mut s);
+        assert!(
+            s.find_text("EARLY CHANGE").is_some(),
+            "{away:?}: not on the first change of the current content:\n{}",
+            s.screen()
+        );
+    }
+}
+
+/// (ii) Covered after the landing was consumed: the reader's scroll is put back as it was
+/// (clamped), and what is drawn there is the current content.
+#[test]
+fn a_diff_preview_whose_landing_was_consumed_keeps_its_scroll_and_shows_the_current_content() {
+    for worker in [false, true] {
+        for away in BOTH {
+            let root = repo(
+                "prp_diff_landing_done",
+                &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+            );
+            std::fs::write(
+                root.join("doc.md"),
+                long_doc("", "CHANGED MARKER paragraph."),
+            )
+            .unwrap();
+            let mut s = diff_preview_asked(&root, worker);
+            settled(&mut s);
+            assert!(s.app.preview_is_diff_representation(), "{}", s.screen());
+            let before = s.app.reading_position_for_test();
+            let what = format!("{away:?} worker={worker}");
+            assert!(
+                before.0 > 0 || before.2 > 0,
+                "{what}: not scrolled: {before:?}"
+            );
+            s.see("CHANGED MARKER");
+            s.dont_see("EARLY CHANGE");
+            go_away(&mut s, away);
+            // The first change moves to the top, and the text at the end is not the same text.
+            std::fs::write(
+                root.join("doc.md"),
+                long_doc(" EARLY CHANGE", "CHANGED MARKER paragraph NEWTAIL."),
+            )
+            .unwrap();
+            come_back(&mut s, away);
+            settled(&mut s);
+            let what = format!("{what}\n{}", s.screen());
+            assert_eq!(s.app.reading_position_for_test(), before, "{what}");
+            // The landing is not made again (the reader's scroll stands), and the text drawn
+            // there is the content as it is now.
+            assert!(
+                s.find_text("EARLY CHANGE").is_none(),
+                "landed again: {what}"
+            );
+            assert!(s.find_text("NEWTAIL").is_some(), "old content: {what}");
+            s.key('g');
+            settled(&mut s);
+            assert!(s.find_text("EARLY CHANGE").is_some(), "old content: {what}");
+        }
+    }
+}
+
 // --- (e) A confirmed search is found again on the current text.
 
 #[test]
@@ -481,6 +649,12 @@ fn a_tree_filter_pool_made_while_covered_is_not_reverted_by_the_return() {
             s.enter();
             settled(&mut s);
             assert!(s.app.filter_query().is_some(), "the filter is on");
+            // A preview of a file of the result: the screen that covers it is put back through
+            // the tab restore (a tree is put back by `back_to_tree`, which has no saved tab).
+            s.select("xold.txt");
+            s.enter();
+            settled(&mut s);
+            assert_eq!(s.app.tab.mode, Mode::Preview, "{away:?} worker={worker}");
             go_away(&mut s, away);
             std::fs::write(root.join("xnew.txt"), "n\n").unwrap();
             s.app.refresh_fs(true).unwrap();
@@ -509,5 +683,49 @@ fn a_tree_filter_pool_made_while_covered_is_not_reverted_by_the_return() {
                 s.screen()
             );
         }
+    }
+}
+
+/// The pool is scanned on a worker when the loader is attached (the run loop does). A scan that
+/// lands while the screen covers the tab is the tab's pool; the return starts a scan of its own,
+/// and until that one lands (nothing applies it here) the pool the tab shows is the one that was
+/// delivered while covered, not the older one saved at the cover.
+#[test]
+fn a_filter_pool_delivered_while_covered_is_still_the_pool_right_after_the_return() {
+    for worker in [false, true] {
+        let root = repo(
+            "prp_filter_pool_async",
+            &[("xold.txt", "x\n"), ("other.txt", "o\n")],
+        );
+        let mut s = road(&root, cfg_en(), worker);
+        s.key('/');
+        s.key('x');
+        s.enter();
+        settled(&mut s);
+        assert!(s.app.filter_query().is_some(), "the filter is on");
+        s.select("xold.txt");
+        s.enter();
+        settled(&mut s);
+        assert_eq!(s.app.tab.mode, Mode::Preview, "worker={worker}");
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.app.attach_filter_pool_loader(tx);
+        open_project(&mut s);
+        std::fs::write(root.join("xnew.txt"), "n\n").unwrap();
+        s.app.refresh_fs(true).unwrap();
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the scan started while covered lands");
+        assert!(s.app.apply_filter_pool(res), "worker={worker}");
+        let live = s.app.filter_pool_names_for_test();
+        assert!(
+            live.iter().any(|n| n == "xnew.txt"),
+            "worker={worker}: the scan did not reach the pool: {live:?}"
+        );
+        leave_project(&mut s);
+        let pool = s.app.filter_pool_names_for_test();
+        assert!(
+            pool.iter().any(|n| n == "xnew.txt"),
+            "worker={worker}: the pool delivered while covered was reverted: {pool:?}"
+        );
     }
 }

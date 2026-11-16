@@ -362,48 +362,6 @@ fn the_diff_preview_representation_lands_on_the_first_change_with_and_without_th
     assert_same_screen(&screens[0], &screens[1], "diff preview representation");
 }
 
-/// A diff's Preview representation covered by a project screen is landed on the first change of
-/// the content it has when it comes back, not on the first change it had before: the file changed
-/// while covered so its first change moved to the top.
-#[cfg(feature = "git")]
-#[test]
-fn a_revived_diff_preview_lands_on_the_first_change_of_the_current_content() {
-    let mut body = String::from("# Title\n\n");
-    for i in 0..80 {
-        body.push_str(&format!(
-            "Filler paragraph number {i} to take up space.\n\n"
-        ));
-    }
-    let original = format!("{body}ORIGINAL MARKER paragraph.\n");
-    let changed = format!("{body}CHANGED MARKER paragraph.\n");
-    let root = changed_repo("pwp_diff_preview_moved", "doc.md", &original, &changed);
-    for worker in [false, true] {
-        let mut s = road(&root, cfg_en(), worker);
-        s.select("doc.md");
-        s.key('d');
-        wait_diff_target(&mut s, worker);
-        // Covered while the landing is still waiting for the text (the worker has not answered
-        // yet); without the worker the landing has run by then, and the text is read again.
-        s.key('R');
-        s.app.cover_with_project_screen_for_test();
-        // While covered the first change moves to the top of the file.
-        let moved = format!(
-            "# Title EARLY CHANGE\n\n{}",
-            &changed["# Title\n\n".len()..]
-        );
-        std::fs::write(root.join("doc.md"), moved).unwrap();
-        s.app.leave_project_screens_for_test();
-        wait_diff_target(&mut s, worker);
-        s.settle_inline_images("returned", std::time::Duration::from_secs(120));
-        s.draw();
-        assert!(
-            s.find_text("EARLY CHANGE").is_some(),
-            "worker={worker}: not on the first change of the current content:\n{}",
-            s.screen()
-        );
-    }
-}
-
 #[test]
 fn restored_tabs_that_were_previews_are_drawn_when_switched_to_with_the_worker() {
     let dir = sandbox("pwp_restore");
@@ -1133,14 +1091,33 @@ fn a_document_failing_in_the_tab_return_drops_that_tabs_waiting_line() {
 
 // --- The corpus: every kind of preview state comes back the same from a project screen and from a tab.
 
-/// Everything a reader sees (the drawn rows but the tab bar and the footer) and everything the keys act on.
+/// One number per drawn row (but the tab bar and the footer): the cells of the row with their
+/// colours and modifiers, so a picture drawn in colour (half blocks) counts by what is drawn,
+/// cropped and zoomed, not by the source image. A row that differs names itself in a failure.
+fn drawn_cell_hashes(s: &Sim) -> Vec<String> {
+    use std::hash::{Hash, Hasher};
+    let c = cells(s);
+    c[1..c.len() - 1]
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            format!("{row:?}").hash(&mut h);
+            format!("row {i}: {:016x}", h.finish())
+        })
+        .collect()
+}
+
+/// Everything a reader sees (the drawn rows but the tab bar and the footer, their colours
+/// included) and everything the keys act on.
 fn reading_state(s: &Sim) -> String {
     let r = rows(s);
     let a = &s.app;
     format!(
-        "{:#?}\nkind={:?} pos={:?} search={:?}/{:?} fence=({}) page={:?} \
+        "{:#?}\n{:#?}\nkind={:?} pos={:?} search={:?}/{:?} fence=({}) page={:?} \
          table={:?}/{:?} raw={} image={:?} ref={:?} picture={:?}",
         &r[1..r.len() - 1], // not the tab bar, nor the footer (a notice of the jump that is gone)
+        drawn_cell_hashes(s),
         a.tab.preview_kind,
         a.reading_position_for_test(),
         a.search_status(),
@@ -1156,9 +1133,20 @@ fn reading_state(s: &Sim) -> String {
     )
 }
 
+/// How many drawn cells carry a picture's colour (an RGB fore- or background).
+fn drawn_picture_cells(s: &Sim) -> usize {
+    use ratatui::style::Color;
+    cells(s)
+        .iter()
+        .flatten()
+        .filter(|c| matches!(c.1, Color::Rgb(..)) || matches!(c.2, Color::Rgb(..)))
+        .count()
+}
+
 fn settled(s: &mut Sim) {
     s.settle_inline_images("settled", std::time::Duration::from_secs(120));
     s.draw();
+    s.answer_image_resizes();
 }
 
 /// One preview state of the corpus: the files, how a reader gets into the state, and what a
@@ -1409,7 +1397,13 @@ fn corpus() -> Vec<Case> {
                 s.app.image_pan(1.0, 0.0);
                 s.draw();
             },
-            sanity: |s| assert!(s.app.tab.image_view.zoom > 1.0),
+            sanity: |s| {
+                assert!(s.app.tab.image_view.zoom > 1.0);
+                assert!(
+                    drawn_picture_cells(s) > 20,
+                    "the picture is not drawn in cells"
+                );
+            },
         },
     ]
 }

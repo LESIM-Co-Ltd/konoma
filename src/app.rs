@@ -4525,6 +4525,25 @@ impl App {
             .collect()
     }
 
+    /// Test-only: whether the tab still waits to land a diff's Preview representation on its
+    /// first change, and whether the draw still has the reservation to scroll there.
+    #[cfg(all(test, feature = "git"))]
+    pub fn diff_landing_state_for_test(&self) -> (bool, bool) {
+        (
+            matches!(
+                self.tab.pending.as_ref().map(|p| &p.landing),
+                Some(Landing::DiffPreview { .. })
+            ),
+            self.tab.diff_scroll_pending.is_some(),
+        )
+    }
+
+    /// Test-only: whether the tab has any landing pending.
+    #[cfg(test)]
+    pub fn has_pending_landing_for_test(&self) -> bool {
+        self.tab.pending.is_some()
+    }
+
     /// The windowed preview's caret line (0-based). Test-only.
     #[cfg(test)]
     pub fn preview_caret_line(&self) -> usize {

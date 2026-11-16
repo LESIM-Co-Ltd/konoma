@@ -68,6 +68,8 @@ struct Sim {
     gitop_rx: Option<std::sync::mpsc::Receiver<crate::app::GitOpResult>>,
     /// Receiver for background inline-Markdown-image decodes (`with_media`). Drained by `drain_md_images`.
     md_img_rx: Option<std::sync::mpsc::Receiver<crate::app::MdImageResult>>,
+    /// The full-screen picture's resize requests, answered by `answer_image_resizes`.
+    resize_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ratatui_image::thread::ResizeRequest>>,
     /// Receiver for the background inline-image encode worker (`with_media`). Drained by `drain_md_encodes`.
     md_enc_rx: Option<std::sync::mpsc::Receiver<crate::app::MdEncodeResult>>,
     /// Receiver for full-screen media loads — SVG/GIF/PDF/video/standalone-mermaid/fullscreen-fence
@@ -141,6 +143,7 @@ impl Sim {
             #[cfg(feature = "git")]
             gitop_rx: None,
             md_img_rx: None,
+            resize_rx: None,
             md_enc_rx: None,
             media_rx: None,
             md_remote_rx: None,
@@ -270,7 +273,7 @@ impl Sim {
         preview_worker: bool,
     ) -> Sim {
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
-        std::mem::forget(resize_rx); // the kitty zoom/pan resize path isn't exercised here
+        self.resize_rx = Some(resize_rx);
         self.app.attach_image_backend(picker.clone(), resize_tx);
 
         let (media_tx, media_rx) = std::sync::mpsc::channel();
@@ -414,6 +417,18 @@ impl Sim {
             if done {
                 return applied;
             }
+        }
+    }
+
+    /// Answers every resize the full-screen picture asked for, drawing again after each, so the
+    /// picture is in the drawn cells (a test that never calls this leaves the requests unanswered).
+    fn answer_image_resizes(&mut self) {
+        loop {
+            let Some(req) = self.resize_rx.as_mut().and_then(|rx| rx.try_recv().ok()) else {
+                return;
+            };
+            self.app.apply_image_resize(req.resize_encode());
+            self.draw();
         }
     }
 
