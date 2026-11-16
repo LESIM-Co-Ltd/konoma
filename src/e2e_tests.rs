@@ -253,12 +253,30 @@ impl Sim {
         self.with_media_on(picker)
     }
 
-    fn with_media_on(mut self, picker: ratatui_image::picker::Picker) -> Sim {
+    /// `with_media` plus the preview resolution worker on the same mailbox, as `main` attaches
+    /// them (`attach_preview_resolution_worker(media_tx.clone())` first): the kind of a file is
+    /// decided on a worker and the reply lands through `apply_media`.
+    fn with_media_and_preview_worker(self) -> Sim {
+        self.with_media_worker_on(ratatui_image::picker::Picker::halfblocks(), true)
+    }
+
+    fn with_media_on(self, picker: ratatui_image::picker::Picker) -> Sim {
+        self.with_media_worker_on(picker, false)
+    }
+
+    fn with_media_worker_on(
+        mut self,
+        picker: ratatui_image::picker::Picker,
+        preview_worker: bool,
+    ) -> Sim {
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
         std::mem::forget(resize_rx); // the kitty zoom/pan resize path isn't exercised here
         self.app.attach_image_backend(picker.clone(), resize_tx);
 
         let (media_tx, media_rx) = std::sync::mpsc::channel();
+        if preview_worker {
+            self.app.attach_preview_resolution_worker(media_tx.clone());
+        }
         self.app.attach_media_loader(media_tx);
         self.media_rx = Some(media_rx);
 
@@ -19876,6 +19894,7 @@ mod preview_failure_choice;
 #[cfg(feature = "git")]
 mod preview_gutter_parity;
 mod preview_plan_parity;
+mod preview_worker_parity;
 mod project_frames;
 mod project_host;
 #[cfg(feature = "git")]

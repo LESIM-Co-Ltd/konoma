@@ -232,11 +232,7 @@ impl App {
                 }
                 self.media_loading = false;
                 let kind = crate::plugins::kind_of(plan, &path);
-                self.set_preview_kind(Some(kind.clone()));
-                self.tab.repr = None;
-                self.tab.deck_pending_slide = None;
-                self.start_media_load(&kind, &path);
-                self.setup_windowed();
+                self.apply_resolved_preview(kind, &path);
                 true
             }
         }

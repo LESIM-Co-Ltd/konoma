@@ -3464,6 +3464,24 @@ impl App {
         crate::vcs::file_diff(&self.tab.root, path)
     }
 
+    /// Everything that follows from a preview kind being known, in the order it needs: the
+    /// representation and deck slide start afresh, the kind is set, the media job starts, the
+    /// windowed reader is armed and a non-picture plugin is opened. The one place both roads use:
+    /// `enter_preview` without a resolution worker, and the worker's reply. (`preview_kind` must
+    /// be set **before** `start_media_load`: a sync-fallback media path applies its payload inside
+    /// that call and `setup_windowed` reads the kind.)
+    pub(super) fn apply_resolved_preview(&mut self, kind: PreviewKind, path: &Path) {
+        // A new file starts in the plugin's default representation (the rendered document for
+        // Markdown, Word and slides), and this must hold *before* the load: a document that lands
+        // synchronously decides there whether the source view is the one wanted.
+        self.tab.repr = None;
+        self.tab.deck_pending_slide = None;
+        self.set_preview_kind(Some(kind.clone()));
+        self.start_media_load(&kind, path);
+        self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
+        self.load_plugin();
+    }
+
     fn enter_preview(&mut self, path: &Path) {
         self.tab.diff_read_context = Default::default();
         // Is this re-entering the same file (returning via `q` from a full-screen fence)? If so,
@@ -3525,18 +3543,6 @@ impl App {
         // page.) Must precede `start_media_load` below, whose synchronous fallback can land the
         // new document right away.
         self.set_document(None);
-        // Set `preview_kind` **before** `start_media_load`, not after: the sync-fallback media path
-        // (no media_tx — tests, or a picker-less terminal) runs `apply_payload` synchronously inside
-        // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
-        // `setup_windowed`, which decides whether to open the windowed reader by reading
-        // `self.tab.preview_kind` — it must already be the new kind, not whatever was showing before.
-        // A new file starts in the plugin's default representation (the rendered document for
-        // Markdown, Word and slides), and this must hold *before* the load: a document that lands
-        // synchronously (no media_tx) decides there whether the source view is the one wanted.
-        self.tab.repr = None;
-        self.tab.deck_pending_slide = None;
-        self.set_preview_kind(Some(kind.clone()));
-        self.start_media_load(&kind, path);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
@@ -3563,10 +3569,6 @@ impl App {
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
-        self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
-        if self.preview_resolution_tx.is_some() {
-            self.resolve_preview_on_worker(path);
-        }
         // Reset the windowed preview's 2D caret/selection to the start.
         self.tab.preview_cursor_line = 0;
         self.tab.preview_cursor_col = 0;
@@ -3598,7 +3600,18 @@ impl App {
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
-        self.load_plugin();
+        if self.preview_resolution_tx.is_some() {
+            // The kind is decided on the worker: until its reply lands the screen shows the
+            // provisional kind (which also drops the previous file's plugin show), and
+            // `apply_resolved_preview` runs from the reply.
+            self.tab.repr = None;
+            self.tab.deck_pending_slide = None;
+            self.set_preview_kind(Some(kind));
+            self.setup_windowed();
+            self.resolve_preview_on_worker(path);
+        } else {
+            self.apply_resolved_preview(kind, path);
+        }
         self.tab.mode = Mode::Preview;
     }
 
