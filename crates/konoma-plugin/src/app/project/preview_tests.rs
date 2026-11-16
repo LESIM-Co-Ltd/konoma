@@ -291,7 +291,63 @@ impl EventSource for Events {
         }
     }
 }
+
+/// Keys fed at the code-side idle fence (`ProjectIdleSnapshot::is_idle`: owner replies landed,
+/// queued keys replayed, contexts and previews published). A key accepted while a read is in
+/// flight is therefore replayed before the run ends, so a test never asserts on a state the
+/// loop had not finished reaching. `next` is never asked while fenced.
+struct FencedKeys {
+    keys: VecDeque<Key>,
+    read: usize,
+    ended: bool,
+}
+impl EventSource for FencedKeys {
+    fn next(&mut self, _: Option<Duration>) -> Next {
+        unreachable!("a fenced source is only asked at the idle fence")
+    }
+    fn project_fenced(&self) -> bool {
+        true
+    }
+    fn project_idle(&mut self, _: crate::app::project::ProjectIdleSnapshot, _: Buffer) -> Next {
+        match self.keys.pop_front() {
+            Some(key) => {
+                self.read += 1;
+                Next::Event(AppEvent::Key(key))
+            }
+            None => {
+                self.ended = true;
+                Next::End
+            }
+        }
+    }
+}
 fn drive(
+    prepared: &mut PreparedProjects,
+    terminal: &mut Terminal<TestBackend>,
+    keys: Vec<Key>,
+) -> FencedKeys {
+    let (tx, _published) = mpsc::channel();
+    prepared.preview_open_fence = Some(tx);
+    let mut events = FencedKeys {
+        keys: keys.into(),
+        read: 0,
+        ended: false,
+    };
+    run_project_with(
+        terminal,
+        prepared,
+        &mut events,
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    events
+}
+/// The unfenced driver: it ends the moment its keys are fed, WITHOUT waiting for the loop to go
+/// idle. Only for a test that deliberately holds a worker (a write, a raw reply, a read) and asserts
+/// on the loop while that work is still owed; every other test uses [`drive`], which waits for
+/// the idle fence so a queued key is replayed first.
+fn drive_held(
     prepared: &mut PreparedProjects,
     terminal: &mut Terminal<TestBackend>,
     keys: Vec<Key>,
@@ -427,7 +483,7 @@ fn preview_r_reopens_raw_diff_even_when_preview_owned_the_unlanded_reply() {
     diff(&mut p);
     // Classification can publish before raw content, retaining the project return already.
     p.diff_return = p.screen.take();
-    drive(&mut p, &mut terminal, vec![Key::char('R')]);
+    drive_held(&mut p, &mut terminal, vec![Key::char('R')]);
     assert!(p.file_preview.is_some());
     assert!(
         p.diff.as_ref().unwrap().data.is_none(),
@@ -1144,12 +1200,135 @@ fn preview_resumed_after_end_keeps_its_return_when_a_raw_reply_fails() {
     diff(&mut p);
     // Classification can publish before raw content, saving this same return owner.
     p.diff_return = p.screen.take();
-    drive(&mut p, &mut term, vec![Key::char('R')]);
+    drive_held(&mut p, &mut term, vec![Key::char('R')]);
     assert!(p.file_preview.is_some());
     tx.send(Err(Failure::external("raw diff failed"))).unwrap();
-    drive(&mut p, &mut term, vec![Key::char('q')]);
+    drive_held(&mut p, &mut term, vec![Key::char('q')]);
     assert_screen(
         p.screen.as_ref().expect("Preview keeps its opening screen"),
         &saved,
+    );
+}
+
+/// A project whose view read waits for the test to release it.
+struct HeldProject(Arc<std::sync::atomic::AtomicBool>);
+impl Plugin for HeldProject {
+    fn manifest(&self) -> Manifest {
+        Project.manifest()
+    }
+    fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(HeldSession(self.0.clone())))
+    }
+}
+struct HeldSession(Arc<std::sync::atomic::AtomicBool>);
+impl Session for HeldSession {
+    fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        let start = std::time::Instant::now();
+        while self.0.load(std::sync::atomic::Ordering::SeqCst)
+            && start.elapsed() < Duration::from_secs(20)
+        {
+            std::thread::yield_now();
+        }
+        ProjectSession.view(req, cx)
+    }
+}
+
+/// Run the loop until the code-side idle fence (owners, replay, contexts all settled), with no new key.
+fn settle(p: &mut PreparedProjects, term: &mut Terminal<TestBackend>) {
+    super::super::run_project_fenced_for_test(
+        term,
+        p,
+        &ProjectLoopCx::default(),
+        None,
+        |snapshot, _| {
+            assert!(snapshot.is_idle(), "{snapshot:?}");
+            Next::End
+        },
+    )
+    .unwrap();
+}
+
+fn held_read_setup() -> (
+    Arc<std::sync::atomic::AtomicBool>,
+    konoma_test_support::TmpDir,
+    PreparedProjects,
+    Terminal<TestBackend>,
+    usize,
+) {
+    let hold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (dir, mut p, mut term) = setup_plugin(
+        Arc::new(HeldProject(hold.clone())),
+        false,
+        false,
+        "[ui]\nlang='en'\ndiff_view='source'\nwrap=false\n",
+    );
+    opening(&mut p, &mut term, "log");
+    let depth = p.screen.as_ref().unwrap().stack.len();
+    (hold, dir, p, term, depth)
+}
+
+#[test]
+fn a_key_sent_while_the_view_read_is_held_is_kept_and_replayed_after_release() {
+    let (hold, _dir, mut p, mut term, depth) = held_read_setup();
+    hold.store(true, std::sync::atomic::Ordering::SeqCst);
+    let events = drive_held(&mut p, &mut term, vec![Key::char('h')]);
+    assert!(events.ended);
+    let nav = p.screen.as_ref().unwrap();
+    assert_eq!(
+        nav.stack.len(),
+        depth,
+        "h is queued, not applied, while the read is held"
+    );
+    assert_eq!(nav.frame().unwrap().pending.len(), 1, "the held h is kept");
+    hold.store(false, std::sync::atomic::Ordering::SeqCst);
+    settle(&mut p, &mut term);
+    let nav = p.screen.as_ref().unwrap();
+    assert_eq!(
+        nav.stack.len(),
+        depth - 1,
+        "the kept h goes back after release"
+    );
+}
+
+#[test]
+fn keys_sent_while_the_view_read_is_held_wait_in_order_and_replay_after_release() {
+    let (hold, _dir, mut p, mut term, depth) = held_read_setup();
+    hold.store(true, std::sync::atomic::Ordering::SeqCst);
+    drive_held(
+        &mut p,
+        &mut term,
+        vec![Key::char('x'), Key::char('y'), Key::char('h')],
+    );
+    let nav = p.screen.as_ref().unwrap();
+    let kept: Vec<char> = nav
+        .frame()
+        .unwrap()
+        .pending
+        .iter()
+        .map(|input| match input {
+            ProjectInput::Key(key) => match key.code {
+                crossterm::event::KeyCode::Char(c) => c,
+                other => panic!("unexpected key {other:?}"),
+            },
+            _ => panic!("only keys were sent"),
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        ['x', 'y', 'h'],
+        "the held keys wait in the order they were sent"
+    );
+    assert_eq!(
+        nav.stack.len(),
+        depth,
+        "nothing is applied while the read is held"
+    );
+    hold.store(false, std::sync::atomic::Ordering::SeqCst);
+    settle(&mut p, &mut term);
+    let nav = p.screen.as_ref().unwrap();
+    assert_eq!(
+        nav.stack.len(),
+        depth - 1,
+        "the kept h went back after release"
     );
 }

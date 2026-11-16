@@ -2,7 +2,9 @@
 //! The seam records the attempt and runs no program.
 use super::vcs_changes::git_repo;
 use konoma_host_core::shared::SharedConfig;
-use konoma_plugin::app::project::{prepare_projects, run_project_with, ProjectLoopCx};
+use konoma_plugin::app::project::{
+    prepare_projects, run_project_with, ProjectIdleSnapshot, ProjectLoopCx,
+};
 use konoma_plugin::app::{key_from_crossterm, AppEvent, EventSource, LaunchCx, Next};
 use konoma_plugin::{Plugin, TermCaps};
 use ratatui::{backend::TestBackend, Terminal};
@@ -12,45 +14,36 @@ use std::sync::{Arc, Mutex};
 /// One recorded launch: program, arguments and working directory.
 type Launch = (String, Vec<String>, String);
 
-/// Feeds `keys` one at a time, giving the loop idle turns (a bounded number of short waits) before
-/// each key and after the last, so asynchronous screen loading and queued launches settle.
+/// Feeds `keys` one at a time at the code-side idle fence (`ProjectIdleSnapshot::is_idle`), so
+/// asynchronous screen loading, replayed keys and queued launches have settled before each key
+/// and before the end. No sleeping or turn counting: the loop reports when it owes nothing.
 struct Keys {
     keys: std::collections::VecDeque<char>,
-    gap: usize,
-    log: Arc<Mutex<Vec<Launch>>>,
-    after: usize,
 }
 
 impl EventSource for Keys {
     fn next(&mut self, _wait: Option<std::time::Duration>) -> Next {
-        const IDLE_TURNS: usize = 40;
-        if self.gap < IDLE_TURNS {
-            self.gap += 1;
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            return Next::Timeout;
-        }
-        if let Some(c) = self.keys.pop_front() {
-            self.gap = 0;
-            return Next::Event(AppEvent::Key(
-                key_from_crossterm(&crossterm::event::KeyEvent::new(
-                    // `\t` stands for the Tab key, which cycles the project's screens.
-                    if c == '\t' {
-                        crossterm::event::KeyCode::Tab
-                    } else {
-                        crossterm::event::KeyCode::Char(c)
-                    },
-                    crossterm::event::KeyModifiers::NONE,
-                ))
-                .expect("a key"),
-            ));
-        }
-        // Keys are used up: settle until a launch is recorded or the idle budget is spent.
-        if self.log.lock().unwrap().is_empty() && self.after < 400 {
-            self.after += 1;
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            return Next::Timeout;
-        }
-        Next::End
+        unreachable!("a fenced source is only asked at the idle fence")
+    }
+    fn project_fenced(&self) -> bool {
+        true
+    }
+    fn project_idle(&mut self, _: ProjectIdleSnapshot, _: ratatui::buffer::Buffer) -> Next {
+        let Some(c) = self.keys.pop_front() else {
+            return Next::End;
+        };
+        Next::Event(AppEvent::Key(
+            key_from_crossterm(&crossterm::event::KeyEvent::new(
+                // `\t` stands for the Tab key, which cycles the project's screens.
+                if c == '\t' {
+                    crossterm::event::KeyCode::Tab
+                } else {
+                    crossterm::event::KeyCode::Char(c)
+                },
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .expect("a key"),
+        ))
     }
 }
 
@@ -90,9 +83,6 @@ fn run_keys(root: &Path, config: &str, keys: &str) -> Vec<Launch> {
     };
     let mut events = Keys {
         keys: keys.chars().collect(),
-        gap: 0,
-        log: log.clone(),
-        after: 0,
     };
     let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
     run_project_with(&mut terminal, &mut prepared, &mut events, &cx, None).unwrap();
@@ -104,11 +94,11 @@ fn run_keys(root: &Path, config: &str, keys: &str) -> Vec<Launch> {
 fn vcs_standalone_bang_hands_the_configured_tool_to_the_launch_seam() {
     let repo = git_repo("vcs_standalone_bang", true);
     let root = repo.canonicalize().unwrap();
-    // The trailing keys keep the loop turning so the queued launch is polled before the end.
+    // No trailing keys: the loop ends only at the idle fence, after the queued launch is polled.
     let records = run_keys(
         &root,
         "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool --flag'\n",
-        "!jjj",
+        "!",
     );
     assert_eq!(records.len(), 1, "{records:?}");
     let (prog, args, cwd) = &records[0];
@@ -124,7 +114,7 @@ fn vcs_standalone_bang_without_the_key_launches_nothing_and_a_disabled_tool_stay
     let config = "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool'\n";
     assert!(run_keys(&root, config, "jjj").is_empty());
     let off = "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool'\n[external]\ngit_tool=false\n";
-    assert!(run_keys(&root, off, "!jjj").is_empty());
+    assert!(run_keys(&root, off, "!").is_empty());
 }
 
 /// Old hub: `!` is bound only in the changes screen's table, so the standalone program's `!`
@@ -143,7 +133,7 @@ fn vcs_standalone_bang_acts_only_on_the_changes_screen() {
     }
     // The same keys without the Tabs do launch (changes), so the empty results above are not a
     // harness that never launches.
-    assert_eq!(run_keys(&root, config, "!jjj").len(), 1);
+    assert_eq!(run_keys(&root, config, "!").len(), 1);
     // jj has changes, log, graph and bookmarks (no worktrees screen): three Tabs reach them all.
     // The guard lives to the end of the test: dropping it would delete the fixture.
     if crate::vcs::jj::available() {
@@ -157,6 +147,6 @@ fn vcs_standalone_bang_acts_only_on_the_changes_screen() {
                 "jj: `!` {tabs} screen(s) after changes launched the tool"
             );
         }
-        assert_eq!(run_keys(&jj_root, config, "!jjj").len(), 1);
+        assert_eq!(run_keys(&jj_root, config, "!").len(), 1);
     }
 }

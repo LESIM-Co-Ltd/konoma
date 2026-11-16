@@ -131,7 +131,7 @@ fn open_project(lang: &str) -> Held {
 /// (the running act stays with the project runtime).
 fn held(lang: &str, key: char, diff_open: bool) -> Held {
     let mut h = open_project(lang);
-    drive(&mut h.p, &mut h.t, vec![Key::char(key)]);
+    drive_held(&mut h.p, &mut h.t, vec![Key::char(key)]);
     // The key may be queued behind the project's own first view reply; it starts the act once
     // that reply is taken.
     settle(&mut h, "the act is running", |h| {
@@ -242,7 +242,7 @@ fn every_quit_path_asks_while_a_write_runs_in_en_and_ja() {
         for (name, diff_open, keys) in paths() {
             let mut h = held(lang, 'w', diff_open);
             assert!(write_running(&h), "{name}");
-            let events = drive(&mut h.p, &mut h.t, with(&keys, &[Key::char('j')]));
+            let events = drive_held(&mut h.p, &mut h.t, with(&keys, &[Key::char('j')]));
             assert_eq!(
                 events.read,
                 keys.len() + 1,
@@ -268,7 +268,7 @@ fn declining_keeps_the_write_running_and_it_completes() {
     ] {
         for (name, diff_open, keys) in paths() {
             let mut h = held("en", 'w', diff_open);
-            let events = drive(
+            let events = drive_held(
                 &mut h.p,
                 &mut h.t,
                 with(&keys, &[decline.clone(), Key::char('j')]),
@@ -288,7 +288,7 @@ fn declining_keeps_the_write_running_and_it_completes() {
             } else {
                 keys.clone()
             };
-            let events = drive(&mut h.p, &mut h.t, with(&again, &[Key::char('j')]));
+            let events = drive_held(&mut h.p, &mut h.t, with(&again, &[Key::char('j')]));
             assert_eq!(
                 events.read,
                 again.len(),
@@ -303,7 +303,7 @@ fn declining_keeps_the_write_running_and_it_completes() {
 fn yes_quits_while_the_write_runs() {
     for (name, diff_open, keys) in paths() {
         let mut h = held("en", 'w', diff_open);
-        let events = drive(
+        let events = drive_held(
             &mut h.p,
             &mut h.t,
             with(&keys, &[Key::char('y'), Key::char('j')]),
@@ -316,7 +316,7 @@ fn yes_quits_while_the_write_runs() {
 #[test]
 fn the_question_takes_every_other_key_and_stays_open() {
     let mut h = held("en", 'w', false);
-    let events = drive(
+    let events = drive_held(
         &mut h.p,
         &mut h.t,
         vec![
@@ -340,7 +340,7 @@ fn a_running_read_or_a_view_refresh_quits_at_once() {
             "{name}: a read act is running"
         );
         let mut h = h;
-        let events = drive(&mut h.p, &mut h.t, with(&keys, &[Key::char('j')]));
+        let events = drive_held(&mut h.p, &mut h.t, with(&keys, &[Key::char('j')]));
         assert_eq!(events.read, keys.len(), "{name}: a read does not ask");
         assert!(!events.ended, "{name}");
     }
@@ -348,12 +348,12 @@ fn a_running_read_or_a_view_refresh_quits_at_once() {
     for (name, _, keys) in paths().into_iter().filter(|(_, d, _)| !*d) {
         let mut h = open_project("en");
         h.shared.block_views.store(true, Ordering::SeqCst);
-        drive(&mut h.p, &mut h.t, vec![Key::char('r')]);
+        drive_held(&mut h.p, &mut h.t, vec![Key::char('r')]);
         // A view read is held in the plugin: the owner is busy, but no act runs.
         settle(&mut h, "a refresh is running", |h| {
             h.p.runtimes.values().any(|r| r.busy && !r.acting)
         });
-        let events = drive(&mut h.p, &mut h.t, with(&keys, &[Key::char('j')]));
+        let events = drive_held(&mut h.p, &mut h.t, with(&keys, &[Key::char('j')]));
         assert_eq!(events.read, keys.len(), "{name}: a refresh does not ask");
         assert!(!events.ended, "{name}");
     }
@@ -366,7 +366,7 @@ fn an_idle_project_quits_at_once() {
         if diff_open {
             diff(&mut h.p);
         }
-        let events = drive(&mut h.p, &mut h.t, with(&keys, &[Key::char('j')]));
+        let events = drive_held(&mut h.p, &mut h.t, with(&keys, &[Key::char('j')]));
         assert_eq!(events.read, keys.len(), "{name}");
         assert!(!events.ended, "{name}");
     }
@@ -460,13 +460,13 @@ fn a_vanished_project_ends_the_loop_only_after_the_running_write_finished() {
 /// event source presses `j`, optionally makes the project vanish, and releases the write.
 fn dialog_scenario(vanish: bool) -> (Result<(), AppError>, Held) {
     let mut h = open_project("en");
-    drive(&mut h.p, &mut h.t, vec![Key::char('a')]);
+    drive_held(&mut h.p, &mut h.t, vec![Key::char('a')]);
     // Every run of the loop starts with a fresh viewport, so it re-reads the screen first; a key
     // read before that reply is taken waits in the screen's queue and acts once it is.
     settle(&mut h, "the confirmation opened", |h| h.p.dialog.is_some());
     let dialog = h.p.dialog.take();
     assert!(dialog.is_some(), "the confirmation opened");
-    drive(&mut h.p, &mut h.t, vec![Key::char('w')]);
+    drive_held(&mut h.p, &mut h.t, vec![Key::char('w')]);
     settle(&mut h, "the write is running", write_running);
     h.p.dialog = dialog;
     struct Owned {
@@ -565,15 +565,15 @@ fn an_ignored_key_during_a_load_leaves_the_waiting_key_alone() {
     for ignored in ['j', 'h', 'q'] {
         let mut h = open_project("en");
         h.shared.block_views.store(true, Ordering::SeqCst);
-        drive(&mut h.p, &mut h.t, vec![Key::char('r')]);
+        drive_held(&mut h.p, &mut h.t, vec![Key::char('r')]);
         settle(&mut h, "a refresh is running", |h| {
             h.p.runtimes.values().any(|r| r.busy && !r.acting)
         });
         // The refresh `r` waits in line too (the first read is still out); `x` joins it.
-        drive(&mut h.p, &mut h.t, vec![Key::char('x')]);
+        drive_held(&mut h.p, &mut h.t, vec![Key::char('x')]);
         let waiting = h.p.screen.as_ref().unwrap().frame().unwrap().pending.len();
         assert!(waiting >= 1, "x did not wait in line");
-        let events = drive(&mut h.p, &mut h.t, vec![alt(ignored)]);
+        let events = drive_held(&mut h.p, &mut h.t, vec![alt(ignored)]);
         assert!(events.ended, "Alt-{ignored} ended the app");
         let frame = h.p.screen.as_ref().expect("the project is still open");
         assert_eq!(
@@ -589,12 +589,12 @@ fn an_ignored_key_during_a_load_leaves_the_waiting_key_alone() {
     }
     let mut h = open_project("en");
     h.shared.block_views.store(true, Ordering::SeqCst);
-    drive(&mut h.p, &mut h.t, vec![Key::char('r')]);
+    drive_held(&mut h.p, &mut h.t, vec![Key::char('r')]);
     settle(&mut h, "a refresh is running", |h| {
         h.p.runtimes.values().any(|r| r.busy && !r.acting)
     });
     let depth = h.p.screen.as_ref().unwrap().stack.len();
-    drive(&mut h.p, &mut h.t, vec![Key::char('q')]);
+    drive_held(&mut h.p, &mut h.t, vec![Key::char('q')]);
     assert_eq!(
         h.p.screen.as_ref().unwrap().stack.len(),
         depth - 1,
