@@ -405,10 +405,9 @@ impl DiffScreenState {
         &mut self,
         config: &SharedConfig,
     ) -> Result<(), Failure> {
-        // The host reopens a diff when the project overlay returns: use the configured choice,
-        // keep its saved scroll position and the project-owned picture cache.
-        self.choice = DiffView::parse(&config.ui.diff_view);
-        self.media.page = 1;
+        // The covered diff is put back as it was: the chosen representation, the media page and
+        // the scroll stay; only the data is read again.
+        let _ = config;
         self.reload()
     }
 

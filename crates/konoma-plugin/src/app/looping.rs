@@ -2027,8 +2027,7 @@ pub(in crate::app) struct FileLoopState {
 
 impl FileLoopState {
     pub(in crate::app) fn resume_project_preview(&mut self) {
-        self.st.caret_line = 0;
-        self.st.caret_col = 0;
+        // The caret stays where it was: a covered preview is put back as it was.
         self.need_view = true;
     }
     pub(in crate::app) fn invalidate(&mut self) {
