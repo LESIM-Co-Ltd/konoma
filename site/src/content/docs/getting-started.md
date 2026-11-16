@@ -51,7 +51,7 @@ The gate for konoma's full experience is the **terminal**, not the OS:
 `ffmpegthumbnailer` / `ffmpeg` (thumbnails for the video formats konoma can't
 decode itself — VP9, AV1, the older codecs, `.avi`), `jj` if you work in jj
 (preview — without it konoma simply falls back to git), and `lazygit` /
-`lazyjj` only if you want `!` to open a TUI inside the hub. An Office app (Microsoft Office or LibreOffice) only
+`lazyjj` only if you want `!` to open a TUI from the changes screen. An Office app (Microsoft Office or LibreOffice) only
 if you want `e` to open Word / Excel / PowerPoint files (the spreadsheet, Word and presentation previews themselves need none). The free
 Carlito / Caladea fonts if you want a PowerPoint deck's text to break lines where PowerPoint does (they have the widths of Calibri and Cambria,
 which may not be redistributed; without them konoma draws the text in a font about 10% wider). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, presentations, code,
@@ -200,7 +200,7 @@ Two habits carry you everywhere:
    links. Press `Tab` to focus a link, `Enter` to follow it, `q` to come back.
 4. Select an image or PDF — full-screen pixels; `+`/`-` zooms, `J`/`K` turns
    PDF pages.
-5. In a git repository, press `p` — the changes hub. `Enter` on a file shows its
+5. In a git repository, press `p` — the project screens, opening on the changes. `Enter` on a file shows its
    full-screen diff; `Tab` walks on to the log and the commit graph. `q` backs out.
 6. Press `m` then `a` to bookmark where you are; press `'` to see the bookmark
    list and jump.
@@ -220,6 +220,6 @@ konoma konoma/samples        # then open tutorial.md
 - [Tutorial](../tutorial/) — the same tour as above, in seven guided steps.
 - [Working with an AI agent](../guides/agent-watch/) — konoma's flagship workflow.
 - [Previews in depth](../guides/preview/) — Markdown, tables, media, copying.
-- [The git suite](../guides/git/) — hub, diffs, log, graph, branches.
+- [The git suite](../guides/git/) — project screens, diffs, log, graph, branches.
 - [Files, bookmarks & tabs](../guides/files/) — the file-manager side.
 - [Configuration](../reference/configuration/) — every option, one page.

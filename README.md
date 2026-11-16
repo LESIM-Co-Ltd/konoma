@@ -173,8 +173,9 @@ you came from, since a worktree's directory rarely does.
   Word, presentations, code) is a standard plugin built into konoma. `konoma --plugins` lists which plugin shows which
   files, and `[plugins.<id>] enabled = false` switches one off. Your `[[preview.rules]]` are tried first and the standard
   plugins decide the rest. The keys of a plugin's own actions can be rebound in `[keys.<plugin id>]`. (Swapping in a plugin
-  of your own is not available yet.) The Git / jj screens are not plugins yet — they are still part of konoma itself and
-  move later — but they follow the same key design.
+  of your own is not available yet.) The Git / jj screens are standard plugins too (`git` and `jj`): `p` opens their
+  project screens, their writes can be stopped with `[plugins.git] read_only = true` (git) and `[plugins.jj] read_only = true` (jj), and their keys are rebound in
+  `[keys.git]` / `[keys.jj]`.
 - **One key design**: the same key means the same thing everywhere — `/` search, `n`/`N` next match or change, `r` reload,
   `y` copy menu, `e` edit, `o` open in another app, `p` the project screen, `,` sort and display options, `Space` the menu of
   every operation on the screen you are looking at. Every default can be changed in `[keys]`; the `?` help and the
@@ -186,11 +187,12 @@ you came from, since a worktree's directory rarely does.
   the diff *since you pressed `F`*, so pre-existing changes stay out of the way.
 - **Git suite**: status, diff, log, a custom commit-graph renderer, branches, commits, and
   **worktrees** — list them, diff one against its base branch, and switch or open it in a tab.
-  `p` opens it from anywhere; `Tab` walks its screens.
+  `p` opens it from anywhere; the screens are tabs on the right of the top edge, `Tab` walks them, and `q` / `h` on a top-level screen go
+  back to where you pressed `p`. The `konoma-vcs` program opens the same screens on its own for the current directory.
 - **jj (Jujutsu) — preview**: a repository jj created without a colocated `.git`, and every
   `jj workspace`, gets the same views. Off by default where git can already answer; set
-  `[external] vcs = "jj"` to use it in a colocated repository too. **konoma only reads a jj
-  repository.** Preview: the surface is complete for the tree, diffs and the hub, but `jj workspace`
+  `[project] vcs = "jj"` to use it in a colocated repository too. **konoma only reads a jj
+  repository.** Preview: the surface is complete for the tree, diffs and the project screens, but `jj workspace`
   has no list yet, and jj is pre-1.0 and moves monthly.
 - **File manager**: create / rename / delete (trash by default) / copy / move, plus search,
   bookmarks, and sorting. Destructive actions require a confirmation dialog.
@@ -290,7 +292,7 @@ sudo apt install fonts-crosextra-carlito fonts-crosextra-caladea    # the same o
 `git` is what the git suite runs on, and `jj` likewise for the jj backend — without either, konoma
 simply shows no repository information for that system. `ffmpeg` covers the video formats konoma
 cannot decode itself. **`lazygit` and `lazyjj` are neither required nor used by anything except the
-`!` key**, which opens them inside the hub; without them that one key says so and nothing else
+`!` key**, which opens them from the changes screen; without them that one key says so and nothing else
 changes.
 
 jj is not in Debian/Ubuntu's archives; install it from [its own
@@ -305,7 +307,7 @@ instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt bin
   in pure Rust.
 - **git** — the in-app git suite (status / diff / log / graph / branches). Enabled by default;
   build with `--no-default-features` to drop it.
-- **lazygit** — the external git tool launched with `!` inside the changes hub. Any other TUI works
+- **lazygit** — the external git tool launched with `!` on the changes screen. Any other TUI works
   too: set `[git] tool` in the config (e.g. `"tig status"`).
 - **jj** — needed only for the jj backend (preview): without it konoma falls back to git, so a
   machine with no jj behaves exactly as before. konoma runs it read-only — every call carries

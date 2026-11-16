@@ -1,6 +1,6 @@
 ---
 title: The git suite
-description: Changes hub, full-screen diffs, log, a custom-rendered commit graph, and branch management — without leaving the browser.
+description: Project screens for changes, full-screen diffs, log, a custom-rendered commit graph, and branch management — without leaving the browser.
 sidebar:
   order: 4
 ---
@@ -10,10 +10,10 @@ colored, gitignored entries are dimmed, and code previews carry a change
 gutter. The full suite lives one key away. (Requires `git`; konoma works fine
 without it in non-repos.)
 
-## Changes hub — `p`
+## Project screens — `p`
 
-`p` — the project screen — opens it from the tree, from any preview and from a diff. It is the
-staging area. Each uncommitted file on one line with its status:
+`p` opens the version-control project screens from the tree, from any preview and from a diff. They are supplied by the standard `git` and `jj` plugins (the `konoma-vcs` crate). The screens are tabs, drawn on the right of the top edge, and `p` lands on the changes screen, which is
+the staging area. Each uncommitted file on one line with its status:
 
 - `s` / `u` stage / unstage the selected file; `S` / `U` all files.
 - `Enter` (or `l`) opens the file's **full-screen diff**; `d` opens the diff of all changes.
@@ -23,12 +23,14 @@ staging area. Each uncommitted file on one line with its status:
 - `e` edits the row's file, `o` opens it in another app, `Ctrl-t` opens it in a new tab.
 - `y` copies the selected file's path; `r` reads the list again.
 - **`Tab` / `Shift-Tab` walk the version-control screens** — changes, log, graph, branches,
-  worktrees — shown in the footer and the `?` help. `b` and `w` still go straight to the
-  branches and the worktrees.
+  worktrees — shown in the footer and the `?` help. Each screen also has a jump key: `p` changes, `b` branches, `w` worktrees; the log and the graph have none by default. Rebind them in `[keys.git]` / `[keys.jj]` as `goto_changes`, `goto_log`, `goto_graph`, `goto_branches`, `goto_worktrees` (`"noop"` removes one).
+- `q` / `h` on a top-level screen go back to where you pressed `p`; on a pushed screen (a commit's detail) `q` goes back to the screen below it, and on the Git detail `h` scrolls sideways. `Esc` on a preview opened from a project returns to the project. `R` does nothing here.
+- While a write (a commit, a checkout, …) runs, the other action keys are hidden and do nothing, and quitting konoma asks first.
+- `konoma-vcs [directory]` opens the same screens as a standalone program (the current directory if omitted).
 
 ## Diffs
 
-From the hub, from the tree (`d` on any changed file), or from follow mode. A diff has up to 3
+From the project screens, from the tree (`d` on any changed file), or from follow mode. A diff has up to 3
 presentations, cycled with `R` (`[ui] diff_view`, default `rendered`):
 
 - **`rendered`** — a Markdown file's diff drawn as decorated blocks: removed content in red/dim,
@@ -91,10 +93,10 @@ natural size.
 
 ## Log
 
-Reached with `Tab` from the changes hub. Commit list with right-aligned author/date columns. `Enter`
+Reached with `Tab` from the changes screen. Commit list with right-aligned author/date columns. `Enter`
 (or `l`) shows the full commit: complete message (multi-paragraph preserved) plus its diff, scrolling
 as one document. `/` filters the commits. `y` opens the copy menu: short or full hash / subject / full
-message / author / date.
+message / author / date. A repository with no commits shows an empty row, `(no commits)`.
 
 ## Commit graph
 
@@ -106,15 +108,16 @@ the bottom.
   locks to lane 0 as a straight line and everything else folds to the right —
   ideal for reading feature branches against `main`. `x` unpins.
 - `b` opens a branch picker (`x` toggles visibility, `a` shows all, `c` only the current branch, reorder with
-  `J`/`K`, `l` or `Enter` applies); at most
-  `ui.graph_max_branches` (default 12) branches draw at once.
-- `ui.graph_base_branches = ["main", "develop"]` pre-pins your convention.
+  `J`/`K`, `l` or `Enter` applies); the graph
+  opens with at most `graph_max_branches` (default 12) branches selected automatically, and you can add more by hand in the picker.
+- `graph_base_branches = ["main", "develop"]` pre-pins your convention.
+- Both settings live in `[plugins.git]` / `[plugins.jj]` (the old `[ui]` names are still read, and the plugin table wins).
 - `Enter` opens the commit's detail, `y` copies commit info, `/` filters the rows.
 
 ## Branches — `b`
 
-List with ahead/behind info. `Enter` (or `l`) checks out, `c` creates, `d` deletes
-(confirmed), `/` filters, and `y` opens a menu that copies the branch name. Branches checked out in another worktree appear here
+The branch names, with the current one marked. `Enter` (or `l`) checks out, `c` creates, `d` deletes
+(confirmed), `/` filters, and `y` opens a menu whose `n` copies the branch name. Checking out or creating a branch stays on this screen. With no branches the screen shows `(no branches)`. Branches checked out in another worktree appear here
 too, though checking one out fails — git keeps a branch in one worktree at a
 time, and says which one holds it.
 
@@ -140,7 +143,7 @@ where there is no git repository to ask: one created with `jj git init --no-colo
 `jj workspace`. Set `[external] vcs = "jj"` to use jj in a colocated repository too.
 
 Where jj does answer, it answers for everything this page describes: the tree's markers and
-dimming, the diffs, the changed-file list, follow mode, and the hub.
+dimming, the diffs, the changed-file list, follow mode, and the project screens.
 
 What you see is jj's, not git's wearing jj's data:
 
@@ -153,7 +156,7 @@ What you see is jj's, not git's wearing jj's data:
   keeps when jj rewrites it. `a` widens it to every revision. Another
   workspace's checkout appears as an ordinary commit labelled `ws-second@`.
 - `b` lists bookmarks and marks none of them current, because a bookmark does
-  not follow the working copy the way a branch follows HEAD.
+  not follow the working copy the way a branch follows HEAD. The list is read-only: `y` then `n` copies a name, and there is no checkout, create or delete key.
 - `!` launches `[jj] tool` (default `lazyjj`).
 
 **konoma only reads a jj repository.** Every call it makes carries
@@ -165,14 +168,14 @@ Because it never writes, konoma tracks changes itself rather than asking jj,
 which means a file an agent wrote a second ago shows up even though jj has not
 noticed it yet. The one thing that escapes this is a file whose contents
 changed while its timestamp did not; `s` on the changes list asks jj for a snapshot to
-settle it, after a confirmation (`[ui] confirm_jj_sync`).
+settle it, after a confirmation by default (`[plugins.jj] confirm_sync = false` skips it).
 
-Not there yet: `jj workspace` has no list of its own (`w` says so), and staging
+Not there yet: `jj workspace` has no list of its own (`w` does nothing), and staging
 has no counterpart — jj has no index, and `jj split` selects after the fact
 rather than before.
 
 ## External tool — `!`
 
-For anything beyond the built-ins (rebase, stash surgery…), `!` (from the tree, a preview, a diff or the changes hub) suspends
+For anything beyond the built-ins (rebase, stash surgery…), `!` (from the tree, a preview, a diff or the changes screen) suspends
 konoma and launches your configured tool (`git.tool`, default `lazygit`),
 returning to the same spot when you exit.

@@ -2613,14 +2613,70 @@ fn struct_pub_field_names(source: &str, struct_name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Checks one commented `<key> = "<operation>"` entry of a `[keys.<plugin id>]` example the way
+/// konoma binds it: the entry goes alone into the plugin's table, through the binders the app
+/// calls (`bind_actions` for the plugin's actions, `bind_jumps` for its `goto_<screen>` jumps),
+/// and must come out bound to its key with no note, and not shadowed by another binding.
+fn check_plugin_example_entry(
+    name: &str,
+    id: &str,
+    manifest: &konoma_plugin::Manifest,
+    key: &str,
+    operation: &str,
+) {
+    use konoma_plugin::host::bind::{bind_actions, bind_jumps, keypress_of};
+    let table: HashMap<String, String> = [(key.to_string(), operation.to_string())].into();
+    let (acts, act_notes) = bind_actions(id, manifest, Some(&table), |a| a.to_string());
+    let (jumps, jump_notes) = bind_jumps(id, manifest, Some(&table));
+    let notes: Vec<_> = act_notes.into_iter().chain(jump_notes).collect();
+    assert!(
+        notes.is_empty(),
+        "{name}: `[keys.{id}]` example `{key} = {operation:?}` is refused by the binder: {notes:?}"
+    );
+    if operation == "noop" || operation == "disabled" {
+        return; // taking a key away binds nothing
+    }
+    let spec = konoma_plugin::keys::parse_key(key).unwrap_or_else(|e| {
+        panic!("{name}: `[keys.{id}]` example key {key:?} does not parse: {e:?}")
+    });
+    let pressed = keypress_of(spec);
+    let jump = jumps.iter().find(|j| j.op == operation);
+    let act = acts.iter().find(|a| a.act == operation);
+    let owners = acts.iter().filter(|a| a.key == Some(pressed)).count()
+        + jumps.iter().filter(|j| j.key == Some(pressed)).count();
+    match (jump, act) {
+        (Some(j), _) => assert_eq!(
+            j.key,
+            Some(pressed),
+            "{name}: `[keys.{id}]` example `{key} = {operation:?}` does not bind the jump"
+        ),
+        (None, Some(a)) => assert_eq!(
+            a.key,
+            Some(pressed),
+            "{name}: `[keys.{id}]` example `{key} = {operation:?}` does not bind the action"
+        ),
+        (None, None) => panic!(
+            "{name}: `[keys.{id}]` example binds {operation:?}, which the plugin does not declare"
+        ),
+    }
+    assert_eq!(
+        owners, 1,
+        "{name}: `[keys.{id}]` example key {key:?} is also bound to another action or jump of the plugin"
+    );
+}
+
 /// The example configs' `[keys]` section names every key context, and the `[keys.<name>]` examples in
 /// them (commented out, so `toml::from_str` never sees them) use names konoma actually knows — so an
 /// example a user uncomments does not just produce an "unknown key surface" warning. Context names
 /// that were renamed (plugin stage 2 / B1) are the thing this guards: the lists are hand-written
-/// in two languages.
+/// in two languages. A `[keys.<plugin id>]` example (the id of a standard plugin) runs from its
+/// commented header to the next header or the first line that is not a comment (a bare `#` does not
+/// end it); every commented `key = value` line in it is parsed as TOML and bound with the real
+/// binders (`check_plugin_example_entry`).
 #[test]
 fn shipped_example_configs_name_every_key_context_and_only_real_ones() {
     use crate::keymap::Context;
+    let manifests = crate::plugins::standard_manifests();
     for name in ["config.example.toml", "config.example.ja.toml"] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -2636,30 +2692,83 @@ fn shipped_example_configs_name_every_key_context_and_only_real_ones() {
         }
         // Every `[keys.<name>]` / `[keys."<name>"]` header, commented out or not.
         let mut headers = 0;
-        for line in text.lines() {
-            let l = line.trim_start_matches('#').trim();
+        // Entries checked, by plugin id.
+        let mut checked: HashMap<String, usize> = HashMap::new();
+        // The plugin whose `[keys.<id>]` example table the lines below belong to.
+        let mut plugin_table: Option<String> = None;
+        for (index, line) in text.lines().enumerate() {
+            let at = format!("{name}:{}", index + 1);
+            let commented = line.trim_start().starts_with('#');
+            let l = line.trim_start().trim_start_matches('#').trim();
+            if !commented || l.starts_with('[') {
+                // A line that is not a comment, or any header, ends the table in scope.
+                plugin_table = None;
+            } else if let (Some(id), false) = (&plugin_table, l.is_empty()) {
+                // An entry of the table in scope; prose (no `=`) is skipped.
+                if l.contains('=') {
+                    let parsed: toml::Table = toml::from_str(l).unwrap_or_else(|e| {
+                        panic!("{at}: `{l}` in the `[keys.{id}]` example is not a TOML entry: {e}")
+                    });
+                    assert_eq!(parsed.len(), 1, "{at}: expected one entry in `{l}`");
+                    let (key, value) = parsed.iter().next().expect("one entry");
+                    let operation = value.as_str().unwrap_or_else(|| {
+                        panic!("{at}: the value of `{key}` in the `[keys.{id}]` example is not a string")
+                    });
+                    let manifest = manifests
+                        .iter()
+                        .find(|m| m.id == *id)
+                        .unwrap_or_else(|| panic!("{at}: no manifest for plugin `{id}`"));
+                    check_plugin_example_entry(&at, id, manifest, key, operation);
+                    *checked.entry(id.clone()).or_default() += 1;
+                }
+            }
             let Some(rest) = l.strip_prefix("[keys.") else {
                 continue;
             };
             let Some(end) = rest.find(']') else { continue };
+            // A header ends at its `]` (a trailing comment is fine); a prose line that merely
+            // starts with a `[keys.…]` mention is not one.
+            let after = rest[end + 1..].trim();
+            if !after.is_empty() && !after.starts_with('#') {
+                continue;
+            }
             let n = rest[..end].trim_matches('"');
             if n.starts_with('<') {
                 continue; // the `[keys.<context>]` placeholder
             }
             headers += 1;
+            // A standard plugin's own table (`[keys.git]`); without git the git and jj plugins are
+            // not built in and their tables are skipped like the dotted names.
+            // A host context of the same name (`text`, `image`, ...) is the context, not the plugin.
+            let is_context = n == "global" || Context::from_name(n).is_some();
+            if !is_context
+                && (manifests.iter().any(|m| m.id == n)
+                    || (!cfg!(feature = "git") && matches!(n, "git" | "jj")))
+            {
+                plugin_table =
+                    (commented && manifests.iter().any(|m| m.id == n)).then(|| n.to_string());
+                continue;
+            }
             // Without git the dotted version-control names are unknown by design.
             let known = n == "global" || Context::from_name(n).is_some() || n.contains('.');
-            assert!(known, "{name}: `[keys.{n}]` is not a key context");
+            assert!(known, "{at}: `[keys.{n}]` is not a key context");
             if cfg!(feature = "git") && n.contains('.') {
                 assert!(
                     Context::from_name(n).is_some(),
-                    "{name}: `[keys.\"{n}\"]` is not a key context"
+                    "{at}: `[keys.\"{n}\"]` is not a key context"
                 );
             }
         }
         assert!(
             headers >= 3,
             "{name}: found only {headers} [keys.…] examples"
+        );
+        // Lower bound per expected table: the examples show at least one operation under
+        // `[keys.git]`, so the check above cannot pass by finding nothing (with git off the table
+        // is skipped).
+        assert!(
+            !cfg!(feature = "git") || checked.get("git").copied().unwrap_or(0) >= 1,
+            "{name}: no `[keys.git]` example entry was checked"
         );
     }
 }

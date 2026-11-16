@@ -77,7 +77,7 @@ see the change.
 
 ## 6. Git, live
 
-In a git repository: `p` opens the changes hub (stage with `s`, commit with
+In a git repository: `p` opens the project screens, on the changes (stage with `s`, commit with
 `c`), `Enter` on a file shows its full-screen diff (`s` cycles
 unified/split), and `Tab` walks on to the log and the commit graph — try `s` on a
 commit there to pin its branch straight along lane 0. Changed files are

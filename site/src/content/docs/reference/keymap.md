@@ -64,8 +64,8 @@ when it has no key of its own.
 |---|---|
 | `e` | edit in the external editor, at the line you are looking at (an Office file: in an Office app — `[external] office_apps`). Works in the tree, every preview, a diff and on a row of the changes list |
 | `o` | open in another app: an Office file in Microsoft Office / LibreOffice / the OS default, anything else in the OS default (`open` / `xdg-open`). Runs in the background; `[external] office_apps` / `open_links` switch it off. A directory is not opened |
-| `p` | the project screen: the Git (or jj) changes list, from the tree, a preview or a diff |
-| `!` | the project tool: lazygit / lazyjj (`[git] tool` / `[jj] tool`), from the tree, a preview, a diff and the changes list |
+| `p` | the project screens: the Git (or jj) changes screen, from the tree, a preview or a diff |
+| `!` | the project tool: lazygit / lazyjj (`[git] tool` / `[jj] tool`), from the tree, a preview, a diff and the changes screen of a project |
 
 ## Tree
 
@@ -86,7 +86,7 @@ when it has no key of its own.
 | `a` / `A` | anchor display root here / reset anchor |
 | `d` | diff of the cursor file (git) |
 | `C` / `n` `N` | changed-files view / jump between changed files |
-| `e` / `o` / `p` / `!` | edit / open in another app / the Git hub / the external git tool |
+| `e` / `o` / `p` / `!` | edit / open in another app / the project screens / the external git tool |
 | `q` | close tab (last tab: quit) |
 
 ## Text / Markdown / document preview
@@ -109,7 +109,7 @@ when it has no key of its own.
 | `,` | `p` path style · `w` line wrapping |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `m` + letter / `'` | bookmark the previewed file / bookmark list |
-| `e` / `o` / `p` / `!` / `r` / `q` | edit / open in another app / the Git hub / the git tool / read again / back to tree |
+| `e` / `o` / `p` / `!` / `r` / `q` | edit / open in another app / the project screens / the git tool / read again / back to tree |
 
 ## Image / PDF / SVG / video preview
 
@@ -153,15 +153,15 @@ when it has no key of its own.
 | `,` | `f` follow scope (since follow-start ⇄ the full git diff) · `p` path style |
 | `x` | discard this file's changes (confirmed first) |
 | `e` | edit at the line of the change block on screen |
-| `o` / `p` / `!` / `r` / `q` | open in another app / the Git hub / the git tool / read again / back |
+| `o` / `p` / `!` / `r` / `q` | open in another app / the project screens / the git tool / read again / back |
 | `y` | copy menu |
 
 ## Git screens (and jj)
 
-`p` opens the changes list from the tree, a preview or a diff. **`Tab` / `Shift-Tab` walk the screens** — changes,
+`p` opens the project screens from the tree, a preview or a diff; they come from the standard `git` and `jj` plugins. The screens are tabs, drawn on the right of the top edge. **`Tab` / `Shift-Tab` walk the screens** — changes,
 log, graph, branches, worktrees (jj has no worktree screen, so its cycle skips it). Every list shares `j` `k` `g` `G`,
 `l` / `Enter` (open), `h` / `q` (back), `/` (filter), `r` (read again), `y` (copy menu), `Space` (operations menu), `Ctrl-t`
-(open in a new tab, where it applies).
+(open in a new tab, where it applies). Each screen also has a jump key (`p` changes, `b` branches, `w` worktrees; the log and the graph have none by default), rebound in `[keys.git]` / `[keys.jj]` as `goto_<screen>` (see [Configuration](../configuration/#pluginsid--plugin-switches-and-settings)). `q` / `h` on a top-level screen go back to where you pressed `p` (on a pushed screen such as a commit's detail, `q` goes back to the screen below it, and on the Git detail `h` scrolls sideways); `Esc` on a preview opened from the project returns to the project. The log and the branches show an empty row (`(no commits)` / `(no branches)`) instead of refusing to open. `R` does nothing here, and `y` with nothing to copy does nothing. While a write runs the other action keys are hidden and do nothing, and quitting konoma asks first.
 
 | Screen | Keys |
 |---|---|
@@ -172,7 +172,7 @@ log, graph, branches, worktrees (jj has no worktree screen, so its cycle skips i
 | Branches | `l` / `Enter` checkout · `c` create · `d` delete · `/` filter · `y` → `n` copy the branch name |
 | Worktrees (`w`) | `l` / `Enter` switch this tab to it · `Ctrl-t` open it in a new tab · `d` diff it against its base branch · `c` create one (asks for a branch name, then switches into it) · `/` filter |
 | **jj** — changes | `s` ask jj to snapshot the working copy (the only write; confirmed first) |
-| **jj** — branches | bookmarks (jj's pointers; none is marked current) |
+| **jj** — branches | bookmarks (jj's pointers; none is marked current), read-only: `y` → `n` copies the name, no checkout / create / delete |
 | **jj** — changes | no `u` `S` `U` `c` `x` `w`: jj has no index, and konoma only reads |
 
 ## Menus: `y`, `,` and `Space`
@@ -223,14 +223,14 @@ here, unlike every other list: they are bookmark names like the other letters.
 
 | Before | Now |
 |---|---|
-| tree `o` (Git hub) | `p` (the project screen — also from previews and diffs); `o` now opens the file in another app |
+| tree `o` (the Git screens) | `p` (the project screen — also from previews and diffs); `o` now opens the file in another app |
 | preview `o` (outline) | `O` |
 | tree `s` (sort menu) and `p` (path style) | the `,` menu |
 | `t` (append at the end) and `I` (insert after the current tab) | `t` inserts after the current tab; `I` and the appending `tab_new` have no default key |
 | diff `n` / `N` (changed file) | `Ctrl-n` / `Ctrl-p`; `n` / `N` step through the change blocks of the file |
 | image `0` (fit) | `=` |
 | range selection `q` (quit the app) | cancels the selection (`Q` still quits) |
-| hub `g` / `l` (graph, log) | `Tab` / `Shift-Tab` walk the screens (`b` and `w` still jump); `l` opens the selected row |
+| the old hub's `g` / `l` (graph, log) | `Tab` / `Shift-Tab` walk the screens (`b` and `w` still jump); `l` opens the selected row |
 | jj `R` (sync) | `s` on the jj changes list |
 | branch list `y` (direct copy) | `y` menu → `n` |
 | branch / worktree lists `n` (create) | `c` (`n` is the next match) |
