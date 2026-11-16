@@ -190,6 +190,9 @@ impl ProjectLoopState {
             let emptied = crate::host::project::prompt::retain_projects(&mut self.dialog, |key| {
                 after.contains(key)
             });
+            // Runtimes are created only at start (see `prepare`): a project detected later has
+            // none and cannot be opened by this program. So no runtime left means nothing this
+            // program can open remains, and it ends like a start without a project (exit code 2).
             if emptied || self.runtimes.is_empty() || after.is_empty() {
                 self.project_gone = true;
             }

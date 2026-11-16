@@ -685,9 +685,12 @@ fn watch_error_kind_is_missing(error: &notify::Error) -> bool {
 
 /// Whether an asynchronous watch error says a path vanished: a "not found" kind AND the paths it
 /// names all gone now. An error that names no path cannot be checked and stays a failure. A
-/// "not found" error whose paths still exist (a dangling symlink met inside a recursive walk, a
-/// backend rounding its errors) is not a vanished path. (An error from adding a watch is judged
-/// by its kind alone: see [`WatchSet`].)
+/// "not found" error whose paths still exist as directories (a backend rounding its errors) is
+/// not a vanished path. "Gone" is judged by [`directory_missing`], the way the watch itself sees
+/// the path: symlinks are followed, so a dangling symlink and a regular file where a directory
+/// was both count as gone. That only costs a rescan, where calling them failures would show the
+/// watch warning for an ordinary dangling link. (An error from adding a watch is judged by its
+/// kind alone: see [`WatchSet`].)
 fn watch_error_says_path_gone(error: &notify::Error) -> bool {
     watch_error_kind_is_missing(error)
         && !error.paths.is_empty()

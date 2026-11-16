@@ -211,3 +211,47 @@ fn a_failed_answer_that_drops_a_project_retires_it() {
         "nothing is left: as a start without a project"
     );
 }
+
+/// Runtimes exist only for the projects found at start: when the one project goes and another one
+/// (which has no runtime) appears, nothing this program can open is left, so the loop ends.
+#[test]
+fn a_gone_project_replaced_by_a_new_one_ends_the_loop() {
+    let dir = konoma_test_support::unique_tmp("project_replaced");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.into_canonical().unwrap();
+    std::fs::write(dir.join("a.marker"), "").unwrap();
+    let mut prepared = crate::app::project::prepare::prepare_projects_with_previews(
+        vec![
+            Arc::new(Marked("alpha", "a.marker")),
+            Arc::new(Marked("gamma", "c.marker")),
+        ],
+        Vec::new(),
+        &dir,
+        TermCaps::new(),
+        (SharedConfig::parse("[ui]\nlang='en'\n").unwrap(), None),
+        Arc::new(Services),
+    )
+    .unwrap_or_else(|e| panic!("{}", e.error));
+    let mut state = ProjectLoopState::new(&mut prepared, false);
+    assert_eq!(state.runtimes.len(), 1, "only alpha has a runtime");
+    assert!(!state.project_gone);
+    // No screen of alpha is up and no chooser is open, so only the runtimes can say the end.
+    state.screen = None;
+    state.dialog = None;
+    let old = dir.join("a.marker");
+    std::fs::remove_file(&old).unwrap();
+    std::fs::write(dir.join("c.marker"), "").unwrap();
+    prepared
+        .detection
+        .inject_event(Ok(notify::Event::new(notify::EventKind::Any).add_path(old)));
+    let info = state.info(&prepared, &ProjectLoopCx::default());
+    assert!(state.poll_detection(&mut prepared, &info));
+    let detected: Vec<_> = prepared
+        .detection
+        .projects
+        .iter()
+        .map(|p| p.plugin.as_str())
+        .collect();
+    assert_eq!(detected, ["gamma"], "gamma is detected but has no runtime");
+    assert!(state.project_gone, "nothing this program can open is left");
+}

@@ -1003,6 +1003,34 @@ fn project_async_errors_for_existing_paths_are_failures() {
     }
 }
 
+/// What an asynchronous watch error "says a path vanished" means: a missing kind and every named
+/// path gone as a directory, judged with symlinks followed.
+#[test]
+fn project_watch_error_says_path_gone_judges_the_named_paths() {
+    let dir = unique_tmp("project_watch_error_gone");
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = dir.canonicalize().unwrap_or(dir.to_path_buf());
+    let removed = base.join("removed");
+    std::fs::create_dir(&removed).unwrap();
+    std::fs::remove_dir(&removed).unwrap();
+    let dangling = base.join("dangling");
+    std::os::unix::fs::symlink(base.join("no-such-target"), &dangling).unwrap();
+    let file = base.join("now-a-file");
+    std::fs::write(&file, "").unwrap();
+    let existing = base.join("existing");
+    std::fs::create_dir(&existing).unwrap();
+    let missing = || notify::Error::path_not_found();
+    assert!(watch_error_says_path_gone(
+        &missing().add_path(removed.clone())
+    ));
+    assert!(watch_error_says_path_gone(&missing().add_path(dangling)));
+    assert!(watch_error_says_path_gone(&missing().add_path(file)));
+    assert!(!watch_error_says_path_gone(&missing().add_path(existing)));
+    assert!(!watch_error_says_path_gone(&missing()));
+    let denied = notify::Error::io(io::Error::from(io::ErrorKind::PermissionDenied));
+    assert!(!watch_error_says_path_gone(&denied.add_path(removed)));
+}
+
 type ErrorOf = fn(&Path) -> notify::Error;
 
 /// The "not found" answers an add may give for a target that exists: named, unnamed, and naming a
