@@ -19883,6 +19883,8 @@ mod project_launch_bridge;
 #[path = "e2e_tests/project_screens.rs"]
 mod project_screens;
 #[cfg(feature = "git")]
+mod project_wide_gap;
+#[cfg(feature = "git")]
 mod representation_cycles;
 #[cfg(feature = "git")]
 mod selected_backend;

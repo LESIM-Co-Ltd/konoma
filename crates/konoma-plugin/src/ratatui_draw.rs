@@ -135,31 +135,22 @@ pub fn paint_canvas(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
 /// frame that `─` is equal in both buffers and is not written, although the terminal blanked it
 /// when the wide character was overwritten. The screen then shows a hole where the buffer says `─`.
 ///
-/// Per row, a cell wider than one column (and not a skip cell) resets the cells it covers, except
-/// cells that are skip cells themselves (an image drawn by an escape sequence owns them).
-/// A cell with a forced width is left alone: its symbol is an escape sequence, not text.
+/// Per row, a cell wider than one column that the diff treats as text resets the cells it covers,
+/// except cells that are not text themselves (an image drawn by an escape sequence owns them).
+/// "Text" is decided by [`diff_treats_as_text`], for the wide cell and the covered cells alike.
 pub fn clear_cells_hidden_by_wide_symbols(buf: &mut Buffer) {
-    use ratatui::buffer::{CellDiffOption, CellWidth};
-    #[allow(deprecated)]
-    fn is_skip(cell: &ratatui::buffer::Cell) -> bool {
-        cell.skip || cell.diff_option == CellDiffOption::Skip
-    }
+    use ratatui::buffer::CellWidth;
     let area = buf.area;
     for y in area.top()..area.bottom() {
         let mut x = area.left();
         while x < area.right() {
             let cell = &buf[(x, y)];
             let width = cell.cell_width();
-            let acts = !is_skip(cell)
-                && matches!(
-                    cell.diff_option,
-                    CellDiffOption::None | CellDiffOption::AlwaysUpdate
-                );
-            if width > 1 && acts {
+            if width > 1 && diff_treats_as_text(cell) {
                 let end = x.saturating_add(width).min(area.right());
                 for hidden in x + 1..end {
                     let cell = &mut buf[(hidden, y)];
-                    if !is_skip(cell) {
+                    if diff_treats_as_text(cell) {
                         cell.reset();
                     }
                 }
@@ -169,6 +160,22 @@ pub fn clear_cells_hidden_by_wide_symbols(buf: &mut Buffer) {
             }
         }
     }
+}
+
+/// Whether ratatui's buffer diff writes this cell as plain text: its `diff_option` is `None` or
+/// `AlwaysUpdate` (not `Skip`, not `ForcedWidth`, whose symbol is an escape sequence), and it is not
+/// skipped by the deprecated `skip` flag. Mirrors ratatui-core 0.1.2 `buffer/diff.rs`: the `match
+/// current.diff_option` (lines 129-142: the `Skip` arm at 130, the `is_skip` arm at 131, the
+/// `ForcedWidth` arm at 133, the `None | AlwaysUpdate` arm at 142) and `is_skip` (lines 203-206),
+/// which honours `skip` only while the option is `None`.
+fn diff_treats_as_text(cell: &ratatui::buffer::Cell) -> bool {
+    use ratatui::buffer::CellDiffOption;
+    #[allow(deprecated)]
+    let skipped_by_flag = cell.skip && cell.diff_option == CellDiffOption::None;
+    matches!(
+        cell.diff_option,
+        CellDiffOption::None | CellDiffOption::AlwaysUpdate
+    ) && !skipped_by_flag
 }
 
 #[cfg(test)]
@@ -458,6 +465,66 @@ r1 c7..7 fg=Reset bg=Reset mod=UNDERLINED |b|
         buf[(1, 0)].set_diff_option(CellDiffOption::AlwaysUpdate);
         clear_cells_hidden_by_wide_symbols(&mut buf);
         assert_eq!(buf[(2, 0)].symbol(), " ");
+    }
+
+    #[test]
+    fn the_clear_keeps_an_image_cell_with_a_forced_width_behind_a_wide_char() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        buf[(0, 0)].set_symbol("変");
+        // An image drawn by an escape sequence: its first cell carries the sequence.
+        buf[(1, 0)]
+            .set_symbol("\x1b_Ga=T\x1b\\")
+            .set_diff_option(CellDiffOption::ForcedWidth(
+                std::num::NonZeroU16::new(2).unwrap(),
+            ));
+        let image = buf[(1, 0)].clone();
+        clear_cells_hidden_by_wide_symbols(&mut buf);
+        assert_eq!(buf[(1, 0)], image);
+        assert_eq!(buf[(0, 0)].symbol(), "変");
+    }
+
+    #[test]
+    fn a_forced_width_cell_is_not_a_wide_symbol_that_clears_what_it_covers() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        buf[(0, 0)]
+            .set_symbol("\x1b_Ga=T\x1b\\")
+            .set_diff_option(CellDiffOption::ForcedWidth(
+                std::num::NonZeroU16::new(3).unwrap(),
+            ));
+        buf[(1, 0)].set_symbol("x");
+        clear_cells_hidden_by_wide_symbols(&mut buf);
+        assert_eq!(buf[(1, 0)].symbol(), "x");
+    }
+
+    #[test]
+    fn the_deprecated_skip_flag_counts_only_while_the_diff_option_is_none() {
+        // ratatui-core 0.1.2 `diff.rs` `is_skip`: `skip` is honoured only with `CellDiffOption::None`,
+        // so an `AlwaysUpdate` cell with the flag set is still written by the diff.
+        #[allow(deprecated)]
+        {
+            let mut buf = bordered_with_tabs(10, "変");
+            buf[(1, 0)]
+                .set_diff_option(CellDiffOption::AlwaysUpdate)
+                .skip = true;
+            clear_cells_hidden_by_wide_symbols(&mut buf);
+            assert_eq!(
+                buf[(2, 0)].symbol(),
+                " ",
+                "a wide AlwaysUpdate cell with skip"
+            );
+
+            // As a hidden cell: it is written by the diff too, so it is text and gets blanked.
+            let mut buf = bordered_with_tabs(10, "変");
+            buf[(2, 0)]
+                .set_diff_option(CellDiffOption::AlwaysUpdate)
+                .skip = true;
+            clear_cells_hidden_by_wide_symbols(&mut buf);
+            assert_eq!(
+                buf[(2, 0)].symbol(),
+                " ",
+                "a hidden AlwaysUpdate cell with skip"
+            );
+        }
     }
 
     #[test]

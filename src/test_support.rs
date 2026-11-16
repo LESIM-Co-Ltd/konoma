@@ -422,6 +422,61 @@ pub(crate) fn buffer_dump(buf: &ratatui::buffer::Buffer) -> String {
 pub(crate) use konoma_test_support::top_edge;
 
 // ---------------------------------------------------------------------------------------------
+/// A terminal's grid with the semantics the buffer diff has to be right about: a symbol written
+/// over the first half of a wide character blanks its second half, and a wide symbol covers the
+/// cell after it.
+#[cfg(feature = "git")]
+pub(crate) struct TermModel {
+    rows: Vec<Vec<(String, bool)>>,
+}
+
+#[cfg(feature = "git")]
+impl TermModel {
+    pub(crate) fn new(width: u16, height: u16) -> Self {
+        Self {
+            rows: vec![vec![(" ".to_string(), false); usize::from(width)]; usize::from(height)],
+        }
+    }
+
+    fn write(&mut self, x: u16, y: u16, symbol: &str) {
+        use unicode_width::UnicodeWidthStr;
+        let (x, w) = (usize::from(x), symbol.width().max(1));
+        let row = &mut self.rows[usize::from(y)];
+        // Overwriting the second half of a wide character blanks its first half.
+        if row[x].1 && x > 0 {
+            row[x - 1] = (" ".to_string(), false);
+        }
+        // Overwriting the first half of a wide character blanks its second half.
+        if row[x].0.width() > 1 && x + 1 < row.len() {
+            row[x + 1] = (" ".to_string(), false);
+        }
+        row[x] = (symbol.to_string(), false);
+        for k in 1..w {
+            if x + k < row.len() {
+                // A wide character that loses its first cell here loses its second half too.
+                if row[x + k].0.width() > 1 && x + k + 1 < row.len() {
+                    row[x + k + 1] = (" ".to_string(), false);
+                }
+                row[x + k] = (" ".to_string(), true);
+            }
+        }
+    }
+
+    pub(crate) fn apply(&mut self, prev: &ratatui::buffer::Buffer, next: &ratatui::buffer::Buffer) {
+        for (x, y, cell) in prev.diff(next) {
+            self.write(x, y, cell.symbol());
+        }
+    }
+
+    pub(crate) fn row(&self, y: u16) -> String {
+        self.rows[usize::from(y)]
+            .iter()
+            .filter(|(_, hidden)| !hidden)
+            .map(|(s, _)| s.as_str())
+            .collect()
+    }
+}
+
 // Regression guard: nothing outside this module should call `std::env::temp_dir()` to build a
 // *fixed*-name path ever again (that's exactly the bug this module was written to fix — see the
 // module doc). Scans `src/**/*.rs`'s own text, so it catches a reintroduced fixed name wherever it
