@@ -138,6 +138,7 @@ pub fn paint_canvas(buf: &mut Buffer, inner: Rect, canvas: &CanvasView) {
 /// Per row, a cell wider than one column that the diff treats as text resets the cells it covers,
 /// except cells that are not text themselves (an image drawn by an escape sequence owns them).
 /// "Text" is decided by [`diff_treats_as_text`], for the wide cell and the covered cells alike.
+/// A wide character whose span holds a non-text cell is blanked itself (its style is kept).
 pub fn clear_cells_hidden_by_wide_symbols(buf: &mut Buffer) {
     use ratatui::buffer::CellWidth;
     let area = buf.area;
@@ -148,11 +149,21 @@ pub fn clear_cells_hidden_by_wide_symbols(buf: &mut Buffer) {
             let width = cell.cell_width();
             if width > 1 && diff_treats_as_text(cell) {
                 let end = x.saturating_add(width).min(area.right());
+                let mut owned_by_non_text = false;
                 for hidden in x + 1..end {
                     let cell = &mut buf[(hidden, y)];
                     if diff_treats_as_text(cell) {
                         cell.reset();
+                    } else {
+                        owned_by_non_text = true;
                     }
+                }
+                // A non-text cell (an image's escape sequence, a skipped cell) owns part of the
+                // span, so the terminal cannot show the wide character whole: it is not on the
+                // screen. Blank it (keeping the style, so the background stays) instead of leaving
+                // text the diff would write over the owner's column or skip past it.
+                if owned_by_non_text {
+                    buf[(x, y)].set_symbol(" ");
                 }
                 x = end;
             } else {
@@ -480,7 +491,8 @@ r1 c7..7 fg=Reset bg=Reset mod=UNDERLINED |b|
         let image = buf[(1, 0)].clone();
         clear_cells_hidden_by_wide_symbols(&mut buf);
         assert_eq!(buf[(1, 0)], image);
-        assert_eq!(buf[(0, 0)].symbol(), "変");
+        // The wide character cannot be shown whole next to the image: it is blanked.
+        assert_eq!(buf[(0, 0)].symbol(), " ");
     }
 
     #[test]
@@ -525,6 +537,70 @@ r1 c7..7 fg=Reset bg=Reset mod=UNDERLINED |b|
                 "a hidden AlwaysUpdate cell with skip"
             );
         }
+    }
+
+    /// What the diff writes from an empty screen, as `(x, y, symbol)`.
+    fn written(buf: &Buffer) -> Vec<(u16, u16, String)> {
+        Buffer::empty(buf.area)
+            .diff(buf)
+            .into_iter()
+            .map(|(x, y, cell)| (x, y, cell.symbol().to_string()))
+            .collect()
+    }
+
+    const IMAGE: &str = "\x1b_Ga=T\x1b\\";
+
+    fn image_over_the_right_half_of(wide: &str) -> Buffer {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        buf[(0, 0)].set_symbol(wide);
+        buf[(1, 0)]
+            .set_symbol(IMAGE)
+            .set_diff_option(CellDiffOption::ForcedWidth(
+                std::num::NonZeroU16::new(2).unwrap(),
+            ));
+        buf
+    }
+
+    #[test]
+    fn a_wide_char_whose_span_holds_an_image_cell_is_blanked_so_the_diff_writes_the_image() {
+        for wide in ["変", "\u{2764}\u{fe0f}"] {
+            let mut buf = image_over_the_right_half_of(wide);
+            let image = buf[(1, 0)].clone();
+            clear_cells_hidden_by_wide_symbols(&mut buf);
+            assert_eq!(
+                buf[(0, 0)].symbol(),
+                " ",
+                "the wide {wide:?} is not on the screen"
+            );
+            assert_eq!(buf[(1, 0)], image, "the image cell is untouched ({wide:?})");
+            assert_eq!(
+                written(&buf),
+                vec![(1, 0, IMAGE.to_string())],
+                "the first frame writes the image sequence ({wide:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_blanked_wide_char_keeps_its_style_for_the_background() {
+        let mut buf = image_over_the_right_half_of("変");
+        buf[(0, 0)].set_bg(RColor::Blue);
+        clear_cells_hidden_by_wide_symbols(&mut buf);
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+        assert_eq!(buf[(0, 0)].bg, RColor::Blue);
+    }
+
+    #[test]
+    fn a_wide_char_whose_span_holds_a_skip_cell_is_blanked_too() {
+        // A skip cell is not text (it is not written), so it owns its column like an image cell.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        buf[(0, 0)].set_symbol("変");
+        buf[(1, 0)]
+            .set_symbol("x")
+            .set_diff_option(CellDiffOption::Skip);
+        clear_cells_hidden_by_wide_symbols(&mut buf);
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+        assert_eq!(buf[(1, 0)].symbol(), "x");
     }
 
     #[test]
