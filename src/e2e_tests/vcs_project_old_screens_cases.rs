@@ -137,10 +137,8 @@ fn vcs_old_names_every_mapped_name_reaches_its_operation_and_is_noted() {
                     (120, 30),
                 );
                 old_reach(&mut sim, &scr);
-                let (_, legacy) =
-                    App::count_legacy_hub_opens(|| press(&mut sim, KeyCode::Char(OLD_KEY)));
+                press(&mut sim, KeyCode::Char(OLD_KEY));
                 let got = old_effect(&mut sim);
-                assert_eq!(legacy, 0, "{id} {} -> {op}", row.old);
                 assert_eq!(
                     got,
                     want,
@@ -231,9 +229,7 @@ fn vcs_old_names_an_unmapped_name_does_nothing_and_says_so() {
                 );
                 screen(&mut sim, scr);
                 let before = old_effect(&mut sim);
-                let (_, legacy) =
-                    App::count_legacy_hub_opens(|| press(&mut sim, KeyCode::Char(OLD_KEY)));
-                assert_eq!(legacy, 0);
+                press(&mut sim, KeyCode::Char(OLD_KEY));
                 assert_eq!(
                     old_effect(&mut sim),
                     before,
@@ -457,9 +453,7 @@ fn old_jump_cases(via_old_name: bool) -> usize {
                     );
                     assert!(!report.contains("no effect"), "{id} {op}: {report}");
                 }
-                let (_, legacy) =
-                    App::count_legacy_hub_opens(|| press(&mut sim, KeyCode::Char(OLD_KEY)));
-                assert_eq!(legacy, 0);
+                press(&mut sim, KeyCode::Char(OLD_KEY));
                 assert_eq!(frame_screen(&sim), scr, "{id} {lang} {op}: the key jumps");
                 // From another screen too.
                 screen(&mut sim, "branches");

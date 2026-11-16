@@ -725,8 +725,7 @@ fn open_changed_diff(repo: &std::path::Path, id: &str, down: usize) -> Sim {
     for _ in 0..down {
         press(&mut sim, KeyCode::Char('j'));
     }
-    let (_, legacy) = App::count_legacy_hub_opens(|| press(&mut sim, KeyCode::Enter));
-    assert_eq!(legacy, 0, "{id}: no old hub opened");
+    press(&mut sim, KeyCode::Enter);
     assert!(sim.app.is_git_diff_preview() && !sim.app.project_active(), "{id}");
     assert!(sim.app.tab.project_return.is_some(), "{id}");
     sim
@@ -754,9 +753,7 @@ fn vcs_keys_esc_on_a_file_diff_returns_to_the_changes_row_like_q() {
             let q = landing(&by_q);
 
             let mut by_esc = open_changed_diff(&repo, id, down);
-            let (_, legacy) =
-                App::count_legacy_hub_opens(|| press(&mut by_esc, KeyCode::Esc));
-            assert_eq!(legacy, 0, "{id}: Esc opens no old hub");
+            press(&mut by_esc, KeyCode::Esc);
             let esc = landing(&by_esc);
             assert!(esc.active, "{id} row {down}: Esc returns to the project: {esc:?}");
             assert_eq!(esc.screen.as_deref(), Some("changes"), "{id} row {down}");

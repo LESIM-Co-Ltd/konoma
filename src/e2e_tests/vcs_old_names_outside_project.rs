@@ -1,6 +1,6 @@
 //! An old hub action name bound on a surface that is not a project canvas (`[keys.tree]`,
 //! `[keys.preview_text]`): the name is read as the plugin operation that `plugins/old_screens.rs`
-//! maps it to, through the project the way `p` opens it, and no state of the old hub is raised.
+//! maps it to, through the project the way `p` opens it.
 //! Every expected value is written out; a name that needed a hub row still does nothing.
 use super::vcs_changes::drain;
 use super::*;
@@ -44,14 +44,12 @@ fn repo(id: &str, tag: &str) -> Option<std::path::PathBuf> {
 }
 
 /// What one press visibly did, as text: the project and its screen, the flash, the surface, the
-/// dialog of the host and the prompt of the project, the launch of the tool, and the seven
-/// predicates of the old hub.
+/// dialog of the host and the prompt of the project, and the launch of the tool.
 fn effect(sim: &mut Sim) -> String {
     let launched = sim.app.take_launch_git_tool();
     let a = &sim.app;
     format!(
-        "project={} screen={} flash={:?} surface={:?} dialog={} prompt={} launched={launched} \
-         hub[view={} log={} branches={} worktrees={} graph={} picker={} detail={}]",
+        "project={} screen={} flash={:?} surface={:?} dialog={} prompt={} launched={launched}",
         a.project_active(),
         a.project_frame()
             .map(|f| f.key.screen.clone())
@@ -60,24 +58,14 @@ fn effect(sim: &mut Sim) -> String {
         a.surface(),
         a.is_dialog(),
         a.project_dialog.is_some(),
-        a.is_git_view(),
-        a.is_git_log(),
-        a.is_git_branches(),
-        a.is_git_worktrees(),
-        a.is_git_graph(),
-        a.is_git_graph_picker(),
-        a.is_git_detail(),
     )
 }
-
-const HUB_OFF: &str =
-    "hub[view=false log=false branches=false worktrees=false graph=false picker=false detail=false]";
 
 /// The surface is left as it was and nothing happens but the flash (if any).
 fn stays(surface: &str, flash: Option<&str>) -> String {
     format!(
         "project=false screen= flash={flash:?} surface={surface} dialog=false prompt=false \
-         launched=false {HUB_OFF}"
+         launched=false"
     )
 }
 
@@ -85,7 +73,7 @@ fn stays(surface: &str, flash: Option<&str>) -> String {
 fn canvas(screen: &str, flash: Option<&str>, prompt: bool) -> String {
     format!(
         "project=true screen={screen} flash={flash:?} surface=PreviewCanvas dialog=false \
-         prompt={prompt} launched=false {HUB_OFF}"
+         prompt={prompt} launched=false"
     )
 }
 
@@ -623,9 +611,8 @@ fn vcs_old_names_on_the_file_diff_open_the_project_over_the_diff() {
 
 // ---- the same names bound on a project canvas run the operation in the open project ----
 
-/// After `p`, press `KEY` bound to `name` in `table`: the effect and how many times the old hub
-/// was opened.
-fn press_on_canvas(id: &str, table: &str, name: &str) -> Option<(String, usize)> {
+/// After `p`, press `KEY` bound to `name` in `table`: the effect.
+fn press_on_canvas(id: &str, table: &str, name: &str) -> Option<String> {
     let root = repo(id, "c")?;
     let mut sim = Sim::with_config_sized(&root, cfg_for(id, table, name), 120, 30);
     sim.app.tab.projects.wait_for_result();
@@ -637,11 +624,9 @@ fn press_on_canvas(id: &str, table: &str, name: &str) -> Option<(String, usize)>
         canvas("changes", None, false),
         "{id} after p"
     );
-    let ((), opens) = App::count_legacy_hub_opens(|| {
-        sim.key(KEY);
-        drain(&mut sim);
-    });
-    Some((effect(&mut sim), opens))
+    sim.key(KEY);
+    drain(&mut sim);
+    Some(effect(&mut sim))
 }
 
 /// The expected effect of each name on a canvas that was opened by `p` (the changes screen). The
@@ -684,16 +669,12 @@ fn run_canvas(id: &str, table: &str) {
             continue;
         }
         let want = if id == "git" { git } else { jj };
-        let Some((got, opens)) = press_on_canvas(id, table, name) else {
+        let Some(got) = press_on_canvas(id, table, name) else {
             return;
         };
         assert_eq!(
             got, want,
             "{id} `{name}` bound in [keys.{table}] on a canvas"
-        );
-        assert_eq!(
-            opens, 0,
-            "{id} `{name}` in [keys.{table}] opened the old hub"
         );
         checked += 1;
     }
@@ -770,7 +751,7 @@ fn vcs_old_names_on_a_canvas_equal_the_plugins_own_key() {
         sim.press(key.code, KeyModifiers::NONE);
         drain(&mut sim);
         let own = effect(&mut sim);
-        let (got, _) = press_on_canvas(id, "canvas", name).unwrap();
+        let got = press_on_canvas(id, "canvas", name).unwrap();
         assert_eq!(got, own, "{id} `{name}` vs the key of `{op}`");
         assert!(
             !sim.app.is_dialog(),

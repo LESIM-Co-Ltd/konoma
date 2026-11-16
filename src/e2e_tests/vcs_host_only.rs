@@ -80,9 +80,8 @@ fn enter(sim: &mut Sim) {
         sim.app.tab.projects.wait_for_result();
     }
     sim.app.poll_projects();
-    let (_, legacy) = App::count_legacy_hub_opens(|| sim.key('p'));
+    sim.key('p');
     drain(sim);
-    assert_eq!(legacy, 0);
     assert!(sim.app.project_active());
 }
 

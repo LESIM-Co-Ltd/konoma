@@ -184,16 +184,12 @@ fn vcs_hub_e2e_p_and_bang_work_from_the_tree_and_every_preview() {
             "{name}: ! is offered"
         );
         let mode = s.app.tab.mode;
-        let (_, legacy) = App::count_legacy_hub_opens(|| {
-            s.key('p');
-            drain(&mut s);
-        });
-        assert_eq!(legacy, 0, "{name}: p must not open the old hub");
+        s.key('p');
+        drain(&mut s);
         assert!(
             s.app.project_active(),
             "{name}: p opens the project's screen"
         );
-        assert!(!s.app.is_git_view(), "{name}");
         assert_eq!(
             s.app.project_frame().unwrap().key.screen,
             "changes",
@@ -652,16 +648,6 @@ fn tree_diff_session(name: &str) -> (Sim, std::path::PathBuf, crate::test_suppor
     (sim, root, dir)
 }
 
-fn assert_no_old_hub_state(app: &App, why: &str) {
-    assert!(!app.is_git_view(), "{why}: hub");
-    assert!(!app.is_git_log(), "{why}: log");
-    assert!(!app.is_git_branches(), "{why}: branches");
-    assert!(!app.is_git_worktrees(), "{why}: worktrees");
-    assert!(!app.is_git_graph(), "{why}: graph");
-    assert!(!app.is_git_graph_picker(), "{why}: graph picker");
-    assert!(!app.is_git_detail(), "{why}: detail");
-}
-
 #[test]
 fn tree_diff_discard_opens_the_project_changes_screen_like_p_and_q_returns_to_the_tree() {
     let (mut sim, root, _dir) = tree_diff_session("vcs_hub_e2e_tree_diff_discard");
@@ -678,7 +664,6 @@ fn tree_diff_discard_opens_the_project_changes_screen_like_p_and_q_returns_to_th
         b"base\n",
         "the file is reverted on disk"
     );
-    assert_no_old_hub_state(&sim.app, "after the discard");
     assert!(
         sim.app.project_active(),
         "the project changes screen is shown, flash {:?}",
@@ -721,7 +706,6 @@ fn tree_diff_discard_opens_the_project_changes_screen_like_p_and_q_returns_to_th
     sim.key('q');
     drain(&mut sim);
     assert!(!sim.app.project_active(), "q leaves the project");
-    assert_no_old_hub_state(&sim.app, "after q");
     assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree);
     assert!(!sim.app.is_git_diff_preview());
     sim.app.ensure_git_status_now();
@@ -757,7 +741,6 @@ fn tree_diff_discard_failure_keeps_the_diff_and_shows_the_failure() {
     );
     assert!(sim.app.is_git_diff_preview(), "a failed discard stays");
     assert!(!sim.app.project_active());
-    assert_no_old_hub_state(&sim.app, "after the failure");
     assert_eq!(
         std::fs::read(root.join("e-untracked.txt")).unwrap(),
         b"new\n"
@@ -765,7 +748,6 @@ fn tree_diff_discard_failure_keeps_the_diff_and_shows_the_failure() {
     // `q` still returns to the tree (the diff was opened from it).
     sim.key('q');
     assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree);
-    assert_no_old_hub_state(&sim.app, "after q");
 }
 
 #[test]
@@ -778,7 +760,6 @@ fn tree_diff_cancelled_discard_then_q_returns_to_the_tree_not_a_hub() {
     sim.key('n');
     assert!(sim.app.is_git_diff_preview(), "cancel keeps the diff");
     sim.key('q');
-    assert_no_old_hub_state(&sim.app, "after cancel and q");
     assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree);
     assert!(!sim.app.project_active());
 }
@@ -1161,9 +1142,8 @@ fn vcs_hub_e2e_jj_opens_despite_git_switched_off_and_missing_binary() {
     let opens_jj = |sim: &mut Sim, why: &str| {
         sim.app.tab.projects.wait_for_result();
         sim.app.poll_projects();
-        let (_, legacy) = App::count_legacy_hub_opens(|| sim.key('p'));
+        sim.key('p');
         drain(sim);
-        assert_eq!(legacy, 0, "{why}: no legacy open");
         assert!(
             sim.app.project_active(),
             "{why}: the jj project opens: {:?}",
@@ -1227,9 +1207,8 @@ fn vcs_hub_e2e_p_on_a_git_repo_flashes_the_distinct_reason_when_git_is_off_or_mi
     seed_write_repository(&root, true);
     let refused = |sim: &mut Sim, msg: Msg, why: &str| {
         sim.app.flash = None;
-        let (_, legacy) = App::count_legacy_hub_opens(|| sim.key('p'));
+        sim.key('p');
         drain(sim);
-        assert_eq!(legacy, 0, "{why}: no legacy open");
         assert!(!sim.app.project_active(), "{why}: no project opens");
         assert!(sim.app.project_frame().is_none(), "{why}: no project frame");
         assert_eq!(

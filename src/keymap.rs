@@ -557,13 +557,8 @@ pub enum Surface {
     Filter,
     Search,
     Mark,
-    #[cfg(feature = "git")]
-    BranchFilter,
-    #[cfg(feature = "git")]
-    WorktreeFilter,
-    /// The `/` filter of a list that shares the one list filter: the changes list, the log, the
-    /// graph, the outline / page list, the tab list or the bookmark list (which one is
-    /// `App::filtering_list`).
+    /// The `/` filter of a list that shares the one list filter: the outline / page list, the tab
+    /// list or the bookmark list (which one is `App::filtering_list`).
     ListFilter,
 
     // --- Confirm modal (y/n/c/m/! fixed) ---
@@ -586,21 +581,6 @@ pub enum Surface {
     /// Full-cell popup (`Enter` in a table preview): the cursor cell's untruncated text, wrapped
     /// and scrollable (`j`/`k`/`g`/`G`/PageUp/PageDown), `q`/Esc/Enter close it.
     TableCell,
-    #[cfg(feature = "git")]
-    GitDetail,
-    #[cfg(feature = "git")]
-    GitLog,
-    #[cfg(feature = "git")]
-    GitGraph,
-    #[cfg(feature = "git")]
-    GitGraphPicker,
-    #[cfg(feature = "git")]
-    GitBranches,
-    #[cfg(feature = "git")]
-    GitChanges,
-    /// The linked-worktree list (`w` from the changes hub).
-    #[cfg(feature = "git")]
-    GitWorktrees,
 
     // --- Basic full-screen surfaces (keymap-driven) ---
     Visual,
@@ -622,19 +602,15 @@ pub enum Surface {
 impl Surface {
     /// Whether this is a text-input surface (intercepts character/editing keys and does not apply the keymap).
     pub fn is_text_input(self) -> bool {
-        match self {
+        matches!(
+            self,
             Surface::DialogInput
-            | Surface::Filter
-            | Surface::Search
-            | Surface::Mark
-            | Surface::PluginInput => true,
-            #[cfg(feature = "git")]
-            Surface::BranchFilter => true,
-            Surface::ListFilter => true,
-            #[cfg(feature = "git")]
-            Surface::WorktreeFilter => true,
-            _ => false,
-        }
+                | Surface::Filter
+                | Surface::Search
+                | Surface::Mark
+                | Surface::PluginInput
+                | Surface::ListFilter
+        )
     }
 
     /// Whether this is a confirm-modal surface (handles y/n/c/m/! as fixed keys).
@@ -646,21 +622,6 @@ impl Surface {
                 | Surface::DialogRenamePreview
                 | Surface::DialogConfirmQuit
                 | Surface::DialogConfirmBookmark
-        )
-    }
-
-    /// Whether this is one of the version-control screens, which are opened for git or for jj.
-    #[cfg(feature = "git")]
-    pub fn is_vcs_screen(self) -> bool {
-        matches!(
-            self,
-            Surface::GitDetail
-                | Surface::GitLog
-                | Surface::GitGraph
-                | Surface::GitGraphPicker
-                | Surface::GitBranches
-                | Surface::GitChanges
-                | Surface::GitWorktrees
         )
     }
 
@@ -1140,7 +1101,8 @@ impl Context {
     }
 
     /// The keymap [`Surface`] this context is a refinement of (the surface that [`Context::of_surface`]
-    /// maps to it).
+    /// maps to it; a version-control screen is only an old table name and reports the project
+    /// canvas that shows it).
     pub fn surface(self) -> Surface {
         match self {
             Context::Tree => Surface::Tree,
@@ -1157,29 +1119,17 @@ impl Context {
             Context::Info => Surface::Info,
             Context::Help => Surface::Help,
             Context::Diff => Surface::PreviewGitDiff,
+            // The screens are shown on the project canvas.
             #[cfg(feature = "git")]
-            Context::Screen(_, s) => match s {
-                Screen::Changes => Surface::GitChanges,
-                Screen::Log => Surface::GitLog,
-                Screen::Graph => Surface::GitGraph,
-                Screen::GraphPicker => Surface::GitGraphPicker,
-                Screen::Branches => Surface::GitBranches,
-                Screen::Worktrees => Surface::GitWorktrees,
-                Screen::Detail => Surface::GitDetail,
-            },
+            Context::Screen(..) => Surface::PreviewCanvas,
         }
     }
 
     /// The context for the frontmost `sfc`, or `None` for a surface that does not use the keymap
-    /// (text input and confirm modals). `document` says the text preview is a decorated view;
-    /// `jj` says a version-control screen is open for jj rather than git. **The one place that
-    /// decides the context**: `App::key_context` supplies the two facts and key lookup
-    /// (`handle_key`) uses nothing else. Exhaustive over `Surface` on purpose.
-    pub fn of_surface(sfc: Surface, document: bool, jj: bool) -> Option<Context> {
-        #[cfg(feature = "git")]
-        let backend = if jj { Backend::Jj } else { Backend::Git };
-        #[cfg(not(feature = "git"))]
-        let _ = jj;
+    /// (text input and confirm modals). `document` says the text preview is a decorated view.
+    /// **The one place that decides the context**: `App::key_context` supplies the fact and key
+    /// lookup (`handle_key`) uses nothing else. Exhaustive over `Surface` on purpose.
+    pub fn of_surface(sfc: Surface, document: bool) -> Option<Context> {
         Some(match sfc {
             Surface::DialogInput
             | Surface::Filter
@@ -1192,28 +1142,12 @@ impl Context {
             | Surface::DialogConfirmQuit
             | Surface::DialogConfirmBookmark => return None,
             Surface::ListFilter => return None,
-            #[cfg(feature = "git")]
-            Surface::BranchFilter | Surface::WorktreeFilter => return None,
             Surface::Help => Context::Help,
             Surface::Bookmarks => Context::Bookmarks,
             Surface::Tabs => Context::Tabs,
             Surface::Outline => Context::Outline,
             Surface::Info => Context::Info,
             Surface::TableCell => Context::TableCell,
-            #[cfg(feature = "git")]
-            Surface::GitDetail => Context::Screen(backend, Screen::Detail),
-            #[cfg(feature = "git")]
-            Surface::GitLog => Context::Screen(backend, Screen::Log),
-            #[cfg(feature = "git")]
-            Surface::GitGraph => Context::Screen(backend, Screen::Graph),
-            #[cfg(feature = "git")]
-            Surface::GitGraphPicker => Context::Screen(backend, Screen::GraphPicker),
-            #[cfg(feature = "git")]
-            Surface::GitBranches => Context::Screen(backend, Screen::Branches),
-            #[cfg(feature = "git")]
-            Surface::GitChanges => Context::Screen(backend, Screen::Changes),
-            #[cfg(feature = "git")]
-            Surface::GitWorktrees => Context::Screen(backend, Screen::Worktrees),
             Surface::Visual => Context::TreeVisual,
             Surface::Tree => Context::Tree,
             Surface::PreviewText => {
@@ -1265,6 +1199,16 @@ fn old_surface_contexts(name: &str) -> Option<Vec<Context>> {
         }
     }
     None
+}
+
+/// The version-control screen an old `[keys.<backend>.<screen>]` context stands for (`None` for
+/// every other context): the part of a conflict's identity that its surface no longer carries.
+fn conflict_screen(ctx: Context) -> Option<&'static str> {
+    match ctx {
+        #[cfg(feature = "git")]
+        Context::Screen(_, s) => Some(s.name()),
+        _ => None,
+    }
 }
 
 impl KeyMap {
@@ -2039,7 +1983,7 @@ impl KeyMap {
 
     /// Detect post-merge conflicts and revert conflicting overrides to the defaults (§7). `defaults` is the kept default copy.
     fn validate(&mut self, defaults: &KeyMap) {
-        let mut conflicts: Vec<KeyConflict> = Vec::new();
+        let mut conflicts: Vec<(Option<&'static str>, KeyConflict)> = Vec::new();
         let mut global_keys: Vec<KeyPress> = self.global.keys().copied().collect();
         global_keys.sort_by_key(|k| format!("{k:?}"));
         let mut ctxs: Vec<Context> = self.contexts.keys().copied().collect();
@@ -2057,13 +2001,16 @@ impl KeyMap {
                 .collect();
             for (k, id) in leader_keys {
                 if let Some(Binding::Run(a)) = self.local(ctx, k).cloned() {
-                    conflicts.push(KeyConflict {
-                        surface: ctx.surface(),
-                        key: k,
-                        kept: format!("leader:{}", leader_name(id)),
-                        dropped: format!("{} in {}", action_name(a), ctx.header()),
-                        reason: ConflictKind::PrefixVsSingle,
-                    });
+                    conflicts.push((
+                        conflict_screen(ctx),
+                        KeyConflict {
+                            surface: ctx.surface(),
+                            key: k,
+                            kept: format!("leader:{}", leader_name(id)),
+                            dropped: format!("{} in {}", action_name(a), ctx.header()),
+                            reason: ConflictKind::PrefixVsSingle,
+                        },
+                    ));
                     self.contexts
                         .entry(ctx)
                         .or_default()
@@ -2102,13 +2049,16 @@ impl KeyMap {
                 })
                 .collect();
             for (gk, kept, dropped, restore) in shadows {
-                conflicts.push(KeyConflict {
-                    surface: ctx.surface(),
-                    key: gk,
-                    kept,
-                    dropped,
-                    reason: ConflictKind::GlobalShadow,
-                });
+                conflicts.push((
+                    conflict_screen(ctx),
+                    KeyConflict {
+                        surface: ctx.surface(),
+                        key: gk,
+                        kept,
+                        dropped,
+                        reason: ConflictKind::GlobalShadow,
+                    },
+                ));
                 match restore {
                     Some(b) => {
                         self.contexts.entry(ctx).or_default().insert(gk, b);
@@ -2121,9 +2071,11 @@ impl KeyMap {
         // One context-less table can stand for several contexts (a table under the old name
         // `preview_text` covers `text` and `document`), and both would report the same thing:
         // count it once, as it was when there was one surface.
-        let mut seen: Vec<(Surface, KeyPress, ConflictKind)> = Vec::new();
-        conflicts.retain(|c| {
-            let id = (c.surface, c.key, c.reason);
+        // The screens of an old table all report the canvas surface, so the screen name keeps
+        // two screens' conflicts on one key apart (one each, as when each had its own surface).
+        let mut seen: Vec<(Option<&'static str>, Surface, KeyPress, ConflictKind)> = Vec::new();
+        conflicts.retain(|(screen, c)| {
+            let id = (*screen, c.surface, c.key, c.reason);
             if seen.contains(&id) {
                 false
             } else {
@@ -2131,7 +2083,7 @@ impl KeyMap {
                 true
             }
         });
-        self.conflicts = conflicts;
+        self.conflicts = conflicts.into_iter().map(|(_, c)| c).collect();
     }
 
     /// The menu `id` is in `ctx`: the context's own copy when it has one, else the shared one.
@@ -4026,10 +3978,10 @@ mod tests {
         );
         // A text-input surface (Filter) has no context, so it does not inherit Global (nor
         // anything else): `handle_key` never looks a key up for it.
-        assert_eq!(Context::of_surface(Surface::Filter, false, false), None);
-        assert_eq!(Context::of_surface(Surface::Search, false, false), None);
+        assert_eq!(Context::of_surface(Surface::Filter, false), None);
+        assert_eq!(Context::of_surface(Surface::Search, false), None);
         assert_eq!(
-            Context::of_surface(Surface::DialogConfirmDelete, false, false),
+            Context::of_surface(Surface::DialogConfirmDelete, false),
             None
         );
     }

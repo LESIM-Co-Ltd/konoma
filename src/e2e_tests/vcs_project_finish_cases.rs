@@ -1242,21 +1242,26 @@ fn mode_chips(sim: &Sim) -> Vec<String> {
 fn assert_mode_chips(sim: &mut Sim, id: &str, lang: &str, ctx: &str) -> usize {
     let mut checked = 0;
     let l = sim.app.lang;
-    let display = tr(l, if id == "jj" { Msg::StJj } else { Msg::StGit });
-    let other = tr(l, if id == "jj" { Msg::StGit } else { Msg::StJj });
+    // The texts the chips had in the old hub, written out (the messages were deleted with it).
+    let en = l == crate::i18n::Lang::En;
+    let text = |en_text: &'static str, jp_text: &'static str| if en { en_text } else { jp_text };
+    let (st_git, st_jj) = (text("GIT", "Git"), text("JJ", "jj"));
+    let display = if id == "jj" { st_jj } else { st_git };
+    let other = if id == "jj" { st_git } else { st_jj };
     let list = if id == "jj" {
-        tr(l, Msg::StBookmark)
+        text("BOOKMARK", "ブックマーク")
     } else {
-        tr(l, Msg::StBranch)
+        text("BRANCH", "ブランチ")
     };
+    let st_graph = text("GRAPH", "グラフ");
     let mut screens: Vec<(&str, String)> = vec![
-        ("changes", tr(l, Msg::StChanges).to_string()),
-        ("log", tr(l, Msg::StLog).to_string()),
-        ("graph", tr(l, Msg::StGraph).to_string()),
+        ("changes", text("CHANGES", "変更").to_string()),
+        ("log", text("LOG", "ログ").to_string()),
+        ("graph", st_graph.to_string()),
         ("branches", list.to_string()),
     ];
     if id == "git" {
-        screens.push(("worktrees", tr(l, Msg::StWorktrees).to_string()));
+        screens.push(("worktrees", text("WORKTREES", "ワークツリー").to_string()));
     }
     for (name, word) in screens {
         screen(sim, name);
@@ -1275,13 +1280,13 @@ fn assert_mode_chips(sim: &mut Sim, id: &str, lang: &str, ctx: &str) -> usize {
     screen(sim, "log");
     keys(sim, "l");
     let chips = mode_chips(sim);
-    assert!(chips.iter().any(|c| *c == tr(l, Msg::StCommitDiff)), "{ctx}/{id}/{lang}: {chips:?}");
+    assert!(chips.iter().any(|c| *c == text("COMMIT DIFF", "コミット差分")), "{ctx}/{id}/{lang}: {chips:?}");
     assert!(chips.iter().any(|c| c == display), "{ctx}/{id}/{lang}: detail display chip");
     checked += 1;
     keys(sim, "q");
     screen(sim, "graph");
     keys(sim, "b");
-    let picker = format!("{} - {}", tr(l, Msg::StGraph), tr(l, Msg::StBranch));
+    let picker = format!("{} - {}", st_graph, text("BRANCH", "ブランチ"));
     let chips = mode_chips(sim);
     assert!(chips.contains(&picker),"{ctx}/{id}/{lang}: picker {chips:?}");
     checked += 1;
@@ -1940,10 +1945,8 @@ fn vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind() {
             ("changes", 0),
             "{table}: the cursor does not start over"
         );
-        assert!(!sim.app.is_git_view(), "{table} changes: the hub opened behind the canvas");
         keys(&mut sim, "q");
         assert!(!sim.app.project_active(), "{table} changes: q");
-        assert!(!sim.app.is_git_view(), "{table} changes: the hub shows after the canvas");
         std::fs::remove_file(root.join(&added)).unwrap();
         for name in ["log", "branches"] {
             let mut sim = open(&root, cfg.clone(), (180, 24));
@@ -1954,10 +1957,8 @@ fn vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind() {
             assert!(sim.app.project_active(), "{table} {name}: Z left");
             let frame = sim.app.project_frame().unwrap();
             assert_eq!((frame.key.screen.as_str(), frame.cursor), (name, cursor), "{table} {name}");
-            assert!(!sim.app.is_git_view(), "{table} {name}: the hub opened behind the canvas");
             keys(&mut sim, "q");
             assert!(!sim.app.project_active(), "{table} {name}: q");
-            assert!(!sim.app.is_git_view(), "{table} {name}: the hub shows after the canvas");
             assert_eq!(sim.app.surface(), crate::keymap::Surface::Tree, "{table} {name}");
         }
         // The worktree list's own close is that operation: it leaves.
@@ -1965,7 +1966,6 @@ fn vcs_port_moved_another_screens_worktree_close_leaves_no_hub_behind() {
         screen(&mut sim, "worktrees");
         keys(&mut sim, "Z");
         assert!(!sim.app.project_active(), "{table}: Z on worktrees");
-        assert!(!sim.app.is_git_view(), "{table}: Z on worktrees opened the hub");
     }
 }
 
@@ -2214,7 +2214,6 @@ fn vcs_port_moved_jj_worktree_close_reloads_the_changes_from_the_top() {
         ("changes", 0),
         "jj: the cursor does not start over"
     );
-    assert!(!sim.app.is_git_view(), "jj: the hub opened behind the canvas");
 }
 
 fn press_ctrl(sim: &mut Sim, c: char) {

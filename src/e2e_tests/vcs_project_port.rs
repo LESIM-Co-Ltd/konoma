@@ -47,9 +47,8 @@ fn open(root: &std::path::Path, cfg: Config, size: (u16, u16)) -> Sim {
     let mut sim = Sim::with_config_sized(root, cfg, size.0, size.1);
     sim.app.tab.projects.wait_for_result();
     sim.app.poll_projects();
-    let (_, legacy) = App::count_legacy_hub_opens(|| sim.key('p'));
+    sim.key('p');
     drain(&mut sim);
-    assert_eq!(legacy, 0);
     assert!(sim.app.project_active());
     sim
 }

@@ -1,29 +1,14 @@
-//! Git views: changes hub, branches, worktrees, commit graph, and commit detail — methods on `App`.
+//! The file diff (open, layout, discard) and the background git writes — methods on `App`.
 
-use super::list_filter::ListId;
 use super::*;
 
 #[cfg(all(test, feature = "git"))]
 #[path = "diff_source_test_adapter.rs"]
 mod diff_source_test_adapter;
 
-#[cfg(test)]
-thread_local! {
-    static LEGACY_HUB_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-impl App {
-    pub(crate) fn count_legacy_hub_opens<T>(f: impl FnOnce() -> T) -> (T, usize) {
-        let before = LEGACY_HUB_OPENS.with(|calls| calls.get());
-        let result = f();
-        (result, LEGACY_HUB_OPENS.with(|calls| calls.get() - before))
-    }
-}
-
 /// How a diff is being opened — the input `App::open_git_diff_with` needs *before* it decides
-/// `diff_follow_scope`/`came_from_git_view`/the presentation and validates that presentation
-/// exactly once. `Default` is the ordinary "fresh open, from a tree/hub selection" shape that plain
+/// `diff_follow_scope`/the presentation and validates that presentation
+/// exactly once. `Default` is the ordinary "fresh open, from a tree/project selection" shape that plain
 /// `App::open_git_diff` uses; the other three call sites (`follow_jump`, `n`/`N`, the `Preview`
 /// representation's own `R` back to `Source`) each override just the fields they need.
 #[derive(Default)]
@@ -40,12 +25,6 @@ pub(super) struct DiffOpen {
     /// `Some(v)` carries an already-chosen presentation over instead, so moving to another file
     /// (`n`/`N`) or returning from the `Preview` representation doesn't reset it.
     pub view: Option<DiffView>,
-    /// `Some(b)` preserves a `came_from_git_view` value the caller already has, instead of the
-    /// ordinary "opened straight from wherever the tab's Git view currently is" rule
-    /// (`self.tab.git_view`, which a fresh open always reads and then closes). `n`/`N` and the
-    /// `Preview` return both want this — they are continuing a diff that was already open, not
-    /// opening one from the Git view.
-    pub came_from_git_view: Option<bool>,
     /// A diff already fetched by the caller (`follow_jump`'s own `compute_gitdiff_lines`), seeded
     /// into `diff_cache` so the first render of the `Source` presentation doesn't have to re-invoke
     /// git for something already in hand. `None` (the default) leaves the cache empty
@@ -54,36 +33,6 @@ pub(super) struct DiffOpen {
 }
 
 impl App {
-    /// Whether the Git view is showing. False when the feature is disabled or this is not a repo (open_git_view never sets it).
-    pub fn is_git_view(&self) -> bool {
-        self.tab.git_view
-    }
-    /// The change list (for rendering).
-    pub fn git_view_entries(&self) -> &[crate::git::ChangeEntry] {
-        &self.tab.git_view_entries
-    }
-    /// Cursor position in the Git view (used for render scrolling/inversion).
-    pub fn git_view_sel(&self) -> usize {
-        self.tab.git_view_sel
-    }
-    /// Absolute path of the changed file at the cursor.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub fn git_view_selected(&self) -> Option<PathBuf> {
-        self.tab
-            .git_view_entries
-            .get(self.tab.git_view_sel)
-            .map(|e| e.path.clone())
-    }
-    /// Rebuild the list after a write operation and clamp the cursor. Also invalidates and refetches git status.
-    pub fn git_view_reload(&mut self) {
-        self.tab.git_view_entries = crate::vcs::changed_files(&self.tab.root);
-        if self.tab.git_view_sel >= self.tab.git_view_entries.len() {
-            self.tab.git_view_sel = self.tab.git_view_entries.len().saturating_sub(1);
-        }
-        self.git_status_for = None; // also re-fetch the tree's git status next time
-        self.git_status_dirty = true; // status changed due to a git operation = invalidate the workdir cache
-    }
-
     // --- Background git writes (design principle #4) ---------------------------------
     // Every mutation below (stage/unstage/discard/commit/checkout/branch/worktree) shells out to
     // `git`, whose runtime is unbounded: a `pre-commit` hook, a network mount, or another process
@@ -238,12 +187,10 @@ impl App {
                         && self.is_git_diff_preview()
                         && !self.return_to_project_after_discard()
                     {
-                        self.tab.came_from_git_view = false;
                         self.back_to_tree();
                         self.enter_project();
                     }
                     if shows_same_repo {
-                        self.git_view_reload();
                         // The discard itself succeeded. If the tree rebuild fails, report that
                         // instead of covering it with a success flash.
                         ok = self.rebuild_tree_notify();
@@ -257,17 +204,15 @@ impl App {
         true
     }
 
-    // --- Git view stubs (replaced by phase 4/5) -------------------------
-    /// `Enter`/`l`: Open the selected file's diff in the GitDiff preview. Closes the Git view and
-    /// remembers where it came from (came_from_git_view) so Esc/q can return to the Git view. A
-    /// fresh, tree-/hub-originated open — `open_git_diff_with`'s own doc comment covers the other
-    /// three call shapes (follow-originated, `n`/`N`, returning from the `Preview` representation).
+    // --- The file diff -------------------------------------------------
+    /// Open `path`'s diff in the GitDiff preview. A fresh, tree-originated open —
+    /// `open_git_diff_with`'s own doc comment covers the other three call shapes (follow-originated, `n`/`N`, returning from the `Preview` representation).
     pub fn open_git_diff(&mut self, path: &Path) {
         self.open_git_diff_with(path, DiffOpen::default());
     }
 
     /// `open_git_diff`, generalized over *how* the diff is being opened — the single place that
-    /// decides `diff_follow_scope`, `came_from_git_view` and the presentation (`apply_diff_view`)
+    /// decides `diff_follow_scope` and the presentation (`apply_diff_view`)
     /// from already-final inputs and calls `apply_diff_view` exactly once, rather than a caller
     /// opening with the wrong scope and immediately re-deciding once it knows better.
     ///
@@ -280,7 +225,7 @@ impl App {
     /// `Source`; the second call would then successfully switch to `Rendered` — but never cleared
     /// the stale flash, which sat in the footer (looking exactly like the "am I broken?" case that
     /// flash exists to head off) despite `Rendered` already being on screen. `return_to_diff_from_
-    /// preview` had the same save/restore shape for `came_from_git_view`/`diff_follow_scope` (though
+    /// preview` had the same save/restore shape for `diff_follow_scope` (though
     /// not the double-validation bug, since it never re-entered `Rendered`). All three now build a
     /// `DiffOpen` up front and call this once.
     pub(super) fn open_git_diff_with(&mut self, path: &Path, open: DiffOpen) {
@@ -314,8 +259,6 @@ impl App {
         self.tab.focused_item = None;
         self.hl_pending = false;
         self.hl_warming = false;
-        self.tab.came_from_git_view = open.came_from_git_view.unwrap_or(self.tab.git_view);
-        self.tab.git_view = false;
         self.diff_follow_scope = open.follow_scope;
         // The presentation: a fresh open (`open.view == None`) wants `[ui] diff_view` unrounded; a
         // carried-over one (`n`/`N`, the `Preview` return) wants whatever the caller already chose
@@ -413,7 +356,7 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChanges).into());
             return;
         }
-        self.open_git_diff(&path); // came_from_git_view=false (tree-originated) → `q` returns to the tree
+        self.open_git_diff(&path); // tree-originated → `q` returns to the tree
     }
 
     /// Whether to lay the diff side by side at display width `width` (resolves Auto).
@@ -424,8 +367,7 @@ impl App {
     pub(crate) fn source_diff_layout(&self) -> konoma_widgets::diff_frame::SourceDiffLayout {
         konoma_plugin::host::project::diff_frame::source_diff_layout(self.diff_layout)
     }
-    /// Cycle the diff layout unified→split→Auto (`s`). Called from both the GitDiff preview and the
-    /// detail view. While the media diff's side-by-side view is actually **showing pictures**
+    /// Cycle the diff layout unified→split→Auto (`s`). Called from the GitDiff preview. While the media diff's side-by-side view is actually **showing pictures**
     /// (`media_diff_showing_pictures` — not merely targeted; a still-computing or binary-summary body
     /// has nothing to lay out), delegates to `cycle_media_diff_layout` instead — `s` there cycles
     /// auto/side/stack, a wholly different (and separately configured) layout state than this one.
@@ -446,7 +388,6 @@ impl App {
         }
         self.diff_layout = self.diff_layout.next();
         self.tab.preview_hscroll = 0;
-        self.tab.git_detail_hscroll = 0; // reset the horizontal position on layout switch (its meaning changes)
         let label = match self.diff_layout {
             DiffLayout::Unified => crate::i18n::tr(self.lang, crate::i18n::Msg::DiffUnified),
             DiffLayout::Split => crate::i18n::tr(self.lang, crate::i18n::Msg::DiffSideBySide),
@@ -461,12 +402,11 @@ impl App {
     /// here so either origin ends up in the identical "no longer inside a diff" state.
     pub fn close_git_diff(&mut self) {
         self.tab.preview_from_diff = false;
-        self.tab.came_from_git_view = false;
         self.back_to_tree();
     }
 
     /// `x` in the GitDiff preview = discard all changes to the displayed file. Opens a confirmation dialog
-    /// (on confirm: git::discard then open the project's changes screen). Uses the same flow as discard from the Git view.
+    /// (on confirm: git::discard then open the project's changes screen).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_diff_start_discard(&mut self) {
         if !self.allow_write("git", true, true) {
@@ -492,109 +432,8 @@ impl App {
             },
         });
     }
-    /// Whether the git log is showing (for render/key branching).
-    pub fn is_git_log(&self) -> bool {
-        self.tab.git_log.is_some()
-    }
-
-    /// Returns the id of the selected commit.
-    // Read only by the git-gated `current_commit_meta` (copy_actions); U9l removes the pair.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub fn git_log_selected_id(&self) -> Option<String> {
-        self.tab
-            .git_log
-            .as_ref()?
-            .get(self.tab.git_log_sel)
-            .map(|c| c.id.clone())
-    }
-
-    /// Whether the branch list is showing.
-    pub fn is_git_branches(&self) -> bool {
-        self.tab.git_branches.is_some()
-    }
-    /// The filtered display list (names containing the query, case-insensitive). All entries if the query is empty. Used for rendering/operations.
-    pub fn git_branch_view(&self) -> Vec<crate::git::BranchInfo> {
-        let Some(all) = &self.tab.git_branches else {
-            return Vec::new();
-        };
-        let q = self.tab.git_branch_filter.to_lowercase();
-        if q.is_empty() {
-            all.clone()
-        } else {
-            all.iter()
-                .filter(|b| b.name.to_lowercase().contains(&q))
-                .cloned()
-                .collect()
-        }
-    }
-    /// The branch selected in the display list.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub(super) fn git_branch_selected(&self) -> Option<crate::git::BranchInfo> {
-        self.git_branch_view()
-            .into_iter()
-            .nth(self.tab.git_branch_sel)
-    }
-    // --- Branch filtering (`/`): the shared list filter (`list_filter.rs`) ---------------
-    /// Whether branch-filter input is active (while true, main captures keys as characters).
-    pub fn git_branch_filtering(&self) -> bool {
-        self.list_filtering(ListId::Branches)
-    }
-    pub(super) fn clamp_git_branch_sel(&mut self) {
-        let len = self.git_branch_view().len();
-        if self.tab.git_branch_sel >= len {
-            self.tab.git_branch_sel = len.saturating_sub(1);
-        }
-    }
-
-    // --- Linked worktrees (`w` from the changes hub) --------------------------------
-    // "Worktree" here means a **linked working tree** (`git worktree add`) — a different concept
-    // from the rest of this codebase's "worktree", which always means *the uncommitted working
-    // tree* (`GitWorktreeDiff`/`GraphRow.worktree`/config's `git_worktree_diff`). Do not rename
-    // either to avoid the ambiguity; the doc comments carry the distinction instead.
-
-    /// Whether the worktree list is showing.
-    pub fn is_git_worktrees(&self) -> bool {
-        self.tab.git_worktrees.is_some()
-    }
-    /// The filtered display list (branch name or path containing the query, case-insensitive). All
-    /// entries if the query is empty. Used for rendering/operations.
-    pub fn git_worktree_view(&self) -> Vec<crate::git::WorktreeInfo> {
-        let Some(all) = &self.tab.git_worktrees else {
-            return Vec::new();
-        };
-        let q = self.tab.git_worktree_filter.to_lowercase();
-        if q.is_empty() {
-            all.clone()
-        } else {
-            all.iter()
-                .filter(|w| {
-                    w.branch
-                        .as_deref()
-                        .is_some_and(|b| b.to_lowercase().contains(&q))
-                        || w.path.to_string_lossy().to_lowercase().contains(&q)
-                })
-                .cloned()
-                .collect()
-        }
-    }
-    /// Clears the worktree list's transient UI state (list/cursor/filter/filtering). Shared by
-    /// `close_git_worktrees` (which follows up with `open_git_view()` to return to the hub),
-    /// `worktree_goto`'s `Go` arm (which follows up with `jump_to_dir` instead — switching root,
-    /// not returning to the hub, so it can't just call `close_git_worktrees`), and `dialog_submit`'s
-    /// `PendingOp::WorktreeCreate` success arm (same "switched root, don't return to the hub" case
-    /// as `worktree_goto`, hence `pub(super)` rather than private — `dialog_submit` lives in the
-    /// sibling `dialog_actions` module). Kept as one spot so a future field added to this state
-    /// can't be reset in one caller and forgotten in the others.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub(super) fn reset_git_worktree_list_state(&mut self) {
-        self.tab.git_worktrees = None;
-        self.tab.git_worktree_sel = 0;
-        self.tab.git_worktree_filter.clear();
-        self.tab.git_worktree_filtering = false;
-    }
     /// The existing worktree root switch, also used by a project's SwitchRoot outcome.
     pub(super) fn switch_worktree_root(&mut self, path: PathBuf) {
-        self.reset_git_worktree_list_state();
         self.jump_to_dir(path.clone());
         self.tab.open_dir = path;
         self.flash = Some(format!(
@@ -602,52 +441,6 @@ impl App {
             crate::i18n::tr(self.lang, crate::i18n::Msg::SwitchedTo),
             home_relative(&self.tab.root)
         ));
-    }
-    // --- Worktree filtering (`/`): the shared list filter (`list_filter.rs`) ------------
-    /// Whether worktree-filter input is active (while true, main captures keys as characters).
-    pub fn git_worktree_filtering(&self) -> bool {
-        self.list_filtering(ListId::Worktrees)
-    }
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub(super) fn clamp_git_worktree_sel(&mut self) {
-        let len = self.git_worktree_view().len();
-        if self.tab.git_worktree_sel >= len {
-            self.tab.git_worktree_sel = len.saturating_sub(1);
-        }
-    }
-
-    /// Whether the panel is showing.
-    pub fn is_git_graph_picker(&self) -> bool {
-        self.git_graph_picker
-    }
-    /// Whether the graph is showing.
-    pub fn is_git_graph(&self) -> bool {
-        self.tab.git_graph.is_some()
-    }
-    /// **Whether Git is the main mode** (one of the changes hub / log / graph / branches / worktrees /
-    /// detail / diff). Used to set the outer (main) mode chip to `GIT`. The git views overlay tree/preview.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub fn in_git_view(&self) -> bool {
-        self.is_git_view()
-            || self.is_git_log()
-            || self.is_git_graph()
-            || self.is_git_branches()
-            || self.is_git_worktrees()
-            || self.is_git_detail()
-            || self.is_git_diff_preview()
-    }
-    /// The graph's cursor row (for render/title).
-    // Read only by the git-gated `current_commit_meta` (copy_actions); U9l removes the pair.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub fn git_graph_selected_row(&self) -> Option<&crate::git::GraphRow> {
-        self.tab
-            .git_graph
-            .as_ref()
-            .and_then(|rows| rows.get(self.tab.git_graph_sel))
-    }
-    /// Whether the commit detail is showing (for render/key branching).
-    pub fn is_git_detail(&self) -> bool {
-        self.tab.git_detail.is_some()
     }
 }
 

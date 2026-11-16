@@ -75,10 +75,6 @@ impl App {
         // on restore.
         // (The git overlay itself and the graph decoration state are restored together later via
         // `self.tab = t`.)
-        self.git_graph_picker = false;
-        self.git_graph_picker_sel = 0;
-        self.git_graph_picker_set.clear();
-        self.git_graph_reordered = false;
         // The heading outline overlay is not carried across tabs either.
         self.close_outline();
         // Same for the table-cell full-text popup (the meaning of the shown cell changes per tab).
@@ -369,12 +365,6 @@ impl App {
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
         self.tab.fence_return = None;
-        // A new tab starts as a plain Tree with no git overlay (the current tab's git state was
-        // already preserved by save_active).
-        self.tab.git_view = false;
-        self.tab.git_view_sel = 0;
-        self.tab.git_view_entries.clear();
-        self.tab.came_from_git_view = false;
         // A new tab shows no Word document (the source tab's was snapshotted by save_active; it is
         // re-read on the worker when that tab is activated again). Its page starts at the first.
         self.set_document(None);
@@ -387,44 +377,9 @@ impl App {
         self.tab.diff_media_page = 1;
         self.tab.diff_scroll_pending = None;
         self.tab.preview_from_diff = false;
-        self.tab.git_log = None;
-        self.tab.git_log_sel = 0;
-        self.tab.git_detail = None;
-        self.tab.git_detail_meta = None;
-        self.tab.git_detail_title = None;
-        self.tab.git_detail_scroll = 0;
-        self.tab.git_detail_hscroll = 0;
-        self.tab.git_detail_viewport = 0;
-        self.tab.git_detail_total = 0;
-        self.tab.git_branches = None;
-        self.tab.git_branch_sel = 0;
-        self.tab.git_branch_filter.clear();
-        self.tab.git_branch_filtering = false;
-        self.tab.git_view_filter.clear();
-        self.tab.git_view_filtering = false;
-        self.tab.git_log_filter.clear();
-        self.tab.git_log_filtering = false;
-        self.tab.git_graph_filter.clear();
-        self.tab.git_graph_filtering = false;
-        self.tab.git_worktrees = None;
-        self.tab.git_worktree_sel = 0;
-        self.tab.git_worktree_filter.clear();
-        self.tab.git_worktree_filtering = false;
-        self.tab.git_graph = None;
-        self.tab.git_graph_sel = 0;
         // A new tab also starts the graph's decoration state (base/legend/visible branches/order)
         // and picker from scratch (the current tab's were already preserved in PerTab by the
         // preceding save_active). They get re-derived the next time it's opened.
-        self.tab.git_graph_base = None;
-        self.tab.git_graph_base_label = None;
-        self.tab.git_graph_visible.clear();
-        self.tab.git_graph_legend.clear();
-        self.tab.git_graph_hidden = 0;
-        self.tab.git_graph_order.clear();
-        self.git_graph_picker = false;
-        self.git_graph_picker_sel = 0;
-        self.git_graph_picker_set.clear();
-        self.git_graph_reordered = false;
         // A new tab starts selection / filter / preview search empty
         // (the current tab's were already preserved in PerTab by the preceding save_active).
         self.tab.selection.clear();

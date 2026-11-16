@@ -180,28 +180,6 @@ pub fn help_context(app: &App) -> Context {
     if app.project_active() {
         return Context::Canvas;
     }
-    #[cfg(feature = "git")]
-    {
-        let backend = crate::ops::backend(app);
-        let screen = if app.is_git_detail() {
-            Some(Screen::Detail)
-        } else if app.is_git_log() {
-            Some(Screen::Log)
-        } else if app.is_git_graph() {
-            Some(Screen::Graph)
-        } else if app.is_git_branches() {
-            Some(Screen::Branches)
-        } else if app.is_git_worktrees() {
-            Some(Screen::Worktrees)
-        } else if app.is_git_view() {
-            Some(Screen::Changes)
-        } else {
-            None
-        };
-        if let Some(s) = screen {
-            return Context::Screen(backend, s);
-        }
-    }
     if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
         return Context::Diff;
     }

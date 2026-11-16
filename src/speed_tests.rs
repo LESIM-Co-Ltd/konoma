@@ -801,8 +801,8 @@ fn diff_body(n: usize, marker: &str) -> String {
 }
 
 // GUARDS: (1) `file_diff` + diff-line colorization (stacked/side-by-side) stay roughly linear in the
-// diff size, and (2) opening + rendering every git view (hub / log / graph / branches / a large
-// diff) stays within a generous, deterministic ceiling. Covers git.rs (statuses / file_diff / log /
+// diff size, and (2) opening + rendering every git view (the project's changes / log / graph / branches screens /
+// a large diff) stays within a generous, deterministic ceiling. Covers git.rs (statuses / file_diff / log /
 // graph / branches) + konoma-widgets' gitdiff + the diff render in ui/preview.rs. Converted
 // from wall-clock bounds to **deterministic allocation** checks — (1) an allocation-scaling ratio
 // (same technique as the markdown/highlight guards above: doubling the changed lines should roughly

@@ -424,11 +424,9 @@ impl App {
     #[cfg(feature = "git")]
     pub(super) fn enter_diff_preview_representation(&mut self, path: &Path) {
         let read_context = self.tab.diff_read_context;
-        let came_from_git_view = self.tab.came_from_git_view;
         let diff_follow_scope = self.diff_follow_scope;
         self.enter_preview(path);
         self.tab.diff_read_context = read_context;
-        self.tab.came_from_git_view = came_from_git_view;
         self.diff_follow_scope = diff_follow_scope;
         self.tab.preview_from_diff = true;
         self.follow_scroll_to_first_change();
@@ -439,8 +437,8 @@ impl App {
     /// explicit choice: "`R`＝Source の diff に戻る", not a fresh open). Reuses `open_git_diff_with`
     /// for every other bit of state it resets (the windowed reader, `md_cache`, the raw-diff cache,
     /// ...) and overrides just the fields that a fresh open would otherwise get wrong: the
-    /// presentation (`Source`, not the config default) and `came_from_git_view`/`diff_follow_scope`
-    /// (which a fresh open always resets to their own rules — carried over here instead, for the
+    /// presentation (`Source`, not the config default) and `diff_follow_scope`
+    /// (which a fresh open always resets to its own rule — carried over here instead, for the
     /// same reason `diff_jump_changed` carries them over around its own call: this is a *return*,
     /// not a fresh open).
     #[cfg(feature = "git")]
@@ -461,7 +459,6 @@ impl App {
                 read_context: self.tab.diff_read_context,
                 follow_scope: self.diff_follow_scope,
                 view: Some(transition.choice),
-                came_from_git_view: Some(self.tab.came_from_git_view),
                 ..Default::default()
             },
         );

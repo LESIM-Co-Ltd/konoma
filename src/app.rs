@@ -1,5 +1,5 @@
 //! Application state: the `App` struct and its methods — mode (Tree/Preview), the tree,
-//! tabs, and the current preview target. Git view methods live in the `git_view` submodule.
+//! tabs, and the current preview target. The file diff and its git writes live in the `git_view` submodule.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -170,15 +170,7 @@ pub enum InternalMode {
     DropConfirm,
     QuitConfirm,
     BookmarkConfirm,
-    GitChanges,
     GitDiff,
-    GitLog,
-    GitDetail,
-    GitBranch,
-    /// The linked-worktree list (`w` from the changes hub).
-    GitWorktrees,
-    GitGraph,
-    GitGraphPicker,
 }
 
 /// What the **bottom** of the UI stack is showing, once nothing is overlaying it.
@@ -243,24 +235,7 @@ pub enum UiLayer {
     // --- The help overlay (above everything but the dialogs) ---
     Help,
 
-    // --- The git views (detail sits over log; the branch panel sits over the graph) ---
-    GitDetail,
-    /// The log with its `/` filter input active.
-    GitLogFilter,
-    GitLog,
-    GitGraphPicker,
-    /// The graph with its `/` filter input active.
-    GitGraphFilter,
-    GitGraph,
-    /// The branch list with its `/` filter input active.
-    GitBranchFilter,
-    GitBranches,
-    /// The worktree list with its `/` filter input active.
-    GitWorktreeFilter,
-    GitWorktrees,
-    /// The changes list with its `/` filter input active.
-    GitChangesFilter,
-    GitChanges,
+    // --- The file diff ---
     GitDiff,
 
     // --- Input surfaces / menus / lists / popups ---
@@ -319,12 +294,8 @@ impl BaseLayer {
 impl UiLayer {
     /// The keymap surface this layer owns.
     ///
-    /// `None` means the layer has no surface **on this build** — only the git layers, and only when
-    /// the `git` feature is off (the shared diff surface is available in every build). [`App::surface`]
-    /// then keeps walking to the layer behind it, which is exactly what the old hand-written cascade
-    /// did by wrapping its whole git block in `#[cfg(feature = "git")]`. (Such state is unreachable
-    /// through the UI on a no-git build — native hub openers bail out because the `git.rs` stubs
-    /// return empty/None — but the fall-through is characterized so it cannot change by accident.)
+    /// Every layer owns a surface now, so this is always `Some`; the `Option` stays because
+    /// [`App::frontmost_layer`] takes a predicate over it.
     pub fn surface(self) -> Option<crate::keymap::Surface> {
         use crate::keymap::Surface as S;
         Some(match self {
@@ -335,40 +306,7 @@ impl UiLayer {
             Self::RenamePreview => S::DialogRenamePreview,
             Self::InputCreate | Self::InputBatchRename | Self::InputRename => S::DialogInput,
             Self::Help => S::Help,
-            #[cfg(feature = "git")]
-            Self::GitDetail => S::GitDetail,
-            #[cfg(feature = "git")]
-            Self::GitLogFilter | Self::GitGraphFilter | Self::GitChangesFilter => S::ListFilter,
-            #[cfg(feature = "git")]
-            Self::GitLog => S::GitLog,
-            #[cfg(feature = "git")]
-            Self::GitGraphPicker => S::GitGraphPicker,
-            #[cfg(feature = "git")]
-            Self::GitGraph => S::GitGraph,
-            #[cfg(feature = "git")]
-            Self::GitBranchFilter => S::BranchFilter,
-            #[cfg(feature = "git")]
-            Self::GitBranches => S::GitBranches,
-            #[cfg(feature = "git")]
-            Self::GitWorktreeFilter => S::WorktreeFilter,
-            #[cfg(feature = "git")]
-            Self::GitWorktrees => S::GitWorktrees,
-            #[cfg(feature = "git")]
-            Self::GitChanges => S::GitChanges,
             Self::GitDiff => S::PreviewGitDiff,
-            #[cfg(not(feature = "git"))]
-            Self::GitDetail
-            | Self::GitLogFilter
-            | Self::GitLog
-            | Self::GitGraphPicker
-            | Self::GitGraphFilter
-            | Self::GitGraph
-            | Self::GitChangesFilter
-            | Self::GitBranchFilter
-            | Self::GitBranches
-            | Self::GitWorktreeFilter
-            | Self::GitWorktrees
-            | Self::GitChanges => return None,
             Self::Filter => S::Filter,
             Self::Search => S::Search,
             Self::Mark => S::Mark,
@@ -398,21 +336,6 @@ impl UiLayer {
             Self::InputBatchRename => InternalMode::BatchRename,
             Self::InputRename => InternalMode::Rename,
             Self::Help => InternalMode::Help,
-            Self::GitDetail => InternalMode::GitDetail,
-            Self::GitLogFilter | Self::GitLog => InternalMode::GitLog,
-            Self::GitGraphPicker => InternalMode::GitGraphPicker,
-            Self::GitGraphFilter | Self::GitGraph => InternalMode::GitGraph,
-            // A list's `/` filter deliberately keeps the list's own chip, so there is no
-            // `InternalMode::BranchFilter`/`WorktreeFilter` to map to. The three consumers each
-            // want something different and that is on purpose: the keymap needs a separate surface
-            // because typing has to be captured rather than dispatched (`Surface::is_text_input`),
-            // the chip must *not* change because the list is still what you are looking at (cursor
-            // and all), and the footer swaps to the `/query` prompt through its own branch in
-            // `ui::status::footer_spans`, ahead of the mode footer. Pinned by
-            // `a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip`.
-            Self::GitBranchFilter | Self::GitBranches => InternalMode::GitBranch,
-            Self::GitWorktreeFilter | Self::GitWorktrees => InternalMode::GitWorktrees,
-            Self::GitChangesFilter | Self::GitChanges => InternalMode::GitChanges,
             Self::GitDiff => InternalMode::GitDiff,
             Self::Filter => InternalMode::Filter,
             Self::Search => InternalMode::Search,
@@ -457,13 +380,6 @@ impl crate::keymap::Surface {
             S::Search => UiLayer::Search,
             S::Mark => UiLayer::Mark,
             S::PluginInput => UiLayer::PluginInput,
-            #[cfg(feature = "git")]
-            S::BranchFilter => UiLayer::GitBranchFilter,
-            #[cfg(feature = "git")]
-            S::WorktreeFilter => UiLayer::GitWorktreeFilter,
-            #[cfg(feature = "git")]
-            S::ListFilter => UiLayer::GitChangesFilter,
-            #[cfg(not(feature = "git"))]
             S::ListFilter => UiLayer::OutlineFilter,
             S::DialogConfirmDelete => UiLayer::ConfirmDelete,
             S::DialogConfirmDrop => UiLayer::ConfirmDrop,
@@ -476,20 +392,6 @@ impl crate::keymap::Surface {
             S::Outline => UiLayer::Outline,
             S::Info => UiLayer::Info,
             S::TableCell => UiLayer::TableCell,
-            #[cfg(feature = "git")]
-            S::GitDetail => UiLayer::GitDetail,
-            #[cfg(feature = "git")]
-            S::GitLog => UiLayer::GitLog,
-            #[cfg(feature = "git")]
-            S::GitGraph => UiLayer::GitGraph,
-            #[cfg(feature = "git")]
-            S::GitGraphPicker => UiLayer::GitGraphPicker,
-            #[cfg(feature = "git")]
-            S::GitBranches => UiLayer::GitBranches,
-            #[cfg(feature = "git")]
-            S::GitChanges => UiLayer::GitChanges,
-            #[cfg(feature = "git")]
-            S::GitWorktrees => UiLayer::GitWorktrees,
             S::PreviewGitDiff => UiLayer::GitDiff,
             S::Visual => UiLayer::Visual,
             S::Tree => base(BaseKind::Tree, false),
@@ -1629,16 +1531,6 @@ pub struct App {
     /// which needs it recomputed exactly once per root change, never per render.
     git_worktree_origin: Option<String>,
 
-    /// Whether the branch-visibility panel (`b`) is open. Modal/transient — not per-tab (reset, not
-    /// restored, on tab switch; see `PerTab` for the per-tab git-view overlay state).
-    git_graph_picker: bool,
-    /// Cursor position in the panel (row = branch).
-    git_graph_picker_sel: usize,
-    /// Tentative selection while editing the panel (committed to `git_graph_visible` with Enter / discarded with q).
-    git_graph_picker_set: std::collections::HashSet<String>,
-    /// Whether `J`/`K` reordering was done in the panel (so the base is re-derived to the top branch on Enter confirm).
-    git_graph_reordered: bool,
-
     /// Sender returning results from the worker running background filesystem operations
     /// (paste/duplicate/trash/permanent-delete/drop-transfer). If not attached (tests), `start_file_op`
     /// falls back to computing synchronously, exactly like `spawn_or_sync_statuses`/`_ignored`.
@@ -2051,11 +1943,6 @@ pub(crate) struct PerTab {
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
-    // The git overlay is also kept per tab (still in git mode after viewing a doc in another tab and coming back).
-    git_view: bool,
-    git_view_sel: usize,
-    git_view_entries: Vec<crate::git::ChangeEntry>,
-    came_from_git_view: bool,
     /// Which of the three presentations (`docs/FEATURE-MD-RENDERED-DIFF.md` §1) the current/last
     /// GitDiff preview is shown in. Set from `[ui] diff_view` (rounded to what the target file can
     /// actually show) every time `App::open_git_diff` opens a *fresh* file's diff; `R`
@@ -2115,47 +2002,6 @@ pub(crate) struct PerTab {
     /// plain raw-source toggle / tree return. Cleared by `App::enter_preview`'s own reset (so any
     /// *other* way of opening a preview always starts `false`) and by returning to the diff.
     preview_from_diff: bool,
-    git_log: Option<Vec<crate::git::CommitInfo>>,
-    git_log_sel: usize,
-    git_detail: Option<Vec<crate::git::DiffLine>>,
-    git_detail_meta: Option<crate::git::CommitMeta>,
-    git_detail_title: Option<String>,
-    git_detail_scroll: u16,
-    git_detail_hscroll: u16,
-    git_detail_viewport: u16,
-    git_detail_total: usize,
-    git_branches: Option<Vec<crate::git::BranchInfo>>,
-    git_branch_sel: usize,
-    git_branch_filter: String,
-    git_branch_filtering: bool,
-    // The `/` filter of the other lists: the changes list, the log and the graph (the branch and
-    // worktree lists have theirs right above and below). One shape for all five, see `list_filter`.
-    git_view_filter: String,
-    git_view_filtering: bool,
-    git_log_filter: String,
-    git_log_filtering: bool,
-    git_graph_filter: String,
-    git_graph_filtering: bool,
-    // The linked-worktree list (`w` from the changes hub). Same shape as the branch-list fields
-    // right above (list / cursor / filter query / filter-input-active).
-    git_worktrees: Option<Vec<crate::git::WorktreeInfo>>,
-    git_worktree_sel: usize,
-    git_worktree_filter: String,
-    git_worktree_filtering: bool,
-    git_graph: Option<Vec<crate::git::GraphRow>>,
-    git_graph_sel: usize,
-    // Since we save the graph body itself (git_graph), the derived state that decorates it (base
-    // pin, legend, visible branches, priority order) must be saved to the same tab too, or the
-    // legend/`base:` title left over from another tab would stick around after changing base/view
-    // there and coming back (load_active does not rebuild the graph). Same treatment as saving
-    // git_detail_meta/title alongside git_detail. The picker's (modal) transient state is not
-    // saved, and gets reset on restore.
-    git_graph_base: Option<String>,
-    git_graph_base_label: Option<String>,
-    git_graph_visible: std::collections::HashSet<String>,
-    git_graph_legend: Vec<crate::git::LegendEntry>,
-    git_graph_hidden: usize,
-    git_graph_order: Vec<String>,
     // --- Internal scroll state for a windowed (Code/Text/raw md) preview ---
     preview_byte_top: u64,
     preview_top_line: usize,
@@ -2274,10 +2120,6 @@ impl Default for PerTab {
             table_cur_col: 0,
             table_top_row: 0,
             table_left_col: 0,
-            git_view: false,
-            git_view_sel: 0,
-            git_view_entries: Vec::new(),
-            came_from_git_view: false,
             // No diff has been opened yet in a fresh tab; App::open_git_diff sets the real value
             // from config the moment one is. `Rendered` (not e.g. `Source`) simply so a fresh
             // `PerTab` never claims a presentation it never actually resolved.
@@ -2287,37 +2129,6 @@ impl Default for PerTab {
             diff_media_page: 1,
             diff_scroll_pending: None,
             preview_from_diff: false,
-            git_log: None,
-            git_log_sel: 0,
-            git_detail: None,
-            git_detail_meta: None,
-            git_detail_title: None,
-            git_detail_scroll: 0,
-            git_detail_hscroll: 0,
-            git_detail_viewport: 0,
-            git_detail_total: 0,
-            git_branches: None,
-            git_branch_sel: 0,
-            git_branch_filter: String::new(),
-            git_branch_filtering: false,
-            git_view_filter: String::new(),
-            git_view_filtering: false,
-            git_log_filter: String::new(),
-            git_log_filtering: false,
-            git_graph_filter: String::new(),
-            git_graph_filtering: false,
-            git_worktrees: None,
-            git_worktree_sel: 0,
-            git_worktree_filter: String::new(),
-            git_worktree_filtering: false,
-            git_graph: None,
-            git_graph_sel: 0,
-            git_graph_base: None,
-            git_graph_base_label: None,
-            git_graph_visible: std::collections::HashSet::new(),
-            git_graph_legend: Vec::new(),
-            git_graph_hidden: 0,
-            git_graph_order: Vec::new(),
             preview_byte_top: 0,
             preview_top_line: 0,
             command_out: None,
@@ -2561,10 +2372,6 @@ impl App {
             media_diff_layout,
             git_branch: None,
             git_worktree_origin: None,
-            git_graph_picker: false,
-            git_graph_picker_sel: 0,
-            git_graph_picker_set: std::collections::HashSet::new(),
-            git_graph_reordered: false,
             fileop_tx: None,
             office_tx: None,
             office_runner: office_open::real_runner(),
@@ -3011,40 +2818,7 @@ impl App {
         // --- Help, above everything but the dialogs ---
         layer!(self.show_help, UiLayer::Help);
 
-        // --- The git views. The commit detail sits over the log, and the branch panel sits over
-        // the graph (`is_git_graph` is still true underneath it), so each goes before what it covers. ---
-        layer!(self.is_git_detail(), UiLayer::GitDetail);
-        let log = self.is_git_log();
-        layer!(
-            log && self.list_filtering(list_filter::ListId::Log),
-            UiLayer::GitLogFilter
-        );
-        layer!(log, UiLayer::GitLog);
-        layer!(self.is_git_graph_picker(), UiLayer::GitGraphPicker);
-        let graph = self.is_git_graph();
-        layer!(
-            graph && self.list_filtering(list_filter::ListId::Graph),
-            UiLayer::GitGraphFilter
-        );
-        layer!(graph, UiLayer::GitGraph);
-        let branches = self.is_git_branches();
-        layer!(
-            branches && self.git_branch_filtering(),
-            UiLayer::GitBranchFilter
-        );
-        layer!(branches, UiLayer::GitBranches);
-        let worktrees = self.is_git_worktrees();
-        layer!(
-            worktrees && self.git_worktree_filtering(),
-            UiLayer::GitWorktreeFilter
-        );
-        layer!(worktrees, UiLayer::GitWorktrees);
-        let changes = self.is_git_view();
-        layer!(
-            changes && self.list_filtering(list_filter::ListId::Changes),
-            UiLayer::GitChangesFilter
-        );
-        layer!(changes, UiLayer::GitChanges);
+        // --- The file diff ---
         layer!(self.is_git_diff_preview(), UiLayer::GitDiff);
 
         // --- Input surfaces / menus / lists / popups ---
@@ -3121,7 +2895,7 @@ impl App {
     /// [`App::canvas_screen`].
     pub fn key_context(&self) -> Option<crate::keymap::Context> {
         let sfc = self.surface();
-        crate::keymap::Context::of_surface(sfc, self.shows_document(), self.screen_is_jj(sfc))
+        crate::keymap::Context::of_surface(sfc, self.shows_document())
     }
 
     /// The plugin screen (`git.changes`, `jj.log`, ...) a version-control project canvas shows,
@@ -3170,21 +2944,6 @@ impl App {
             .flatten()
     }
 
-    /// Whether the version-control screen `sfc` is open for a jj repository: the cached `git_vcs`
-    /// (settled by the background scan) or the root itself (so the screens name the right keys from
-    /// their first frame, before the scan lands).
-    fn screen_is_jj(&self, sfc: crate::keymap::Surface) -> bool {
-        #[cfg(feature = "git")]
-        {
-            sfc.is_vcs_screen() && crate::ops::backend(self) == crate::keymap::Backend::Jj
-        }
-        #[cfg(not(feature = "git"))]
-        {
-            let _ = sfc;
-            false
-        }
-    }
-
     /// The context of the screen at the bottom of the stack (the tree, or the preview underneath),
     /// ignoring every overlay in front of it. The footer of the tree and of the previews is the
     /// plan of this context (`ops::footer`).
@@ -3192,12 +2951,8 @@ impl App {
         if self.project_active() {
             return crate::keymap::Context::Canvas;
         }
-        crate::keymap::Context::of_surface(
-            self.base_layer().surface(),
-            self.shows_document(),
-            false,
-        )
-        .unwrap_or(crate::keymap::Context::Tree)
+        crate::keymap::Context::of_surface(self.base_layer().surface(), self.shows_document())
+            .unwrap_or(crate::keymap::Context::Tree)
     }
 
     // --- Copy/cut & paste (M7 Phase B, default keys Y/X/P, changeable via keymap) ---
@@ -3971,10 +3726,6 @@ impl App {
         if self.tab.mode != Mode::Preview {
             return None;
         }
-        // The version-control list over a preview: the file is the list's row, not the preview's.
-        if self.is_git_view() {
-            return None;
-        }
         // A diff opens the editor at the change block on screen (new-file line number).
         #[cfg(feature = "git")]
         if self.is_git_diff_preview() {
@@ -4410,8 +4161,7 @@ impl App {
 
     pub fn back_to_tree(&mut self) {
         // `q` from a full-screen fence display returns not "to the tree" but "back to the original
-        // Markdown view" (the same "return to where you came from" convention as git diff's
-        // came_from_git_view). Scroll/focus are also restored.
+        // Markdown view". Scroll/focus are also restored.
         if matches!(self.tab.preview_kind, Some(PreviewKind::MermaidFence(_))) {
             if let Some(md) = self.tab.preview_path.clone() {
                 let ret = self.tab.fence_return.take();
@@ -4458,7 +4208,6 @@ impl App {
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
-        self.tab.came_from_git_view = false;
         self.drop_plugin();
         self.set_document(None);
         self.tab.table_cur_row = 0;

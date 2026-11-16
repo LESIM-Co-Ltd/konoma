@@ -41,8 +41,6 @@ pub enum Msg {
     /// `?` help section title for the worktree list.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitWorktreesLabel,
-    /// Inner-mode chip label while the worktree list is open.
-    StWorktrees,
     /// Persistent chip shown whenever the current root is inside a **linked worktree** (never for
     /// the main working tree). Language-neutral by design (an abbreviation, not a sentence), but
     /// kept as a `Msg` for the usual catalog sweep/consistency.
@@ -516,9 +514,6 @@ pub enum Msg {
     OutlineTitle,
     OutlineActions,
     HelpTabList,
-    StBranch,
-    StChanges,
-    StCommitDiff,
     StCreate,
     StDelete,
     StDiff,
@@ -580,10 +575,6 @@ pub enum Msg {
     /// Flash on `a` in the graph when the backend already draws everything.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphAlreadyAll,
-    /// The pointer list's chip when jj is answering: it lists bookmarks, not branches.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    StBookmark,
-    StGit,
     /// Flash when a write is asked of a backend that only reads (jj).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     VcsReadOnly,
@@ -610,10 +601,8 @@ pub enum Msg {
     /// Status-bar chip when a jj (Jujutsu) backend is answering, in place of `StGit`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     StJj,
-    StGraph,
     StImage,
     StInfo,
-    StLog,
     StMark,
     StPreview,
     StRename,
@@ -912,6 +901,7 @@ pub enum Msg {
     WkDate,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     NoCommitToCopy,
+    StGit,
     ImageUnsupported,
     ImageReasonTooLarge,
     ImageReasonCorrupt,
@@ -1141,7 +1131,6 @@ fn en(msg: Msg) -> &'static str {
     use Msg::*;
     match msg {
         GitWorktreesLabel => "Git worktrees (w)",
-        StWorktrees => "WORKTREES",
         StWorktreeChip => "WT",
         GitWorktreeSwitch => "switch to it",
         GitWorktreesRow => "worktrees",
@@ -1585,10 +1574,6 @@ fn en(msg: Msg) -> &'static str {
         OutlineActions => "j/k move   ↵/l jump   / filter   O·q·h·Esc close",
         HelpTabList => "tab list (switch / close)",
         GraphAlreadyAll => "the graph already shows every commit",
-        StBookmark => "BOOKMARK",
-        StBranch => "BRANCH",
-        StChanges => "CHANGES",
-        StCommitDiff => "COMMIT DIFF",
         StCreate => "CREATE",
         StDelete => "DELETE",
         StDiff => "DIFF",
@@ -1620,10 +1605,8 @@ fn en(msg: Msg) -> &'static str {
         PluginKeyBad => CoreMsg::PluginKeyBad.en(),
         StGit => "GIT",
         StJj => "JJ",
-        StGraph => "GRAPH",
         StImage => "IMAGE",
         StInfo => "INFO",
-        StLog => "LOG",
         StMark => "MARK",
         StPreview => "PREVIEW",
         StTable => "TABLE",
@@ -1960,7 +1943,6 @@ fn jp(msg: Msg) -> &'static str {
     use Msg::*;
     match msg {
         GitWorktreesLabel => "Git ワークツリー (w)",
-        StWorktrees => "ワークツリー",
         StWorktreeChip => "WT",
         GitWorktreeSwitch => "切り替える",
         GitWorktreesRow => "ワークツリー",
@@ -2399,10 +2381,6 @@ fn jp(msg: Msg) -> &'static str {
         OutlineActions => "j/k 移動   ↵/l ジャンプ   / 絞り込み   O·q·h·Esc 閉じる",
         HelpTabList => "タブ一覧(切替 / 閉じる)",
         GraphAlreadyAll => "グラフは既に全コミットを表示しています",
-        StBookmark => "ブックマーク",
-        StBranch => "ブランチ",
-        StChanges => "変更",
-        StCommitDiff => "コミット差分",
         StCreate => "作成",
         StDelete => "削除確認",
         StDiff => "差分",
@@ -2434,10 +2412,8 @@ fn jp(msg: Msg) -> &'static str {
         PluginKeyBad => CoreMsg::PluginKeyBad.ja(),
         StGit => "Git",
         StJj => "jj",
-        StGraph => "グラフ",
         StImage => "画像",
         StInfo => "情報",
-        StLog => "ログ",
         StMark => "登録",
         StPreview => "プレビュー",
         StTable => "テーブル",
@@ -3152,7 +3128,6 @@ mod tests {
     // referenced under both features.
     const ALL_MSGS: &[Msg] = &[
         Msg::GitWorktreesLabel,
-        Msg::StWorktrees,
         Msg::StWorktreeChip,
         Msg::GitWorktreeSwitch,
         Msg::GitWorktreesRow,
@@ -3577,16 +3552,12 @@ mod tests {
         Msg::OutlineTitle,
         Msg::OutlineActions,
         Msg::HelpTabList,
-        Msg::StBranch,
-        Msg::StChanges,
-        Msg::StCommitDiff,
         Msg::StCreate,
         Msg::StDelete,
         Msg::StDiff,
         Msg::StDrop,
         Msg::StFilter,
         Msg::GraphAlreadyAll,
-        Msg::StBookmark,
         Msg::VcsReadOnly,
         Msg::PluginReadOnly,
         Msg::ProjectDetectionFailed,
@@ -3608,10 +3579,8 @@ mod tests {
         Msg::PluginKeyBad,
         Msg::StGit,
         Msg::StJj,
-        Msg::StGraph,
         Msg::StImage,
         Msg::StInfo,
-        Msg::StLog,
         Msg::StMark,
         Msg::StPreview,
         Msg::StRename,

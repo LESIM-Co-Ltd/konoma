@@ -875,8 +875,7 @@ fn project_diff_text_and_code_preview_change_navigation_matches_host() {
 fn host_diff_snapshot(host: &mut Sim) -> Option<konoma_plugin::app::project::ProjectDiffSnapshot> {
     use konoma_host_core::project::DiffView;
     use konoma_plugin::app::project::ProjectDiffSnapshot;
-    if host.app.project_active() || host.app.is_git_view() || host.app.tab.project_return.is_none()
-    {
+    if host.app.project_active() || host.app.tab.project_return.is_none() {
         return None;
     }
     let path = host.app.tab.preview_path.clone()?;
@@ -1304,10 +1303,6 @@ fn project_diff_discard_confirm_returns_refreshes_and_keeps_flash() {
     assert!(
         host.app.project_active(),
         "discard from a project diff returns to the project screen"
-    );
-    assert!(
-        !host.app.is_git_view(),
-        "the legacy hub must not replace the project screen"
     );
     let after = host_state(&host);
     assert_eq!(after.stack, before.stack);

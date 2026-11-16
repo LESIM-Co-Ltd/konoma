@@ -577,7 +577,6 @@ impl App {
                 // Project diffs always show raw lines, independent of the origin preview's presentation.
                 self.diff_layout = layout;
                 self.tab.preview_hscroll = 0;
-                self.tab.git_detail_hscroll = 0;
                 let label = match layout {
                     DiffLayout::Unified => Msg::DiffUnified,
                     DiffLayout::Split => Msg::DiffSideBySide,
@@ -2171,8 +2170,8 @@ impl App {
             .any(|runtime| runtime.write_act_running())
     }
 
-    /// Whether a git write is running right now, whichever path started it: the old hub's
-    /// background `git_op_running()`, or a project act that declares `writes` (the vcs plugin's
+    /// Whether a git write is running right now, whichever path started it: the file diff's
+    /// background discard (`git_op_running()`), or a project act that declares `writes` (the vcs plugin's
     /// commit / checkout / worktree add / discard / stage / sync). The one answer for the quit
     /// warning, the busy indicator and the watcher-burst deferral, so they cannot drift apart.
     /// Reads (refresh, status, log) never count.

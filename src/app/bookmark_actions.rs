@@ -1064,10 +1064,9 @@ impl App {
         } else {
             let _ = self.reveal_path_deep(&target);
         }
-        // A fresh `open_git_diff` would reset `came_from_git_view`/`diff_follow_scope`/the
+        // A fresh `open_git_diff` would reset `diff_follow_scope`/the
         // presentation to the target file's own config default, so carry the current ones over
-        // instead (so cycling from a hub-opened diff still returns to the hub with `q`, a
-        // follow-scoped cycle keeps going, and the presentation — source/rendered/preview — is never
+        // instead (so a follow-scoped cycle keeps going, and the presentation — source/rendered/preview — is never
         // reset by simply moving to the next changed file: `docs/FEATURE-MD-RENDERED-DIFF.md` §4's
         // "n/N で次のファイルの diff へ移っても表現は維持"). Carries `diff_view_choice` — the
         // presentation actually *chosen* — not the current file's already-rounded `diff_view`: a
@@ -1087,7 +1086,6 @@ impl App {
                 read_context: self.tab.diff_read_context,
                 follow_scope: self.diff_follow_scope,
                 view: Some(self.tab.diff_view_choice),
-                came_from_git_view: Some(self.tab.came_from_git_view),
                 ..Default::default()
             },
         );
@@ -1711,10 +1709,6 @@ impl App {
         let tree = self.rebuild_tree_preserving_filtered_view(anchors);
         // Drop paths that vanished from the selection set (retain keeps only ones that still exist; symlinks aren't followed).
         self.tab.selection.retain(|p| p.symlink_metadata().is_ok());
-        // Only make the active derived view follow along.
-        if self.is_git_view() {
-            self.git_view_reload();
-        }
         if reload_preview
             && matches!(self.tab.mode, Mode::Preview)
             && self.preview_affected_by(changed)

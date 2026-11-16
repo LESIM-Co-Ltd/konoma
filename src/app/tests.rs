@@ -12716,59 +12716,6 @@ fn md_overlay_move_detection_requests_full_redraw() {
 /// load_active's media-restoration branch had no case for the Mermaid family, and clear_image
 /// also left preview_media_mtime in place, so reload_media_if_changed also misjudged it as
 /// "unchanged" and was blocked, so returning to the tab fell back to the text ruled-line diagram —
-/// A git graph's decoration state (the pinned base, visible branches, priority order, legend) is
-/// saved/restored per tab. Regression 2026-07-18: git_graph (GraphRow) is saved, but these
-/// derived states were not, so changing the base/visibility in another tab and coming back left
-/// the legend or the `base:` title showing the other tab's values (load_active doesn't rebuild
-/// the graph). It is not carried over to a new tab, and is restored on returning.
-#[test]
-fn git_graph_decoration_state_is_per_tab() {
-    let dir = unique_tmp("konoma_graph_pertab_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("a.txt"), "x").unwrap();
-
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    // Simulate tab 0's graph decoration state (set the derived fields directly, without building
-    // a real graph).
-    app.tab.git_graph_base = Some("release/1.0".into());
-    app.tab.git_graph_base_label = Some("release/1.0".into());
-    app.tab.git_graph_visible = ["main".to_string(), "dev".to_string()]
-        .into_iter()
-        .collect();
-    app.tab.git_graph_order = vec!["release/1.0".into(), "main".into(), "dev".into()];
-    app.tab.git_graph_hidden = 3;
-
-    app.tab_new().unwrap(); // tab 1 (a plain Tree)
-    assert!(
-        app.tab.git_graph_base.is_none(),
-        "新規タブへ基準ピンは漏れない"
-    );
-    assert!(
-        app.tab.git_graph_visible.is_empty(),
-        "新規タブへ表示ブランチは漏れない"
-    );
-    assert!(
-        app.tab.git_graph_order.is_empty(),
-        "新規タブへ優先順は漏れない"
-    );
-    assert_eq!(app.tab.git_graph_hidden, 0, "新規タブの hidden は 0");
-
-    // Put tab 1 into a different decoration state, then go back.
-    app.tab.git_graph_base = Some("hotfix".into());
-    app.tab_goto(0);
-    assert_eq!(
-        app.tab.git_graph_base.as_deref(),
-        Some("release/1.0"),
-        "タブ0の基準ピンが復元される"
-    );
-    assert_eq!(app.tab.git_graph_hidden, 3, "タブ0の hidden が復元される");
-    assert!(
-        app.tab.git_graph_visible.contains("main") && app.tab.git_graph_visible.contains("dev"),
-        "タブ0の表示ブランチが復元される"
-    );
-}
-
 /// It had been silently degrading (a non-deterministic behavior that happened to recover only
 /// when a different media was opened in the background).
 #[test]
@@ -18392,12 +18339,7 @@ fn layer_cases() -> Vec<LayerCase> {
     v
 }
 
-/// The git layers. `surface()` gates its whole git block behind `#[cfg(feature = "git")]` while
-/// `internal_mode()` does not, so on a no-git build the very same state reports a git *chip* while
-/// the keys fall through to whatever is behind it. That asymmetry is characterized here too: it is
-/// unreachable through the UI (every opener bails out because the no-git `git.rs` stubs return
-/// empty/None), but a merged cascade must still reproduce it exactly.
-#[cfg(feature = "git")]
+/// The diff preview layer, which exists in every build.
 fn layer_cases_git() -> Vec<LayerCase> {
     use crate::keymap::Surface as S;
     vec![
@@ -18411,149 +18353,6 @@ fn layer_cases_git() -> Vec<LayerCase> {
             internal: Some(InternalMode::GitDiff),
         },
         LayerCase {
-            name: "GitChanges / GitChanges",
-            setup: |a| a.tab.git_view = true,
-            surface: S::GitChanges,
-            internal: Some(InternalMode::GitChanges),
-        },
-        LayerCase {
-            name: "GitWorktrees / GitWorktrees",
-            setup: |a| a.tab.git_worktrees = Some(Vec::new()),
-            surface: S::GitWorktrees,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
-            name: "WorktreeFilter / GitWorktrees",
-            setup: |a| {
-                a.tab.git_worktrees = Some(Vec::new());
-                a.tab.git_worktree_filtering = true;
-            },
-            surface: S::WorktreeFilter,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
-            name: "GitBranches / GitBranch",
-            setup: |a| a.tab.git_branches = Some(Vec::new()),
-            surface: S::GitBranches,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "BranchFilter / GitBranch",
-            setup: |a| {
-                a.tab.git_branches = Some(Vec::new());
-                a.tab.git_branch_filtering = true;
-            },
-            surface: S::BranchFilter,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "GitGraph / GitGraph",
-            setup: |a| a.tab.git_graph = Some(Vec::new()),
-            surface: S::GitGraph,
-            internal: Some(InternalMode::GitGraph),
-        },
-        LayerCase {
-            name: "GitGraphPicker / GitGraphPicker (panel over the graph)",
-            setup: |a| {
-                a.tab.git_graph = Some(Vec::new());
-                a.git_graph_picker = true;
-            },
-            surface: S::GitGraphPicker,
-            internal: Some(InternalMode::GitGraphPicker),
-        },
-        LayerCase {
-            name: "GitGraphPicker / GitGraphPicker (panel without a graph)",
-            setup: |a| a.git_graph_picker = true,
-            surface: S::GitGraphPicker,
-            internal: Some(InternalMode::GitGraphPicker),
-        },
-        LayerCase {
-            name: "GitLog / GitLog",
-            setup: |a| a.tab.git_log = Some(Vec::new()),
-            surface: S::GitLog,
-            internal: Some(InternalMode::GitLog),
-        },
-        LayerCase {
-            name: "GitDetail / GitDetail",
-            setup: |a| a.tab.git_detail = Some(Vec::new()),
-            surface: S::GitDetail,
-            internal: Some(InternalMode::GitDetail),
-        },
-        // -- adjacent-pair ordering inside and around the git block --
-        LayerCase {
-            name: "order: help beats the git detail",
-            setup: |a| {
-                a.show_help = true;
-                a.tab.git_detail = Some(Vec::new());
-            },
-            surface: S::Help,
-            internal: Some(InternalMode::Help),
-        },
-        LayerCase {
-            name: "order: the git detail beats the log",
-            setup: |a| {
-                a.tab.git_detail = Some(Vec::new());
-                a.tab.git_log = Some(Vec::new());
-            },
-            surface: S::GitDetail,
-            internal: Some(InternalMode::GitDetail),
-        },
-        LayerCase {
-            name: "order: the log beats the graph picker",
-            setup: |a| {
-                a.tab.git_log = Some(Vec::new());
-                a.git_graph_picker = true;
-            },
-            surface: S::GitLog,
-            internal: Some(InternalMode::GitLog),
-        },
-        LayerCase {
-            name: "order: the graph picker beats the graph",
-            setup: |a| {
-                a.git_graph_picker = true;
-                a.tab.git_graph = Some(Vec::new());
-            },
-            surface: S::GitGraphPicker,
-            internal: Some(InternalMode::GitGraphPicker),
-        },
-        LayerCase {
-            name: "order: the graph beats the branch list",
-            setup: |a| {
-                a.tab.git_graph = Some(Vec::new());
-                a.tab.git_branches = Some(Vec::new());
-            },
-            surface: S::GitGraph,
-            internal: Some(InternalMode::GitGraph),
-        },
-        LayerCase {
-            name: "order: the branch list beats the worktree list",
-            setup: |a| {
-                a.tab.git_branches = Some(Vec::new());
-                a.tab.git_worktrees = Some(Vec::new());
-            },
-            surface: S::GitBranches,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "order: the worktree list beats the changes hub",
-            setup: |a| {
-                a.tab.git_worktrees = Some(Vec::new());
-                a.tab.git_view = true;
-            },
-            surface: S::GitWorktrees,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
-            name: "order: the changes hub beats the diff preview",
-            setup: |a| {
-                a.tab.git_view = true;
-                a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
-                a.tab.mode = Mode::Preview;
-            },
-            surface: S::GitChanges,
-            internal: Some(InternalMode::GitChanges),
-        },
-        LayerCase {
             name: "order: the diff preview beats the filter input",
             setup: |a| {
                 a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
@@ -18562,84 +18361,6 @@ fn layer_cases_git() -> Vec<LayerCase> {
             },
             surface: S::PreviewGitDiff,
             internal: Some(InternalMode::GitDiff),
-        },
-    ]
-}
-
-/// Native hub surfaces remain git-only; the shared diff surface exists in every build.
-#[cfg(not(feature = "git"))]
-fn layer_cases_git() -> Vec<LayerCase> {
-    use crate::keymap::Surface as S;
-    vec![
-        LayerCase {
-            name: "Tree / GitChanges (no-git: the hub has no surface, keys fall through)",
-            setup: |a| a.tab.git_view = true,
-            surface: S::Tree,
-            internal: Some(InternalMode::GitChanges),
-        },
-        LayerCase {
-            name:
-                "Filter / GitChanges (no-git: falls through to the layer behind, not to the base)",
-            setup: |a| {
-                a.tab.git_view = true;
-                a.tab.filter_input = Some(String::new());
-            },
-            surface: S::Filter,
-            internal: Some(InternalMode::GitChanges),
-        },
-        LayerCase {
-            name: "Tree / GitDetail (no-git)",
-            setup: |a| a.tab.git_detail = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitDetail),
-        },
-        LayerCase {
-            name: "PreviewGitDiff / GitDiff (no-git: shared diff surface)",
-            setup: |a| {
-                a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
-                a.tab.mode = Mode::Preview;
-            },
-            surface: S::PreviewGitDiff,
-            internal: Some(InternalMode::GitDiff),
-        },
-        LayerCase {
-            name: "Tree / GitGraphPicker (no-git)",
-            setup: |a| a.git_graph_picker = true,
-            surface: S::Tree,
-            internal: Some(InternalMode::GitGraphPicker),
-        },
-        LayerCase {
-            name: "Tree / GitLog (no-git)",
-            setup: |a| a.tab.git_log = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitLog),
-        },
-        LayerCase {
-            name: "Tree / GitGraph (no-git)",
-            setup: |a| a.tab.git_graph = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitGraph),
-        },
-        LayerCase {
-            name: "Tree / GitBranch (no-git: the branch-list arm)",
-            setup: |a| a.tab.git_branches = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "Tree / GitWorktrees (no-git: the worktree-list arm)",
-            setup: |a| a.tab.git_worktrees = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
-            name: "order: the git detail beats the log (no-git: still ordered for the chip)",
-            setup: |a| {
-                a.tab.git_detail = Some(Vec::new());
-                a.tab.git_log = Some(Vec::new());
-            },
-            surface: S::Tree,
-            internal: Some(InternalMode::GitDetail),
         },
     ]
 }
@@ -18737,14 +18458,7 @@ fn all_internal_modes() -> Vec<InternalMode> {
         M::DropConfirm,
         M::QuitConfirm,
         M::BookmarkConfirm,
-        M::GitChanges,
         M::GitDiff,
-        M::GitLog,
-        M::GitDetail,
-        M::GitBranch,
-        M::GitWorktrees,
-        M::GitGraph,
-        M::GitGraphPicker,
     ];
     // Exhaustive on purpose: a new variant does not compile until it is named here, and the
     // duplicate/count check below then forces it into the list above.
@@ -18784,14 +18498,7 @@ fn internal_mode_name(m: InternalMode) -> &'static str {
         M::DropConfirm => "DropConfirm",
         M::QuitConfirm => "QuitConfirm",
         M::BookmarkConfirm => "BookmarkConfirm",
-        M::GitChanges => "GitChanges",
         M::GitDiff => "GitDiff",
-        M::GitLog => "GitLog",
-        M::GitDetail => "GitDetail",
-        M::GitBranch => "GitBranch",
-        M::GitWorktrees => "GitWorktrees",
-        M::GitGraph => "GitGraph",
-        M::GitGraphPicker => "GitGraphPicker",
     }
 }
 
@@ -18803,10 +18510,6 @@ fn all_surfaces() -> Vec<crate::keymap::Surface> {
         S::Filter,
         S::Search,
         S::Mark,
-        #[cfg(feature = "git")]
-        S::BranchFilter,
-        #[cfg(feature = "git")]
-        S::WorktreeFilter,
         S::DialogConfirmDelete,
         S::DialogConfirmDrop,
         S::DialogRenamePreview,
@@ -18819,20 +18522,6 @@ fn all_surfaces() -> Vec<crate::keymap::Surface> {
         S::Outline,
         S::Info,
         S::TableCell,
-        #[cfg(feature = "git")]
-        S::GitDetail,
-        #[cfg(feature = "git")]
-        S::GitLog,
-        #[cfg(feature = "git")]
-        S::GitGraph,
-        #[cfg(feature = "git")]
-        S::GitGraphPicker,
-        #[cfg(feature = "git")]
-        S::GitBranches,
-        #[cfg(feature = "git")]
-        S::GitChanges,
-        #[cfg(feature = "git")]
-        S::GitWorktrees,
         S::Visual,
         S::Tree,
         S::PreviewText,
@@ -18883,8 +18572,6 @@ fn the_chip_and_the_keys_come_from_the_same_layer() {
         if app.internal_mode() != front.internal_mode() {
             failures.push(format!("{}: the chip does not follow {front:?}", c.name));
         }
-        // The one documented exception is a git layer on a no-git build, which owns no surface at
-        // all; then — and only then — the keys legitimately belong to a layer further back.
         match front.surface() {
             Some(s) if app.surface() != s => {
                 failures.push(format!("{}: the keys do not follow {front:?}", c.name))
@@ -18909,17 +18596,6 @@ fn help_wins_over_whatever_screen_is_behind_it() {
         ("tree visual", |a| a.tab.visual_anchor = Some(0)),
         ("filter input", |a| a.tab.filter_input = Some(String::new())),
         ("tab list", |a| a.tab_list = true),
-        #[cfg(feature = "git")]
-        ("git changes hub", |a| a.tab.git_view = true),
-        #[cfg(feature = "git")]
-        ("git commit detail", |a| a.tab.git_detail = Some(Vec::new())),
-        #[cfg(feature = "git")]
-        ("git log", |a| a.tab.git_log = Some(Vec::new())),
-        #[cfg(feature = "git")]
-        ("git graph picker", |a| {
-            a.tab.git_graph = Some(Vec::new());
-            a.git_graph_picker = true;
-        }),
     ];
     for (name, setup) in behind {
         let mut app = layer_app(&dir);
@@ -18938,66 +18614,7 @@ fn help_wins_over_whatever_screen_is_behind_it() {
     }
 }
 
-/// The branch/worktree list `/` filter is deliberately **not** symmetric across the three consumers,
-/// and this pins why (see `UiLayer::internal_mode`): the keymap needs its own surface because typing
-/// must be captured instead of dispatched, the chip deliberately stays on the list (the list is
-/// still what you are looking at, cursor and all), and the footer swaps to the `/query` prompt
-/// through its own branch in `footer_spans`, not through the mode.
-#[cfg(feature = "git")]
-#[test]
-fn a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
-    let dir = layer_fixture();
-    for (name, list, filtering, surface, mode) in [
-        (
-            "branches",
-            (|a: &mut App| a.tab.git_branches = Some(Vec::new())) as fn(&mut App),
-            (|a: &mut App| a.tab.git_branch_filtering = true) as fn(&mut App),
-            crate::keymap::Surface::BranchFilter,
-            InternalMode::GitBranch,
-        ),
-        (
-            "worktrees",
-            (|a: &mut App| a.tab.git_worktrees = Some(Vec::new())) as fn(&mut App),
-            (|a: &mut App| a.tab.git_worktree_filtering = true) as fn(&mut App),
-            crate::keymap::Surface::WorktreeFilter,
-            InternalMode::GitWorktrees,
-        ),
-    ] {
-        let mut app = layer_app(&dir);
-        list(&mut app);
-        let footer_before: String = crate::ui::status::footer_spans(&app, 80)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(app.internal_mode(), Some(mode), "{name}: chip before");
-
-        filtering(&mut app);
-        assert_eq!(
-            app.surface(),
-            surface,
-            "{name}: the keymap must switch to the text-input surface"
-        );
-        assert!(
-            app.surface().is_text_input(),
-            "{name}: characters must be captured, not dispatched"
-        );
-        assert_eq!(
-            app.internal_mode(),
-            Some(mode),
-            "{name}: the chip must stay on the list — the filter is an input inside it, not a mode"
-        );
-        let footer_after: String = crate::ui::status::footer_spans(&app, 80)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(
-            footer_after.starts_with('/') && footer_after != footer_before,
-            "{name}: the footer must show the /query prompt: {footer_after:?}"
-        );
-    }
-}
-
-/// The `/` filter of the overlay lists (bookmarks, tabs, outline) behaves like the git lists': its
+/// The `/` filter of the overlay lists (bookmarks, tabs, outline): its
 /// own text-input surface for the keys, the overlay's own chip, the `/query` prompt in the footer.
 #[test]
 fn an_overlay_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
@@ -19066,18 +18683,6 @@ fn the_walk_visits_the_layers_in_their_declaration_order() {
     let dir = layer_fixture();
     let mut app = layer_app(&dir);
     app.show_help = true;
-    #[cfg(feature = "git")]
-    {
-        app.tab.git_detail = Some(Vec::new());
-        app.tab.git_log = Some(Vec::new());
-        app.git_graph_picker = true;
-        app.tab.git_graph = Some(Vec::new());
-        app.tab.git_branches = Some(Vec::new());
-        app.tab.git_branch_filtering = true;
-        app.tab.git_worktrees = Some(Vec::new());
-        app.tab.git_worktree_filtering = true;
-        app.tab.git_view = true;
-    }
     app.tab.filter_input = Some(String::new());
     app.tab.search_input = Some(String::new());
     app.mark_set_pending = true;
@@ -21354,58 +20959,6 @@ fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
 // in `src/e2e_tests.rs` (needs `Sim`); what stays here needs either private `PerTab` field access
 // (only visible inside `app` and its submodules) or is a pure source/logic check unrelated to keys.
 // =============================================================================
-
-/// `WorktreeCreate` cannot be reached through real navigation in a jj repository: `w` from the
-/// changes hub redirects to the `JjWorkspacesUnlisted` flash before `Surface::GitWorktrees` is ever
-/// entered (`open_git_worktrees`, `src/app/git_view.rs`) — see
-/// `e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list` (`src/e2e_tests.rs`). That
-/// unreachability is exactly why this needs its own test: the gate in `dispatch_action` must hold
-/// even if the surface is somehow reached anyway — a future regression in `open_git_worktrees`'s own
-/// redirect, or stale per-tab state. Forcing `tab.git_worktrees` open directly (rather than pressing
-/// `w`) is what lets this test exist despite the surface being unreachable through keys; it needs
-/// `PerTab`'s private fields, which is why it lives here rather than in `e2e_tests.rs`.
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_open() {
-    let Some(dir) = jj_scratch_seeded("konoma_worktree_create_gate") else {
-        return;
-    };
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    assert!(
-        !crate::vcs::caps(&app.tab.root).write,
-        "sanity: the fixture must resolve to the read-only jj backend, or this test proves nothing"
-    );
-    app.tab.git_worktrees = Some(Vec::new()); // force the surface open; `w` cannot reach it in jj
-    app.tab.git_worktree_sel = 0;
-    assert_eq!(
-        app.surface(),
-        crate::keymap::Surface::GitWorktrees,
-        "sanity: the forced state must read as the worktree list"
-    );
-
-    let res = crate::handle_key(
-        &mut app,
-        crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('c'),
-            crossterm::event::KeyModifiers::NONE,
-        ),
-    );
-    assert!(
-        res.is_ok(),
-        "the gate must return Ok(false), not error: {res:?}"
-    );
-    assert!(
-        app.flash
-            .as_deref()
-            .is_some_and(|f| f.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::VcsReadOnly))),
-        "expected the VcsReadOnly flash, got {:?}",
-        app.flash
-    );
-    assert!(
-        !app.is_dialog(),
-        "n must not have opened the new-worktree input dialog"
-    );
-}
 
 /// The read-only gate in `dispatch_action` only protects a write if it is reached through an
 /// `Action` — a git write that bypasses `run_git_op` (the one place every `crate::vcs::Git::` write call

@@ -362,7 +362,6 @@ fn vcs_port_q_returns_to_origin_and_l_g_are_list_keys_on_log_and_graph() {
             sim.app.tab.entries.iter().any(|e| e.path.ends_with(&late)),
             "the return re-derives the tree from disk ({name})"
         );
-        assert!(!sim.app.is_git_view() && !sim.app.is_git_log() && !sim.app.is_git_graph());
     }
 }
 
@@ -581,9 +580,8 @@ fn vcs_port_each_tabs_project_title_reverifies_its_repo_branch() {
         sim.key('l');
         sim.app.tab.projects.wait_for_result();
         sim.app.poll_projects();
-        let (_, legacy) = App::count_legacy_hub_opens(|| sim.key('p'));
+        sim.key('p');
         drain(sim);
-        assert_eq!(legacy, 0, "{dir}: no legacy open");
         assert!(sim.app.project_active(), "{dir}: project opened");
     };
     enter_project(&mut sim, "/a");

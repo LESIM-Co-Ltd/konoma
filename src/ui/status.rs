@@ -17,8 +17,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, DisplayMode, InternalMode, Mode, PathStyle};
 use crate::i18n::{tr, Lang, Msg};
 use crate::keymap::Context;
-#[cfg(feature = "git")]
-use crate::keymap::Screen;
 use konoma_widgets::help_panel::fit_tokens;
 
 /// Shared helper that builds one mode chip. Background color = meaning; foreground is black/white by lightness.
@@ -72,7 +70,7 @@ fn display_chip(app: &App) -> Span<'static> {
     if app.project_active() {
         return chip(app.lang, Msg::ProjectTitle, Color::Cyan, false);
     }
-    if app.in_git_view() {
+    if app.is_git_diff_preview() {
         // Which backend is answering has to be visible: a colocated repository has both, and a diff
         // taken against `@-` is not the same thing as one taken against HEAD.
         return match app.diff_vcs() {
@@ -104,14 +102,6 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         let screen = app.project_vcs_chips()?.screen?;
         return Some(chip_str(screen.text, screen.bg, screen.dark));
     };
-    if matches!(mode, InternalMode::GitGraphPicker) {
-        let text = format!(
-            "{} - {}",
-            tr(app.lang, Msg::StGraph),
-            tr(app.lang, Msg::StBranch)
-        );
-        return Some(chip_str(text, Color::Yellow, false));
-    }
     let (msg, bg, dark) = match mode {
         // Help is part of the same "view-only overlay" family as Info (dim/DarkGray).
         InternalMode::Help => (Msg::StHelp, Color::DarkGray, true),
@@ -148,30 +138,8 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::QuitConfirm => (Msg::StQuit, Color::Yellow, false),
         // The bookmark-overwrite confirmation is also non-destructive = yellow.
         InternalMode::BookmarkConfirm => (Msg::StMarkOverwrite, Color::Yellow, false),
-        InternalMode::GitChanges => (Msg::StChanges, Color::Yellow, false),
         // diff is part of the "viewing content" preview family, so blue.
         InternalMode::GitDiff => (Msg::StDiff, Color::Blue, true),
-        // A commit is "creating/finalizing", so green (same family as create).
-        // log is history browsing (the Git family's yellow). Detail is part of the "viewing
-        // content" diff family, so blue.
-        InternalMode::GitLog => (Msg::StLog, Color::Yellow, false),
-        InternalMode::GitDetail => (Msg::StCommitDiff, Color::Blue, true),
-        // Branch operations are also part of the Git family's yellow.
-        InternalMode::GitBranch => {
-            // jj's list holds bookmarks; the word is not a synonym for branch there.
-            match app.git_vcs {
-                crate::vcs::VcsKind::Git => (Msg::StBranch, Color::Yellow, false),
-                #[cfg(feature = "git")]
-                crate::vcs::VcsKind::Jj => (Msg::StBookmark, Color::Yellow, false),
-            }
-        }
-        // Worktrees are also part of the Git family's yellow.
-        InternalMode::GitWorktrees => (Msg::StWorktrees, Color::Yellow, false),
-        InternalMode::GitGraph => (Msg::StGraph, Color::Yellow, false),
-        // GitGraphPicker is already handled as a breadcrumb up top (early return) = it never
-        // reaches here. Even if that guard ever slips, fall back gently to the GRAPH chip so
-        // nothing panics inside the render loop.
-        InternalMode::GitGraphPicker => (Msg::StGraph, Color::Yellow, false),
     };
     Some(chip(app.lang, msg, bg, dark))
 }
@@ -294,9 +262,6 @@ fn mode_footer(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
 
 /// The key context whose footer an internal mode shows (`None` = the mode has no footer of its own).
 fn mode_context(app: &App, mode: InternalMode) -> Option<Context> {
-    #[cfg(feature = "git")]
-    let backend = crate::ops::backend(app);
-    #[cfg(not(feature = "git"))]
     let _ = app;
     Some(match mode {
         InternalMode::Help => Context::Help,
@@ -304,20 +269,6 @@ fn mode_context(app: &App, mode: InternalMode) -> Option<Context> {
         InternalMode::PreviewVisual => Context::TextVisual,
         InternalMode::Info => Context::Info,
         InternalMode::TableCell => Context::TableCell,
-        #[cfg(feature = "git")]
-        InternalMode::GitChanges => Context::Screen(backend, Screen::Changes),
-        #[cfg(feature = "git")]
-        InternalMode::GitGraph => Context::Screen(backend, Screen::Graph),
-        #[cfg(feature = "git")]
-        InternalMode::GitGraphPicker => Context::Screen(backend, Screen::GraphPicker),
-        #[cfg(feature = "git")]
-        InternalMode::GitBranch => Context::Screen(backend, Screen::Branches),
-        #[cfg(feature = "git")]
-        InternalMode::GitWorktrees => Context::Screen(backend, Screen::Worktrees),
-        #[cfg(feature = "git")]
-        InternalMode::GitLog => Context::Screen(backend, Screen::Log),
-        #[cfg(feature = "git")]
-        InternalMode::GitDetail => Context::Screen(backend, Screen::Detail),
         InternalMode::GitDiff => Context::Diff,
         _ => return None,
     })

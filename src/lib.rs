@@ -1777,7 +1777,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
     // than each handler discovering it separately and failing in its own way.
     let ctx = app
         .key_context()
-        .or_else(|| keymap::Context::of_surface(sfc, false, false))
+        .or_else(|| keymap::Context::of_surface(sfc, false))
         .unwrap_or(keymap::Context::Tree);
     // These handlers always started by waiting for a fresh scan; the gate reads its answer.
     if ctx == keymap::Context::Tree
@@ -2076,21 +2076,6 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
 fn list_surface(l: app::list_filter::ListId) -> Surface {
     use app::list_filter::ListId;
     match l {
-        #[cfg(feature = "git")]
-        ListId::Changes => Surface::GitChanges,
-        #[cfg(feature = "git")]
-        ListId::Log => Surface::GitLog,
-        #[cfg(feature = "git")]
-        ListId::Graph => Surface::GitGraph,
-        #[cfg(feature = "git")]
-        ListId::Branches => Surface::GitBranches,
-        #[cfg(feature = "git")]
-        ListId::Worktrees => Surface::GitWorktrees,
-        // The version-control lists exist only in a build with `git`; there is nothing to move.
-        #[cfg(not(feature = "git"))]
-        ListId::Changes | ListId::Log | ListId::Graph | ListId::Branches | ListId::Worktrees => {
-            Surface::Tree
-        }
         ListId::Bookmarks => Surface::Bookmarks,
         ListId::Tabs => Surface::Tabs,
         ListId::Outline => Surface::Outline,

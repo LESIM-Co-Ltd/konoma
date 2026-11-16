@@ -188,7 +188,6 @@ fn stage(f: &Value, case: &Value, count: usize) -> Value {
             }
         }));
     app.open_git_diff(&path);
-    app.tab.came_from_git_view = true;
     app.git_status
         .insert(path.clone(), crate::git::FileStatus::Modified);
     app.git_status_for = Some(root);

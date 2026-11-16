@@ -72,13 +72,8 @@ fn e2e_standard_vcs_disabled_and_no_backend_never_open_the_legacy_hub() {
             if let Some(key) = menu {
                 sim.key(key);
             }
-            let (_, legacy_opens) = App::count_legacy_hub_opens(|| sim.key('p'));
+            sim.key('p');
             settle(&mut sim);
-            assert_eq!(legacy_opens, 0, "p must never call the legacy hub");
-            assert!(
-                !sim.app.is_git_view(),
-                "disabled p must not open the legacy hub"
-            );
             assert!(!sim.app.project_active());
             assert!(sim.app.project_dialog.is_none());
             if menu.is_none() {
@@ -101,10 +96,8 @@ fn e2e_standard_vcs_disabled_and_no_backend_never_open_the_legacy_hub() {
         settle(&mut sim);
         assert!(sim.app.tab.projects.projects.is_empty());
         assert_not_offered(&sim);
-        let (_, legacy_opens) = App::count_legacy_hub_opens(|| sim.key('p'));
+        sim.key('p');
         settle(&mut sim);
-        assert_eq!(legacy_opens, 0, "no-git p must never call the legacy hub");
-        assert!(!sim.app.is_git_view());
         assert!(!sim.app.project_active());
         assert_eq!(
             sim.app.flash.as_deref(),
@@ -193,7 +186,6 @@ fn check_project_entries(root: &std::path::Path, id: &str) {
                 sim.app.flash,
                 sim.app.project_dialog.is_some()
             );
-            assert!(!sim.app.is_git_view());
             let frame = sim.app.project_frame().unwrap();
             assert_eq!(
                 sim.app
@@ -250,7 +242,6 @@ fn e2e_standard_vcs_colocated_p_shows_the_project_chooser() {
     settle(&mut sim);
     sim.key('p');
     assert!(!sim.app.project_active());
-    assert!(!sim.app.is_git_view());
     let crate::app::project_screens::ProjectDialog::Projects { projects, .. } =
         sim.app.project_dialog.as_ref().unwrap()
     else {
@@ -276,7 +267,6 @@ fn e2e_standard_vcs_colocated_p_shows_the_project_chooser() {
             .plugin,
         "jj"
     );
-    assert!(!sim.app.is_git_view());
     // The positive outcome: the chosen project is open on its first screen.
     assert!(sim.app.project_active(), "the chosen jj project opens");
     assert_eq!(sim.app.project_frame().unwrap().key.screen, "changes");
@@ -311,7 +301,6 @@ fn e2e_standard_vcs_disabling_a_detected_project_blocks_keys_menus_and_a_stale_c
             !sim.app.project_active(),
             "disabled cached project must not open on p"
         );
-        assert!(!sim.app.is_git_view());
         assert_eq!(
             sim.app.flash.as_deref(),
             Some(tr(Lang::En, Msg::NotAGitRepo)),
@@ -331,7 +320,6 @@ fn e2e_standard_vcs_disabling_a_detected_project_blocks_keys_menus_and_a_stale_c
             !sim.app.project_active(),
             "disabled chooser selection must not open"
         );
-        assert!(!sim.app.is_git_view());
         assert!(
             sim.app.project_dialog.is_none(),
             "the stale chooser is closed"
@@ -354,16 +342,9 @@ fn e2e_standard_vcs_p_while_detection_is_pending_enters_the_project_or_reports_n
         let mut sim = Sim::new(&dir);
         sim.app.lang = Lang::En;
         assert!(sim.app.tab.projects.pending());
-        let (_, legacy_opens) = App::count_legacy_hub_opens(|| {
-            sim.key('p');
-            settle(&mut sim);
-        });
-        assert_eq!(
-            legacy_opens, 0,
-            "pending entry must not fall back to the legacy hub"
-        );
+        sim.key('p');
+        settle(&mut sim);
         assert_eq!(sim.app.project_active(), repository);
-        assert!(!sim.app.is_git_view());
         if repository {
             assert_eq!(sim.app.project_frame().unwrap().key.screen, "changes");
         }
@@ -405,7 +386,6 @@ fn e2e_standard_vcs_disabled_return_paths_do_not_reopen_project_or_legacy_hub() 
         !sim.app.project_active(),
         "disabled project must not reopen from a diff return"
     );
-    assert!(!sim.app.is_git_view());
     assert!(!sim.app.is_git_diff_preview(), "the diff was left");
     assert_eq!(
         sim.app.tab.mode,

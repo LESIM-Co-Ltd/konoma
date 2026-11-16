@@ -101,18 +101,6 @@ impl App {
                 .map(VerbTarget::File)
                 .unwrap_or(VerbTarget::None);
         }
-        if self.is_git_view() {
-            return match self.git_view_entries().get(self.git_view_sel()) {
-                Some(e) if e.status != crate::git::FileStatus::Deleted => {
-                    VerbTarget::File(e.path.clone())
-                }
-                _ => VerbTarget::None,
-            };
-        }
-        // The other lists (log, graph, branches, worktrees) have rows that are not files.
-        if self.in_git_view() && !self.is_git_diff_preview() {
-            return VerbTarget::None;
-        }
         if self.tab.project_return.is_some() {
             return self
                 .project_preview_launch_target()
