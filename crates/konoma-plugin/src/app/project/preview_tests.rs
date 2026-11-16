@@ -403,12 +403,23 @@ fn assert_screen(
     }
 }
 
-/// The standalone app takes the host's effect rule: opening a diff shows no operation name in
-/// the footer, while the result of a write does. (Opening a file or a tab is refused there with
-/// its own notice, so it is not a case of this rule.)
+/// The standalone app takes the host's effect rule: opening a diff, a redraw and an unhandled
+/// result show no operation name in the footer, while the result of a write does. (Opening a file
+/// or a tab is refused there with its own notice, so it is not a case of this rule.)
 #[test]
 fn standalone_effects_name_the_operation_only_for_writes() {
-    for (diff, named) in [(true, false), (false, true)] {
+    for (outcome, named) in [
+        (None, true),
+        (Some(Outcome::Reload), true),
+        (Some(Outcome::Redraw), false),
+        (Some(Outcome::Unhandled), false),
+        (
+            Some(Outcome::OpenDiff {
+                path: "file.txt".into(),
+            }),
+            false,
+        ),
+    ] {
         let (_dir, mut prepared, _term) = setup(false, true);
         let mut state = ProjectLoopState::new(&mut prepared, false);
         let info = state.info(&prepared, &ProjectLoopCx::default());
@@ -423,8 +434,11 @@ fn standalone_effects_name_the_operation_only_for_writes() {
             },
             "Diff",
         );
-        effect.outcome = diff.then(|| Outcome::OpenDiff {
-            path: prepared.open_dir.join("file.txt"),
+        effect.outcome = outcome.clone().map(|o| match o {
+            Outcome::OpenDiff { .. } => Outcome::OpenDiff {
+                path: prepared.open_dir.join("file.txt"),
+            },
+            other => other,
         });
         let mut update = ProjectUpdate::handled();
         update.events.push(ProjectEvent::Effect(effect));
@@ -433,7 +447,7 @@ fn standalone_effects_name_the_operation_only_for_writes() {
         assert_eq!(
             prepared.notice.as_deref(),
             named.then_some("Diff"),
-            "diff outcome: {diff}"
+            "{outcome:?}"
         );
     }
 }

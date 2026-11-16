@@ -360,55 +360,67 @@ fn non_navigation_effects_keep_existing_acceptance_rules() {
     }
 }
 
-/// Only a write result flashes the operation name; opening something never does. The matching
-/// origin makes the navigation itself run, so the missing label is the rule and not a drop.
+/// Every result kind against whether its operation name is flashed: a write result names the
+/// operation; a redraw, a navigation (the destination answers) and an unhandled result do not.
+/// The matching origin makes a navigation itself run, so a missing label is the rule, not a drop.
 #[test]
-fn navigation_results_show_no_operation_name_and_write_results_do() {
+fn every_result_kind_names_the_operation_or_not() {
     use crate::Outcome::*;
-    let navigations = [
-        OpenDiff {
-            path: "/file".into(),
-        },
-        OpenFile {
-            path: "/file".into(),
-            line: None,
-        },
-        SwitchRoot {
-            root: "/root".into(),
-            message: None,
-        },
-        OpenTab {
-            path: "/file".into(),
-        },
-        PushScreen {
-            screen: "detail".into(),
-            selection: None,
-        },
-        PopScreen,
+    let table: Vec<(Option<crate::Outcome>, bool)> = vec![
+        (None, true),
+        (Some(Reload), true),
+        (Some(Copy { text: "t".into() }), true),
+        (Some(Flash(crate::Tr::new("m"))), true),
+        (Some(Redraw), false),
+        (Some(Unhandled), false),
+        (
+            Some(OpenDiff {
+                path: "/file".into(),
+            }),
+            false,
+        ),
+        (
+            Some(OpenFile {
+                path: "/file".into(),
+                line: None,
+            }),
+            false,
+        ),
+        (
+            Some(SwitchRoot {
+                root: "/root".into(),
+                message: None,
+            }),
+            false,
+        ),
+        (
+            Some(OpenTab {
+                path: "/file".into(),
+            }),
+            false,
+        ),
+        (
+            Some(PushScreen {
+                screen: "detail".into(),
+                selection: None,
+            }),
+            false,
+        ),
+        (Some(PopScreen), false),
     ];
-    let writes = [
-        None,
-        Some(Reload),
-        Some(Copy { text: "t".into() }),
-        Some(Flash(crate::Tr::new("m"))),
-    ];
-    let labelled = |outcome: Option<crate::Outcome>| {
+    for (outcome, named) in table {
         let mut f = Fixture::new();
         f.runtimes.get_mut(&project()).unwrap().project.declaration = crate::ProjectDecl::new()
             .screen(crate::ProjectScreen::new("detail", "Detail").pushed());
         let mut e = effect();
-        e.outcome = outcome;
+        e.outcome = outcome.clone();
         let (mut host, mut context) = f.parts();
-        host.apply_effect(&mut context, &info(7), e)
+        let labelled = host
+            .apply_effect(&mut context, &info(7), e)
             .commands
             .iter()
-            .any(|c| matches!(c, ProjectCommand::Label(_)))
-    };
-    for outcome in navigations {
-        assert!(!labelled(Some(outcome.clone())), "{outcome:?}");
-    }
-    for outcome in writes {
-        assert!(labelled(outcome.clone()), "{outcome:?}");
+            .any(|c| matches!(c, ProjectCommand::Label(_)));
+        assert_eq!(labelled, named, "{outcome:?}");
     }
 }
 
