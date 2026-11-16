@@ -152,7 +152,6 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         // diff is part of the "viewing content" preview family, so blue.
         InternalMode::GitDiff => (Msg::StDiff, Color::Blue, true),
         // A commit is "creating/finalizing", so green (same family as create).
-        InternalMode::Commit => (Msg::StCommit, Color::Green, false),
         // log is history browsing (the Git family's yellow). Detail is part of the "viewing
         // content" diff family, so blue.
         InternalMode::GitLog => (Msg::StLog, Color::Yellow, false),
@@ -274,7 +273,6 @@ fn mode_footer(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
         InternalMode::Create => Some(Msg::StCreateHint),
         InternalMode::BatchRename => Some(Msg::StRenamePreviewHint),
         InternalMode::Rename => Some(Msg::StRenameHint),
-        InternalMode::Commit => Some(Msg::StCommitHint),
         InternalMode::PluginInput => Some(Msg::StPluginInputHint),
         _ => None,
     };

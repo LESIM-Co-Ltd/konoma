@@ -1867,10 +1867,14 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         | Action::JjSync
         | Action::GitGraphToggleAll
         | Action::BranchCreate
-        | Action::WorktreeCreate
-            if !matches!(ctx, keymap::Context::Canvas | keymap::Context::Screen(..)) =>
-        {
-            app.run_old_hub_name(&keymap::action_name(action));
+        | Action::WorktreeCreate => {
+            let name = keymap::action_name(action);
+            if matches!(ctx, keymap::Context::Canvas | keymap::Context::Screen(..)) {
+                // The project is already open: read the name for its plugin, never the old host dialog.
+                app.run_old_hub_name_in_project(&name);
+            } else {
+                app.run_old_hub_name(&name);
+            }
         }
         Action::OpenGitView => open_project_like_p(app),
         // On a project canvas the key `r` is the host's own refresh; the menu item runs that path.
@@ -2018,19 +2022,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => app.toggle_follow_diff_scope(),
         #[cfg(feature = "git")]
-        Action::GitStageAll => app.git_view_stage_all(),
-        #[cfg(feature = "git")]
-        Action::GitUnstageAll => app.git_view_unstage_all(),
-        #[cfg(feature = "git")]
-        Action::GitCommit => app.start_git_commit(),
-        #[cfg(feature = "git")]
         Action::GitLaunchTool => app.launch_git_tool(),
-        #[cfg(feature = "git")]
-        Action::JjSync => app.jj_start_sync(),
-        #[cfg(feature = "git")]
-        Action::BranchCreate => app.start_create_branch(),
-        #[cfg(feature = "git")]
-        Action::WorktreeCreate => app.start_create_worktree(),
         // `worktree_close` bound to a key of a project screen. Off a canvas the name did what `p`
         // does in the released hub (it reopened the hub, and the project's changes screen replaced
         // the hub). A project canvas has no hub behind it (its own back is the project key
@@ -2055,16 +2047,10 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::GitStage
         | Action::GitUnstage
         | Action::GitDiscard
-        | Action::GitWorktreeDiff
-        | Action::GitOpenLog
-        | Action::GitOpenGraph
-        | Action::GitOpenBranches
-        | Action::GitOpenWorktrees
         | Action::GitOpenSelectedDiff
         | Action::GitOpenDetail
         | Action::GitGraphSetBase
         | Action::GitGraphClearBase
-        | Action::GitGraphToggleAll
         | Action::GitGraphOpenPicker
         | Action::GitGraphPickerApply
         | Action::GitGraphPickerToggle

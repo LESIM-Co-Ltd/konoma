@@ -46,28 +46,3 @@ fn project_guard_rechecks_immediate_and_queued_acts_without_taking_the_session()
     assert!(app.plugin_act("write"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
-
-#[cfg(feature = "git")]
-#[test]
-fn guard_rechecks_jj_sync_after_confirmation() {
-    let dir = unique_tmp("konoma_guard_jj_sync_confirm");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.dialog = Some(Dialog {
-        op: PendingOp::JjSync,
-        kind: DialogKind::Confirm {
-            message: tr(app.lang, Msg::JjSyncConfirm).into(),
-            allow_permanent: false,
-        },
-    });
-    app.cfg.plugins.insert(
-        "jj".into(),
-        toml::Table::from_iter([("read_only".into(), true.into())]),
-    );
-    app.dialog_confirm(true).unwrap();
-    assert!(app.dialog.is_none());
-    assert_eq!(
-        app.flash.as_deref(),
-        Some(tr(app.lang, Msg::PluginReadOnly))
-    );
-}

@@ -685,7 +685,7 @@ fn git_all_discard_commit_cases(lang: &str) {
     script.act(KeyCode::Char('S'), "stage_all");
     script.message(lang, crate::i18n::Msg::NoChanges);
     script.act(KeyCode::Char('U'), "unstage_all");
-    script.message(lang, crate::i18n::Msg::NothingStaged);
+    script.notice(if lang == "ja" { "ステージ無し" } else { "nothing staged" });
     script.expect(|_, state| assert!(state.prompt.is_none()));
     run_writes(&roots, "git", &text, script);
 

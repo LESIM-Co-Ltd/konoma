@@ -172,7 +172,6 @@ pub enum InternalMode {
     BookmarkConfirm,
     GitChanges,
     GitDiff,
-    Commit,
     GitLog,
     GitDetail,
     GitBranch,
@@ -238,9 +237,6 @@ pub enum UiLayer {
     /// each gets its own chip/footer wording.
     InputCreate,
     InputBatchRename,
-    InputCommit,
-    InputCreateBranch,
-    InputCreateWorktree,
     /// Input dialog: rename, and the catch-all for any other pending operation.
     InputRename,
 
@@ -337,12 +333,7 @@ impl UiLayer {
             Self::ConfirmDrop => S::DialogConfirmDrop,
             Self::ConfirmDelete => S::DialogConfirmDelete,
             Self::RenamePreview => S::DialogRenamePreview,
-            Self::InputCreate
-            | Self::InputBatchRename
-            | Self::InputCommit
-            | Self::InputCreateBranch
-            | Self::InputCreateWorktree
-            | Self::InputRename => S::DialogInput,
+            Self::InputCreate | Self::InputBatchRename | Self::InputRename => S::DialogInput,
             Self::Help => S::Help,
             #[cfg(feature = "git")]
             Self::GitDetail => S::GitDetail,
@@ -405,11 +396,6 @@ impl UiLayer {
             Self::RenamePreview => InternalMode::RenamePreview,
             Self::InputCreate => InternalMode::Create,
             Self::InputBatchRename => InternalMode::BatchRename,
-            Self::InputCommit => InternalMode::Commit,
-            // The branch/worktree creation prompts reuse their list's chip rather than inventing a
-            // dedicated "creating a …" mode.
-            Self::InputCreateBranch => InternalMode::GitBranch,
-            Self::InputCreateWorktree => InternalMode::GitWorktrees,
             Self::InputRename => InternalMode::Rename,
             Self::Help => InternalMode::Help,
             Self::GitDetail => InternalMode::GitDetail,
@@ -613,16 +599,6 @@ enum PendingOp {
     BatchRenameApply { plan: Vec<(PathBuf, PathBuf)> },
     /// In the Git view, `x`=discard a file's changes (via a confirmation dialog). On confirm, git::discard.
     GitDiscard { path: PathBuf },
-    /// In the Git view, `c`=enter a commit message. On confirm, git::commit (uses the staged index).
-    GitCommit,
-    /// In the hub, `R`=let jj take a snapshot. The only write konoma makes to a jj repository, and
-    /// only after this confirmation.
-    JjSync,
-    /// In the branch list, `n`=enter a new branch name. On confirm, git::create_branch (create and switch).
-    GitCreateBranch,
-    /// In the worktree list, `n`=enter a branch name for a new linked worktree. On confirm,
-    /// `dialog_submit` auto-detects new-vs-existing (`git::branch_tip`) and runs `git::worktree_add`.
-    WorktreeCreate,
     /// A transfer received via file drag & drop (through a terminal paste). `c`=copy / `m`=move / Esc=cancel.
     /// `sources`=the dropped existing paths, `dir`=the drop destination (directory based on the cursor).
     DropTransfer { sources: Vec<PathBuf>, dir: PathBuf },
@@ -1111,12 +1087,7 @@ pub struct FileOpResult {
 /// worse than the freeze — and a slow-but-legitimate hook is not an error to abort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitOpKind {
-    StageAll,
-    UnstageAll,
     Discard,
-    Commit,
-    CreateBranch,
-    WorktreeAdd,
 }
 
 /// A queued git write handed to the background worker (or run synchronously when no worker is
@@ -1133,22 +1104,14 @@ pub struct GitOpJob {
     /// alongside `root`. `root` alone cannot answer "did *this* tab ask for it": `t` opens the new
     /// tab at the current root, so two tabs sharing a root is the ordinary case.
     tab_id: u64,
-    /// Path operand: the file for `Stage`/`Unstage`/`Discard`, the new directory for `WorktreeAdd`.
-    /// Empty for the kinds that take no path.
+    /// The file to discard.
     path: PathBuf,
-    /// Text operand: the message for `Commit`, the branch name for `Checkout`/`CreateBranch`/
-    /// `DeleteBranch`/`WorktreeAdd`. Empty for the kinds that take no text.
-    text: String,
-    /// `DeleteBranch`: force (`-D` instead of `-d`). `WorktreeAdd`: also create the branch (`-b`).
-    flag: bool,
     /// Pre-formatted display text for the completion flash, resolved on the UI thread at dispatch
     /// time. `format_path` renders relative to the *dispatching* tab's `open_dir`, and by the time
     /// the result lands the active tab may be a different one — so the label is frozen here rather
     /// than recomputed in `apply_git_op` (same "resolve what needs `&self` before dispatch" rule as
     /// `FileOpJob::err_failed`).
     label: String,
-    /// `StageAll`: how many entries the Git view listed at dispatch time (the count in its flash).
-    count: usize,
 }
 
 /// Outcome of a background git write, applied on the run loop's thread by `App::apply_git_op`.
@@ -1161,10 +1124,7 @@ pub struct GitOpResult {
     /// The dispatching tab's identity (copied from `GitOpJob`), which answers the stricter question
     /// "is the active tab the one that asked".
     tab_id: u64,
-    path: PathBuf,
-    text: String,
     label: String,
-    count: usize,
     /// `None` = success. Otherwise git's own message, produced by `git.rs`'s `git_error_message`
     /// (stderr's first `fatal:` line first, so the reason is never pushed off the end of the flash).
     err: Option<String>,
@@ -3045,15 +3005,6 @@ impl App {
         layer!(
             input && self.pending_is_batch_rename_input(),
             UiLayer::InputBatchRename
-        );
-        layer!(input && self.pending_is_git_commit(), UiLayer::InputCommit);
-        layer!(
-            input && self.pending_is_git_create_branch(),
-            UiLayer::InputCreateBranch
-        );
-        layer!(
-            input && self.pending_is_worktree_create(),
-            UiLayer::InputCreateWorktree
         );
         layer!(input, UiLayer::InputRename);
 

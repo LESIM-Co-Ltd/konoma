@@ -133,11 +133,6 @@ fn guard_is_before_each_write_executor_and_before_a_session_is_taken() {
         start.matches("run_git_op(").count() + 1,
         "only start_git_op may call the executor (the extra occurrence is its definition)"
     );
-    let sync = method(git, "jj_run_sync");
-    assert!(
-        sync.find("allow_write(\"jj\", true, false)").unwrap()
-            < sync.find("vcs::jj::snapshot(").unwrap()
-    );
     let plugin = include_str!("../app/plugin_host.rs");
     for name in ["plugin_act", "send_queued_act"] {
         let body = method(plugin, name);
@@ -221,7 +216,6 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
         "worktree_add",
     ];
     let mut git_calls = 0;
-    let mut jj_calls = 0;
     let mut plugin_calls = 0;
     for path in files {
         let text = std::fs::read_to_string(&path).unwrap();
@@ -244,16 +238,10 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
                 }
             }
         }
-        if text.contains("vcs::jj::snapshot(") {
-            jj_calls += text.matches("vcs::jj::snapshot(").count();
-            assert_eq!(path, src.join("app/git_view.rs"));
-            assert_eq!(
-                text.matches("vcs::jj::snapshot(").count(),
-                method(&text, "jj_run_sync")
-                    .matches("vcs::jj::snapshot(")
-                    .count()
-            );
-        }
+        assert!(
+            !text.contains("vcs::jj::snapshot("),
+            "{path:?}: the host no longer writes to a jj repository"
+        );
         if text.contains("session.act(") {
             plugin_calls += text.matches("session.act(").count();
             assert_eq!(
@@ -265,10 +253,9 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
         }
     }
     assert!(
-        git_calls >= names.len(),
-        "each of the ten known git write APIs must be scanned"
+        git_calls >= 1,
+        "the one remaining git write (discard) must be scanned"
     );
-    assert!(jj_calls >= 1, "the jj snapshot write must be scanned");
     assert!(plugin_calls >= 1, "the plugin act executor must be scanned");
     let project = include_str!("../../crates/konoma-plugin/src/host/project/actions.rs");
     assert_eq!(project.matches("ProjectJob::Act {").count(), 1);
@@ -294,5 +281,5 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
         );
     }
     assert!(!include_str!("../app/project_screens.rs").contains("ProjectJob::Act {"));
-    eprintln!("guarded write paths: git={git_calls}, jj={jj_calls}, plugin={plugin_calls}, project=1; lower bound=13");
+    eprintln!("guarded write paths: git={git_calls}, plugin={plugin_calls}, project=1");
 }

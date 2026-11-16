@@ -182,25 +182,6 @@ impl App {
             Some(PendingOp::BatchRenameInput { .. })
         )
     }
-    pub fn pending_is_git_commit(&self) -> bool {
-        matches!(
-            self.dialog.as_ref().map(|d| &d.op),
-            Some(PendingOp::GitCommit)
-        )
-    }
-    pub fn pending_is_git_create_branch(&self) -> bool {
-        matches!(
-            self.dialog.as_ref().map(|d| &d.op),
-            Some(PendingOp::GitCreateBranch)
-        )
-    }
-    pub fn pending_is_worktree_create(&self) -> bool {
-        matches!(
-            self.dialog.as_ref().map(|d| &d.op),
-            Some(PendingOp::WorktreeCreate)
-        )
-    }
-
     /// Receive a paste from the terminal (including drag-and-drop). While input is active (dialog input / filter /
     /// search / branch filter), **insert text**; in Tree mode, if the dropped content is an existing path,
     /// open a **copy/move dialog** (drop target = the cursor's base directory). Control characters are stripped.

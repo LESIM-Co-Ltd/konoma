@@ -1041,7 +1041,7 @@ impl App {
     /// Run the old hub name a key asked for, in the project that has just opened. The row is read
     /// for that project's plugin, not for the backend the tab was detected as.
     #[cfg(feature = "git")]
-    fn run_old_hub_name_in_project(&mut self, name: &str) {
+    pub(crate) fn run_old_hub_name_in_project(&mut self, name: &str) {
         use crate::plugins::old_screens::{act_screen, Target, ROWS};
         let Some(row) = ROWS.iter().find(|row| row.old == name) else {
             return;
@@ -1099,7 +1099,11 @@ impl App {
         // operation without a key on the canvas has nothing to press.
         if jump.is_none() {
             if let Some(key) = self.plugin_key_of(Context::Canvas, act) {
-                self.project_press(key);
+                // The host's input path takes the press only while it waits for the view; a
+                // loaded screen leaves it to the key's own action, as a pressed key would.
+                if !self.project_press(key) {
+                    self.run_plugin_action(act);
+                }
             }
         }
     }

@@ -620,3 +620,161 @@ fn vcs_old_names_on_the_file_diff_open_the_project_over_the_diff() {
         );
     }
 }
+
+// ---- the same names bound on a project canvas run the operation in the open project ----
+
+/// After `p`, press `KEY` bound to `name` in `table`: the effect and how many times the old hub
+/// was opened.
+fn press_on_canvas(id: &str, table: &str, name: &str) -> Option<(String, usize)> {
+    let root = repo(id, "c")?;
+    let mut sim = Sim::with_config_sized(&root, cfg_for(id, table, name), 120, 30);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    sim.key('p');
+    drain(&mut sim);
+    assert_eq!(
+        effect(&mut sim),
+        canvas("changes", None, false),
+        "{id} after p"
+    );
+    let ((), opens) = App::count_legacy_hub_opens(|| {
+        sim.key(KEY);
+        drain(&mut sim);
+    });
+    Some((effect(&mut sim), opens))
+}
+
+/// The expected effect of each name on a canvas that was opened by `p` (the changes screen). The
+/// operations are the ones the tree cases expect after opening the project; a name with no
+/// operation for the backend changes nothing.
+fn canvas_cases() -> Vec<(&'static str, String, String)> {
+    // Where the tree stays a tree (no operation for the backend, or a name that needs a hub row),
+    // the canvas stays as it was, with the flash the write guard gives (jj reads only).
+    let on_canvas = |s: String| {
+        s.replace("project=false screen=", "project=true screen=changes")
+            .replace("surface=Tree", "surface=PreviewCanvas")
+    };
+    tree_cases()
+        .into_iter()
+        .map(|(name, git, jj)| {
+            let fix = |s: String| {
+                if s.contains("surface=Tree") {
+                    on_canvas(s)
+                } else {
+                    s
+                }
+            };
+            (name, fix(git), fix(jj))
+        })
+        .collect()
+}
+
+fn run_canvas(id: &str, table: &str) {
+    let mut checked = 0;
+    for (name, git, jj) in canvas_cases() {
+        // `worktree_close` on a canvas keeps its own behaviour; the tool launch and the filters
+        // have their own handlers.
+        if matches!(
+            name,
+            "worktree_close" | "git_launch_tool" | "branch_filter_start" | "worktree_filter_start"
+        ) || name == "git_close"
+            || name.starts_with("git_copy_")
+            || name == "copy_branch_name"
+        {
+            continue;
+        }
+        let want = if id == "git" { git } else { jj };
+        let Some((got, opens)) = press_on_canvas(id, table, name) else {
+            return;
+        };
+        assert_eq!(
+            got, want,
+            "{id} `{name}` bound in [keys.{table}] on a canvas"
+        );
+        assert_eq!(
+            opens, 0,
+            "{id} `{name}` in [keys.{table}] opened the old hub"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 38, "the number of names under test");
+}
+
+#[test]
+fn vcs_old_names_on_a_canvas_bound_in_keys_canvas_git() {
+    if isolated("vcs_old_names_on_a_canvas_bound_in_keys_canvas_git") {
+        return;
+    }
+    run_canvas("git", "canvas");
+}
+
+#[test]
+fn vcs_old_names_on_a_canvas_bound_in_keys_global_git() {
+    if isolated("vcs_old_names_on_a_canvas_bound_in_keys_global_git") {
+        return;
+    }
+    run_canvas("git", "global");
+}
+
+#[test]
+fn vcs_old_names_on_a_canvas_bound_in_keys_canvas_jj() {
+    if isolated("vcs_old_names_on_a_canvas_bound_in_keys_canvas_jj") {
+        return;
+    }
+    if repo("jj", "probe").is_none() {
+        eprintln!("SKIPPED: jj is not installed");
+        return;
+    }
+    run_canvas("jj", "canvas");
+}
+
+#[test]
+fn vcs_old_names_on_a_canvas_bound_in_keys_global_jj() {
+    if isolated("vcs_old_names_on_a_canvas_bound_in_keys_global_jj") {
+        return;
+    }
+    if repo("jj", "probe").is_none() {
+        eprintln!("SKIPPED: jj is not installed");
+        return;
+    }
+    run_canvas("jj", "global");
+}
+
+/// The result of a name is the result of the plugin's own key for that operation, in a fresh
+/// project opened by `p` (the operations of the changes screen).
+#[test]
+fn vcs_old_names_on_a_canvas_equal_the_plugins_own_key() {
+    if isolated("vcs_old_names_on_a_canvas_equal_the_plugins_own_key") {
+        return;
+    }
+    for (id, name, op) in [
+        ("git", "git_stage_all", "stage_all"),
+        ("git", "git_unstage_all", "unstage_all"),
+        ("git", "git_commit", "commit"),
+        ("jj", "jj_sync", "sync"),
+    ] {
+        let Some(root) = repo(id, "own") else {
+            eprintln!("SKIPPED: jj is not installed");
+            continue;
+        };
+        let mut sim = Sim::with_config_sized(&root, cfg_for(id, "canvas", "noop"), 120, 30);
+        sim.app.tab.projects.wait_for_result();
+        sim.app.poll_projects();
+        sim.key('p');
+        drain(&mut sim);
+        let act = crate::plugins::PluginAct::new(id, op);
+        let key = sim
+            .app
+            .plugin_key_of(crate::keymap::Context::Canvas, act)
+            .unwrap_or_else(|| panic!("{id} `{op}` has no key on the canvas"));
+        sim.press(key.code, KeyModifiers::NONE);
+        drain(&mut sim);
+        let own = effect(&mut sim);
+        let (got, _) = press_on_canvas(id, "canvas", name).unwrap();
+        assert_eq!(got, own, "{id} `{name}` vs the key of `{op}`");
+        assert!(
+            !sim.app.is_dialog(),
+            "{id} `{name}`: the host dialog is open"
+        );
+    }
+}

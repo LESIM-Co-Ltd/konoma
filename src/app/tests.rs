@@ -5357,99 +5357,6 @@ fn apply_ignored_with_a_panic_shaped_result_still_clears_pending() {
     );
 }
 
-/// `worktree_create_target`'s directory-name rule: every `/` in the branch name becomes `-` (git
-/// would otherwise create a **nested** directory for a branch like `feat/nested/deep`, i.e.
-/// `feat/nested/deep/` as three levels, not one flat sibling directory).
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_target_replaces_slash_with_dash_for_the_directory_name() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_wt_target_slash");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["commit", "-q", "-m", "init"])
-        .output()
-        .unwrap();
-    let root = dir.canonicalize().unwrap();
-    let app = App::new(root.clone(), Config::default()).unwrap();
-
-    let target = app.worktree_create_target("feat/nested/deep");
-    assert_eq!(
-        target.file_name().and_then(|n| n.to_str()),
-        Some("feat-nested-deep"),
-        "全ての / が - に置換され、1階層のディレクトリ名になる: {target:?}"
-    );
-    // Not a nested structure: the parent of `target` must not itself be named after a slash-split prefix.
-    let parent_name = target
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str());
-    assert_ne!(
-        parent_name,
-        Some("feat"),
-        "入れ子ディレクトリが作られてはいけない: {target:?}"
-    );
-    assert_ne!(
-        parent_name,
-        Some("feat-nested"),
-        "入れ子ディレクトリが作られてはいけない: {target:?}"
-    );
-}
-
-/// `worktree_create_target` resolves against the **main** worktree's own path, not `self.tab.root`,
-/// and respects `[git] worktree_dir` — the default `"../"` places it as a sibling of the main
-/// worktree, and a custom (here: absolute) value changes the placement entirely.
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_target_respects_worktree_dir_config() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_wt_target_dircfg");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["commit", "-q", "-m", "init"])
-        .output()
-        .unwrap();
-    let root = dir.canonicalize().unwrap();
-
-    // Default ("../"): a sibling of the main worktree.
-    let app_default = App::new(root.clone(), Config::default()).unwrap();
-    let default_target = app_default.worktree_create_target("brA");
-    assert_eq!(
-        default_target.parent().unwrap().canonicalize().unwrap(),
-        root.parent().unwrap().canonicalize().unwrap(),
-        "既定 \"../\" はメインワークツリーの隣に置く: {default_target:?}"
-    );
-
-    // Custom (absolute) worktree_dir: placement follows it instead.
-    let custom_base = unique_tmp("konoma_wt_target_dircfg_custom");
-    std::fs::create_dir_all(&custom_base).unwrap();
-    let mut cfg = Config::default();
-    cfg.git.worktree_dir = custom_base.to_string_lossy().into_owned();
-    let app_custom = App::new(root.clone(), cfg).unwrap();
-    let custom_target = app_custom.worktree_create_target("brB");
-    assert_eq!(
-        custom_target.parent().unwrap().canonicalize().unwrap(),
-        custom_base.canonicalize().unwrap(),
-        "worktree_dir を変えると置き場所が変わる: {custom_target:?}"
-    );
-}
-
 // --- git log + commit detail ---------------------------------------------
 // ============================================================================
 // Additional coverage: App's pure state, preview scrolling, images/GIF, links, tabs, etc.
@@ -8421,7 +8328,7 @@ fn quit_confirms_while_a_git_op_is_running() {
         !app.request_quit(),
         "confirm_quit=false かつアイドルなら即終了"
     );
-    app.gitop_pending = Some(crate::app::GitOpKind::Commit);
+    app.gitop_pending = Some(crate::app::GitOpKind::Discard);
     assert!(
         app.request_quit(),
         "git 書き込み中は設定に関わらず確認を出す"
@@ -18298,24 +18205,6 @@ fn layer_cases() -> Vec<LayerCase> {
             internal: Some(InternalMode::BatchRename),
         },
         LayerCase {
-            name: "DialogInput / Commit",
-            setup: |a| lc_input(a, PendingOp::GitCommit),
-            surface: S::DialogInput,
-            internal: Some(InternalMode::Commit),
-        },
-        LayerCase {
-            name: "DialogInput / GitBranch",
-            setup: |a| lc_input(a, PendingOp::GitCreateBranch),
-            surface: S::DialogInput,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "DialogInput / GitWorktrees",
-            setup: |a| lc_input(a, PendingOp::WorktreeCreate),
-            surface: S::DialogInput,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
             // The input catch-all.
             name: "DialogInput / Rename",
             setup: |a| {
@@ -18850,7 +18739,6 @@ fn all_internal_modes() -> Vec<InternalMode> {
         M::BookmarkConfirm,
         M::GitChanges,
         M::GitDiff,
-        M::Commit,
         M::GitLog,
         M::GitDetail,
         M::GitBranch,
@@ -18898,7 +18786,6 @@ fn internal_mode_name(m: InternalMode) -> &'static str {
         M::BookmarkConfirm => "BookmarkConfirm",
         M::GitChanges => "GitChanges",
         M::GitDiff => "GitDiff",
-        M::Commit => "Commit",
         M::GitLog => "GitLog",
         M::GitDetail => "GitDetail",
         M::GitBranch => "GitBranch",
@@ -21557,18 +21444,7 @@ fn git_write_api_calls_stay_confined_to_run_git_op() {
     let body = &after_start[..rel_end + 1];
 
     // Exactly what `run_git_op`'s match calls today (mirrors `GitOpKind`, `src/app.rs`).
-    let write_calls = [
-        "crate::vcs::Git::stage(",
-        "crate::vcs::Git::unstage(",
-        "crate::vcs::Git::stage_all(",
-        "crate::vcs::Git::unstage_all(",
-        "crate::vcs::Git::discard(",
-        "crate::vcs::Git::commit(",
-        "crate::vcs::Git::checkout(",
-        "crate::vcs::Git::create_branch(",
-        "crate::vcs::Git::delete_branch(",
-        "crate::vcs::Git::worktree_add(",
-    ];
+    let write_calls = ["crate::vcs::Git::discard("];
     for needle in write_calls {
         let total = src.matches(needle).count();
         assert_eq!(
