@@ -1157,7 +1157,7 @@ impl App {
         self.with_project_host(|host, context| host.ensure_view(context, &info));
     }
 
-    fn project_back(&mut self) {
+    pub(crate) fn project_back(&mut self) {
         if self.with_project_host(|host, context| host.pop_screen(context)) {
             self.ensure_project_view();
             return;
@@ -1165,10 +1165,20 @@ impl App {
         self.leave_project_screens();
     }
 
+    /// A jump to a file or directory (paste-jump, a bookmark) while a project screen is in front:
+    /// leave the screen first, as its back key does, so the target lands on the base screen and
+    /// is shown instead of being opened under the screen.
+    /// (A jump to a directory changes the root, and `clear_for_root_change` closes the screens.)
+    pub(crate) fn leave_project_screens_for_jump(&mut self) {
+        if self.project_active() {
+            self.leave_project_screens();
+        }
+    }
+
     /// Close the project screens and return to where they were opened from (the tree, or the
     /// Preview they overlaid). Leaving the top screen does this; so does a project that is no
     /// longer detected.
-    fn leave_project_screens(&mut self) {
+    pub(crate) fn leave_project_screens(&mut self) {
         let Some(nav) = self.tab.project_navigation.take() else {
             return;
         };
@@ -1257,9 +1267,13 @@ impl App {
     /// The `Space` menu's refresh item on a project canvas: presses the host's refresh key through
     /// the key's own handler, so the busy guard (queue / `Busy` notice) applies as for the key.
     pub(crate) fn project_refresh(&mut self) {
-        self.project_press(KeyPress::ch(
-            konoma_plugin::host::project::input::REFRESH_KEY,
-        ));
+        self.handle_project_key_in(
+            KeyEvent::new(
+                KeyCode::Char(konoma_plugin::host::project::input::REFRESH_KEY),
+                KeyModifiers::NONE,
+            ),
+            false,
+        );
     }
 
     /// The key of a canvas control as the footer and the help name it, or `None` where that key
@@ -1342,6 +1356,14 @@ impl App {
     }
 
     pub(crate) fn handle_project_key(&mut self, key: KeyEvent) -> bool {
+        self.handle_project_key_in(key, true)
+    }
+
+    /// [`Self::handle_project_key`] where `blocked_by_overlay` says whether an overlay in front of
+    /// the project (help, lists, Info, a dialog) keeps the key from the project. An app-level
+    /// action the overlay's own surface dispatched (the refresh bound in the help) passes `false`:
+    /// it acts on the project although the overlay is up.
+    fn handle_project_key_in(&mut self, key: KeyEvent, blocked_by_overlay: bool) -> bool {
         use crate::keymap::{Action, Motion, Resolution};
         #[cfg(feature = "git")]
         use crate::keymap::{Binding, ViewType};
@@ -1402,11 +1424,12 @@ impl App {
             jumps,
             back_keys: self.project_back_keys(),
             filter_keys: self.project_filter_keys(),
-            blocked: self.show_help
-                || self.dialog.is_some()
-                || self.is_tab_list()
-                || self.is_bookmark_list()
-                || self.is_info(),
+            blocked: blocked_by_overlay
+                && (self.show_help
+                    || self.dialog.is_some()
+                    || self.is_tab_list()
+                    || self.is_bookmark_list()
+                    || self.is_info()),
             leader: self.pending_leader.is_some(),
             global: self.keymaps.layer_of_key_on(
                 Context::Canvas,

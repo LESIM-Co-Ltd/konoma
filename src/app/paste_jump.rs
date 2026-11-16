@@ -282,6 +282,9 @@ impl App {
     /// `line` when given). Sets a `→ path[:line]` flash. Also reused by "open link in a new tab"
     /// (`md_open_focused_link_new_tab`) after it creates the fresh tab.
     pub(crate) fn paste_jump_to(&mut self, path: &Path, line: Option<usize>) {
+        // A project screen in front is left first (as its back key does), so the jump lands on
+        // the base screen and is shown instead of running under the screen.
+        self.leave_project_screens_for_jump();
         if !path.starts_with(&self.tab.root) {
             let anchor = if path.is_dir() {
                 path.to_path_buf()

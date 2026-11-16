@@ -12,6 +12,7 @@ include!("vcs_project_finish_cases.rs");
 include!("vcs_project_gap_cases.rs");
 include!("vcs_project_footer_cases.rs");
 include!("vcs_project_keys_cases.rs");
+include!("vcs_project_overlay_cases.rs");
 include!("vcs_project_help_cases.rs");
 include!("vcs_project_old_screens_cases.rs");
 include!("vcs_project_space_cases.rs");

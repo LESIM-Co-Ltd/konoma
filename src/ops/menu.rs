@@ -312,7 +312,7 @@ fn fixed_menu_with_preview(
 
 /// Operations a context has that no key is bound to by default (they used to have one, or never
 /// did): the menu is where they are always reachable.
-fn unkeyed(ctx: Context) -> Vec<Action> {
+pub(crate) fn unkeyed(ctx: Context) -> Vec<Action> {
     // The preview screens' are described once (the standalone app's menu reads the same list).
     if let Some(cctx) = super::preview_plan::core_of(ctx) {
         return konoma_host_core::preview_plan::unkeyed(cctx)

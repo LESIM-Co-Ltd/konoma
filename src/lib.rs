@@ -1878,9 +1878,10 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         }
         Action::OpenGitView => open_project_like_p(app),
         // On a project canvas the key `r` is the host's own refresh; the menu item runs that path.
-        Action::Refresh if ctx == keymap::Context::Canvas && app.project_active() => {
-            app.project_refresh()
-        }
+        // While a project screen covers the screen under it, `Refresh` is the project's own from
+        // whichever layer the key came (an overlay in front included), never the hidden
+        // preview's or the tree's.
+        Action::Refresh if app.project_active() => app.project_refresh(),
         Action::Refresh => app.refresh_explicit()?,
         Action::CyclePathStyle => app.cycle_path_style(),
         // The old sort overlay is gone: `open_sort_menu` is another name for the `,` menu of the
@@ -1940,6 +1941,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::VisualCommit => app.exit_visual_commit(),
         Action::VisualSelectSiblings => app.visual_select_scope(false),
         Action::VisualSelectAll => app.visual_select_scope(true),
+        // Whatever key it is bound to, going back from a project screen is the project's own back.
+        Action::PreviewBack if app.project_active() => app.project_back(),
         Action::PreviewBack => close_preview(app),
         Action::SearchStart => app.start_search(),
         // `n` / `N` step through the matches of a search; with no search active a text or document
@@ -2284,6 +2287,7 @@ fn handle_fixed_key(
     sfc: Surface,
     ctx: Option<keymap::Context>,
     key: KeyEvent,
+    kp: KeyPress,
 ) -> Result<Option<bool>> {
     let Some(ctx) = ctx else {
         return Ok(None);
@@ -2294,7 +2298,7 @@ fn handle_fixed_key(
     // A canvas hands the navigation fixed keys to the plugin: the key runs the plugin's action
     // when it declares one on it (the same lookup the footer and help use), else nothing.
     if ctx == keymap::Context::Canvas {
-        if let Some(a) = app.plugin_action_for_key(ctx, KeyPress::norm(&key)) {
+        if let Some(a) = app.plugin_action_for_key(ctx, kp) {
             return dispatch_action(app, a, sfc).map(Some);
         }
     }
@@ -2317,6 +2321,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     if app.handle_project_key(key) {
         return Ok(false);
     }
+    // The key as the frontmost layer reads it: a chord the project in front has no form for is a
+    // key of no host table, and closes a which-key menu like any other key not in it.
+    let Some(kp) = app.layer_key(&key) else {
+        app.pending_leader = None;
+        return Ok(false);
+    };
     let sfc = app.surface();
     // The keymap context: `None` exactly on the surfaces that do not use the keymap (text input,
     // confirm modals), which are handled before any lookup below.
@@ -2334,7 +2344,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         let leaves_follow_view = app.pending_leader.is_none()
             && ctx.is_some_and(|c| {
                 matches!(
-                    app.keymaps.resolve_on(c, screen, KeyPress::norm(&key)),
+                    app.keymaps.resolve_on(c, screen, kp),
                     Resolution::Action(Action::PreviewBack)
                 )
             });
@@ -2351,8 +2361,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         return handle_modal_confirm(app, sfc, key);
     }
 
-    let kp = KeyPress::norm(&key);
-
     // 2) Waiting on a which-key leader: resolve from leaders (an unknown suffix cancels and does
     // not fall through — §5).
     if let Some(lead) = app.pending_leader.take() {
@@ -2364,7 +2372,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     }
 
     // 3) Pre-empt surface-independent fixed keys (arrows = Navigate / Esc / Enter / Tab·BackTab) (requirements 3/4).
-    if let Some(done) = handle_fixed_key(app, sfc, ctx, key)? {
+    if let Some(done) = handle_fixed_key(app, sfc, ctx, key, kp)? {
         return Ok(done);
     }
 

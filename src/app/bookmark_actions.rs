@@ -189,6 +189,7 @@ impl App {
             }
             Some(p) if p.is_file() => {
                 self.close_bookmark_list();
+                self.leave_project_screens_for_jump();
                 self.enter_preview(&p);
             }
             Some(p) => {
@@ -310,6 +311,7 @@ impl App {
             if p.is_dir() {
                 self.jump_to_dir(p);
             } else if p.is_file() {
+                self.leave_project_screens_for_jump();
                 self.enter_preview(&p); // a file opens in the preview (tree is left unchanged)
             } else {
                 self.flash = Some(format!(

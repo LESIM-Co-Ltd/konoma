@@ -66,7 +66,7 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
     // action cannot reach the preview, outline, selection or marks under the screen, and the
     // keys, the footer and the help agree with the layer walk. The project screen's own keys are
     // handled before the gate is asked.
-    if app.project_screen_covers() && !allowed_over_a_project_screen(app, a) {
+    if app.project_screen_covers() && !allowed_over_a_project_screen_in(app, ctx, a) {
         return Gate::Off(None);
     }
     match a {
@@ -349,31 +349,74 @@ fn gate_plugin(app: &App, ctx: Context, p: crate::plugins::PluginAct) -> Gate {
     super::write_guard::write_guard(app, p.plugin(), binding.writes, false)
 }
 
+/// [`allowed_over_a_project_screen`] for the layer `ctx` belongs to. A project screen covers the
+/// layers BEHIND it and nothing in front of it: an overlay in front (help, the bookmark list, the
+/// tab list, Info) keeps its own actions, plus the application-level ones; anything else bound
+/// there (a config binding to a preview action) is off, so it cannot reach the hidden screen.
+pub(super) fn allowed_over_a_project_screen_in(app: &App, ctx: Context, a: Action) -> bool {
+    if app.overlay_in_front_of_project(ctx) {
+        return overlay_owns(app, ctx, a) || app_level_over_a_project_screen(a);
+    }
+    allowed_over_a_project_screen(app, a)
+}
+
+/// The actions an overlay owns, from the same sources as its footer and `Space` menu: what its
+/// defaults bind (whatever `[keys]` did since), its fixed keys and the operations that have no
+/// key. Config-independent, so a rebinding cannot widen it.
+fn overlay_owns(app: &App, ctx: Context, a: Action) -> bool {
+    // The overlay's own table (not the global one: tabs, quit, ... are the app-level part).
+    app.keymaps
+        .default_ops
+        .get(&ctx)
+        .is_some_and(|v| v.contains(&a))
+        || super::keys::fixed_bindings(ctx)
+            .iter()
+            .any(|f| f.action == a)
+        || super::menu::unkeyed(ctx).contains(&a)
+}
+
 /// The actions that stay available while a project screen covers the screen under it. Everything
 /// else is off there, so an action added later cannot act on the hidden preview by default.
+/// Written once as two parts: the application-level ones (also kept in an overlay in front of the
+/// screen) and the ones that act on the project screen itself.
 fn allowed_over_a_project_screen(app: &App, a: Action) -> bool {
+    app_level_over_a_project_screen(a) || acts_on_the_project_screen(app, a)
+}
+
+/// The application-level part of the allow list: tab, quit, help, paste-jump and refresh
+/// commands, and the screen's own motions. None of them reads the screen under (the ones that
+/// would are redirected where they run: see `dispatch_action`).
+fn app_level_over_a_project_screen(a: Action) -> bool {
+    use Action as A;
+    matches!(
+        a,
+        // A key the user disabled does nothing anywhere.
+        A::Noop
+            // The screen's own motions (it reads them through the same table).
+            | A::Navigate(_)
+            | A::TabNew
+            | A::TabNewAfter
+            | A::TabClose
+            | A::CloseTabOrQuit
+            | A::TabPrev
+            | A::TabNext
+            // The digit keys: switch to a tab.
+            | A::TabGoto(_)
+            | A::ToggleTabList
+            | A::ToggleHelp
+            | A::ToggleFollow
+            | A::PasteJump
+            | A::Quit
+            | A::Refresh
+    )
+}
+
+/// The part of the allow list that acts on the project screen: leaving it, launching from its own
+/// rows, its `Space` menu controls and the project-aware old names.
+fn acts_on_the_project_screen(app: &App, a: Action) -> bool {
     use Action as A;
     match a {
-        // A key the user disabled does nothing anywhere.
-        A::Noop => true,
-        // The screen's own motions (it reads them through the same table).
-        A::Navigate(_) => true,
-        // Tab-level and application-level commands: they never read the screen under.
-        A::TabNew
-        | A::TabNewAfter
-        | A::TabClose
-        | A::CloseTabOrQuit
-        | A::TabPrev
-        | A::TabNext
-        | A::OpenInNewTab
-        | A::ToggleTabList
-        | A::ToggleHelp
-        | A::ToggleFollow
-        | A::PasteJump
-        | A::Quit
-        | A::Refresh => true,
-        // The digit keys: switch to a tab.
-        A::TabGoto(_) => true,
+        A::OpenInNewTab => true,
         // Leaving the screen, and launching from its own rows.
         A::PreviewBack | A::OpenGitView | A::RequestEdit | A::OpenExternal => true,
         // A control chosen from the project screen's own `Space` menu.

@@ -2813,6 +2813,51 @@ impl App {
         self.project_active()
     }
 
+    /// Whether `ctx` is the context of an overlay that is drawn in FRONT of an open project
+    /// screen (help, the bookmark list, the tab list, Info; their `/` filters read text and never
+    /// ask the keymap). A project screen covers the layers behind it and nothing in front of it,
+    /// so these keep their own actions ([`crate::ops::gate`]). The match has no wildcard: a new
+    /// context must be classified here.
+    pub fn overlay_in_front_of_project(&self, ctx: crate::keymap::Context) -> bool {
+        if !self.project_screen_covers() {
+            return false;
+        }
+        use crate::keymap::Context;
+        match ctx {
+            Context::Help | Context::Bookmarks | Context::Tabs | Context::Info => true,
+            Context::Tree
+            | Context::TreeVisual
+            | Context::Text
+            | Context::Document
+            | Context::TextVisual
+            | Context::Image
+            | Context::Table
+            | Context::Canvas
+            | Context::TableCell
+            | Context::Outline
+            | Context::Diff => false,
+            #[cfg(feature = "git")]
+            Context::Screen(..) => false,
+        }
+    }
+
+    /// Whether the project screen is the frontmost layer (nothing is drawn in front of it).
+    pub fn project_is_frontmost(&self) -> bool {
+        self.frontmost_layer(|_| true) == UiLayer::Project
+    }
+
+    /// The key as the frontmost layer reads it, for every host lookup (keymap, plugin keys, fixed
+    /// keys). The project screen compares modifiers exactly (Alt is part of its keys), so a chord
+    /// with Alt is a key of no host table while it is in front: `None`. Every other layer, and the
+    /// host without a project, reads the key through [`KeyPress::norm`] as before.
+    pub fn layer_key(&self, key: &crossterm::event::KeyEvent) -> Option<crate::keymap::KeyPress> {
+        use crossterm::event::KeyModifiers;
+        if key.modifiers.contains(KeyModifiers::ALT) && self.project_is_frontmost() {
+            return None;
+        }
+        Some(crate::keymap::KeyPress::norm(key))
+    }
+
     fn frontmost_layer(&self, visible: impl Fn(UiLayer) -> bool) -> UiLayer {
         macro_rules! layer {
             ($active:expr, $l:expr) => {
@@ -3744,6 +3789,11 @@ impl App {
     ///   section being read; see `preview_edit_line` verification).
     /// - Otherwise (tree edits, Mermaid, images): None (open at the top).
     fn preview_edit_line(&self) -> Option<usize> {
+        // A project screen in front hides the preview: its caret, scroll and diff are not what
+        // the target (the project's own row) is at, so the editor is given no line.
+        if self.project_screen_covers() {
+            return None;
+        }
         if self.tab.mode != Mode::Preview {
             return None;
         }

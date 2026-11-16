@@ -1234,8 +1234,10 @@ fn vcs_keys_only_the_listed_actions_stay_on_over_a_project_screen() {
     };
     let sim = project_over_md_preview(&repo, "git");
     let all = every_assignable_action();
-    // A floor on the walk: the parser has well over a hundred names.
-    assert!(all.len() > 100, "only {} action names were walked", all.len());
+    // The walk is complete: every variant of `Action` (the ones with no config name, the
+    // project controls and the plugin actions included) has a value in it, exactly
+    // (`vcs_keys_the_walk_over_every_action_and_every_context_of_a_project_screen` walks them).
+    assert_the_walk_covers_every_variant(&every_action_value(&sim.app));
     // Over the project screen the gate allows an explicit list; every other action is off, by
     // name, whatever key the config binds it to. Some listed actions have a rule of their own
     // (a tab count, a launch target), so a listed action may still be off.
