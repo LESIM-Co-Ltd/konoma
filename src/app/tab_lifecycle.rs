@@ -207,8 +207,14 @@ impl App {
         // A tab left while its kind was still being decided holds the provisional kind, and its
         // reply was (or will be) dropped by the generation check: ask again, so the landing
         // kept in the tab is applied when the answer comes.
-        if self.tab.kind_resolving && self.tab.mode == Mode::Preview {
-            if let Some(path) = self.tab.preview_path.clone() {
+        // Only for the file preview that asked: a pending resolution of another path (or none)
+        // is not this tab's to ask about.
+        if self.tab.mode == Mode::Preview {
+            let ask = self.tab.pending.as_ref().and_then(|p| {
+                (!p.kind_known && self.tab.preview_path.as_ref() == Some(&p.path))
+                    .then(|| p.path.clone())
+            });
+            if let Some(path) = ask {
                 self.resolve_preview_on_worker(&path);
             }
         }

@@ -502,6 +502,8 @@ impl App {
                 self.plugin_view_now(self.plugin_view_req());
             }
         }
+        // The text is here: a landing that waited for it runs now.
+        self.land_pending_document();
     }
 
     /// The plugin could not show the document (the reason is the show's failure): nothing of an

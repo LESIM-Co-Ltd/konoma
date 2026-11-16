@@ -230,10 +230,19 @@ impl App {
                 {
                     return false;
                 }
+                // The reply belongs to the file preview that asked: if that preview has been left
+                // or replaced since (`set_preview_kind` drops its pending resolution), nothing of
+                // it is applied.
+                let Some(pending) = self
+                    .tab
+                    .pending
+                    .take_if(|p| !p.kind_known && p.path == path)
+                else {
+                    return false;
+                };
                 self.media_loading = false;
                 let kind = crate::plugins::kind_of(plan, &path);
-                let landing = std::mem::take(&mut self.tab.landing);
-                self.apply_resolved_preview(kind, &path, landing);
+                self.apply_resolved_preview(kind, &path, pending.landing);
                 true
             }
         }

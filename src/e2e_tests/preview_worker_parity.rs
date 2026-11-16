@@ -408,3 +408,159 @@ fn restored_tabs_that_were_previews_are_drawn_when_switched_to_with_the_worker()
     s2.see("Alpha Heading");
     s2.dont_see("can not preview");
 }
+
+// --- A resolution still on its way belongs to the file preview that asked for it.
+
+/// A file preview left (`q`) before the worker's reply must take its pending resolution with it,
+/// even when the next thing opened is the *same file's* diff (so no path comparison can tell them
+/// apart): a later tab round trip must not ask again about, and land on, that diff as a preview.
+#[cfg(feature = "git")]
+#[test]
+fn a_left_previews_pending_landing_does_not_turn_the_next_diff_into_a_preview() {
+    let root = changed_repo(
+        "pwp_left_pending",
+        "a.txt",
+        &numbered_lines(300),
+        &format!("changed first\n{}", numbered_lines(300)),
+    );
+    let mut s = road(&root, cfg_en(), true);
+    // The file is opened on line 100: its kind goes to the worker and the reply is not taken yet.
+    s.app.paste_jump_to(&root.join("a.txt"), Some(100));
+    s.key('q');
+    s.select("a.txt");
+    s.key('d');
+    // A tab round trip: the tab is saved and made active again.
+    s.key('t');
+    s.key('[');
+    s.settle_inline_images("round trip", std::time::Duration::from_secs(60));
+    // Whatever replies were on their way, the diff is still the diff.
+    while let Ok(res) = s.media_rx.as_ref().unwrap().try_recv() {
+        s.app.apply_media(res);
+    }
+    s.draw();
+    assert!(
+        s.app.is_git_diff_preview(),
+        "the diff became an ordinary preview:\n{}",
+        s.screen()
+    );
+}
+
+// --- A landing waits for the document's text.
+
+/// The plugin has not delivered a Markdown file's text when the preview opens (the first frame's
+/// wait is over): the line the opener asked for is not lost, it lands with the text. The plugin's
+/// `open` is held behind a gate, so the state is made, not raced.
+#[test]
+fn a_line_jump_into_markdown_whose_text_comes_late_lands_when_it_comes() {
+    use crate::app::HoldOpens;
+    use crate::plugins::test_plugins::Latch;
+    let dir = sandbox("pwp_goto_md_late");
+    let mut body = String::from("# Title\n\n");
+    for i in 0..60 {
+        body.push_str(&format!("Paragraph {i} with some **bold** words.\n\n"));
+    }
+    std::fs::write(dir.join("doc.md"), body).unwrap();
+    let root = canon(&dir);
+    let mut screens = Vec::new();
+    for worker in [false, true] {
+        let gate = std::sync::Arc::new(Latch::default());
+        let _hold = HoldOpens::until(&gate);
+        let mut s = road(&root, cfg_en(), worker);
+        s.app.paste_jump_to(&root.join("doc.md"), Some(40));
+        // With the worker the kind is decided by a reply: take it (it opens the plugin).
+        while worker && !s.app.is_document_loading() {
+            let res = s
+                .media_rx
+                .as_ref()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("the worker answers");
+            s.app.apply_media(res);
+        }
+        assert!(
+            s.app.document_text_missing(),
+            "worker={worker}: the text must still be on its way"
+        );
+        gate.open();
+        s.settle_inline_images("late markdown", std::time::Duration::from_secs(120));
+        s.draw();
+        s.see("**bold**");
+        s.see("Paragraph 19");
+        s.dont_see("can not preview");
+        screens.push(s);
+    }
+    assert_same_screen(&screens[0], &screens[1], "markdown file:40, late text");
+}
+
+// --- A screen that covered a preview gives it back where it was read.
+
+/// Opens `file` on `road`, reads it down to `line`, covers it with a project screen and leaves
+/// that screen again: the position of the reading is what the preview is back at.
+#[track_caller]
+fn read_cover_and_return(root: &std::path::Path, file: &str, line: usize, worker: bool) -> Sim {
+    let mut s = road(root, cfg_en(), worker);
+    s.select(file);
+    s.enter();
+    s.settle_inline_images("opened", std::time::Duration::from_secs(60));
+    s.app.paste_jump_to(&root.join(file), Some(line));
+    s.settle_inline_images("jumped", std::time::Duration::from_secs(60));
+    s.draw();
+    s.app.cover_with_project_screen_for_test();
+    s.app.leave_project_screens_for_test();
+    s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+    s.draw();
+    s
+}
+
+#[test]
+fn a_windowed_text_is_read_where_it_was_after_a_project_screen_with_and_without_the_worker() {
+    let dir = sandbox("pwp_return_text");
+    std::fs::write(dir.join("long.txt"), numbered_lines(300)).unwrap();
+    let root = canon(&dir);
+    let mut screens = Vec::new();
+    for worker in [false, true] {
+        let s = read_cover_and_return(&root, "long.txt", 150, worker);
+        s.see("line number 150");
+        assert!(
+            s.app.preview_top_line() > 0,
+            "worker={worker}: back at the first line"
+        );
+        assert_eq!(s.app.preview_caret_line(), 149, "worker={worker}");
+        screens.push(s);
+    }
+    assert_same_screen(&screens[0], &screens[1], "text after a project screen");
+}
+
+#[test]
+fn a_markdown_view_is_read_where_it_was_after_a_project_screen_with_and_without_the_worker() {
+    let dir = sandbox("pwp_return_md");
+    let mut body = String::from("# Title\n\n");
+    for i in 0..60 {
+        body.push_str(&format!("Paragraph {i} with some **bold** words.\n\n"));
+    }
+    std::fs::write(dir.join("doc.md"), body).unwrap();
+    let root = canon(&dir);
+    for worker in [false, true] {
+        let mut s = road(&root, cfg_en(), worker);
+        s.select("doc.md");
+        s.enter();
+        s.settle_inline_images("opened", std::time::Duration::from_secs(60));
+        let at_top = s.app.reading_position_for_test();
+        // Rendered view, scrolled down.
+        for _ in 0..30 {
+            s.key('j');
+        }
+        s.draw();
+        let before = s.app.reading_position_for_test();
+        assert_ne!(before, at_top, "worker={worker}: the view did not move");
+        s.app.cover_with_project_screen_for_test();
+        s.app.leave_project_screens_for_test();
+        s.settle_inline_images("returned", std::time::Duration::from_secs(60));
+        s.draw();
+        assert_eq!(
+            s.app.reading_position_for_test(),
+            before,
+            "worker={worker}: not back where it was read"
+        );
+    }
+}

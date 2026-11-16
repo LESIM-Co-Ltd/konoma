@@ -93,6 +93,8 @@ mod paste_jump;
 mod plugin_acts;
 mod plugin_host;
 #[cfg(test)]
+pub(crate) use plugin_host::HoldOpens;
+#[cfg(test)]
 pub(crate) use plugin_host::InlineAnswers;
 mod plugin_input;
 mod plugin_outcomes;
@@ -1935,6 +1937,38 @@ pub(crate) enum Landing {
         read_context: konoma_plugin::host::project::DiffReadContext,
         follow_scope: bool,
     },
+    /// Put the reading position back (coming back to a preview from a screen that covered it).
+    Restore(ReadingPosition),
+}
+
+/// Where a preview is being read: the whole position, whichever way the kind shows it (the
+/// scroll of a decorated view, the line-head byte, top line and caret of a windowed one, the
+/// focused item of a Markdown view). Saved when something covers the preview, put back by
+/// `Landing::Restore` once the kind is known.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) struct ReadingPosition {
+    scroll: u16,
+    hscroll: u16,
+    byte_top: u64,
+    top_line: usize,
+    cursor_line: usize,
+    cursor_col: usize,
+    focused_item: Option<usize>,
+}
+
+/// What a file preview still waits for. One value, owned by the preview that asked: it is dropped
+/// whenever the tab's preview kind is set (`App::set_preview_kind`), so it never outlives the file
+/// preview it was made for or lands on another one.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingResolution {
+    /// The file the preview was opened on.
+    pub(crate) path: PathBuf,
+    /// What the opener wants done once the preview can be positioned.
+    pub(crate) landing: Landing,
+    /// `false`: the kind is still being decided on the worker (the kind held in `preview_kind` is
+    /// the provisional one; a tab saved in this state asks again when it becomes active). `true`:
+    /// the kind is known and the landing waits for the document's text.
+    pub(crate) kind_known: bool,
 }
 
 #[derive(Clone)]
@@ -2046,15 +2080,10 @@ pub(crate) struct PerTab {
     /// plain raw-source toggle / tree return. Cleared by `App::enter_preview`'s own reset (so any
     /// *other* way of opening a preview always starts `false`) and by returning to the diff.
     preview_from_diff: bool,
-    /// The preview's kind was handed to the resolution worker and its reply has not landed: the
-    /// kind held in `preview_kind` is the provisional one. A tab saved in this state asks again when
-    /// it becomes active (its reply was dropped by the generation check on the switch).
-    kind_resolving: bool,
-    /// What the opener of this preview wants done once the kind is known (a line to land on, the
-    /// first change). Taken by `App::apply_resolved_preview` on both roads: at once without the
-    /// worker, from the reply with it. Replaced by every `enter_preview`, so a reply for an
-    /// earlier file never finds another file's landing.
-    landing: Landing,
+    /// What the file preview in this tab still waits for before it is final (see
+    /// [`PendingResolution`]). It belongs to **that file preview**: `App::set_preview_kind`, the one
+    /// place a preview is replaced or left, drops it.
+    pending: Option<PendingResolution>,
     // --- Internal scroll state for a windowed (Code/Text/raw md) preview ---
     preview_byte_top: u64,
     preview_top_line: usize,
@@ -2192,8 +2221,7 @@ impl Default for PerTab {
             diff_media_page: 1,
             diff_scroll_pending: None,
             preview_from_diff: false,
-            kind_resolving: false,
-            landing: Landing::None,
+            pending: None,
             preview_byte_top: 0,
             preview_top_line: 0,
             command_out: None,
@@ -3510,17 +3538,84 @@ impl App {
         // synchronously decides there whether the source view is the one wanted.
         self.tab.repr = None;
         self.tab.deck_pending_slide = None;
-        self.tab.kind_resolving = false;
         self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
         self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
         self.load_plugin();
+        self.land_when_ready(path, landing);
+    }
+
+    /// Does what the opener wanted once the preview can be positioned. A document whose text has
+    /// not arrived cannot (a Markdown line is found in its source, a first change in its text): the
+    /// landing waits as the tab's pending resolution and `land_pending_document` runs it when the
+    /// text lands.
+    fn land_when_ready(&mut self, path: &Path, landing: Landing) {
+        if landing == Landing::None {
+            return;
+        }
+        if self.document_text_missing() {
+            self.tab.pending = Some(PendingResolution {
+                path: path.to_path_buf(),
+                landing,
+                kind_known: true,
+            });
+            return;
+        }
+        self.run_landing(landing);
+    }
+
+    /// The position the preview is being read at.
+    pub(super) fn reading_position(&self) -> ReadingPosition {
+        ReadingPosition {
+            scroll: self.tab.preview_scroll,
+            hscroll: self.tab.preview_hscroll,
+            byte_top: self.tab.preview_byte_top,
+            top_line: self.tab.preview_top_line,
+            cursor_line: self.tab.preview_cursor_line,
+            cursor_col: self.tab.preview_cursor_col,
+            focused_item: self.tab.focused_item,
+        }
+    }
+
+    /// Test-only: [`App::reading_position`] for the tests outside `app`.
+    #[cfg(test)]
+    pub(crate) fn reading_position_for_test(&self) -> ReadingPosition {
+        self.reading_position()
+    }
+
+    fn restore_reading_position(&mut self, pos: ReadingPosition) {
+        self.tab.preview_scroll = pos.scroll;
+        self.tab.preview_hscroll = pos.hscroll;
+        self.tab.preview_byte_top = pos.byte_top;
+        self.tab.preview_top_line = pos.top_line;
+        self.tab.preview_cursor_line = pos.cursor_line;
+        self.tab.preview_cursor_col = pos.cursor_col;
+        self.tab.focused_item = pos.focused_item;
+    }
+
+    fn run_landing(&mut self, landing: Landing) {
         match landing {
+            Landing::Restore(pos) => self.restore_reading_position(pos),
             Landing::None => {}
             Landing::GotoLine(line) => self.preview_goto_line(line),
             Landing::FirstChange => self.follow_scroll_to_first_change(),
             #[cfg(feature = "git")]
             Landing::DiffPreview { .. } => self.follow_scroll_to_first_change(),
+        }
+    }
+
+    /// The document's text has landed: runs the landing that waited for it.
+    pub(super) fn land_pending_document(&mut self) {
+        if self.document_text_missing() {
+            return;
+        }
+        let waiting = self.tab.pending.as_ref().is_some_and(|p| {
+            p.kind_known && self.tab.preview_path.as_deref() == Some(p.path.as_path())
+        });
+        if waiting {
+            if let Some(p) = self.tab.pending.take() {
+                self.run_landing(p.landing);
+            }
         }
     }
 
@@ -3667,11 +3762,13 @@ impl App {
             self.tab.deck_pending_slide = None;
             self.set_preview_kind(Some(kind));
             self.setup_windowed();
-            self.tab.kind_resolving = true;
-            self.tab.landing = landing;
+            self.tab.pending = Some(PendingResolution {
+                path: path.to_path_buf(),
+                landing,
+                kind_known: false,
+            });
             self.resolve_preview_on_worker(path);
         } else {
-            self.tab.landing = Landing::None;
             self.apply_resolved_preview(kind, path, landing);
         }
     }

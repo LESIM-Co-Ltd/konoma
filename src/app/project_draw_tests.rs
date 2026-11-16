@@ -144,8 +144,7 @@ fn app() -> (App, crate::test_support::TmpDir) {
         origin_mode: Mode::Tree,
         origin_path: None,
         origin_kind: None,
-        origin_scroll: 0,
-        origin_hscroll: 0,
+        origin_position: Default::default(),
     });
     let (tx, _jobs) = std::sync::mpsc::sync_channel(1);
     let (_results, rx) = std::sync::mpsc::sync_channel(1);

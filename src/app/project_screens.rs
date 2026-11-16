@@ -326,8 +326,7 @@ pub(crate) struct ProjectNavigation {
     origin_mode: Mode,
     origin_path: Option<PathBuf>,
     origin_kind: Option<PreviewKind>,
-    origin_scroll: u16,
-    origin_hscroll: u16,
+    origin_position: super::ReadingPosition,
 }
 
 #[cfg(test)]
@@ -353,8 +352,7 @@ mod presentation_frame_tests {
             origin_mode: Mode::Tree,
             origin_path: None,
             origin_kind: None,
-            origin_scroll: 0,
-            origin_hscroll: 0,
+            origin_position: Default::default(),
         });
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         for help in [false, true] {
@@ -1142,15 +1140,46 @@ impl App {
         if !self.project_is_enabled(&key.plugin) {
             return;
         }
-        self.tab.project_navigation = Some(ProjectNavigation {
-            state: ProjectHost::<ProjectInvocation>::start_screen(key, screen),
+        self.tab.project_navigation = Some(self.navigation_over_here(ProjectHost::<
+            ProjectInvocation,
+        >::start_screen(
+            key, screen
+        )));
+        self.ensure_project_view();
+    }
+
+    /// A navigation that remembers what it covers: the mode, the file and kind of the preview and
+    /// the whole position it was being read at.
+    fn navigation_over_here(
+        &self,
+        state: ProjectScreenState<ProjectInvocation>,
+    ) -> ProjectNavigation {
+        ProjectNavigation {
+            state,
             origin_mode: self.tab.mode,
             origin_path: self.tab.preview_path.clone(),
             origin_kind: self.tab.preview_kind.clone(),
-            origin_scroll: self.tab.preview_scroll,
-            origin_hscroll: self.tab.preview_hscroll,
-        });
-        self.ensure_project_view();
+            origin_position: self.reading_position(),
+        }
+    }
+
+    /// Test-only: a project screen opened over what the tab shows, the way `show_project_screen`
+    /// does it (without a project plugin behind it).
+    #[cfg(test)]
+    pub(crate) fn cover_with_project_screen_for_test(&mut self) {
+        let key = ProjectKey {
+            plugin: "example".into(),
+            root: self.tab.root.clone(),
+            marker: "project".into(),
+        };
+        let state = ProjectScreenState::new(key, ScreenKey::new("items", self.tab.id));
+        self.tab.project_navigation = Some(self.navigation_over_here(state));
+    }
+
+    /// Test-only: leaving the top project screen.
+    #[cfg(test)]
+    pub(crate) fn leave_project_screens_for_test(&mut self) {
+        self.leave_project_screens();
     }
 
     fn ensure_project_view(&mut self) {
@@ -1193,19 +1222,21 @@ impl App {
                             ..Default::default()
                         },
                     );
+                    self.tab.preview_scroll = nav.origin_position.scroll;
+                    self.tab.preview_hscroll = nav.origin_position.hscroll;
                 } else {
                     // The project overlays this Preview. Re-entering the file resets the
                     // diff-only state, which belongs to the retained origin on this return.
                     let from_diff = self.tab.preview_from_diff;
                     let read_context = self.tab.diff_read_context;
-                    self.enter_preview(&path);
+                    // The whole reading position goes back once the kind is known (with the
+                    // preview worker that is when its reply lands, not now).
+                    self.enter_preview_landing(&path, Landing::Restore(nav.origin_position));
                     self.tab.preview_from_diff = from_diff;
                     if from_diff {
                         self.tab.diff_read_context = read_context;
                     }
                 }
-                self.tab.preview_scroll = nav.origin_scroll;
-                self.tab.preview_hscroll = nav.origin_hscroll;
             }
             _ => self.back_to_tree(),
         }
