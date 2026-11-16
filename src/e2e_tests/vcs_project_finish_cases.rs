@@ -2442,3 +2442,52 @@ fn vcs_port_alt_chords_are_not_the_back_or_filter_key() {
     keys(&mut sim, "q");
     assert!(!sim.app.project_active(), "plain q does not leave");
 }
+
+/// A key the project layer ignores (an Alt chord) does nothing at all while the screen reads: it
+/// neither waits in line nor cancels what waits. A `c` queued during the load still opens its
+/// input after the load; plain `q` during the load still leaves.
+#[test]
+fn vcs_port_an_ignored_key_during_a_load_leaves_the_waiting_key_alone() {
+    use std::sync::atomic::Ordering;
+    if isolated("vcs_port_an_ignored_key_during_a_load_leaves_the_waiting_key_alone") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_alt_during_load", true);
+    for table in ["git.changes", "git_changes"] {
+        for ignored in ['j', 'h', 'q'] {
+            let (cfg, h) = wt_flaky_cfg("git", table);
+            let mut sim = open(&root, cfg, (180, 24));
+            screen(&mut sim, "changes");
+            h.hold.store(true, Ordering::SeqCst);
+            sim.press(KeyCode::Char('r'), KeyModifiers::NONE);
+            assert!(sim.app.project_jobs_pending(), "{table}: r did not start a job");
+            sim.press(KeyCode::Char('c'), KeyModifiers::NONE);
+            let before = sim.app.project_frame().unwrap().pending.len();
+            assert!(before >= 1, "{table}: c did not wait in line");
+            sim.press(KeyCode::Char(ignored), KeyModifiers::ALT);
+            assert!(sim.app.project_active(), "{table}: Alt-{ignored} left");
+            assert_eq!(
+                sim.app.project_frame().unwrap().pending.len(),
+                before,
+                "{table}: Alt-{ignored} changed the waiting keys"
+            );
+            h.latch.open();
+            drain(&mut sim);
+            assert!(
+                sim.app.project_dialog.is_some(),
+                "{table}: Alt-{ignored} during the load lost the waiting c"
+            );
+        }
+        // Plain q during the load is unchanged: it leaves the project.
+        let (cfg, h) = wt_flaky_cfg("git", table);
+        let mut sim = open(&root, cfg, (180, 24));
+        screen(&mut sim, "changes");
+        h.hold.store(true, Ordering::SeqCst);
+        sim.press(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(sim.app.project_jobs_pending());
+        sim.press(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(!sim.app.project_active(), "{table}: plain q during a load did not leave");
+        h.latch.open();
+        drain(&mut sim);
+    }
+}

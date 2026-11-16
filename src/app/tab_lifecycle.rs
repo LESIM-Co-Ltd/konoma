@@ -329,6 +329,10 @@ impl App {
         self.tab.project_effects.clear();
         self.tab.project_enter_pending = false;
         self.tab.project_enter_op = None;
+        // The reload a covered screen of the tab we left is owed belongs to that tab (its snapshot
+        // holds it); this tab has no covered screen.
+        self.tab.covered_reload = None;
+        self.tab.covered_changed_filter = false;
         self.project_dialog = None;
         self.tab.open_dir = root.clone();
         self.tab.root = root;

@@ -384,3 +384,95 @@ fn a_screen_action_with_the_rebound_key_wins_over_the_jump() {
         "list"
     );
 }
+
+fn alt(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+}
+
+/// A key the project layer ignores (an Alt chord has no form in it) does nothing at all: with a
+/// `c` waiting behind a read, it neither joins the queue nor cancels it. Plain `q` still leaves
+/// the project, as before.
+#[test]
+fn an_ignored_key_neither_queues_nor_cancels_what_waits() {
+    use super::actions::ProjectDispatch;
+    for c in ['h', 'j', 'l', 'q', 'Q'] {
+        let mut f = super::actions_tests::Fixture::new();
+        f.runtimes.get_mut(&project()).unwrap().busy = true;
+        let (mut host, mut context) = f.parts();
+        assert!(host.queue_input(&mut context, ProjectInput::Key(key('c'))));
+        let update = host.handle_key(&mut context, alt(c), &ProjectKeyFacts::of_no_key());
+        assert_eq!(update.dispatch, ProjectDispatch::Unhandled, "Alt-{c}");
+        let frame = context.active.as_ref().unwrap().frame().unwrap();
+        assert_eq!(frame.pending.len(), 1, "Alt-{c} changed the queue");
+        assert!(
+            matches!(frame.pending.front(), Some(ProjectInput::Key(k)) if k == &key('c')),
+            "Alt-{c} displaced the waiting key"
+        );
+    }
+    let mut f = super::actions_tests::Fixture::new();
+    f.runtimes.get_mut(&project()).unwrap().busy = true;
+    let (mut host, mut context) = f.parts();
+    assert!(host.queue_input(&mut context, ProjectInput::Key(key('c'))));
+    let update = host.handle_key(&mut context, key('q'), &ProjectKeyFacts::default());
+    assert_eq!(update.dispatch, ProjectDispatch::LeaveProject);
+}
+
+/// The direct refresh goes through the same gate as the key `r`: behind a read, behind input that
+/// is still pending after the read, and into the busy notice when the queue is full.
+#[test]
+fn the_direct_refresh_goes_through_the_gate_of_the_key_r() {
+    use super::actions::ProjectCommand;
+    // (busy, pending before, expected queue length after, expected busy notice)
+    for (busy, before, after, notice) in [
+        (true, 0, 1, false),
+        (false, 1, 2, false),
+        (false, 4096, 4096, true),
+        (true, 4096, 4096, true),
+        (false, 0, 0, false),
+    ] {
+        let mut outcomes = Vec::new();
+        for direct in [false, true] {
+            let mut f = super::actions_tests::Fixture::new();
+            f.runtimes.get_mut(&project()).unwrap().busy = busy;
+            let (mut host, mut context) = f.parts();
+            for _ in 0..before {
+                assert!(host.queue_input(&mut context, ProjectInput::Key(key('x'))));
+            }
+            let update = if direct {
+                host.refresh(&mut context)
+            } else {
+                host.handle_key(&mut context, key('r'), &ProjectKeyFacts::default())
+            };
+            let frame = context.active.as_ref().unwrap().frame().unwrap();
+            let busy_notice = update.commands.iter().any(|c| {
+                matches!(
+                    c,
+                    ProjectCommand::Notice(super::actions::ProjectNotice::Busy)
+                )
+            });
+            let ran = update
+                .commands
+                .iter()
+                .any(|c| matches!(c, ProjectCommand::EnsureView));
+            assert_eq!(
+                frame.pending.len(),
+                after,
+                "direct={direct} busy={busy} before={before}: queue length"
+            );
+            assert_eq!(
+                busy_notice, notice,
+                "direct={direct} busy={busy} before={before}"
+            );
+            assert_eq!(
+                ran,
+                after == 0 && !notice,
+                "direct={direct} busy={busy} before={before}: ran"
+            );
+            outcomes.push((frame.pending.len(), busy_notice, ran));
+        }
+        assert_eq!(
+            outcomes[0], outcomes[1],
+            "busy={busy} before={before}: r and refresh differ"
+        );
+    }
+}

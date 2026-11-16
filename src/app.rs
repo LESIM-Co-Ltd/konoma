@@ -1168,13 +1168,6 @@ pub struct App {
 
     /// Flag requesting launch of an external git tool (lazygit, etc.) via `O`. The run loop takes it, suspends the TUI, and launches.
     pending_git_tool: bool,
-    /// What an external program that returned while a project screen covered the screen under it
-    /// may have changed in that hidden screen. The hidden screen is not rebuilt while covered; it
-    /// is brought up to date when it is in front again ([`App::settle_covered_reload`]).
-    covered_reload: Option<ExternalReturn>,
-    /// A status result arrived while a project screen covered the screen under it, so the changed-files
-    /// list under it was not rebuilt from it; it is rebuilt when that screen is in front again.
-    covered_changed_filter: bool,
 
     /// Cache of decorated preview content (Markdown/Mermaid).
     /// Avoids re-parsing (pulldown-cmark/syntect/mermaid layout) on every scroll.
@@ -2105,6 +2098,16 @@ pub(crate) struct PerTab {
     /// anchor rides along in its own snapshot across any number of switches until it is actually
     /// consumed (no loss *out*).
     changed_anchor_pending: Option<PathBuf>,
+    /// What an external program or a file-watch event that arrived while a project screen covered
+    /// this tab's screen may have changed in that hidden screen. The hidden screen is not rebuilt
+    /// while covered; it is brought up to date when it is in front again
+    /// ([`App::settle_covered_reload`]). Per tab: it belongs to the tab whose screen is covered,
+    /// travels with a tab switch and is dropped with the tab.
+    covered_reload: Option<ExternalReturn>,
+    /// A status result arrived while a project screen covered this tab's screen, so the
+    /// changed-files list under it was not rebuilt from it; it is rebuilt when that screen is in
+    /// front again. Per tab, like `covered_reload`.
+    covered_changed_filter: bool,
     preview_search: Option<String>,
     search_input: Option<String>,
     search_matches: Vec<(u64, usize, usize)>,
@@ -2187,6 +2190,8 @@ impl Default for PerTab {
             filter_pool: Vec::new(),
             changed_filter: false,
             changed_anchor_pending: None,
+            covered_reload: None,
+            covered_changed_filter: false,
             preview_search: None,
             search_input: None,
             search_matches: Vec::new(),
@@ -2285,8 +2290,6 @@ impl App {
             pending_edit: None,
             pending_terminal: None,
             pending_git_tool: false,
-            covered_reload: None,
-            covered_changed_filter: false,
             md_cache: None,
             diff_cache: None,
             gutter_cache: None,
@@ -3335,8 +3338,8 @@ impl App {
     /// `visual_anchor` is an entries index, so it goes stale under a different root. The filter and preview search are also
     /// for the old root, so they are cleared together (rebuild_tree also invalidates visual_anchor, but we do it explicitly).
     fn clear_for_root_change(&mut self) {
-        self.covered_reload = None;
-        self.covered_changed_filter = false;
+        self.tab.covered_reload = None;
+        self.tab.covered_changed_filter = false;
         self.tab.project_navigation = None;
         self.tab.project_return = None;
         self.project_dialog = None;
@@ -3933,7 +3936,7 @@ impl App {
     pub(crate) fn external_returned(&mut self, what: ExternalReturn) {
         if self.project_screen_covers() {
             self.project_refresh();
-            self.covered_reload = self.covered_reload.max(Some(what));
+            self.tab.covered_reload = self.tab.covered_reload.max(Some(what));
             return;
         }
         match what {
@@ -3954,21 +3957,43 @@ impl App {
     /// and that screen has not been brought up to date yet.
     #[cfg(all(test, feature = "git"))]
     pub(crate) fn covered_reload_pending(&self) -> bool {
-        self.covered_reload.is_some()
+        self.tab.covered_reload.is_some()
+    }
+
+    /// Test accessors: a status scan is in flight / a changed-files rebuild is left to it.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn git_status_in_flight(&self) -> bool {
+        self.git_status_pending.is_some()
+    }
+
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn changed_anchor_left_to_status(&self) -> bool {
+        self.tab.changed_anchor_pending.is_some()
+    }
+
+    /// Test accessor: the active tab has a changed-files rebuild owed to its covered list.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn covered_changed_filter_pending(&self) -> bool {
+        self.tab.covered_changed_filter
     }
 
     /// The screen under a project screen is in front again: reload what an external program that
     /// returned meanwhile may have changed ([`App::external_returned`]).
     pub(crate) fn settle_covered_reload(&mut self) {
-        if std::mem::take(&mut self.covered_changed_filter) && self.tab.changed_filter {
+        if std::mem::take(&mut self.tab.covered_changed_filter) && self.tab.changed_filter {
             let anchor = self
                 .tab
                 .changed_anchor_pending
-                .take()
+                .clone()
                 .or_else(|| self.filter_anchor());
-            self.reapply_changed_filter(anchor);
+            // The same condition as the ordinary rebuild: not while this tab's status is still
+            // being fetched (its list would be judged from an empty status and turn itself off).
+            if !self.rebuild_changed_list_when_status_ready(anchor.clone()) {
+                // Left to `apply_statuses`, which reads the identity back from here.
+                self.tab.changed_anchor_pending = anchor;
+            }
         }
-        match self.covered_reload.take() {
+        match self.tab.covered_reload.take() {
             Some(ExternalReturn::File) => self.reload_preview(),
             Some(ExternalReturn::Tree) => {
                 let _ = self.refresh();

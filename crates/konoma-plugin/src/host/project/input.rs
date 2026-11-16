@@ -141,9 +141,12 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             return ProjectUpdate::handled();
         }
         let interaction = self.pending_interaction(context, &facts.actions);
-        let nav = context.active.as_ref().unwrap();
         // The press as the keymap sees it (code and Ctrl). An Alt chord is never one of these.
         let pressed = project_key_press(&key);
+        // A key the project layer has no form for is ignored by it: it never reaches the queue
+        // below, neither to wait in line behind a read nor to cancel what waits (host and
+        // standalone program decide it here, from the one reading of a key).
+        let ignored = pressed.is_none();
         let back_key = pressed.is_some_and(|k| facts.back_keys.contains(&k));
         let filter_key = pressed.is_some_and(|k| facts.filter_keys.contains(&k));
         let jump_key = pressed.is_some_and(|k| jump_target(&facts.jumps, k).is_some());
@@ -153,6 +156,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                 || back_key
                 || jump_key);
         let global = !interaction
+            && !ignored
             && (key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -170,12 +174,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                     | KeyCode::PageUp
                     | KeyCode::PageDown
             ) || filter_key);
-        if !navigation
-            && !global
-            && !local_movement
-            && (self.waiting(context)
-                || !self.replay.active && nav.frame().is_some_and(|f| !f.pending.is_empty()))
-        {
+        if !ignored && !navigation && !global && !local_movement && self.must_queue(context) {
             if facts
                 .action
                 .as_ref()
@@ -184,11 +183,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             {
                 return ProjectUpdate::notice(ProjectNotice::ReadOnly);
             }
-            return if self.queue_input(context, ProjectInput::Key(key)) {
-                ProjectUpdate::handled()
-            } else {
-                ProjectUpdate::notice(ProjectNotice::Busy)
-            };
+            return self.queue_or_busy(context, ProjectInput::Key(key));
         }
         if global {
             if let Some(frame) = context.active.as_mut().and_then(|nav| nav.frame_mut()) {
@@ -344,13 +339,10 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         if context.active.is_none() {
             return ProjectUpdate::new(ProjectDispatch::Unhandled);
         }
-        if self.waiting(context) {
-            // Like a key, it waits in line behind the read; a full queue answers the busy notice.
-            return if self.queue_input(context, ProjectInput::Refresh) {
-                ProjectUpdate::handled()
-            } else {
-                ProjectUpdate::notice(ProjectNotice::Busy)
-            };
+        // Through the gate of the key `r`: it waits in line behind a read and behind input that is
+        // still pending, and a full queue answers the busy notice.
+        if self.must_queue(context) {
+            return self.queue_or_busy(context, ProjectInput::Refresh);
         }
         let nav = context.active.as_ref().unwrap();
         self.refresh_update(nav)
@@ -363,6 +355,32 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         self.mark_screen_stale(nav);
         update.commands.push(ProjectCommand::EnsureView);
         update
+    }
+
+    /// The one gate of an input that acts on the screen (the key `r` and the direct refresh):
+    /// whether it must wait in line, because the screen waits for a read or, outside replay,
+    /// input that came earlier is still pending.
+    fn must_queue(&self, context: &ProjectContextMut<'_, I>) -> bool {
+        self.waiting(context)
+            || !self.replay.active
+                && context
+                    .active
+                    .as_ref()
+                    .and_then(|nav| nav.frame())
+                    .is_some_and(|f| !f.pending.is_empty())
+    }
+
+    /// Queue `input` behind what is waiting; a full queue answers the busy notice.
+    fn queue_or_busy(
+        &mut self,
+        context: &mut ProjectContextMut<'_, I>,
+        input: ProjectInput<I>,
+    ) -> ProjectUpdate<I> {
+        if self.queue_input(context, input) {
+            ProjectUpdate::handled()
+        } else {
+            ProjectUpdate::notice(ProjectNotice::Busy)
+        }
     }
 
     pub fn waiting(&self, context: &ProjectContextMut<'_, I>) -> bool {

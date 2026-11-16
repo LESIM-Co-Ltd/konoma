@@ -1391,7 +1391,7 @@ impl App {
             // The list belongs to the screen under a project screen: it is neither read nor changed
             // while covered, and is rebuilt from the status when that screen is in front again
             // (`settle_covered_reload`). The status itself (what a follow baseline reads) is applied above.
-            self.covered_changed_filter = true;
+            self.tab.covered_changed_filter = true;
         } else if self.tab.changed_filter {
             // Whoever rebuilt the tree out from under the list and left the rebuild to us also left
             // the cursor's identity (`changed_anchor_pending`) — `entries` is the whole tree by now,
@@ -1597,6 +1597,19 @@ impl App {
     /// so there is no `?` to ride and no `resolve_key_result` to reach — a swallowed error here
     /// leaves the tree silently stale.
     pub fn refresh_fs_watched(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
+        if self.project_screen_covers() {
+            // The screen under a project screen is neither read nor changed while covered (what an
+            // external program wrote reaches here as watch events too). Recorded for that screen
+            // (`Tree` is the superset: the listing, git state and the shown preview), and applied
+            // when it is in front again (`settle_covered_reload`).
+            self.tab.covered_reload = self.tab.covered_reload.max(Some(ExternalReturn::Tree));
+            // The one thing still noticed now: the root itself is gone. The chip on the project
+            // canvas reports an outage; the listing under it is left as it is.
+            if !self.tab.root.is_dir() {
+                self.tree_stale = true;
+            }
+            return;
+        }
         self.refresh_reporting_staleness(|app| app.refresh_fs_changed(recompute_ignored, changed));
     }
 
@@ -1638,6 +1651,29 @@ impl App {
         ViewAnchors { filter, changed }
     }
 
+    /// Rebuild the `C` list from the latest statuses, unless a status scan is in flight. Must not
+    /// rebuild while a scan is in flight. Right after switching back from a different repo's tab,
+    /// `git_status` is empty (right after the kick discarded the other repo's leftovers), so
+    /// rebuilding here would make the filter judge "zero changes" and **silently turn itself off,
+    /// even showing a false "no changed files"**. Wait instead — `apply_statuses` rebuilds it once
+    /// the result arrives. Returns whether it rebuilt. The one condition both the ordinary rebuild
+    /// and `settle_covered_reload` go through.
+    pub(super) fn rebuild_changed_list_when_status_ready(
+        &mut self,
+        anchor: Option<PathBuf>,
+    ) -> bool {
+        self.refresh_git_if_needed();
+        if self.git_status_pending.is_some() {
+            return false;
+        }
+        // Rebuilding here and now, so nothing is deferred: drop the published copy rather
+        // than leave it for an unrelated later scan to pick up. The local is the same value
+        // (a synchronous scan above may already have taken the published one).
+        self.tab.changed_anchor_pending = None;
+        self.reapply_changed_filter(anchor);
+        true
+    }
+
     /// `rebuild_tree`, plus putting whichever filtered view is active back on top of the fresh
     /// listing. `rebuild_tree` alone resets `entries` to the whole tree, so calling it directly
     /// while `/` or `C` is on shows everything while still displaying the query — call this instead
@@ -1647,19 +1683,7 @@ impl App {
         let tree = self.rebuild_tree();
         // While the changed-files-only filter is active, rebuild the list from the latest statuses (follows an agent's edits).
         if self.tab.changed_filter {
-            self.refresh_git_if_needed();
-            // Must not rebuild while a scan is in flight. Right after switching back from a
-            // different repo's tab, `git_status` is empty (right after the kick discarded the other
-            // repo's leftovers), so rebuilding here would make the filter judge "zero changes" and
-            // **silently turn itself off, even showing a false "no changed files"**. Wait instead —
-            // `apply_statuses` rebuilds it once the result arrives.
-            if self.git_status_pending.is_none() {
-                // Rebuilding here and now, so nothing is deferred: drop the published copy rather
-                // than leave it for an unrelated later scan to pick up. The local is the same value
-                // (a synchronous scan above may already have taken the published one).
-                self.tab.changed_anchor_pending = None;
-                self.reapply_changed_filter(anchors.changed);
-            }
+            self.rebuild_changed_list_when_status_ready(anchors.changed);
         } else if self.tab.tree_filter.is_some() {
             // While the text filter (`/`) is active, rebuild_tree resets entries back to showing
             // everything, so re-filter **immediately** with the pool we already have (fixing the

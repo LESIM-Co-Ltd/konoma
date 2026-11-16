@@ -555,3 +555,49 @@ fn a_confirmation_of_a_vanished_project_is_closed_while_its_write_runs() {
     );
     std::fs::create_dir_all(&h._dir).unwrap();
 }
+
+/// A key the project layer ignores (an Alt chord) does nothing at all while the screen reads: a
+/// `x` waiting behind the read is neither displaced nor cancelled, and runs once the rows land.
+/// Plain `q` during the read is unchanged: it goes back a screen.
+#[test]
+fn an_ignored_key_during_a_load_leaves_the_waiting_key_alone() {
+    let alt = |c: char| Key::char(c).with_mods(crate::KeyMods::ALT);
+    for ignored in ['j', 'h', 'q'] {
+        let mut h = open_project("en");
+        h.shared.block_views.store(true, Ordering::SeqCst);
+        drive(&mut h.p, &mut h.t, vec![Key::char('r')]);
+        settle(&mut h, "a refresh is running", |h| {
+            h.p.runtimes.values().any(|r| r.busy && !r.acting)
+        });
+        // The refresh `r` waits in line too (the first read is still out); `x` joins it.
+        drive(&mut h.p, &mut h.t, vec![Key::char('x')]);
+        let waiting = h.p.screen.as_ref().unwrap().frame().unwrap().pending.len();
+        assert!(waiting >= 1, "x did not wait in line");
+        let events = drive(&mut h.p, &mut h.t, vec![alt(ignored)]);
+        assert!(events.ended, "Alt-{ignored} ended the app");
+        let frame = h.p.screen.as_ref().expect("the project is still open");
+        assert_eq!(
+            frame.frame().unwrap().pending.len(),
+            waiting,
+            "Alt-{ignored} changed the waiting keys"
+        );
+        h.shared.block_views.store(false, Ordering::SeqCst);
+        h.shared.hold.open();
+        settle(&mut h, "the waiting x ran", |h| {
+            h.shared.finished.load(Ordering::SeqCst) == 1
+        });
+    }
+    let mut h = open_project("en");
+    h.shared.block_views.store(true, Ordering::SeqCst);
+    drive(&mut h.p, &mut h.t, vec![Key::char('r')]);
+    settle(&mut h, "a refresh is running", |h| {
+        h.p.runtimes.values().any(|r| r.busy && !r.acting)
+    });
+    let depth = h.p.screen.as_ref().unwrap().stack.len();
+    drive(&mut h.p, &mut h.t, vec![Key::char('q')]);
+    assert_eq!(
+        h.p.screen.as_ref().unwrap().stack.len(),
+        depth - 1,
+        "plain q during the read did not go back"
+    );
+}

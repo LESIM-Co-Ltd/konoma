@@ -1349,3 +1349,154 @@ fn vcs_project_follow_baseline_does_not_rebuild_the_covered_changed_files_list()
         "the list is stale after leaving: {after:?}"
     );
 }
+
+/// A watched change (the watcher seam `refresh_fs_watched`, which is what an external program's
+/// edits reach) while a project screen covers the preview: the hidden preview is neither rebuilt
+/// nor reloaded; leaving the project applies it.
+#[test]
+fn vcs_project_watched_change_leaves_the_covered_preview_alone_until_it_is_in_front() {
+    if isolated("vcs_project_watched_change_leaves_the_covered_preview_alone_until_it_is_in_front")
+    {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_watched_preview") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_watched_preview_cfg");
+    let mut sim = preview_session(&repo, config("git", "en"), "lines.txt", true, &cfg_base);
+    let _ = sim.app.project_frame().unwrap();
+    let old = preview_text(&mut sim);
+    std::fs::write(repo.join("lines.txt"), "edited-one\nedited-two\n").unwrap();
+    sim.app.refresh_fs_watched(false, &[repo.join("lines.txt")]);
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "the watched change left the project");
+    assert!(sim.app.covered_reload_pending(), "the watched change was not recorded");
+    assert_eq!(preview_text(&mut sim), old, "the covered preview was reloaded");
+    sim.app.leave_project_screens();
+    drain(&mut sim);
+    assert!(!sim.app.covered_reload_pending());
+    let shown = preview_text(&mut sim);
+    assert!(shown.contains("edited-one"), "stale preview after leaving: {shown}");
+}
+
+/// The same for the tree under a project screen.
+#[test]
+fn vcs_project_watched_change_leaves_the_covered_tree_alone_until_it_is_in_front() {
+    if isolated("vcs_project_watched_change_leaves_the_covered_tree_alone_until_it_is_in_front") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_watched_tree") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_watched_tree_cfg");
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    let before = sim.app.tab.entries.len();
+    let made = repo.join("made-by-the-tool.txt");
+    std::fs::write(&made, "x\n").unwrap();
+    sim.app.refresh_fs_watched(false, &[made]);
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    assert!(sim.app.covered_reload_pending(), "the watched change was not recorded");
+    assert_eq!(sim.app.tab.entries.len(), before, "the covered tree was rebuilt");
+    sim.app.leave_project_screens();
+    drain(&mut sim);
+    assert!(
+        sim.app.tab.entries.iter().any(|e| e.path.ends_with("made-by-the-tool.txt")),
+        "the tree did not show the new file after leaving"
+    );
+}
+
+/// The deferred changed-files rebuild belongs to the tab whose list is covered: another tab
+/// neither inherits it nor consumes it, and it is still there when that tab is switched back to.
+#[test]
+fn vcs_project_covered_rebuild_flag_belongs_to_its_tab() {
+    if isolated("vcs_project_covered_rebuild_flag_belongs_to_its_tab") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_covered_flag_tab") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_covered_flag_tab_cfg");
+    std::fs::write(repo.join("dirty-one.txt"), "1\n").unwrap();
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.key('C');
+    drain(&mut sim);
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_status_loader(tx);
+    std::fs::write(repo.join("dirty-two.txt"), "2\n").unwrap();
+    sim.app.mark_git_status_dirty();
+    sim.app.refresh_git_if_needed();
+    let res = rx.recv_timeout(std::time::Duration::from_secs(30)).expect("status result");
+    let applied = sim.app.apply_statuses(res);
+    assert!(applied, "result discarded");
+    assert!(sim.app.covered_changed_filter_pending(), "tab 0 owes a rebuild");
+    sim.app.tab_new().unwrap();
+    assert!(!sim.app.covered_changed_filter_pending(), "the new tab inherited the flag");
+    assert!(!sim.app.covered_reload_pending(), "the new tab inherited the reload");
+    sim.app.tab_goto(0);
+    assert!(sim.app.covered_changed_filter_pending(), "tab 0 lost its own flag");
+}
+
+/// Leaving the project while that tab's git status is still being fetched does not rebuild the
+/// changed-files list from the old status: the rebuild is left to the status that lands.
+#[test]
+fn vcs_project_covered_rebuild_waits_for_the_status() {
+    if isolated("vcs_project_covered_rebuild_waits_for_the_status") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_covered_rebuild_waits") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_covered_rebuild_waits_cfg");
+    std::fs::write(repo.join("dirty-one.txt"), "1\n").unwrap();
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.key('C');
+    drain(&mut sim);
+    sim.key('p');
+    drain(&mut sim);
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_status_loader(tx);
+    std::fs::write(repo.join("dirty-two.txt"), "2\n").unwrap();
+    sim.app.mark_git_status_dirty();
+    sim.app.refresh_git_if_needed();
+    let res = rx.recv_timeout(std::time::Duration::from_secs(30)).expect("status result");
+    sim.app.apply_statuses(res);
+    assert!(sim.app.covered_changed_filter_pending());
+    // A newer status is requested and still in flight when the project is left.
+    std::fs::write(repo.join("dirty-three.txt"), "3\n").unwrap();
+    sim.app.mark_git_status_dirty();
+    sim.app.refresh_git_if_needed();
+    assert!(sim.app.git_status_in_flight(), "the scan is in flight");
+    sim.app.leave_project_screens();
+    assert!(sim.app.changed_filter(), "leaving dropped the changed-files list");
+    assert!(
+        sim.app.changed_anchor_left_to_status(),
+        "the rebuild did not wait for the status"
+    );
+    let res = rx.recv_timeout(std::time::Duration::from_secs(30)).expect("status result");
+    sim.app.apply_statuses(res);
+    assert!(sim.app.changed_filter());
+    let paths: Vec<_> = sim.app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    assert!(
+        paths.iter().any(|p| p.ends_with("dirty-three.txt")),
+        "the list is wrong after the status landed: {paths:?}"
+    );
+}
