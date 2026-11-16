@@ -297,20 +297,37 @@ impl<H: Send + Clone + 'static> RootMail<H> {
             root: root.into(),
             message: None,
         });
-        self.inbox
-            .send(ProjectReply {
-                watch_paths: None,
-                views: vec![],
-                launch_targets: Default::default(),
-                enabled: Default::default(),
-                chip: None,
-                chip_error: None,
-                effect: root.map(|_| effect),
-                error: None,
-                act_failed: false,
-                contexts: Default::default(),
-            })
-            .unwrap_or_else(|_| panic!("current root receives the scheduled switch effect"));
+        let mut reply = ProjectReply {
+            watch_paths: None,
+            views: vec![],
+            launch_targets: Default::default(),
+            enabled: Default::default(),
+            chip: None,
+            chip_error: None,
+            effect: root.map(|_| effect),
+            error: None,
+            act_failed: false,
+            contexts: Default::default(),
+        };
+        // The mailbox holds one reply and only this thread's poll empties it, so a blocking
+        // send would wait forever on a reply nobody adopts.
+        let deadline = std::time::Instant::now() + ROOT_WAIT;
+        loop {
+            match self.inbox.try_send(reply) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(back)) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the mailbox stayed full: an owner reply was forwarded but never adopted by a poll"
+                    );
+                    reply = back;
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    panic!("current root receives the scheduled switch effect")
+                }
+            }
+        }
     }
     fn late(&mut self, accepted: bool, side: &str) {
         assert_eq!(self.delivered.recv_timeout(ROOT_WAIT).expect("held old owner published its reply"), accepted, "{side}: first A input/view/effect mailbox must disconnect after replacement, including A -> B -> A");
@@ -349,6 +366,8 @@ struct RootJobs {
     app_a: std::path::PathBuf,
     finished: bool,
     fences: usize,
+    /// The phase and start of the current not-idle stretch.
+    stall: Option<(String, std::time::Instant)>,
     expecting_switch: bool,
     failure_cursor: usize,
 }
@@ -430,6 +449,7 @@ impl RootJobs {
             app_a: app_a.into(),
             finished: false,
             fences: 0,
+            stall: None,
             expecting_switch: false,
             failure_cursor: 0,
         }
@@ -473,7 +493,30 @@ impl RootJobs {
         ));
         app.fence_root_switches(self.ready_tx.clone());
     }
-    fn wait(&self) -> Next {
+    /// Wait for what the snapshot lacks. Owner replies announce themselves on `ready`; the
+    /// watch answer is adopted only by the app's own poll, which runs between observations,
+    /// so blocking here for it would stall the poll that settles it.
+    fn wait(&mut self, idle: &ProjectIdleSnapshot) -> Next {
+        let phase = format!("{:?}", self.phase);
+        let started = match &self.stall {
+            Some((seen, at)) if *seen == phase => *at,
+            _ => std::time::Instant::now(),
+        };
+        self.stall = Some((phase.clone(), started));
+        assert!(
+            started.elapsed() < ROOT_WAIT,
+            "phase {phase} never settled: owners={} contexts={} replay={} detection={} watch={} navigation={}",
+            idle.owners,
+            idle.contexts,
+            idle.replay,
+            idle.detection,
+            idle.watch,
+            idle.navigation
+        );
+        if idle.owners && idle.contexts && idle.replay {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            return Next::Timeout;
+        }
         self.ready
             .recv_timeout(ROOT_WAIT)
             .expect("owner/root publication precedes the next poll");
@@ -576,10 +619,13 @@ impl RootJobs {
         graph: &serde_json::Value,
     ) -> Next {
         self.fences += 1;
+        if idle.is_idle() {
+            self.stall = None;
+        }
         match self.phase {
             RootPhase::Navigate => {
                 if !idle.is_idle() {
-                    return self.wait();
+                    return self.wait(&idle);
                 }
                 self.compare(&state, &frame, host, fixture, graph);
                 if let Some(key) = self.keys.pop_front() {
@@ -690,7 +736,7 @@ impl RootJobs {
             }
             RootPhase::Commit => {
                 if !idle.navigation {
-                    return self.wait();
+                    return self.wait(&idle);
                 }
                 if self.case.fail_open {
                     self.host_switch(host);
@@ -726,7 +772,7 @@ impl RootJobs {
                     return Next::Timeout;
                 }
                 if !idle.is_idle() {
-                    return self.wait();
+                    return self.wait(&idle);
                 }
                 self.host_switch(host);
                 drain(host);
@@ -758,7 +804,7 @@ impl RootJobs {
             }
             RootPhase::Reopen => {
                 if !idle.is_idle() {
-                    return self.wait();
+                    return self.wait(&idle);
                 }
                 if self.expecting_switch {
                     check_switched_tree(host, &state, &self.a, &self.app_a);
@@ -799,7 +845,7 @@ impl RootJobs {
             }
             RootPhase::Late => {
                 if !idle.is_idle() {
-                    return self.wait();
+                    return self.wait(&idle);
                 }
                 drain(host);
                 assert_eq!(
@@ -814,7 +860,7 @@ impl RootJobs {
             }
             RootPhase::FailureSettle => {
                 if !idle.is_idle() {
-                    return self.wait();
+                    return self.wait(&idle);
                 }
                 self.compare(&state, &frame, host, fixture, graph);
                 assert!(
@@ -827,7 +873,7 @@ impl RootJobs {
             }
             RootPhase::FailureKeys => {
                 if !idle.is_idle() {
-                    return self.wait();
+                    return self.wait(&idle);
                 }
                 self.compare(&state, &frame, host, fixture, graph);
                 if state.cursor == self.failure_cursor {
