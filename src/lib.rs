@@ -1908,6 +1908,24 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ToggleInfo => app.toggle_info(),
         Action::RequestEdit => app.request_edit(),
         Action::OpenExternal => app.open_in_other_app(),
+        // An old hub name bound off a project canvas is read like it is on a screen table.
+        #[cfg(feature = "git")]
+        Action::GitOpenLog
+        | Action::GitOpenGraph
+        | Action::GitOpenBranches
+        | Action::GitOpenWorktrees
+        | Action::GitWorktreeDiff
+        | Action::GitCommit
+        | Action::GitStageAll
+        | Action::GitUnstageAll
+        | Action::JjSync
+        | Action::GitGraphToggleAll
+        | Action::BranchCreate
+        | Action::WorktreeCreate
+            if !matches!(ctx, keymap::Context::Canvas | keymap::Context::Screen(..)) =>
+        {
+            app.run_old_hub_name(&keymap::action_name(action));
+        }
         Action::OpenGitView => {
             if !app.enter_project() {
                 app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::NotAGitRepo).into());

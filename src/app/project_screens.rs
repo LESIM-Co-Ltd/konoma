@@ -998,6 +998,87 @@ impl App {
         handled
     }
 
+    /// An old hub action name bound on a surface that is not a project canvas. The names that
+    /// opened an old screen or acted on the whole repository are read like they are on a screen
+    /// table: open the project the way `p` does, then run the operation `old_screens::ROWS` maps
+    /// the name to for the backend (a screen jump switches the screen in place). A name with no
+    /// operation for the backend does nothing; a name that needed a hub row is not routed here.
+    #[cfg(feature = "git")]
+    pub(crate) fn run_old_hub_name(&mut self, name: &str) {
+        use crate::plugins::old_screens::{act_screen, Target, ROWS};
+        let Some(row) = ROWS.iter().find(|row| row.old == name) else {
+            return;
+        };
+        let target = |plugin: &str| match plugin {
+            "jj" => &row.jj,
+            _ => &row.git,
+        };
+        let detected = if self.git_vcs == crate::vcs::VcsKind::Jj {
+            "jj"
+        } else {
+            "git"
+        };
+        if !matches!(target(detected), Target::Op(_)) {
+            return;
+        }
+        if !self.enter_project() {
+            self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
+            return;
+        }
+        let Some(plugin) = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .map(|nav| nav.project.plugin.clone())
+        else {
+            return;
+        };
+        let Target::Op(ops) = target(&plugin) else {
+            return;
+        };
+        let Some(op) = ops.first() else {
+            return;
+        };
+        let act = PluginAct::new(&plugin, op);
+        let jump = self
+            .plugin_keys
+            .jumps_of(&plugin)
+            .iter()
+            .find(|j| j.op == *op)
+            .map(|j| j.screen.clone());
+        let screen = jump.clone().or_else(|| {
+            self.plugin_keys
+                .declaration(act)
+                .and_then(act_screen)
+                .map(str::to_string)
+        });
+        if let Some(screen) = screen {
+            let id = self.tab.id;
+            let on_it = self
+                .project_frame()
+                .is_some_and(|frame| frame.key.screen == screen);
+            if !on_it {
+                if let Some(frame) = self
+                    .tab
+                    .project_navigation
+                    .as_mut()
+                    .and_then(|nav| nav.frame_mut())
+                {
+                    *frame = ProjectFrame::new(ScreenKey::new(&screen, id));
+                    self.ensure_project_view();
+                }
+            }
+        }
+        // The operation goes in as its own key, so the project's input path waits for the view,
+        // asks for the text or the confirmation, and refuses a write like any pressed key. An
+        // operation without a key on the canvas has nothing to press.
+        if jump.is_none() {
+            if let Some(key) = self.plugin_key_of(Context::Canvas, act) {
+                self.project_press(key);
+            }
+        }
+    }
+
     pub(super) fn open_project(&mut self, key: ProjectKey) {
         if !self.project_is_enabled(&key.plugin) {
             return;

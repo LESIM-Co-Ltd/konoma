@@ -19904,6 +19904,8 @@ mod vcs_frozen_cases;
 mod vcs_host_only;
 #[cfg(feature = "git")]
 mod vcs_log;
+#[cfg(feature = "git")]
+mod vcs_old_names_outside_project;
 mod vcs_port_map;
 #[cfg(feature = "git")]
 mod vcs_project_port;
