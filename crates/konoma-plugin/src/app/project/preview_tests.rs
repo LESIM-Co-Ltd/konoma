@@ -1430,3 +1430,63 @@ fn keys_sent_while_the_view_read_is_held_wait_in_order_and_replay_after_release(
         "the kept h went back after release"
     );
 }
+
+struct JaProject;
+impl Plugin for JaProject {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("preview-project", "0").project(
+            ProjectDecl::new()
+                .marker(DetectionMarker::new("project.marker", MarkerKind::File))
+                .screen(ProjectScreen::new(
+                    "changes",
+                    crate::t!(en: "Changes", ja: "変更"),
+                ))
+                .screen(ProjectScreen::new("log", crate::t!(en: "Log", ja: "ログ"))),
+        )
+    }
+    fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        Ok(Box::new(ProjectSession))
+    }
+}
+
+/// Every cell a wide symbol covers is blank in the frame the standalone project loop draws: the
+/// screen tabs are drawn over the frame's top edge with `Paragraph`, which leaves the `─` behind a
+/// wide character, and the buffer diff trusts the buffer to have a blank there.
+#[test]
+fn the_project_loop_frame_has_a_blank_behind_every_wide_character() {
+    use unicode_width::UnicodeWidthStr;
+    let (_dir, mut p, mut term) = setup_plugin(
+        Arc::new(JaProject),
+        false,
+        false,
+        "[ui]\nlang='ja'\nwrap=false\n",
+    );
+    opening(&mut p, &mut term, "changes");
+    let frame = crate::app::draw::test_frame();
+    let (width, height) = (frame.area.width, frame.area.height);
+    let mut wide_on_the_edge = 0;
+    for y in 0..height {
+        for x in 0..width {
+            let w = frame[(x, y)].symbol().width() as u16;
+            if w < 2 {
+                continue;
+            }
+            if y == 0 || y == 1 {
+                wide_on_the_edge += 1;
+            }
+            for hidden in x + 1..(x + w).min(width) {
+                assert_eq!(
+                    frame[(hidden, y)].symbol(),
+                    " ",
+                    "{x},{y}: {:?} covers {hidden},{y}, which holds {:?}",
+                    frame[(x, y)].symbol(),
+                    frame[(hidden, y)].symbol()
+                );
+            }
+        }
+    }
+    assert!(
+        wide_on_the_edge >= 2,
+        "the Japanese screen tabs are drawn on the frame's top edge ({wide_on_the_edge})"
+    );
+}

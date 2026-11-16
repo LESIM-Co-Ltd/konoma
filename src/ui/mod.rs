@@ -184,6 +184,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // If an inline image moved/disappeared since the previous frame, the run loop fully redraws the
     // terminal once to clean up kitty placeholder debris (the old ID's colored row).
     app.finish_md_overlay_frame();
+    // Last of all, after every widget: `Paragraph` does not blank the cell a wide character covers,
+    // and the buffer diff relies on those cells being blank.
+    konoma_plugin::ratatui_draw::clear_cells_hidden_by_wide_symbols(frame.buffer_mut());
 }
 
 #[cfg(test)]

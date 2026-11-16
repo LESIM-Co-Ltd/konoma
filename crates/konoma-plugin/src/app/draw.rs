@@ -10,6 +10,16 @@ pub(in crate::app) fn record_test_frame(buffer: &ratatui::buffer::Buffer) {
     LAST_FRAME.with(|frame| *frame.borrow_mut() = Some(buffer.clone()));
 }
 
+/// The last thing a frame callback does, after every widget has drawn. The buffer diff relies on
+/// the cells behind a wide character being blank, which `Paragraph` does not keep, so they are
+/// blanked here. With the test hooks the frame is recorded too, so a loop that skips this call
+/// leaves no frame for the tests to read.
+pub(in crate::app) fn finish_frame(buffer: &mut ratatui::buffer::Buffer) {
+    ratatui_draw::clear_cells_hidden_by_wide_symbols(buffer);
+    #[cfg(any(test, feature = "test-hooks"))]
+    record_test_frame(buffer);
+}
+
 #[cfg(any(test, feature = "test-hooks"))]
 pub(in crate::app) fn test_frame() -> ratatui::buffer::Buffer {
     LAST_FRAME.with(|frame| frame.borrow().as_ref().expect("a frame was drawn").clone())
@@ -541,6 +551,22 @@ mod tests {
 
     use super::*;
     use crate::style::Style;
+
+    #[test]
+    fn finish_frame_blanks_the_cells_behind_a_wide_character_and_records_that_frame() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+        Paragraph::new("--------").render(Rect::new(0, 0, 8, 1), &mut buf);
+        Paragraph::new("変更").render(Rect::new(1, 0, 4, 1), &mut buf);
+        // `Paragraph` leaves the border dashes behind the wide characters.
+        assert_eq!(buf[(2, 0)].symbol(), "-");
+        finish_frame(&mut buf);
+        assert_eq!(buf[(1, 0)].symbol(), "変");
+        assert_eq!(buf[(2, 0)].symbol(), " ");
+        assert_eq!(buf[(3, 0)].symbol(), "更");
+        assert_eq!(buf[(4, 0)].symbol(), " ");
+        // The recorded frame is the blanked one, not the one before.
+        assert_eq!(test_frame(), buf);
+    }
 
     #[test]
     fn a_canvas_is_clipped_to_its_area_and_touches_nothing_outside_it() {

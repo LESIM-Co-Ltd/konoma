@@ -3876,8 +3876,7 @@ fn draw_frame_with_header<B: Backend>(
                         h.title.clone(),
                     );
                 }
-                #[cfg(any(test, feature = "test-hooks"))]
-                draw::record_test_frame(f.buffer_mut());
+                draw::finish_frame(f.buffer_mut());
             })
             .map_err(|e| terr(&e))?;
         let moved = pictures.as_deref_mut().is_some_and(Pictures::take_moved);

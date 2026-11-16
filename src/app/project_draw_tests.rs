@@ -953,3 +953,144 @@ fn project_screen_does_not_page_or_draw_the_masked_overlays_of_the_screen_under(
         "the outline popup is drawn over the screen"
     );
 }
+
+/// A terminal's grid with the semantics the buffer diff has to be right about: a symbol written
+/// over the first half of a wide character blanks its second half, and a wide symbol covers the
+/// cell after it.
+struct TermModel {
+    rows: Vec<Vec<(String, bool)>>,
+}
+
+impl TermModel {
+    fn new(width: u16, height: u16) -> Self {
+        Self {
+            rows: vec![vec![(" ".to_string(), false); usize::from(width)]; usize::from(height)],
+        }
+    }
+
+    fn write(&mut self, x: u16, y: u16, symbol: &str) {
+        use unicode_width::UnicodeWidthStr;
+        let (x, w) = (usize::from(x), symbol.width().max(1));
+        let row = &mut self.rows[usize::from(y)];
+        // Overwriting the second half of a wide character blanks its first half.
+        if row[x].1 && x > 0 {
+            row[x - 1] = (" ".to_string(), false);
+        }
+        // Overwriting the first half of a wide character blanks its second half.
+        if row[x].0.width() > 1 && x + 1 < row.len() {
+            row[x + 1] = (" ".to_string(), false);
+        }
+        row[x] = (symbol.to_string(), false);
+        for k in 1..w {
+            if x + k < row.len() {
+                // A wide character that loses its first cell here loses its second half too.
+                if row[x + k].0.width() > 1 && x + k + 1 < row.len() {
+                    row[x + k + 1] = (" ".to_string(), false);
+                }
+                row[x + k] = (" ".to_string(), true);
+            }
+        }
+    }
+
+    fn apply(&mut self, prev: &Buffer, next: &Buffer) {
+        for (x, y, cell) in prev.diff(next) {
+            self.write(x, y, cell.symbol());
+        }
+    }
+
+    fn row(&self, y: u16) -> String {
+        self.rows[usize::from(y)]
+            .iter()
+            .filter(|(_, hidden)| !hidden)
+            .map(|(s, _)| s.as_str())
+            .collect()
+    }
+}
+
+/// The buffer of a frame, and the terminal after drawing it through the real diff.
+fn drawn_through_the_diff(
+    model: &mut TermModel,
+    prev: &Buffer,
+    app: &mut App,
+    size: (u16, u16),
+) -> Buffer {
+    let mut term = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+    // The frame the app drew (not the test backend's screen, which is already the diff applied).
+    let next = term
+        .draw(|f| crate::ui::render(f, app))
+        .unwrap()
+        .buffer
+        .clone();
+    model.apply(prev, &next);
+    next
+}
+
+/// Leaving a project screen whose tabs are in Japanese must not leave holes in the frame that
+/// comes next. `Paragraph` writes a wide character without blanking the cell it covers, so the top
+/// edge of the screen keeps `─` behind each wide character; the diff trusts the buffer to have
+/// blanks there, writes nothing over the terminal's blank, and the next frame (whose edge is
+/// unbroken) shows a gap.
+#[test]
+fn leaving_a_project_screen_with_wide_tabs_leaves_no_gap_in_the_next_frame() {
+    let (mut app, _dir) = app();
+    app.lang = crate::i18n::Lang::Jp;
+    let size = (60, 14);
+    // A loaded list is drawn inside the outer frame, whose top edge carries the screen tabs.
+    let nav = app.tab.project_navigation.as_ref().unwrap();
+    let key = nav.project.clone();
+    let screen = nav.stack.last().unwrap().key.clone();
+    let context = app.project_request(&screen).unwrap().project.unwrap();
+    let runtime = app.project_runtimes.get_mut(&key).unwrap();
+    runtime.views.insert(screen.clone(), Arc::new(list(false)));
+    runtime.contexts.insert(screen, context);
+    // An inactive tab with wide characters (the active tab is drawn reversed, which makes the diff
+    // rewrite the cells behind its wide characters whatever the buffer holds there).
+    runtime.project.declaration.screens[1].title = konoma_plugin::t!(en: "Other", ja: "その他");
+    let mut model = TermModel::new(size.0, size.1);
+    let blank = Buffer::empty(Rect::new(0, 0, size.0, size.1));
+
+    let project = drawn_through_the_diff(&mut model, &blank, &mut app, size);
+    assert!(
+        project.content.iter().any(|c| c.symbol() == "一"),
+        "the Japanese screen tab is drawn"
+    );
+
+    // The next frame: the title is now too long for the tabs to fit, so they are dropped and the
+    // top edge is an unbroken run of `─` in the same style as the one the tabs were drawn over.
+    let nav = app.tab.project_navigation.as_ref().unwrap();
+    let key = nav.project.clone();
+    let screen = nav.stack.last().unwrap().key.clone();
+    let ProjectContent::List(mut long) = list(false) else {
+        unreachable!()
+    };
+    long.title = Some(konoma_plugin::style::Line::raw(format!(
+        " {}",
+        "t".repeat(43)
+    )));
+    let runtime = app.project_runtimes.get_mut(&key).unwrap();
+    runtime
+        .views
+        .insert(screen, Arc::new(ProjectContent::List(long)));
+    let tree = drawn_through_the_diff(&mut model, &project, &mut app, size);
+    assert!(
+        !tree.content.iter().any(|c| c.symbol() == "一"),
+        "the tabs are gone from the second frame"
+    );
+
+    use unicode_width::UnicodeWidthStr;
+    for y in 0..size.1 {
+        let mut expected = String::new();
+        let mut x = 0;
+        while x < size.0 {
+            let symbol = tree[(x, y)].symbol();
+            expected.push_str(symbol);
+            // A cell a wide symbol covers is not on the screen of its own.
+            x += symbol.width().max(1) as u16;
+        }
+        assert_eq!(
+            model.row(y),
+            expected,
+            "row {y}: the terminal differs from the frame it was drawn from (a gap behind a wide character)"
+        );
+    }
+}

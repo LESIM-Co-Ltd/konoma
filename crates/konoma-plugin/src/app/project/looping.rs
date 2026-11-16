@@ -806,8 +806,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                             state.presentation = state.presentation(prepared, &info);
                             state.draw_chrome(prepared, frame.buffer_mut(), whole);
                         }
-                        #[cfg(any(test, feature = "test-hooks"))]
-                        crate::app::draw::record_test_frame(frame.buffer_mut());
+                        crate::app::draw::finish_frame(frame.buffer_mut());
                     })
                     .map_err(|e| AppError::Terminal(e.to_string()))?;
                 if let Some(p) = pictures.as_mut() {
