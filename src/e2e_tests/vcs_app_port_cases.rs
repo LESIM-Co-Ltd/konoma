@@ -1038,10 +1038,10 @@ fn vcs_port_graph_every_copy_base_reload_and_both_detail_open_keys() {
                 if step == 4 {
                     assert_eq!(
                         state.notice.as_deref(),
-                        Some(crate::i18n::tr(
-                            host.app.lang,
-                            crate::i18n::Msg::GraphBaseNeedsCommit
-                        ))
+                        Some(match host.app.lang {
+                            crate::i18n::Lang::En => "select a commit to set as base",
+                            crate::i18n::Lang::Jp => "基準にするコミットを選んでください",
+                        })
                     );
                 }
                 if step == 5 {

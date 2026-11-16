@@ -232,7 +232,13 @@ fn e2e_project_confirmation_status_is_generated_from_declared_choices() {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        assert_eq!(text, crate::i18n::tr(lang, crate::i18n::Msg::StDeleteForce));
+        assert_eq!(
+            text,
+            match lang {
+                Lang::En => "y:delete(-d)  !:force(-D)  n/Esc:cancel",
+                Lang::Jp => "y:削除(-d)  !:強制(-D)  n/Esc:取消",
+            }
+        );
     }
 }
 use crate::app::project_screens::{ProjectDialog, ProjectPrompt};

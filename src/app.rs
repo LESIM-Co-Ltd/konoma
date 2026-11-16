@@ -595,7 +595,7 @@ impl Sort {
 }
 
 /// Destructive/creation operations confirmed through a modal dialog (M7 Phase B, safety first).
-// The git-only variants (GitDiscard/GitDeleteBranch) have no construction path in a non-git build
+// The git-only variants (GitDiscard) have no construction path in a non-git build
 // (what constructs them is git-dispatch only). The variants themselves are kept for match
 // exhaustiveness, and dead_code is allowed only for the non-git build.
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -623,8 +623,6 @@ enum PendingOp {
     /// In the worktree list, `n`=enter a branch name for a new linked worktree. On confirm,
     /// `dialog_submit` auto-detects new-vs-existing (`git::branch_tip`) and runs `git::worktree_add`.
     WorktreeCreate,
-    /// In the branch list, `d`=delete confirmation. `y`=safe (-d) / `!`=force (-D).
-    GitDeleteBranch { name: String },
     /// A transfer received via file drag & drop (through a terminal paste). `c`=copy / `m`=move / Esc=cancel.
     /// `sources`=the dropped existing paths, `dir`=the drop destination (directory based on the cursor).
     DropTransfer { sources: Vec<PathBuf>, dir: PathBuf },
@@ -1113,15 +1111,11 @@ pub struct FileOpResult {
 /// worse than the freeze — and a slow-but-legitimate hook is not an error to abort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitOpKind {
-    Stage,
-    Unstage,
     StageAll,
     UnstageAll,
     Discard,
     Commit,
-    Checkout,
     CreateBranch,
-    DeleteBranch,
     WorktreeAdd,
 }
 
@@ -2198,9 +2192,6 @@ pub(crate) struct PerTab {
     // saved, and gets reset on restore.
     git_graph_base: Option<String>,
     git_graph_base_label: Option<String>,
-    /// Whether the graph shows every revision instead of the range the backend considers current.
-    /// Only jj has a narrower default; git already draws everything.
-    pub(crate) git_graph_all: bool,
     git_graph_visible: std::collections::HashSet<String>,
     git_graph_legend: Vec<crate::git::LegendEntry>,
     git_graph_hidden: usize,
@@ -2363,7 +2354,6 @@ impl Default for PerTab {
             git_graph_sel: 0,
             git_graph_base: None,
             git_graph_base_label: None,
-            git_graph_all: false,
             git_graph_visible: std::collections::HashSet::new(),
             git_graph_legend: Vec::new(),
             git_graph_hidden: 0,
@@ -5799,20 +5789,6 @@ fn sort_cmp(a: &ChildMeta, b: &ChildMeta, sort: Sort) -> std::cmp::Ordering {
     }
     // Stabilize equal values by name (ascending) so the ordering never wobbles.
     ord.then_with(|| a.name_lower.cmp(&b.name_lower))
-}
-
-/// Take the title label for the graph base from refs (`%D`). From `(HEAD -> main, origin/main)`, etc.,
-/// pick one branch name (strip the HEAD-> and skip tag:). If there is no branch ref, the short hash.
-#[cfg_attr(not(feature = "git"), allow(dead_code))]
-fn base_label_from(refs: &str, short: &str) -> String {
-    for part in refs.split(',').map(str::trim) {
-        let p = part.strip_prefix("HEAD -> ").unwrap_or(part);
-        if p.is_empty() || p.starts_with("tag:") {
-            continue;
-        }
-        return p.to_string();
-    }
-    short.to_string()
 }
 
 fn build_dir(

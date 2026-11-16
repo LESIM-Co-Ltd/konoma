@@ -59,18 +59,11 @@ pub(super) fn render_with_project_dialog(
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::DlgCancel)).dim());
             (tr(app.lang, crate::i18n::Msg::DlgDropTitle), Color::Cyan)
         } else if app.dialog_allow_permanent() {
-            // Destructive operation = red-ish. y/!/n change wording by context (file delete or branch delete).
-            let (y_label, bang_label) = if app.confirm_is_branch_delete() {
-                (
-                    tr(app.lang, crate::i18n::Msg::DlgDeleteSafe),
-                    tr(app.lang, crate::i18n::Msg::DlgForceDeleteHint),
-                )
-            } else {
-                (
-                    tr(app.lang, crate::i18n::Msg::DlgTrash),
-                    tr(app.lang, crate::i18n::Msg::DlgDeletePermanentHint),
-                )
-            };
+            // Destructive operation = red-ish.
+            let (y_label, bang_label) = (
+                tr(app.lang, crate::i18n::Msg::DlgTrash),
+                tr(app.lang, crate::i18n::Msg::DlgDeletePermanentHint),
+            );
             lines.push(Line::from(y_label).dim());
             lines.push(Line::from(bang_label).fg(Color::Red));
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::DlgCancel)).dim());

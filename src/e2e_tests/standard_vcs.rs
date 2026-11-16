@@ -412,11 +412,6 @@ fn e2e_standard_vcs_disabled_return_paths_do_not_reopen_project_or_legacy_hub() 
         Mode::Tree,
         "q on the diff returns to the tree, not to a project"
     );
-    sim.app.open_git_view();
-    assert!(
-        !sim.app.is_git_view(),
-        "a legacy return must not bypass disabled"
-    );
 }
 
 #[cfg(feature = "git")]

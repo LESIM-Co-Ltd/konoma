@@ -41,15 +41,6 @@ pub enum Msg {
     /// `?` help section title for the worktree list.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitWorktreesLabel,
-    /// Flash on `w` (open the worktree list) when there is nothing to show (not a repo / git off —
-    /// a real repository always has at least the main worktree).
-    NoWorktrees,
-    /// Flash refusing to switch/open into a bare main worktree (no checkout exists there).
-    WorktreeIsBare,
-    /// Flash refusing to switch/open into a prunable or missing worktree.
-    WorktreeUnavailable,
-    /// Flash when the selected worktree is already the one this tab is in.
-    WorktreeAlreadyCurrent,
     /// Inner-mode chip label while the worktree list is open.
     StWorktrees,
     /// Persistent chip shown whenever the current root is inside a **linked worktree** (never for
@@ -82,7 +73,6 @@ pub enum Msg {
     DlgInputTitle,
     DlgRenamePreviewTitle,
     DlgDeletePermanentHint,
-    DlgForceDeleteHint,
     BmEmpty,
     GitNoChanges,
     BatchRename,
@@ -96,8 +86,6 @@ pub enum Msg {
     CreatedBranch,
     CutDone,
     DeleteTarget,
-    DeleteBranch,
-    DeletedBranch,
     DeletedPermanently,
     DiscardChangesTo,
     Discarded,
@@ -139,15 +127,12 @@ pub enum Msg {
     Renamed,
     TreeSelection,
     InfoSize,
-    Staged,
     StagedAll,
     SwitchedTo,
     HelpTabs,
     InfoTarget,
     TreeSection,
     InfoType,
-    UncommittedChanges,
-    Unstaged,
     UnstagedAll,
     Highlighting,
     ScrollTop,
@@ -175,7 +160,6 @@ pub enum Msg {
     StCopyMoveHint,
     CantCloseLastTab,
     Canceled,
-    CannotDeleteCurrentBranch,
     CannotEditDirectory,
     CannotPasteIntoSelf,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -255,9 +239,6 @@ pub enum Msg {
     InvalidMarkKey,
     Items,
     InfoItems,
-    GraphBaseSet,
-    GraphBaseCleared,
-    GraphBaseNeedsCommit,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphSetBaseHelp,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -265,7 +246,6 @@ pub enum Msg {
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphBranchesHelp,
     GraphPickerTitle,
-    GraphPickerHeadLocked,
     HelpJumpTab,
     JustNow,
     /// Startup note: the konoma built with plugins (`{embedded}`) is older than the konoma that
@@ -488,9 +468,7 @@ pub enum Msg {
     HelpNewTab,
     HelpNewTabAfter,
     NoBookmark,
-    NoBranches,
     NoChanges,
-    NoCommits,
     NoCopyTarget,
     NoFileToEdit,
     NoMatch,
@@ -537,11 +515,9 @@ pub enum Msg {
     VisualRangeHint,
     DlgTrash,
     DlgApply,
-    DlgDeleteSafe,
     DlgYesNo,
     StTrashDelete,
     StApply,
-    StDeleteForce,
     Zoom,
     BmActions,
     Empty,
@@ -622,12 +598,6 @@ pub enum Msg {
     /// Flash on `a` in the graph when the backend already draws everything.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphAlreadyAll,
-    /// Flash on `a`: the graph widened to every revision.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    GraphShowingAll,
-    /// Flash on `a`: the graph narrowed back to the backend's own range.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    GraphShowingDefault,
     /// The pointer list's chip when jj is answering: it lists bookmarks, not branches.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     StBookmark,
@@ -1189,10 +1159,6 @@ fn en(msg: Msg) -> &'static str {
     use Msg::*;
     match msg {
         GitWorktreesLabel => "Git worktrees (w)",
-        NoWorktrees => "no worktrees",
-        WorktreeIsBare => "bare repository — it has no checkout",
-        WorktreeUnavailable => "worktree is missing (run `git worktree prune`)",
-        WorktreeAlreadyCurrent => "already in this worktree",
         StWorktrees => "WORKTREES",
         StWorktreeChip => "WT",
         GitWorktreeSwitch => "switch to it",
@@ -1210,7 +1176,6 @@ fn en(msg: Msg) -> &'static str {
         DlgInputTitle => " Input ",
         DlgRenamePreviewTitle => " Rename preview ",
         DlgDeletePermanentHint => "! = Delete permanently (no undo)",
-        DlgForceDeleteHint => "! = force delete (-D)",
         BmEmpty => "(no bookmarks)",
         GitNoChanges => "(no changes)",
         BatchRename => "Batch rename",
@@ -1223,8 +1188,6 @@ fn en(msg: Msg) -> &'static str {
         CreatedBranch => "Created branch",
         CutDone => "Cut",
         DeleteTarget => "Delete",
-        DeleteBranch => "Delete branch",
-        DeletedBranch => "Deleted branch",
         DeletedPermanently => "Deleted permanently",
         DiscardChangesTo => "Discard changes to",
         Discarded => "Discarded",
@@ -1260,15 +1223,12 @@ fn en(msg: Msg) -> &'static str {
         Renamed => "Renamed",
         TreeSelection => "Selection",
         InfoSize => "Size",
-        Staged => "Staged",
         StagedAll => "Staged all",
         SwitchedTo => "Switched to",
         HelpTabs => "Tabs",
         InfoTarget => "Target",
         TreeSection => "Tree",
         InfoType => "Type",
-        UncommittedChanges => "Uncommitted changes",
-        Unstaged => "Unstaged",
         UnstagedAll => "Unstaged all",
         Highlighting => "[highlighting…] ",
         // Preview scroll position, vim's `%P` wording. Kept to three columns so it fits next to the
@@ -1295,7 +1255,6 @@ fn en(msg: Msg) -> &'static str {
         StCopyMoveHint => "c:copy  m:move  n/Esc:cancel",
         CantCloseLastTab => "can't close the last tab",
         Canceled => "canceled",
-        CannotDeleteCurrentBranch => "cannot delete the current branch",
         CannotEditDirectory => CoreMsg::CannotEditDirectory.en(),
         CannotPasteIntoSelf => "cannot paste into itself",
         GitCheckout => "checkout",
@@ -1374,14 +1333,10 @@ fn en(msg: Msg) -> &'static str {
         InvalidMarkKey => "invalid mark key",
         Items => "items",
         InfoItems => "items",
-        GraphBaseSet => "base: ",
-        GraphBaseCleared => "base cleared",
-        GraphBaseNeedsCommit => "select a commit to set as base",
         GraphSetBaseHelp => "pin the selected commit's branch as the base (leftmost lane)",
         GraphClearBaseHelp => "clear the pinned base",
         GraphBranchesHelp => "choose which branches are shown",
         GraphPickerTitle => "Graph branches",
-        GraphPickerHeadLocked => "current branch (HEAD) is always shown",
         HelpJumpTab => "jump to tab by number",
         JustNow => "just now",
         PluginBuildStale => "the konoma with plugins ({embedded}) is older than this konoma ({base}) — run `konoma plugin update` to rebuild it",
@@ -1602,9 +1557,7 @@ fn en(msg: Msg) -> &'static str {
         HelpNewTab => "new tab",
         HelpNewTabAfter => "new tab right of this one",
         NoBookmark => "no bookmark",
-        NoBranches => "no branches",
         NoChanges => "no changes",
-        NoCommits => "no commits",
         NoCopyTarget => CoreMsg::NoCopyTarget.en(),
         NoFileToEdit => CoreMsg::NoFileToEdit.en(),
         NoMatch => "no match",
@@ -1648,11 +1601,9 @@ fn en(msg: Msg) -> &'static str {
         VisualRangeHint => "visual range: j/k extend, v/Esc commit, a=this dir / A=all, Space=ops",
         DlgTrash => "y = Trash (recoverable)",
         DlgApply => "y = apply    Esc = cancel    j/k = scroll",
-        DlgDeleteSafe => "y = delete (safe, -d)",
         DlgYesNo => "y = yes    n / Esc = no",
         StTrashDelete => "y:Trash  !:delete permanently  n/Esc:cancel",
         StApply => "y:apply  Esc:cancel  j/k:scroll",
-        StDeleteForce => "y:delete(-d)  !:force(-D)  n/Esc:cancel",
         Zoom => CoreMsg::Zoom.en(),
         BmActions => "a-Z jump   ↵ open   / filter   ^E edit   Space d delete   q close",
         Empty => CoreMsg::Empty.en(),
@@ -1666,8 +1617,6 @@ fn en(msg: Msg) -> &'static str {
         OutlineActions => "j/k move   ↵/l jump   / filter   O·q·h·Esc close",
         HelpTabList => "tab list (switch / close)",
         GraphAlreadyAll => "the graph already shows every commit",
-        GraphShowingAll => "showing every revision",
-        GraphShowingDefault => "showing the default range",
         StBookmark => "BOOKMARK",
         StBranch => "BRANCH",
         StChanges => "CHANGES",
@@ -2044,10 +1993,6 @@ fn jp(msg: Msg) -> &'static str {
     use Msg::*;
     match msg {
         GitWorktreesLabel => "Git ワークツリー (w)",
-        NoWorktrees => "ワークツリーなし",
-        WorktreeIsBare => "ベアリポジトリ（実体のチェックアウトがありません）",
-        WorktreeUnavailable => "ワークツリーが見つかりません（`git worktree prune` を実行してください）",
-        WorktreeAlreadyCurrent => "既にこのワークツリーにいます",
         StWorktrees => "ワークツリー",
         StWorktreeChip => "WT",
         GitWorktreeSwitch => "切り替える",
@@ -2065,7 +2010,6 @@ fn jp(msg: Msg) -> &'static str {
         DlgInputTitle => " 入力 ",
         DlgRenamePreviewTitle => " リネーム確認 ",
         DlgDeletePermanentHint => "! = 完全に削除 (復元不可)",
-        DlgForceDeleteHint => "! = 強制削除 (-D)",
         BmEmpty => "(ブックマーク無し)",
         GitNoChanges => "(変更なし)",
         BatchRename => "一括リネーム",
@@ -2078,8 +2022,6 @@ fn jp(msg: Msg) -> &'static str {
         CreatedBranch => "ブランチ作成",
         CutDone => "カット",
         DeleteTarget => "削除対象",
-        DeleteBranch => "ブランチ削除",
-        DeletedBranch => "ブランチ削除",
         DeletedPermanently => "完全に削除しました",
         DiscardChangesTo => "変更を破棄しますか:",
         Discarded => "破棄",
@@ -2115,15 +2057,12 @@ fn jp(msg: Msg) -> &'static str {
         Renamed => "リネーム",
         TreeSelection => "選択",
         InfoSize => "サイズ",
-        Staged => "ステージ",
         StagedAll => "全てステージ",
         SwitchedTo => "切替",
         HelpTabs => "タブ (Tabs)",
         InfoTarget => "リンク先",
         TreeSection => "ツリー (Tree)",
         InfoType => "種別",
-        UncommittedChanges => "未コミットの変更",
-        Unstaged => "アンステージ",
         UnstagedAll => "全てアンステージ",
         Highlighting => "[ハイライト中…] ",
         ScrollTop => CoreMsg::ScrollTop.ja(),
@@ -2148,7 +2087,6 @@ fn jp(msg: Msg) -> &'static str {
         StCopyMoveHint => "c:コピー  m:移動  n/Esc:取消",
         CantCloseLastTab => "最後のタブは閉じられません",
         Canceled => "取消",
-        CannotDeleteCurrentBranch => "現在のブランチは削除できません",
         CannotEditDirectory => CoreMsg::CannotEditDirectory.ja(),
         CannotPasteIntoSelf => "自分自身へは貼れません",
         GitCheckout => "切替",
@@ -2227,14 +2165,10 @@ fn jp(msg: Msg) -> &'static str {
         InvalidMarkKey => "無効なマークキー",
         Items => "件",
         InfoItems => "項目",
-        GraphBaseSet => "基準: ",
-        GraphBaseCleared => "基準を解除しました",
-        GraphBaseNeedsCommit => "基準にするコミットを選んでください",
         GraphSetBaseHelp => "選択コミットの枝を基準(左端レーン)に固定",
         GraphClearBaseHelp => "基準の固定を解除",
         GraphBranchesHelp => "表示するブランチを選ぶ",
         GraphPickerTitle => "グラフのブランチ",
-        GraphPickerHeadLocked => "現在ブランチ(HEAD)は常に表示されます",
         HelpJumpTab => "番号でタブへジャンプ",
         JustNow => "たった今",
         PluginBuildStale => "プラグイン入りの konoma ({embedded}) が本体 ({base}) より古いです — `konoma plugin update` で作り直してください",
@@ -2452,9 +2386,7 @@ fn jp(msg: Msg) -> &'static str {
         HelpNewTab => "新規タブ",
         HelpNewTabAfter => "右隣に新規タブ",
         NoBookmark => "ブックマーク無し",
-        NoBranches => "ブランチなし",
         NoChanges => "変更なし",
-        NoCommits => "コミットなし",
         NoCopyTarget => CoreMsg::NoCopyTarget.ja(),
         NoFileToEdit => CoreMsg::NoFileToEdit.ja(),
         NoMatch => "一致なし",
@@ -2498,11 +2430,9 @@ fn jp(msg: Msg) -> &'static str {
         VisualRangeHint => "ビジュアル範囲: j/k で伸ばす, v/Esc 確定, a=同階層/A=表示全部, Space=操作",
         DlgTrash => "y = ゴミ箱へ送る (復元可)",
         DlgApply => "y = 適用    Esc = 取消    j/k = スクロール",
-        DlgDeleteSafe => "y = 削除 (安全 -d)",
         DlgYesNo => "y = 実行    n / Esc = 取消",
         StTrashDelete => "y:ゴミ箱  !:完全削除  n/Esc:取消",
         StApply => "y:適用  Esc:取消  j/k:スクロール",
-        StDeleteForce => "y:削除(-d)  !:強制(-D)  n/Esc:取消",
         Zoom => CoreMsg::Zoom.ja(),
         BmActions => "a-Z ジャンプ   ↵ 開く   / 絞り込み   ^E 編集   Space d 削除   q 閉じる",
         Empty => CoreMsg::Empty.ja(),
@@ -2516,8 +2446,6 @@ fn jp(msg: Msg) -> &'static str {
         OutlineActions => "j/k 移動   ↵/l ジャンプ   / 絞り込み   O·q·h·Esc 閉じる",
         HelpTabList => "タブ一覧(切替 / 閉じる)",
         GraphAlreadyAll => "グラフは既に全コミットを表示しています",
-        GraphShowingAll => "全リビジョンを表示",
-        GraphShowingDefault => "既定の範囲を表示",
         StBookmark => "ブックマーク",
         StBranch => "ブランチ",
         StChanges => "変更",
@@ -3185,21 +3113,6 @@ pub(crate) fn tr_format(lang: Lang, msg: Msg, values: &[(&str, &str)]) -> String
     output
 }
 
-/// The words the VCS core writes into the commit graph's "uncommitted changes" row (its heading and
-/// the three counts of the breakdown) in `lang`: the core owns no translations, the host hands them in.
-pub fn worktree_labels(lang: Lang) -> konoma_vcs_core::git::WorktreeLabels {
-    let (staged, unstaged, untracked) = match lang {
-        Lang::En => ("staged", "unstaged", "untracked"),
-        Lang::Jp => ("ステージ済", "未ステージ", "未追跡"),
-    };
-    konoma_vcs_core::git::WorktreeLabels {
-        uncommitted: tr(lang, Msg::UncommittedChanges).to_string(),
-        staged: staged.to_string(),
-        unstaged: unstaged.to_string(),
-        untracked: untracked.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3232,8 +3145,6 @@ mod tests {
 
     #[test]
     fn tr_selects_language() {
-        assert_eq!(tr(Lang::En, Msg::NoWorktrees), "no worktrees");
-        assert_eq!(tr(Lang::Jp, Msg::NoWorktrees), "ワークツリーなし");
         assert_eq!(tr(Lang::En, Msg::BmTitle), " Bookmarks ");
         assert_eq!(tr(Lang::Jp, Msg::BmTitle), " ブックマーク ");
     }
@@ -3289,10 +3200,6 @@ mod tests {
     // referenced under both features.
     const ALL_MSGS: &[Msg] = &[
         Msg::GitWorktreesLabel,
-        Msg::NoWorktrees,
-        Msg::WorktreeIsBare,
-        Msg::WorktreeUnavailable,
-        Msg::WorktreeAlreadyCurrent,
         Msg::StWorktrees,
         Msg::StWorktreeChip,
         Msg::GitWorktreeSwitch,
@@ -3310,7 +3217,6 @@ mod tests {
         Msg::DlgInputTitle,
         Msg::DlgRenamePreviewTitle,
         Msg::DlgDeletePermanentHint,
-        Msg::DlgForceDeleteHint,
         Msg::BmEmpty,
         Msg::GitNoChanges,
         Msg::BatchRename,
@@ -3323,8 +3229,6 @@ mod tests {
         Msg::CreatedBranch,
         Msg::CutDone,
         Msg::DeleteTarget,
-        Msg::DeleteBranch,
-        Msg::DeletedBranch,
         Msg::DeletedPermanently,
         Msg::DiscardChangesTo,
         Msg::Discarded,
@@ -3360,15 +3264,12 @@ mod tests {
         Msg::Renamed,
         Msg::TreeSelection,
         Msg::InfoSize,
-        Msg::Staged,
         Msg::StagedAll,
         Msg::SwitchedTo,
         Msg::HelpTabs,
         Msg::InfoTarget,
         Msg::TreeSection,
         Msg::InfoType,
-        Msg::UncommittedChanges,
-        Msg::Unstaged,
         Msg::UnstagedAll,
         Msg::Highlighting,
         Msg::ScrollTop,
@@ -3393,7 +3294,6 @@ mod tests {
         Msg::StCopyMoveHint,
         Msg::CantCloseLastTab,
         Msg::Canceled,
-        Msg::CannotDeleteCurrentBranch,
         Msg::CannotEditDirectory,
         Msg::CannotPasteIntoSelf,
         Msg::GitCheckout,
@@ -3472,14 +3372,10 @@ mod tests {
         Msg::InvalidMarkKey,
         Msg::Items,
         Msg::InfoItems,
-        Msg::GraphBaseSet,
-        Msg::GraphBaseCleared,
-        Msg::GraphBaseNeedsCommit,
         Msg::GraphSetBaseHelp,
         Msg::GraphClearBaseHelp,
         Msg::GraphBranchesHelp,
         Msg::GraphPickerTitle,
-        Msg::GraphPickerHeadLocked,
         Msg::HelpJumpTab,
         Msg::JustNow,
         Msg::PluginBuildStale,
@@ -3685,9 +3581,7 @@ mod tests {
         Msg::HelpNewTab,
         Msg::HelpNewTabAfter,
         Msg::NoBookmark,
-        Msg::NoBranches,
         Msg::NoChanges,
-        Msg::NoCommits,
         Msg::NoCopyTarget,
         Msg::NoFileToEdit,
         Msg::NoMatch,
@@ -3730,11 +3624,9 @@ mod tests {
         Msg::VisualRangeHint,
         Msg::DlgTrash,
         Msg::DlgApply,
-        Msg::DlgDeleteSafe,
         Msg::DlgYesNo,
         Msg::StTrashDelete,
         Msg::StApply,
-        Msg::StDeleteForce,
         Msg::Zoom,
         Msg::BmActions,
         Msg::Empty,
@@ -3757,8 +3649,6 @@ mod tests {
         Msg::StDrop,
         Msg::StFilter,
         Msg::GraphAlreadyAll,
-        Msg::GraphShowingAll,
-        Msg::GraphShowingDefault,
         Msg::StBookmark,
         Msg::VcsReadOnly,
         Msg::PluginReadOnly,

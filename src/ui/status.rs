@@ -266,7 +266,6 @@ fn mode_footer(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
     let lang = app.lang;
     let mode = app.internal_mode()?;
     let fixed = match mode {
-        InternalMode::DeleteConfirm if app.confirm_is_branch_delete() => Some(Msg::StDeleteForce),
         InternalMode::DeleteConfirm => Some(Msg::StTrashDelete),
         InternalMode::DropConfirm => Some(Msg::StCopyMoveHint),
         InternalMode::QuitConfirm => Some(Msg::StQuitHint),

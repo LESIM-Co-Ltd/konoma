@@ -74,13 +74,16 @@ fn vcs_port_git_a_is_inert_and_jj_a_keeps_literal_notices() {
         screen(&mut sim, "graph");
         let original = shown_values(&sim);
         for (all, message) in [
-            (true, Msg::GraphShowingAll),
-            (false, Msg::GraphShowingDefault),
+            (true, ("showing every revision", "全リビジョンを表示")),
+            (false, ("showing the default range", "既定の範囲を表示")),
         ] {
             keys(&mut sim, "a");
             assert_eq!(
                 sim.app.flash.as_deref(),
-                Some(tr(sim.app.lang, message)),
+                Some(match sim.app.lang {
+                    crate::i18n::Lang::En => message.0,
+                    crate::i18n::Lang::Jp => message.1,
+                }),
                 "jj literal range notice"
             );
             if all {

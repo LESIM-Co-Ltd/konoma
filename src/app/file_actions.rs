@@ -143,13 +143,6 @@ impl App {
             })
         )
     }
-    /// Whether the current confirm dialog is a branch deletion (so the y/!/n wording is for a branch, not a file deletion).
-    pub fn confirm_is_branch_delete(&self) -> bool {
-        matches!(
-            self.dialog.as_ref().map(|d| &d.op),
-            Some(PendingOp::GitDeleteBranch { .. })
-        )
-    }
     /// Whether the current confirm dialog is a drag-and-drop transfer (so the keys/wording become c=copy / m=move).
     pub fn confirm_is_drop(&self) -> bool {
         matches!(

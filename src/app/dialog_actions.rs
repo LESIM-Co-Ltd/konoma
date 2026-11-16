@@ -374,7 +374,6 @@ impl App {
             | PendingOp::GitCommit
             | PendingOp::GitCreateBranch
             | PendingOp::WorktreeCreate
-            | PendingOp::GitDeleteBranch { .. }
             | PendingOp::DropTransfer { .. }
             | PendingOp::BookmarkOverwrite { .. }
             | PendingOp::JjSync
@@ -458,8 +457,6 @@ impl App {
                     count: 0,
                 });
             }
-            // Delete branch (safe): git branch -d. On failure (unmerged etc.) flash git's stderr.
-            PendingOp::GitDeleteBranch { name } => self.git_delete_branch(&name, false),
             // Confirming a bookmark overwrite: actually register it (same path as mark_input).
             PendingOp::BookmarkOverwrite { key, target } => self.perform_mark_set(key, target),
             _ => {}
@@ -472,11 +469,6 @@ impl App {
         let Some(dialog) = self.dialog.take() else {
             return Ok(());
         };
-        // Force-delete the branch (`-D`).
-        if let PendingOp::GitDeleteBranch { name } = &dialog.op {
-            self.git_delete_branch(&name.clone(), true);
-            return Ok(());
-        }
         if let PendingOp::Delete { targets } = dialog.op {
             // Permanent delete also runs in the background, same as other bulk file operations (principle #4).
             let job = FileOpJob {
