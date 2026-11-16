@@ -974,6 +974,48 @@ fn project_preview_uses_stage_three_file_runner_cells() {
     assert_cells(&actual, &crate::app::draw::test_frame());
 }
 
+/// A chord with Alt is no key of the project layer: the standalone app reads it as nothing, so
+/// `Alt-h` does not go back, `Alt-j` does not move, `Alt-l` does not open and `Alt-q` does not
+/// quit, while the plain letters do.
+#[test]
+fn alt_chords_are_keys_of_no_table_on_a_project_screen() {
+    let (_dir, mut p, mut term) = setup(false, false);
+    opening(&mut p, &mut term, "log");
+    let depth = p.screen.as_ref().unwrap().stack.len();
+    let cursor = p.screen.as_ref().unwrap().frame().unwrap().cursor;
+    let alt = |c: char| Key::char(c).with_mods(crate::KeyMods::ALT);
+    let events = drive(
+        &mut p,
+        &mut term,
+        vec![alt('h'), alt('j'), alt('k'), alt('l'), alt('q'), alt('Q')],
+    );
+    assert!(events.ended, "an Alt chord quit the app");
+    let nav = p.screen.as_ref().expect("an Alt chord left the project");
+    assert_eq!(
+        nav.stack.len(),
+        depth,
+        "an Alt chord changed the screen stack"
+    );
+    assert_eq!(
+        nav.frame().unwrap().cursor,
+        cursor,
+        "an Alt chord moved the cursor"
+    );
+    let events = drive(&mut p, &mut term, vec![Key::char('j')]);
+    assert!(events.ended);
+    assert_eq!(
+        p.screen.as_ref().unwrap().frame().unwrap().cursor,
+        cursor + 1,
+        "plain j moves"
+    );
+    drive(&mut p, &mut term, vec![Key::char('h')]);
+    assert_eq!(
+        p.screen.as_ref().unwrap().stack.len(),
+        depth - 1,
+        "plain h goes back"
+    );
+}
+
 #[test]
 fn preview_escape_and_preview_back_binding_restore_the_project() {
     for (config, back) in [

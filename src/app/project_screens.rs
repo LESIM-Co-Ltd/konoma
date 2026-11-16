@@ -672,6 +672,7 @@ impl App {
                     crate::resolve_key_result(self, result);
                 }
                 ProjectInput::Act(invocation) => self.execute_project_act(*invocation),
+                ProjectInput::Refresh => self.project_refresh(),
             }
         }
         self.with_project_host(|host, _| host.end_replay());
@@ -1208,6 +1209,7 @@ impl App {
             }
             _ => self.back_to_tree(),
         }
+        self.settle_covered_reload();
     }
 
     /// A project that the latest detection answer no longer lists: its screens close as when
@@ -1264,16 +1266,12 @@ impl App {
         }
     }
 
-    /// The `Space` menu's refresh item on a project canvas: presses the host's refresh key through
-    /// the key's own handler, so the busy guard (queue / `Busy` notice) applies as for the key.
+    /// Refresh on a project canvas, from the `Space` menu's item or the host's `refresh` action
+    /// in whichever layer it came from. It runs the project's refresh operation itself, not a key
+    /// (a key would be read through the config and could be any operation).
     pub(crate) fn project_refresh(&mut self) {
-        self.handle_project_key_in(
-            KeyEvent::new(
-                KeyCode::Char(konoma_plugin::host::project::input::REFRESH_KEY),
-                KeyModifiers::NONE,
-            ),
-            false,
-        );
+        let update = self.with_project_host(|host, context| host.refresh(context));
+        self.apply_project_update(update);
     }
 
     /// The key of a canvas control as the footer and the help name it, or `None` where that key
@@ -1364,14 +1362,40 @@ impl App {
     /// action the overlay's own surface dispatched (the refresh bound in the help) passes `false`:
     /// it acts on the project although the overlay is up.
     fn handle_project_key_in(&mut self, key: KeyEvent, blocked_by_overlay: bool) -> bool {
-        use crate::keymap::{Action, Motion, Resolution};
-        #[cfg(feature = "git")]
-        use crate::keymap::{Binding, ViewType};
         if self.project_dialog.is_some() {
             self.project_dialog_key(key);
             return true;
         }
-        let kp = KeyPress::norm(&key);
+        let facts = self.project_key_facts(
+            konoma_plugin::host::project::project_key_press(&key),
+            blocked_by_overlay,
+        );
+        let update = self.with_project_host(|host, context| host.handle_key(context, key, &facts));
+        self.apply_project_update(update)
+    }
+
+    /// What the host decided about a key for the project layer. `kp` is the key as the project
+    /// layer reads it ([`konoma_plugin::host::project::project_key_press`]); `None` is a key it has
+    /// no form for, which is in no host table, so every lookup below is skipped for it.
+    fn project_key_facts(&self, kp: Option<KeyPress>, blocked_by_overlay: bool) -> ProjectKeyFacts {
+        use crate::keymap::{Action, Motion, Resolution};
+        #[cfg(feature = "git")]
+        use crate::keymap::{Binding, ViewType};
+        let blocked = blocked_by_overlay
+            && (self.show_help
+                || self.dialog.is_some()
+                || self.is_tab_list()
+                || self.is_bookmark_list()
+                || self.is_info());
+        let Some(kp) = kp else {
+            return ProjectKeyFacts {
+                blocked,
+                leader: self.pending_leader.is_some(),
+                viewport: self.project_viewport(),
+                layout: self.diff_layout,
+                ..ProjectKeyFacts::of_no_key()
+            };
+        };
         #[cfg(feature = "git")]
         let list_override = self
             .keymaps
@@ -1381,7 +1405,7 @@ impl App {
             .map(|binding| matches!(binding, Binding::Run(Action::Navigate(Motion::Right))));
         #[cfg(not(feature = "git"))]
         let list_override = None;
-        let motion = crate::ops::keys::fixed_action(Context::Text, key.code)
+        let motion = crate::ops::keys::fixed_action(Context::Text, kp.code)
             .or_else(|| {
                 match self.keymaps.resolve_on(
                     Context::Text,
@@ -1420,16 +1444,11 @@ impl App {
             .as_ref()
             .map(|nav| self.plugin_keys.jumps_of(&nav.project.plugin).to_vec())
             .unwrap_or_default();
-        let facts = ProjectKeyFacts {
+        ProjectKeyFacts {
             jumps,
             back_keys: self.project_back_keys(),
             filter_keys: self.project_filter_keys(),
-            blocked: blocked_by_overlay
-                && (self.show_help
-                    || self.dialog.is_some()
-                    || self.is_tab_list()
-                    || self.is_bookmark_list()
-                    || self.is_info()),
+            blocked,
             leader: self.pending_leader.is_some(),
             global: self.keymaps.layer_of_key_on(
                 Context::Canvas,
@@ -1461,9 +1480,7 @@ impl App {
                 .unwrap_or_default(),
             viewport: self.project_viewport(),
             layout: self.diff_layout,
-        };
-        let update = self.with_project_host(|host, context| host.handle_key(context, key, &facts));
-        self.apply_project_update(update)
+        }
     }
 
     fn apply_project_update(&mut self, update: ProjectUpdate<ProjectInvocation>) -> bool {

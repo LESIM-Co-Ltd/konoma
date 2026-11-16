@@ -31,6 +31,8 @@ impl From<&MatchedProject> for ProjectKey {
 pub enum ProjectInput<I> {
     Key(KeyEvent),
     Act(Box<I>),
+    /// The project's refresh operation, asked while the screen waited for a read.
+    Refresh,
 }
 
 #[derive(Clone)]

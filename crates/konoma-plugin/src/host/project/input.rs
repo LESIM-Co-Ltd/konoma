@@ -63,6 +63,26 @@ impl Default for ProjectKeyFacts {
     }
 }
 
+/// The key as the project layer reads it: the code and Ctrl. The project compares modifiers
+/// exactly, so a chord with Alt has no form in its key language (`None`). This is the one
+/// definition of that reading: every lookup the project layer makes for a key (motions, fixed
+/// keys, plugin keys, the keymap) goes through it, in konoma and in the standalone app alike.
+pub fn project_key_press(key: &KeyEvent) -> Option<KeyPress> {
+    (!key.modifiers.contains(KeyModifiers::ALT)).then(|| KeyPress::norm(key))
+}
+
+impl ProjectKeyFacts {
+    /// The facts of a key the project layer has no form for ([`project_key_press`] is `None`):
+    /// it is in no key table, so it is no motion, action, back or filter key.
+    pub fn of_no_key() -> Self {
+        Self {
+            back_keys: Vec::new(),
+            filter_keys: Vec::new(),
+            ..Self::default()
+        }
+    }
+}
+
 pub fn list_right(
     list: bool,
     physical: KeyCode,
@@ -123,7 +143,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         let interaction = self.pending_interaction(context, &facts.actions);
         let nav = context.active.as_ref().unwrap();
         // The press as the keymap sees it (code and Ctrl). An Alt chord is never one of these.
-        let pressed = (!key.modifiers.contains(KeyModifiers::ALT)).then(|| KeyPress::norm(&key));
+        let pressed = project_key_press(&key);
         let back_key = pressed.is_some_and(|k| facts.back_keys.contains(&k));
         let filter_key = pressed.is_some_and(|k| facts.filter_keys.contains(&k));
         let jump_key = pressed.is_some_and(|k| jump_target(&facts.jumps, k).is_some());
@@ -235,7 +255,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             }
             return update;
         }
-        if KeyPress::norm(&key) == KeyPress::ctrl_ch('t') {
+        if pressed == Some(KeyPress::ctrl_ch('t')) {
             let mut update = ProjectUpdate::handled();
             update.commands.push(ProjectCommand::NewTab);
             return update;
@@ -316,6 +336,26 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         }
         update
     }
+    /// The canvas's refresh as an operation, not a key: the `Space` menu's refresh item and the
+    /// host's `refresh` action run it from whichever layer they came, so no key of the config can
+    /// turn it into another operation. Busy as the key is: while the screen waits for a read it
+    /// answers the busy notice.
+    pub fn refresh(&mut self, context: &mut ProjectContextMut<'_, I>) -> ProjectUpdate<I> {
+        if context.active.is_none() {
+            return ProjectUpdate::new(ProjectDispatch::Unhandled);
+        }
+        if self.waiting(context) {
+            // Like a key, it waits in line behind the read; a full queue answers the busy notice.
+            return if self.queue_input(context, ProjectInput::Refresh) {
+                ProjectUpdate::handled()
+            } else {
+                ProjectUpdate::notice(ProjectNotice::Busy)
+            };
+        }
+        let nav = context.active.as_ref().unwrap();
+        self.refresh_update(nav)
+    }
+
     /// The canvas's refresh (the screen's rows are read again). Reached only through the
     /// [`REFRESH_KEY`] arm of [`Self::handle_key`], after the busy guard.
     fn refresh_update(&mut self, nav: &ProjectScreenState<I>) -> ProjectUpdate<I> {

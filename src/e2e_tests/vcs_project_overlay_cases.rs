@@ -581,41 +581,386 @@ fn vcs_project_an_alt_chord_is_a_key_of_no_host_table_while_the_project_is_in_fr
 
 // --- The all-actions walk ---------------------------------------------------------------------
 
-/// The variants of `Action`, read from the enum's own source (so a new variant is a new name
-/// here). Variants behind `feature = "git"` count only on a build that has it.
-fn action_variants_in_source() -> Vec<String> {
-    let src = include_str!("../keymap.rs");
-    let start = src.find("pub enum Action {").expect("enum Action");
-    let body = &src[start..];
-    let end = body.find("\n}\n").expect("end of enum Action");
-    let mut out = Vec::new();
-    let mut gated_by_git = false;
-    for line in body[..end].lines().skip(1) {
-        if line.starts_with("    #[cfg(feature = \"git\")]") {
-            gated_by_git = true;
-            continue;
-        }
-        assert!(
-            !line.starts_with("    #[cfg("),
-            "a cfg other than the git feature on a variant: classify it here: {line}"
-        );
-        let Some(first) = line.strip_prefix("    ").and_then(|r| r.chars().next()) else {
-            continue;
-        };
-        if !first.is_ascii_uppercase() {
-            continue;
-        }
-        let name: String = line.trim_start().chars().take_while(|c| c.is_alphanumeric()).collect();
-        if !gated_by_git || cfg!(feature = "git") {
-            out.push(name);
-        }
-        gated_by_git = false;
-    }
-    out
+/// The variant of an action, by name. The `match` has no wildcard arm: a new variant of `Action`
+/// does not compile until it gets an arm here (and a name in [`ACTION_VARIANT_NAMES`]), which is
+/// where it is classified. Variants behind `feature = "git"` have arms behind it.
+fn variant_of(a: crate::keymap::Action) -> String {
+    use crate::keymap::Action;
+    let name: &'static str = match a {
+        Action::Noop => "Noop",
+        Action::Navigate(..) => "Navigate",
+        Action::TabNew => "TabNew",
+        Action::TabNewAfter => "TabNewAfter",
+        Action::TabClose => "TabClose",
+        Action::TabPrev => "TabPrev",
+        Action::TabNext => "TabNext",
+        Action::TabGoto(..) => "TabGoto",
+        Action::ToggleHelp => "ToggleHelp",
+        Action::CopyPath(..) => "CopyPath",
+        Action::CopyCodeBlock => "CopyCodeBlock",
+        Action::PasteJump => "PasteJump",
+        Action::Quit => "Quit",
+        Action::CloseTabOrQuit => "CloseTabOrQuit",
+        Action::FilterStart => "FilterStart",
+        Action::TreeDescend => "TreeDescend",
+        Action::TreeActivate => "TreeActivate",
+        Action::TreeLeave => "TreeLeave",
+        Action::ToggleHidden => "ToggleHidden",
+        Action::ToggleWrap => "ToggleWrap",
+        Action::ToggleInfo => "ToggleInfo",
+        Action::RequestEdit => "RequestEdit",
+        Action::OpenExternal => "OpenExternal",
+        Action::OpenGitView => "OpenGitView",
+        Action::Refresh => "Refresh",
+        Action::CyclePathStyle => "CyclePathStyle",
+        Action::OpenSortMenu => "OpenSortMenu",
+        Action::MarkSet => "MarkSet",
+        Action::MarkJump => "MarkJump",
+        Action::SetAnchor => "SetAnchor",
+        Action::ResetAnchor => "ResetAnchor",
+        Action::OpenGitDiffCursor => "OpenGitDiffCursor",
+        Action::EnterVisual => "EnterVisual",
+        Action::ToggleSelect => "ToggleSelect",
+        Action::ToggleChangedFilter => "ToggleChangedFilter",
+        Action::JumpNextChange => "JumpNextChange",
+        Action::JumpPrevChange => "JumpPrevChange",
+        Action::ToggleFollow => "ToggleFollow",
+        Action::FileCreate => "FileCreate",
+        Action::FileRename => "FileRename",
+        Action::FileDelete => "FileDelete",
+        Action::FileCopy => "FileCopy",
+        Action::FileCut => "FileCut",
+        Action::FilePaste => "FilePaste",
+        Action::FileDuplicate => "FileDuplicate",
+        Action::VisualCommit => "VisualCommit",
+        Action::VisualSelectSiblings => "VisualSelectSiblings",
+        Action::VisualSelectAll => "VisualSelectAll",
+        Action::PreviewBack => "PreviewBack",
+        Action::SearchStart => "SearchStart",
+        Action::SearchNext => "SearchNext",
+        Action::SearchPrev => "SearchPrev",
+        Action::PreviewEnterVisual => "PreviewEnterVisual",
+        Action::PreviewEnterVisualLine => "PreviewEnterVisualLine",
+        Action::PreviewCopySelection => "PreviewCopySelection",
+        Action::PreviewCopySelectionRef => "PreviewCopySelectionRef",
+        Action::PreviewExitVisual => "PreviewExitVisual",
+        Action::CycleRepresentation => "CycleRepresentation",
+        Action::ImageReturnToDiff => "ImageReturnToDiff",
+        Action::LinkFocusNext => "LinkFocusNext",
+        Action::LinkFocusPrev => "LinkFocusPrev",
+        Action::LinkOpen => "LinkOpen",
+        Action::OpenLinkNewTab => "OpenLinkNewTab",
+        Action::OpenInNewTab => "OpenInNewTab",
+        Action::ImageZoomIn => "ImageZoomIn",
+        Action::ImageZoomOut => "ImageZoomOut",
+        Action::ImageZoomReset => "ImageZoomReset",
+        Action::PageNext => "PageNext",
+        Action::PagePrev => "PagePrev",
+        Action::PreviewFileNext => "PreviewFileNext",
+        Action::PreviewFilePrev => "PreviewFilePrev",
+        Action::TableCopy(..) => "TableCopy",
+        #[cfg(feature = "git")]
+        Action::GitDiffDiscard => "GitDiffDiscard",
+        Action::CycleDiffLayout => "CycleDiffLayout",
+        #[cfg(feature = "git")]
+        Action::CycleDiffView => "CycleDiffView",
+        #[cfg(feature = "git")]
+        Action::ToggleFollowDiffScope => "ToggleFollowDiffScope",
+        #[cfg(feature = "git")]
+        Action::DiffNextChange => "DiffNextChange",
+        #[cfg(feature = "git")]
+        Action::DiffPrevChange => "DiffPrevChange",
+        #[cfg(feature = "git")]
+        Action::GitStage => "GitStage",
+        #[cfg(feature = "git")]
+        Action::GitUnstage => "GitUnstage",
+        #[cfg(feature = "git")]
+        Action::GitStageAll => "GitStageAll",
+        #[cfg(feature = "git")]
+        Action::GitUnstageAll => "GitUnstageAll",
+        #[cfg(feature = "git")]
+        Action::GitDiscard => "GitDiscard",
+        #[cfg(feature = "git")]
+        Action::GitCommit => "GitCommit",
+        #[cfg(feature = "git")]
+        Action::GitWorktreeDiff => "GitWorktreeDiff",
+        #[cfg(feature = "git")]
+        Action::GitOpenLog => "GitOpenLog",
+        #[cfg(feature = "git")]
+        Action::GitOpenGraph => "GitOpenGraph",
+        #[cfg(feature = "git")]
+        Action::GitOpenBranches => "GitOpenBranches",
+        #[cfg(feature = "git")]
+        Action::GitLaunchTool => "GitLaunchTool",
+        #[cfg(feature = "git")]
+        Action::GitOpenSelectedDiff => "GitOpenSelectedDiff",
+        #[cfg(feature = "git")]
+        Action::GitOpenDetail => "GitOpenDetail",
+        #[cfg(feature = "git")]
+        Action::GitGraphSetBase => "GitGraphSetBase",
+        #[cfg(feature = "git")]
+        Action::GitGraphClearBase => "GitGraphClearBase",
+        #[cfg(feature = "git")]
+        Action::GitGraphToggleAll => "GitGraphToggleAll",
+        #[cfg(feature = "git")]
+        Action::JjSync => "JjSync",
+        #[cfg(feature = "git")]
+        Action::GitGraphOpenPicker => "GitGraphOpenPicker",
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerToggle => "GitGraphPickerToggle",
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerAll => "GitGraphPickerAll",
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerCurrentOnly => "GitGraphPickerCurrentOnly",
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerMoveUp => "GitGraphPickerMoveUp",
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerMoveDown => "GitGraphPickerMoveDown",
+        #[cfg(feature = "git")]
+        Action::GitScreenNext => "GitScreenNext",
+        #[cfg(feature = "git")]
+        Action::GitScreenPrev => "GitScreenPrev",
+        Action::ListFilterStart => "ListFilterStart",
+        #[cfg(feature = "git")]
+        Action::BranchFilterStart => "BranchFilterStart",
+        #[cfg(feature = "git")]
+        Action::BranchCheckout => "BranchCheckout",
+        #[cfg(feature = "git")]
+        Action::BranchCreate => "BranchCreate",
+        #[cfg(feature = "git")]
+        Action::BranchDelete => "BranchDelete",
+        #[cfg(feature = "git")]
+        Action::GitOpenWorktrees => "GitOpenWorktrees",
+        #[cfg(feature = "git")]
+        Action::WorktreeFilterStart => "WorktreeFilterStart",
+        #[cfg(feature = "git")]
+        Action::WorktreeGoto => "WorktreeGoto",
+        #[cfg(feature = "git")]
+        Action::WorktreeGotoNewTab => "WorktreeGotoNewTab",
+        #[cfg(feature = "git")]
+        Action::WorktreeClose => "WorktreeClose",
+        #[cfg(feature = "git")]
+        Action::WorktreeShowChanges => "WorktreeShowChanges",
+        #[cfg(feature = "git")]
+        Action::WorktreeCreate => "WorktreeCreate",
+        #[cfg(feature = "git")]
+        Action::GitCopy(..) => "GitCopy",
+        #[cfg(feature = "git")]
+        Action::CopyBranchName => "CopyBranchName",
+        #[cfg(feature = "git")]
+        Action::GitClose => "GitClose",
+        Action::SortSet(..) => "SortSet",
+        Action::SortToggleReverse => "SortToggleReverse",
+        Action::SortToggleDirsFirst => "SortToggleDirsFirst",
+        Action::ToggleTabList => "ToggleTabList",
+        Action::TabListClose => "TabListClose",
+        Action::ToggleOutline => "ToggleOutline",
+        Action::BookmarkJump => "BookmarkJump",
+        Action::BookmarkEdit => "BookmarkEdit",
+        Action::BookmarkDelete => "BookmarkDelete",
+        Action::BookmarkClose => "BookmarkClose",
+        Action::InfoClose => "InfoClose",
+        Action::ToggleTableCell => "ToggleTableCell",
+        Action::Cancel => "Cancel",
+        Action::TabListActivate => "TabListActivate",
+        Action::OutlineJump => "OutlineJump",
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerApply => "GitGraphPickerApply",
+        Action::ToggleFocusedItem => "ToggleFocusedItem",
+        Action::Plugin(..) => "Plugin",
+        Action::ProjectControl(..) => "ProjectControl",
+    };
+    name.to_string()
 }
 
-fn variant_of(a: crate::keymap::Action) -> String {
-    format!("{a:?}").chars().take_while(|c| c.is_alphanumeric()).collect()
+/// Every variant name of `Action`; the walk must cover exactly these.
+const ACTION_VARIANT_NAMES: &[&str] = &[
+    "Noop",
+    "Navigate",
+    "TabNew",
+    "TabNewAfter",
+    "TabClose",
+    "TabPrev",
+    "TabNext",
+    "TabGoto",
+    "ToggleHelp",
+    "CopyPath",
+    "CopyCodeBlock",
+    "PasteJump",
+    "Quit",
+    "CloseTabOrQuit",
+    "FilterStart",
+    "TreeDescend",
+    "TreeActivate",
+    "TreeLeave",
+    "ToggleHidden",
+    "ToggleWrap",
+    "ToggleInfo",
+    "RequestEdit",
+    "OpenExternal",
+    "OpenGitView",
+    "Refresh",
+    "CyclePathStyle",
+    "OpenSortMenu",
+    "MarkSet",
+    "MarkJump",
+    "SetAnchor",
+    "ResetAnchor",
+    "OpenGitDiffCursor",
+    "EnterVisual",
+    "ToggleSelect",
+    "ToggleChangedFilter",
+    "JumpNextChange",
+    "JumpPrevChange",
+    "ToggleFollow",
+    "FileCreate",
+    "FileRename",
+    "FileDelete",
+    "FileCopy",
+    "FileCut",
+    "FilePaste",
+    "FileDuplicate",
+    "VisualCommit",
+    "VisualSelectSiblings",
+    "VisualSelectAll",
+    "PreviewBack",
+    "SearchStart",
+    "SearchNext",
+    "SearchPrev",
+    "PreviewEnterVisual",
+    "PreviewEnterVisualLine",
+    "PreviewCopySelection",
+    "PreviewCopySelectionRef",
+    "PreviewExitVisual",
+    "CycleRepresentation",
+    "ImageReturnToDiff",
+    "LinkFocusNext",
+    "LinkFocusPrev",
+    "LinkOpen",
+    "OpenLinkNewTab",
+    "OpenInNewTab",
+    "ImageZoomIn",
+    "ImageZoomOut",
+    "ImageZoomReset",
+    "PageNext",
+    "PagePrev",
+    "PreviewFileNext",
+    "PreviewFilePrev",
+    "TableCopy",
+    #[cfg(feature = "git")]
+    "GitDiffDiscard",
+    "CycleDiffLayout",
+    #[cfg(feature = "git")]
+    "CycleDiffView",
+    #[cfg(feature = "git")]
+    "ToggleFollowDiffScope",
+    #[cfg(feature = "git")]
+    "DiffNextChange",
+    #[cfg(feature = "git")]
+    "DiffPrevChange",
+    #[cfg(feature = "git")]
+    "GitStage",
+    #[cfg(feature = "git")]
+    "GitUnstage",
+    #[cfg(feature = "git")]
+    "GitStageAll",
+    #[cfg(feature = "git")]
+    "GitUnstageAll",
+    #[cfg(feature = "git")]
+    "GitDiscard",
+    #[cfg(feature = "git")]
+    "GitCommit",
+    #[cfg(feature = "git")]
+    "GitWorktreeDiff",
+    #[cfg(feature = "git")]
+    "GitOpenLog",
+    #[cfg(feature = "git")]
+    "GitOpenGraph",
+    #[cfg(feature = "git")]
+    "GitOpenBranches",
+    #[cfg(feature = "git")]
+    "GitLaunchTool",
+    #[cfg(feature = "git")]
+    "GitOpenSelectedDiff",
+    #[cfg(feature = "git")]
+    "GitOpenDetail",
+    #[cfg(feature = "git")]
+    "GitGraphSetBase",
+    #[cfg(feature = "git")]
+    "GitGraphClearBase",
+    #[cfg(feature = "git")]
+    "GitGraphToggleAll",
+    #[cfg(feature = "git")]
+    "JjSync",
+    #[cfg(feature = "git")]
+    "GitGraphOpenPicker",
+    #[cfg(feature = "git")]
+    "GitGraphPickerToggle",
+    #[cfg(feature = "git")]
+    "GitGraphPickerAll",
+    #[cfg(feature = "git")]
+    "GitGraphPickerCurrentOnly",
+    #[cfg(feature = "git")]
+    "GitGraphPickerMoveUp",
+    #[cfg(feature = "git")]
+    "GitGraphPickerMoveDown",
+    #[cfg(feature = "git")]
+    "GitScreenNext",
+    #[cfg(feature = "git")]
+    "GitScreenPrev",
+    "ListFilterStart",
+    #[cfg(feature = "git")]
+    "BranchFilterStart",
+    #[cfg(feature = "git")]
+    "BranchCheckout",
+    #[cfg(feature = "git")]
+    "BranchCreate",
+    #[cfg(feature = "git")]
+    "BranchDelete",
+    #[cfg(feature = "git")]
+    "GitOpenWorktrees",
+    #[cfg(feature = "git")]
+    "WorktreeFilterStart",
+    #[cfg(feature = "git")]
+    "WorktreeGoto",
+    #[cfg(feature = "git")]
+    "WorktreeGotoNewTab",
+    #[cfg(feature = "git")]
+    "WorktreeClose",
+    #[cfg(feature = "git")]
+    "WorktreeShowChanges",
+    #[cfg(feature = "git")]
+    "WorktreeCreate",
+    #[cfg(feature = "git")]
+    "GitCopy",
+    #[cfg(feature = "git")]
+    "CopyBranchName",
+    #[cfg(feature = "git")]
+    "GitClose",
+    "SortSet",
+    "SortToggleReverse",
+    "SortToggleDirsFirst",
+    "ToggleTabList",
+    "TabListClose",
+    "ToggleOutline",
+    "BookmarkJump",
+    "BookmarkEdit",
+    "BookmarkDelete",
+    "BookmarkClose",
+    "InfoClose",
+    "ToggleTableCell",
+    "Cancel",
+    "TabListActivate",
+    "OutlineJump",
+    #[cfg(feature = "git")]
+    "GitGraphPickerApply",
+    "ToggleFocusedItem",
+    "Plugin",
+    "ProjectControl",
+];
+
+fn action_variants_in_source() -> Vec<String> {
+    ACTION_VARIANT_NAMES.iter().map(|n| n.to_string()).collect()
 }
 
 /// Every action value the program can hold: the names the config parser accepts, what the
@@ -796,4 +1141,211 @@ fn vcs_keys_the_walk_over_every_action_and_every_context_of_a_project_screen() {
         }
         assert!(kept > 0, "{ctx:?}: the overlay keeps nothing over a project screen");
     }
+}
+
+/// The project layer reads a key as it reads it (`project_key_press`): a chord with Alt is a key
+/// of none of its tables, so Alt-h / Alt-j / Alt-l / Alt-q do nothing on a project screen, while
+/// the plain letters work.
+#[test]
+fn vcs_project_alt_motion_chords_do_nothing_and_plain_letters_work() {
+    if isolated("vcs_project_alt_motion_chords_do_nothing_and_plain_letters_work") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_alt_motion_chords", true);
+    let mut sim = open(&root, config("git", "en"), (180, 24));
+    let screen = sim.app.project_frame().unwrap().key.screen.clone();
+    let cursor = sim.app.project_frame().unwrap().cursor;
+    for c in ['h', 'j', 'k', 'l', 'q', 'r'] {
+        sim.press(KeyCode::Char(c), KeyModifiers::ALT);
+        drain(&mut sim);
+        assert!(sim.app.project_active(), "Alt-{c} left the project");
+        let frame = sim.app.project_frame().unwrap();
+        assert_eq!(frame.key.screen, screen, "Alt-{c} changed the screen");
+        assert_eq!(frame.cursor, cursor, "Alt-{c} moved the cursor");
+    }
+    keys(&mut sim, "j");
+    assert_eq!(
+        sim.app.project_frame().unwrap().cursor,
+        cursor + 1,
+        "plain j moves"
+    );
+    keys(&mut sim, "q");
+    assert!(!sim.app.project_active(), "plain q leaves");
+}
+
+/// Refresh is the project's operation, not the key `r`: with `r` bound to `navigate:left` on the
+/// changes screen, the refresh bound in the help (preview -> `p` -> `?` -> the key) refreshes the
+/// project and does not leave it.
+#[test]
+fn vcs_project_refresh_is_an_operation_not_the_key_r_read_through_the_config() {
+    if isolated("vcs_project_refresh_is_an_operation_not_the_key_r_read_through_the_config") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_refresh_op") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_refresh_op_cfg");
+    for table in ["git.changes", "git_changes"] {
+        let mut cfg = config("git", "en");
+        bind(&mut cfg, table, "r", "navigate:left");
+        bind(&mut cfg, "help", "ctrl-a", "refresh");
+        let mut sim = preview_session(&repo, cfg, "notes.md", true, &cfg_base);
+        let screen = sim.app.project_frame().unwrap().key.screen.clone();
+        let depth = sim.app.tab.project_navigation.as_ref().unwrap().stack.len();
+        sim.key('?');
+        drain(&mut sim);
+        let late = format!("late-refresh-{}.txt", table.replace('.', "_"));
+        std::fs::write(repo.join(&late), "late\n").unwrap();
+        sim.press(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        drain(&mut sim);
+        assert!(sim.app.project_active(), "{table}: the refresh left the project");
+        let nav = sim.app.tab.project_navigation.as_ref().unwrap();
+        assert_eq!(nav.stack.len(), depth, "{table}: the refresh moved back a screen");
+        assert_eq!(sim.app.project_frame().unwrap().key.screen, screen, "{table}");
+        let rows_of = |sim: &Sim| match sim.app.project_content().as_deref() {
+            Some(ProjectContent::List(list)) => {
+                list.rows.iter().map(|r| r.value.clone()).collect::<Vec<_>>()
+            }
+            _ => vec![],
+        };
+        let mut rows = rows_of(&sim);
+        for _ in 0..40 {
+            if rows.iter().any(|v| v.ends_with(&late)) {
+                break;
+            }
+            drain(&mut sim);
+            rows = rows_of(&sim);
+        }
+        assert!(
+            rows.iter().any(|v| v.ends_with(&late)),
+            "{table}: the project did not refresh: {rows:?}"
+        );
+    }
+}
+
+fn preview_text(sim: &mut Sim) -> String {
+    sim.app
+        .windowed_lines(20, 100)
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The real return of the editor / a terminal launch / the git tool goes through
+/// `App::external_returned`. While a project screen covers the preview under it, the return
+/// does not rebuild that preview; leaving the project brings it up to date.
+#[test]
+fn vcs_project_external_return_leaves_the_covered_preview_alone_until_it_is_in_front() {
+    if isolated("vcs_project_external_return_leaves_the_covered_preview_alone_until_it_is_in_front") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_external_return_preview") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_external_return_preview_cfg");
+    for what in [crate::app::ExternalReturn::File, crate::app::ExternalReturn::Tree] {
+        std::fs::write(repo.join("lines.txt"), LINES_TXT).unwrap();
+        let mut sim = preview_session(&repo, config("git", "en"), "lines.txt", true, &cfg_base);
+        let _ = sim.app.project_frame().unwrap();
+        std::fs::write(repo.join("lines.txt"), "edited-one\nedited-two\n").unwrap();
+        sim.app.external_returned(what);
+        drain(&mut sim);
+        assert!(sim.app.project_active(), "{what:?}: the return left the project");
+        assert!(sim.app.covered_reload_pending(), "{what:?}: the hidden screen is not marked");
+        sim.app.leave_project_screens();
+        drain(&mut sim);
+        assert!(!sim.app.project_active());
+        assert!(!sim.app.covered_reload_pending(), "{what:?}: still pending after leaving");
+        let shown = preview_text(&mut sim);
+        assert!(shown.contains("edited-one"), "{what:?}: stale preview after leaving: {shown}");
+    }
+}
+
+/// The same for the tree under a project screen: a file the git tool made shows after leaving,
+/// not while covered.
+#[test]
+fn vcs_project_external_return_leaves_the_covered_tree_alone_until_it_is_in_front() {
+    if isolated("vcs_project_external_return_leaves_the_covered_tree_alone_until_it_is_in_front") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_external_return_tree") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_external_return_tree_cfg");
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    let before = sim.app.tab.entries.len();
+    std::fs::write(repo.join("made-by-the-tool.txt"), "x\n").unwrap();
+    sim.app.external_returned(crate::app::ExternalReturn::Tree);
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    assert_eq!(sim.app.tab.entries.len(), before, "the covered tree was rebuilt");
+    sim.app.leave_project_screens();
+    drain(&mut sim);
+    assert!(
+        sim.app
+            .tab
+            .entries
+            .iter()
+            .any(|e| e.path.ends_with("made-by-the-tool.txt")),
+        "the tree did not show the new file after leaving"
+    );
+}
+
+/// `F` reads the status for its baseline. While a project screen covers the changed-files list,
+/// the status is taken but the hidden list (entries, selection) is not rebuilt from it; it is
+/// correct once the list is in front again.
+#[test]
+fn vcs_project_follow_baseline_does_not_rebuild_the_covered_changed_files_list() {
+    if isolated("vcs_project_follow_baseline_does_not_rebuild_the_covered_changed_files_list") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_follow_baseline_list") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_follow_baseline_list_cfg");
+    std::fs::write(repo.join("dirty-one.txt"), "1\n").unwrap();
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.key('C');
+    drain(&mut sim);
+    assert!(sim.app.changed_filter(), "C turns the changed-files list on");
+    let paths = |sim: &Sim| {
+        sim.app
+            .tab
+            .entries
+            .iter()
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>()
+    };
+    let before = paths(&sim);
+    assert!(before.iter().any(|p| p.ends_with("dirty-one.txt")), "{before:?}");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    std::fs::write(repo.join("dirty-two.txt"), "2\n").unwrap();
+    sim.app.mark_git_status_dirty();
+    sim.app.toggle_follow();
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    assert!(sim.app.changed_filter(), "the covered list's filter was dropped");
+    assert_eq!(paths(&sim), before, "the covered changed-files list was rebuilt");
+    sim.app.leave_project_screens();
+    drain(&mut sim);
+    assert!(sim.app.changed_filter());
+    let after = paths(&sim);
+    assert!(
+        after.iter().any(|p| p.ends_with("dirty-two.txt")),
+        "the list is stale after leaving: {after:?}"
+    );
 }

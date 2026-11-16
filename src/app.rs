@@ -121,6 +121,15 @@ pub use preview_visual::PreviewSelection;
 // Referenced by `ui/table.rs` (the full-cell popup renderer) as `crate::app::TableCellView`.
 pub use table_actions::TableCellView;
 
+/// What an external program that returned may have changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ExternalReturn {
+    /// The file it was given.
+    File,
+    /// Anything in the working tree.
+    Tree,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     #[default]
@@ -1159,6 +1168,13 @@ pub struct App {
 
     /// Flag requesting launch of an external git tool (lazygit, etc.) via `O`. The run loop takes it, suspends the TUI, and launches.
     pending_git_tool: bool,
+    /// What an external program that returned while a project screen covered the screen under it
+    /// may have changed in that hidden screen. The hidden screen is not rebuilt while covered; it
+    /// is brought up to date when it is in front again ([`App::settle_covered_reload`]).
+    covered_reload: Option<ExternalReturn>,
+    /// A status result arrived while a project screen covered the screen under it, so the changed-files
+    /// list under it was not rebuilt from it; it is rebuilt when that screen is in front again.
+    covered_changed_filter: bool,
 
     /// Cache of decorated preview content (Markdown/Mermaid).
     /// Avoids re-parsing (pulldown-cmark/syntect/mermaid layout) on every scroll.
@@ -2269,6 +2285,8 @@ impl App {
             pending_edit: None,
             pending_terminal: None,
             pending_git_tool: false,
+            covered_reload: None,
+            covered_changed_filter: false,
             md_cache: None,
             diff_cache: None,
             gutter_cache: None,
@@ -2851,9 +2869,8 @@ impl App {
     /// with Alt is a key of no host table while it is in front: `None`. Every other layer, and the
     /// host without a project, reads the key through [`KeyPress::norm`] as before.
     pub fn layer_key(&self, key: &crossterm::event::KeyEvent) -> Option<crate::keymap::KeyPress> {
-        use crossterm::event::KeyModifiers;
-        if key.modifiers.contains(KeyModifiers::ALT) && self.project_is_frontmost() {
-            return None;
+        if self.project_is_frontmost() {
+            return konoma_plugin::host::project::project_key_press(key);
         }
         Some(crate::keymap::KeyPress::norm(key))
     }
@@ -3318,6 +3335,8 @@ impl App {
     /// `visual_anchor` is an entries index, so it goes stale under a different root. The filter and preview search are also
     /// for the old root, so they are cleared together (rebuild_tree also invalidates visual_anchor, but we do it explicitly).
     fn clear_for_root_change(&mut self) {
+        self.covered_reload = None;
+        self.covered_changed_filter = false;
         self.tab.project_navigation = None;
         self.tab.project_return = None;
         self.project_dialog = None;
@@ -3905,6 +3924,57 @@ impl App {
     /// Taken by the run loop: if a git-tool launch request is set, return true and clear it.
     pub fn take_launch_git_tool(&mut self) -> bool {
         std::mem::take(&mut self.pending_git_tool)
+    }
+
+    /// An external program (the editor, a terminal launch chain, the git tool) returned. The
+    /// screen in front is brought up to date: the shown file for `File`, the listing, git state
+    /// and views for `Tree`. While a project screen covers the screen under it, the front layer is
+    /// the project (it refreshes) and the hidden screen is left alone until it is in front again.
+    pub(crate) fn external_returned(&mut self, what: ExternalReturn) {
+        if self.project_screen_covers() {
+            self.project_refresh();
+            self.covered_reload = self.covered_reload.max(Some(what));
+            return;
+        }
+        match what {
+            ExternalReturn::File => self.reload_preview(),
+            ExternalReturn::Tree => {
+                let _ = self.refresh();
+            }
+        }
+    }
+
+    /// Test seam: the status is out of date, as after a file system event.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn mark_git_status_dirty(&mut self) {
+        self.git_status_dirty = true;
+    }
+
+    /// Whether an external program returned while a project screen covered the screen under it
+    /// and that screen has not been brought up to date yet.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn covered_reload_pending(&self) -> bool {
+        self.covered_reload.is_some()
+    }
+
+    /// The screen under a project screen is in front again: reload what an external program that
+    /// returned meanwhile may have changed ([`App::external_returned`]).
+    pub(crate) fn settle_covered_reload(&mut self) {
+        if std::mem::take(&mut self.covered_changed_filter) && self.tab.changed_filter {
+            let anchor = self
+                .tab
+                .changed_anchor_pending
+                .take()
+                .or_else(|| self.filter_anchor());
+            self.reapply_changed_filter(anchor);
+        }
+        match self.covered_reload.take() {
+            Some(ExternalReturn::File) => self.reload_preview(),
+            Some(ExternalReturn::Tree) => {
+                let _ = self.refresh();
+            }
+            None => {}
+        }
     }
 
     /// Reopen the preview after the external editor exits (reflect the edited content). Caches are also discarded.

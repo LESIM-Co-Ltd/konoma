@@ -1089,7 +1089,7 @@ fn run(
             // git status, and derived views
             // (symmetric with run_editor's restore calling reload_preview. Prevents the Git view's
             // git_view_entries from going stale — #4).
-            let _ = app.refresh();
+            app.external_returned(app::ExternalReturn::Tree);
             needs_redraw = true;
         }
 
@@ -1478,7 +1478,7 @@ fn run_editor(
     let cwd = path.parent().unwrap_or(path).to_path_buf();
     let status = run_external(terminal, app, prog, args, &cwd)?;
     match status {
-        Ok(_) => app.reload_preview(), // apply the rewritten result (drop the cache + re-open the window)
+        Ok(_) => app.external_returned(app::ExternalReturn::File), // apply the rewritten result (drop the cache + re-open the window)
         Err(e) => {
             app.flash = Some(konoma_plugin::host::launch::editor_failed_notice(
                 app.lang,
@@ -1504,7 +1504,7 @@ fn run_terminal_chain(
         status.map(|s| Some(konoma_plugin::launch::status_code(s)))
     });
     match outcome {
-        Ok(_) => app.reload_preview(),
+        Ok(_) => app.external_returned(app::ExternalReturn::File),
         Err(e) => {
             app.flash = Some(konoma_plugin::host::launch::editor_failed_notice(
                 app.lang, &e,

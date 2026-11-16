@@ -1387,7 +1387,12 @@ impl App {
         }
         // The "changed files only" filter's list is entries **already derived** from statuses, so a
         // re-render alone won't fix it. Rebuild it the moment the new status arrives (live follow-along for an agent's edits).
-        if self.tab.changed_filter {
+        if self.tab.changed_filter && self.project_screen_covers() {
+            // The list belongs to the screen under a project screen: it is neither read nor changed
+            // while covered, and is rebuilt from the status when that screen is in front again
+            // (`settle_covered_reload`). The status itself (what a follow baseline reads) is applied above.
+            self.covered_changed_filter = true;
+        } else if self.tab.changed_filter {
             // Whoever rebuilt the tree out from under the list and left the rebuild to us also left
             // the cursor's identity (`changed_anchor_pending`) — `entries` is the whole tree by now,
             // so it cannot be recovered here. When nobody did, `entries` still *is* the list (this

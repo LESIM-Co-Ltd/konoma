@@ -252,7 +252,18 @@ impl ProjectLoopState {
         {
             return false;
         }
-        let kp = KeyPress::norm(&key);
+        // The project layer's own reading of the key (`project_key_press`, the one definition the
+        // host uses too): a chord with Alt has no form in it, so it is in no table below.
+        let Some(kp) = crate::host::project::project_key_press(&key) else {
+            let facts = ProjectKeyFacts {
+                viewport: self.viewport,
+                layout: prepared.settings.diff_layout,
+                ..ProjectKeyFacts::of_no_key()
+            };
+            let update =
+                self.with_host(info, |host, context| host.handle_key(context, key, &facts));
+            return self.apply(prepared, info, update);
+        };
         // `Q` is one of the two layer-0 keys the standalone keeps (design: the standalone's
         // keys): it ends the program from any project screen, as the help's Global row says.
         // A filter being typed or a dialog open takes the key as text first.
@@ -410,6 +421,11 @@ impl ProjectLoopState {
                 Some(ProjectInput::Act(invocation)) => {
                     changed = true;
                     self.execute_act(prepared, info, *invocation)
+                }
+                Some(ProjectInput::Refresh) => {
+                    changed = true;
+                    let update = self.with_host(info, |host, context| host.refresh(context));
+                    self.apply(prepared, info, update);
                 }
                 None => break,
             }

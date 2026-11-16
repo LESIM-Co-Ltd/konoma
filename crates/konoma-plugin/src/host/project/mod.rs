@@ -40,7 +40,9 @@ pub use actions::{
     ProjectDispatch, ProjectHost, ProjectNotice, ProjectUpdate, ProjectWritePolicy,
 };
 pub use effects::{ProjectContextInfo, ProjectEffect, ProjectEvent, ProjectInvalidation};
-pub use input::{ProjectContextMut, ProjectKeyFacts, ProjectReplay, ProjectReplayState};
+pub use input::{
+    project_key_press, ProjectContextMut, ProjectKeyFacts, ProjectReplay, ProjectReplayState,
+};
 
 #[cfg(test)]
 mod actions_tests;
