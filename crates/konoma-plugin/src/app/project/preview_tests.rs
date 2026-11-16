@@ -403,24 +403,76 @@ fn assert_screen(
     }
 }
 
-/// The standalone app takes the host's effect rule: opening a diff, a redraw and an unhandled
-/// result show no operation name in the footer, while the result of a write does. (Opening a file
-/// or a tab is refused there with its own notice, so it is not a case of this rule.)
+/// Walks every result kind exactly once. Each arm names the next kind and there is no wildcard
+/// arm, so a new `Outcome` variant does not compile until it is placed in the chain (and then in
+/// `standalone_notice`). `None` is the write that returned nothing to show.
+fn next_outcome(
+    current: Option<&Outcome>,
+    open_file: &Path,
+    root: &Path,
+) -> Option<Option<Outcome>> {
+    Some(match current {
+        None => Some(Outcome::Reload),
+        Some(Outcome::Reload) => Some(Outcome::Copy { text: "t".into() }),
+        Some(Outcome::Copy { .. }) => Some(Outcome::Flash(crate::Tr::new("m"))),
+        Some(Outcome::Flash(_)) => Some(Outcome::Redraw),
+        Some(Outcome::Redraw) => Some(Outcome::Unhandled),
+        Some(Outcome::Unhandled) => Some(Outcome::PushScreen {
+            screen: "log".into(),
+            selection: None,
+        }),
+        Some(Outcome::PushScreen { .. }) => Some(Outcome::PopScreen),
+        Some(Outcome::PopScreen) => Some(Outcome::OpenFile {
+            path: open_file.into(),
+            line: None,
+        }),
+        Some(Outcome::OpenFile { .. }) => Some(Outcome::OpenDiff {
+            path: open_file.into(),
+        }),
+        Some(Outcome::OpenDiff { .. }) => Some(Outcome::SwitchRoot {
+            root: root.into(),
+            message: None,
+        }),
+        Some(Outcome::SwitchRoot { .. }) => Some(Outcome::OpenTab {
+            path: open_file.into(),
+        }),
+        Some(Outcome::OpenTab { .. }) => return None,
+    })
+}
+
+/// The footer notice the standalone app shows today for each result kind (English).
+fn standalone_notice(outcome: Option<&Outcome>) -> Option<String> {
+    match outcome {
+        // A write: the operation name.
+        None | Some(Outcome::Reload) => Some("Diff".into()),
+        Some(Outcome::Copy { text }) => Some(konoma_host_core::copy::copied_preview_notice(
+            konoma_host_core::lang::Lang::En,
+            text,
+        )),
+        Some(Outcome::Flash(_)) => Some("m".into()),
+        // Nothing to name, nothing to say.
+        Some(Outcome::Redraw | Outcome::Unhandled) => None,
+        // Navigations: the destination answers, so no operation name.
+        Some(Outcome::PushScreen { .. } | Outcome::PopScreen) => None,
+        Some(Outcome::OpenDiff { .. }) => None,
+        // Refused on this surface with its own notice, never the operation name (this fixture has
+        // no root switching).
+        Some(Outcome::OpenFile { .. } | Outcome::OpenTab { .. } | Outcome::SwitchRoot { .. }) => {
+            Some("this action is not supported in the standalone app".into())
+        }
+    }
+}
+
+/// The standalone app takes the host's effect rule for every result kind: a write names the
+/// operation in the footer, while a redraw, an unhandled result and every navigation do not.
 #[test]
 fn standalone_effects_name_the_operation_only_for_writes() {
-    for (outcome, named) in [
-        (None, true),
-        (Some(Outcome::Reload), true),
-        (Some(Outcome::Redraw), false),
-        (Some(Outcome::Unhandled), false),
-        (
-            Some(Outcome::OpenDiff {
-                path: "file.txt".into(),
-            }),
-            false,
-        ),
-    ] {
-        let (_dir, mut prepared, _term) = setup(false, true);
+    let mut outcome = Some(None);
+    let mut seen = 0;
+    while let Some(current) = outcome {
+        seen += 1;
+        let (dir, mut prepared, _term) = setup(false, true);
+        let _sink = prepared.clipboard_for_test();
         let mut state = ProjectLoopState::new(&mut prepared, false);
         let info = state.info(&prepared, &ProjectLoopCx::default());
         let nav = state.screen.as_ref().unwrap();
@@ -434,22 +486,19 @@ fn standalone_effects_name_the_operation_only_for_writes() {
             },
             "Diff",
         );
-        effect.outcome = outcome.clone().map(|o| match o {
-            Outcome::OpenDiff { .. } => Outcome::OpenDiff {
-                path: prepared.open_dir.join("file.txt"),
-            },
-            other => other,
-        });
+        effect.outcome = current.clone();
         let mut update = ProjectUpdate::handled();
         update.events.push(ProjectEvent::Effect(effect));
         prepared.notice = None;
         state.apply(&mut prepared, &info, update);
         assert_eq!(
-            prepared.notice.as_deref(),
-            named.then_some("Diff"),
-            "{outcome:?}"
+            prepared.notice,
+            standalone_notice(current.as_ref()),
+            "{current:?}"
         );
+        outcome = next_outcome(current.as_ref(), &dir.join("file.txt"), &dir);
     }
+    assert_eq!(seen, 12, "None plus every Outcome variant");
 }
 
 #[test]
