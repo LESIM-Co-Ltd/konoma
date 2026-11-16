@@ -1,8 +1,8 @@
 //! The real terminal: raw mode, the alternate screen, the panic hook and crossterm's events.
 
-use std::io::Stdout;
 use std::time::Duration;
 
+use crate::ratatui_backend::{HostTerminal, WideSafeBackend};
 use crossterm::event::{Event, KeyCode as CKey, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -196,7 +196,7 @@ pub(super) fn install_exit_signals() {
 
 /// The terminal in raw mode on the alternate screen; restored on `leave` and on `Drop`.
 pub struct TerminalGuard {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+    terminal: HostTerminal,
     active: bool,
 }
 
@@ -207,7 +207,10 @@ impl TerminalGuard {
         terminal::enable_raw_mode().map_err(|e| AppError::Terminal(e.to_string()))?;
         // From here the terminal is changed: a failure restores it.
         let mut guard = TerminalGuard {
-            terminal: Terminal::new(CrosstermBackend::new(std::io::stdout())).map_err(|e| {
+            terminal: Terminal::new(WideSafeBackend::new(CrosstermBackend::new(
+                std::io::stdout(),
+            )))
+            .map_err(|e| {
                 restore_terminal();
                 AppError::Terminal(e.to_string())
             })?,
@@ -227,7 +230,7 @@ impl TerminalGuard {
         Ok(guard)
     }
 
-    pub fn terminal(&mut self) -> &mut Terminal<CrosstermBackend<Stdout>> {
+    pub fn terminal(&mut self) -> &mut HostTerminal {
         &mut self.terminal
     }
 

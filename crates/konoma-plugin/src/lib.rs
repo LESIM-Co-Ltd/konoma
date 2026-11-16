@@ -106,6 +106,8 @@ pub mod prelude;
 pub mod proc;
 pub mod project;
 #[cfg(feature = "ratatui")]
+pub mod ratatui_backend;
+#[cfg(feature = "ratatui")]
 pub mod ratatui_draw;
 pub mod registry;
 pub mod reopen;

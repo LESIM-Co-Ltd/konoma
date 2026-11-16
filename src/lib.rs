@@ -607,7 +607,7 @@ fn terminal_gone(err: &anyhow::Error) -> bool {
 /// panics when the tty is gone, and a panic inside a panic hook aborts the process (SIGABRT on a
 /// closed terminal). `main` installs its own hook that tears the terminal down quietly, and only
 /// for a panic that ends the process.
-fn init_terminal() -> ratatui::DefaultTerminal {
+fn init_terminal() -> konoma_plugin::ratatui_backend::HostTerminal {
     let started = crossterm::terminal::enable_raw_mode().and_then(|()| {
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
     });
@@ -615,11 +615,17 @@ fn init_terminal() -> ratatui::DefaultTerminal {
         preview::command::restore_terminal_quietly();
         panic!("failed to initialize terminal: {e}");
     }
-    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
-        .unwrap_or_else(|e| {
-            preview::command::restore_terminal_quietly();
-            panic!("failed to initialize terminal: {e}")
-        })
+    // Through `WideSafeBackend`: the bare crossterm backend writes a blank over the character
+    // after a VS16 emoji (see `konoma_plugin::ratatui_backend`).
+    konoma_plugin::ratatui_backend::HostTerminal::new(
+        konoma_plugin::ratatui_backend::WideSafeBackend::new(
+            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+        ),
+    )
+    .unwrap_or_else(|e| {
+        preview::command::restore_terminal_quietly();
+        panic!("failed to initialize terminal: {e}")
+    })
 }
 
 fn resize_worker(rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<ResizeResult>) {
@@ -881,7 +887,7 @@ fn animation_timers_due(app: &mut App, now: std::time::Instant) -> bool {
 }
 
 fn run(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
     app: &mut App,
     mut resp_rx: UnboundedReceiver<ResizeResult>,
     mut rx: WorkerRx,
@@ -1466,7 +1472,7 @@ fn watch_failed_flash(lang: crate::i18n::Lang, path: &std::path::Path) -> String
 /// Without this, keys can become garbled or stop working after return (ratatui::init assumes legacy
 /// input, so we realign the state).
 fn run_editor(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
     app: &mut App,
     path: &std::path::Path,
     line: Option<usize>,
@@ -1493,7 +1499,7 @@ fn run_editor(
 /// editor does; the first that starts and does not exit non-zero wins. What it may have rewritten
 /// is read again; a chain that all failed is told like a failed editor.
 fn run_terminal_chain(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
     app: &mut App,
     attempts: &[konoma_plugin::launch::Attempt],
     cwd: &std::path::Path,
@@ -1518,7 +1524,7 @@ fn run_terminal_chain(
 /// `cfg`, trims surrounding whitespace, and falls back to the well-known default (`lazygit` /
 /// `lazyjj`) when the configured value is empty (or all whitespace, since trimming it first makes
 /// that collapse to empty too). Pulled out of `run_git_tool` as a pure function — that function
-/// needs a real `ratatui::DefaultTerminal` to suspend/restore and spawns a real process, so the
+/// needs a real `konoma_plugin::ratatui_backend::HostTerminal` to suspend/restore and spawns a real process, so the
 /// selection logic (which section is consulted per `VcsKind`, and the fallback behavior) was
 /// previously unreachable from a test. Returns `(resolved command line, default tool name)`; the
 /// default name is echoed back mainly so tests can assert it directly rather than re-deriving it.
@@ -1542,7 +1548,10 @@ fn git_tool_plan(app: &App) -> Option<konoma_plugin::host::project::launch::Proj
 /// (default lazygit) for git, `[jj] tool` (default lazyjj) for jj; see [`tool_command`]. The command
 /// is split on whitespace into prog + args. The cwd is the workdir discovered from app.tab.root via git
 /// (or root if none). A launch failure (not installed, etc.) is reported as an error via flash.
-fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
+fn run_git_tool(
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
+    app: &mut App,
+) -> Result<()> {
     let Some(plan) = git_tool_plan(app) else {
         return Ok(());
     };
@@ -1582,7 +1591,7 @@ fn git_workdir(root: &std::path::Path) -> PathBuf {
 /// TUI → launches → restores, returning the process exit status (an io::Error on launch failure). Shared
 /// by the editor and git tool. See `run_editor` for suspend/restore details (alternate screen, input-mode reset, draining leftover bytes).
 fn run_external(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
     app: &mut App,
     prog: &str,
     args: &[String],
