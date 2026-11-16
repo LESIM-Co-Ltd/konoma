@@ -63,9 +63,8 @@ impl TmpDir {
     /// same name would make inherent-method lookup pick this by-value, `TmpDir`-returning version
     /// at *every* `some_tmp_dir.canonicalize()` call site in the whole crate — including the ~280
     /// that rely on the borrowing `Path` version and never meant to consume the guard.
-    // Its only two call sites (`app::tests::git_repo_with_one_change`, `git_view::tests::
-    // sandbox_with_worktree`) are both `#[cfg(feature = "git")]`, so this is unused — not
-    // unreachable — on a no-`git` test build.
+    // Its call sites (`app::tests::git_repo_with_one_change` and the VCS e2e fixtures) are
+    // `#[cfg(feature = "git")]`, so this is unused — not unreachable — on a no-`git` test build.
     pub fn into_canonical(self) -> std::io::Result<TmpDir> {
         let canon = self.path.canonicalize()?;
         std::mem::forget(self);
