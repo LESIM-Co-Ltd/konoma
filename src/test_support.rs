@@ -148,6 +148,22 @@ thread_local! {
     /// (`App::kick_filter_pool_start`, `App::kick_filter_pool_refresh`, whether the refresh then
     /// runs a walk or records the request for the walk already out).
     static FILTER_POOL_ASKS: Cell<usize> = const { Cell::new(0) };
+    /// How many block diffs (a Markdown diff's Rendered presentation, the preview's change
+    /// gutter) were asked of the block-diff worker **on this thread** (`App::kick_md_diff`).
+    static MD_DIFF_ASKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called where a block diff is asked of its worker (see `MD_DIFF_ASKS`).
+pub(crate) fn note_md_diff_ask() {
+    let _ = MD_DIFF_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many block diffs were asked for while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_md_diff_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = MD_DIFF_ASKS.with(|c| c.get());
+    let out = f();
+    (out, MD_DIFF_ASKS.with(|c| c.get()).saturating_sub(before))
 }
 
 /// Called where the tab view starts reading its file again (see `TAB_VIEW_LOADS`).

@@ -49,6 +49,8 @@ impl App {
     }
 
     fn kick_md_diff(&mut self, path: PathBuf, kind: MdDiffKind) {
+        #[cfg(test)]
+        crate::test_support::note_md_diff_ask();
         let baseline = self.diff_baseline(&path, kind);
         let opts = self.doc_options();
         self.spawn_or_sync_md_diff(MdDiffRequest {

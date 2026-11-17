@@ -286,17 +286,6 @@ impl App {
         }
         let working = covered.then(|| std::mem::take(&mut self.tab));
         self.tab = Self::restored(t, working);
-        // A diff comes back with the view, the page and the scroll it was left at (they are the
-        // tab's own, restored above); what is read again is the diff itself, from git, when the
-        // project that covered it may have changed the files. The block diff of a Rendered view is
-        // asked for again in either case (its result is not the tab's).
-        if let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() {
-            if covered {
-                self.invalidate_diff_caches();
-            }
-            let view = self.tab.diff_view;
-            self.apply_diff_view(view, &path);
-        }
         let saved_stamp = std::mem::replace(&mut self.tab.preview_win_stamp, win_stamp_now);
         if self.preview_win.is_some() || self.tab.mode == Mode::Preview {
             self.settle_windowed_position(saved_stamp);
@@ -354,7 +343,23 @@ impl App {
         // The preview itself has already been rebuilt from disk above, so **don't reload it again**
         // here (previously refresh_fs → reload_preview repeated the same work, running the
         // full-row CSV parse twice for a CSV tab).
-        self.refresh_fs_after_tab_switch();
+        //
+        // The App-level freshness runs first (in the refresh: it drops the diff caches and the
+        // block diff and media diff asked before it), and only then does the restored view ask
+        // for its workers, when it is the view in front: an ask made before the freshness was
+        // dropped by it and asked again by the draw, so every return computed the block diff
+        // twice and threw the first answer away.
+        if self.refresh_fs_after_tab_switch() {
+            // A diff comes back with the view, the page and the scroll it was left at (they are
+            // the tab's own, restored above); what is read again is the diff itself, from git
+            // (the freshness above dropped its caches, on a tab switch and on the return from a
+            // project screen alike). The block diff of a Rendered view is asked for once, here
+            // (its result is not the tab's).
+            if let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() {
+                let view = self.tab.diff_view;
+                self.apply_diff_view(view, &path);
+            }
+        }
     }
 
     /// The live work of the screen a tab shows, dropped when that screen is left: by a tab switch

@@ -2192,6 +2192,99 @@ fn vcs_project_md_diff_landing_after_the_cover_is_not_applied_behind_the_screen(
     assert!(!marks.is_empty(), "the Rendered diff has no change marks: {marks:?}");
 }
 
+/// A session showing `doc.md`'s working-tree diff Rendered, its block diff landed and drawn.
+fn rendered_md_diff_session(repo: &std::path::Path, cfg_base: &std::path::Path) -> Sim {
+    let doc = overlay_tracked_change(
+        repo,
+        "doc.md",
+        b"# Title\n\nold paragraph\n",
+        b"# Title\n\nnew paragraph\n\nadded block\n",
+    );
+    let mut sim = Sim::with_config_sized(repo, config("git", "en"), 140, 30).with_async_md_diff();
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.app.open_git_diff(&doc);
+    assert_eq!(sim.app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    sim.drain_md_diff();
+    assert!(
+        sim.app
+            .diff_rendered_marks_for_test()
+            .is_some_and(|marks| !marks.is_empty()),
+        "premise: the Rendered diff is built with its change marks"
+    );
+    sim
+}
+
+/// The return to a Rendered Markdown diff asks its block diff once, after the App-level freshness
+/// of the return (which drops the diff caches and the block diff asked before it): `steps` is
+/// the return (a tab switch back, or `q` off a project screen) and its first draw. Exactly one
+/// ask goes out, and its answer is the current one (applied, with the change marks).
+fn assert_return_asks_the_block_diff_once(sim: &mut Sim, road: &str, steps: impl FnOnce(&mut Sim)) {
+    let ((), asks) = crate::test_support::count_md_diff_asks(|| steps(sim));
+    assert_eq!(sim.app.diff_view_for_test(), crate::app::DiffView::Rendered, "{road}");
+    assert_eq!(
+        asks, 1,
+        "{road}: the return asked the block diff {asks} times (an ask made before the return's \
+         freshness is dropped by it and asked again by the draw)"
+    );
+    sim.drain_md_diff();
+    let marks = sim
+        .app
+        .diff_rendered_marks_for_test()
+        .unwrap_or_else(|| panic!("{road}: the Rendered diff is built after the return"));
+    assert!(!marks.is_empty(), "{road}: the Rendered diff has no change marks: {marks:?}");
+    let ((), later) = crate::test_support::count_md_diff_asks(|| sim.draw());
+    assert_eq!(later, 0, "{road}: the landed block diff is asked for again");
+}
+
+/// handoff-e6-6 item 1, tab road: a tab switch away from a Rendered Markdown diff and back asks
+/// the block diff exactly once, and that answer is applied.
+#[test]
+fn vcs_project_tab_switch_back_asks_the_block_diff_once() {
+    if isolated("vcs_project_tab_switch_back_asks_the_block_diff_once") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_md_diff_tab_back") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_md_diff_tab_back_cfg");
+    let mut sim = rendered_md_diff_session(&repo, &cfg_base);
+    sim.app.tab_new().unwrap();
+    drain(&mut sim);
+    assert_eq!(sim.app.active_tab_index(), 1, "premise: on the new tab");
+    assert_return_asks_the_block_diff_once(&mut sim, "tab switch back", |sim| {
+        sim.app.tab_cycle(-1);
+        sim.draw();
+        assert_eq!(sim.app.active_tab_index(), 0, "premise: back on the diff's tab");
+    });
+}
+
+/// handoff-e6-6 item 1, project road: covering a Rendered Markdown diff with `p` and leaving with
+/// `q` asks the block diff exactly once (as the tab switch back does), and that answer is applied.
+#[test]
+fn vcs_project_uncover_asks_the_block_diff_once() {
+    if isolated("vcs_project_uncover_asks_the_block_diff_once") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_md_diff_uncover") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_md_diff_uncover_cfg");
+    let mut sim = rendered_md_diff_session(&repo, &cfg_base);
+    let ((), covered_asks) = crate::test_support::count_md_diff_asks(|| {
+        sim.key('p');
+        drain(&mut sim);
+    });
+    assert!(sim.app.project_active(), "premise: p covers the diff");
+    assert_eq!(covered_asks, 0, "a block diff was asked behind the project screen");
+    assert_return_asks_the_block_diff_once(&mut sim, "uncover", |sim| {
+        press(sim, KeyCode::Char('q'));
+        assert!(!sim.app.project_active(), "premise: q left the project screen");
+    });
+}
+
 /// fix-e6a A: an image diff asks its pictures of the media-diff worker; the answer lands after
 /// `p` covered the diff. It is not applied behind the project screen (`leave_tab_view` drops the
 /// media diff of the screen that is left); leaving the project asks again and that answer lands.

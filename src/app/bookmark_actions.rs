@@ -1612,8 +1612,10 @@ impl App {
     /// Returns nothing on purpose: the caller (`load_active`) has nowhere to propagate a failure
     /// to, so reporting is done **here** instead of leaving a `let _ = …` for a future edit to
     /// forget. See `refresh_reporting_staleness` for why the flash is edge-triggered.
-    pub(super) fn refresh_fs_after_tab_switch(&mut self) {
-        self.refresh_fs_routed(false, &[], false);
+    /// Returns whether the tab's view is the one in front (the routing of `refresh_fs_routed`):
+    /// only then does the caller let the restored view ask for its workers.
+    pub(super) fn refresh_fs_after_tab_switch(&mut self) -> bool {
+        self.refresh_fs_routed(false, &[], false)
     }
 
     /// The fs-watch driven refresh, for `main`'s run loop. Same reason as
@@ -1621,7 +1623,7 @@ impl App {
     /// so there is no `?` to ride and no `resolve_key_result` to reach — a swallowed error here
     /// leaves the tree silently stale.
     pub fn refresh_fs_watched(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
-        self.refresh_fs_routed(recompute_ignored, changed, true);
+        let _ = self.refresh_fs_routed(recompute_ignored, changed, true);
     }
 
     /// The one routing point of the refreshes that do not come from the user (a watch event, the
@@ -1633,19 +1635,21 @@ impl App {
     /// files as they are then (`put_tab_back`, then `refresh_fs_after_tab_switch`). Nothing is
     /// recorded for later; refreshing the view here would only restart, behind the screen, the
     /// work the cover dropped (plugin show, media loads, the filter-pool scan of the tree).
+    /// Returns whether the tab's view is in front (and was refreshed).
     fn refresh_fs_routed(
         &mut self,
         recompute_ignored: bool,
         changed: &[std::path::PathBuf],
         reload_preview: bool,
-    ) {
+    ) -> bool {
         if self.project_screen_covers() {
             self.refresh_while_covered(recompute_ignored, changed);
-            return;
+            return false;
         }
         self.refresh_reporting_staleness(|app| {
             app.refresh_fs_inner(recompute_ignored, changed, reload_preview)
         });
+        true
     }
 
     /// Note which file each filtered view is "on", **before** a `rebuild_tree` replaces `entries`
