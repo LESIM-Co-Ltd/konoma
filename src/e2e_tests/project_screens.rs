@@ -3070,17 +3070,15 @@ fn e2e_project_outcome_open_diff_uses_host_diff() {
         path: root.join("file.txt"),
     });
     assert!(!f.sim.app.project_active());
+    assert!(f.sim.app.is_git_diff_preview());
+    assert_eq!(
+        f.sim.app.tab.preview_path.as_ref(),
+        Some(&f.sim.app.tab.root.join("file.txt"))
+    );
+    // A navigation result flashes no operation name, with or without the git feature.
+    assert!(f.sim.app.flash.is_none(), "{:?}", f.sim.app.flash);
     #[cfg(feature = "git")]
-    {
-        assert!(f.sim.app.is_git_diff_preview());
-        assert_eq!(
-            f.sim.app.tab.preview_path.as_ref(),
-            Some(&f.sim.app.tab.root.join("file.txt"))
-        );
-        f.sim.see("changed project file");
-    }
-    #[cfg(not(feature = "git"))]
-    assert!(f.sim.app.flash.is_some());
+    f.sim.see("changed project file");
 }
 
 #[test]
