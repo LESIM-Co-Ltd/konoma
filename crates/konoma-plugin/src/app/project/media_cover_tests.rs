@@ -1122,3 +1122,429 @@ fn leaving_the_diff_screen_drops_its_animated_media_pictures_on_cover_and_on_bac
         seen[3].2
     );
 }
+
+/// One step of a run that covers the Preview of the diff screen.
+enum Turn {
+    Key(char),
+    /// Run something on the loop's thread between two turns (change a file, let an answer go).
+    Do(Box<dyn FnMut()>),
+    /// Turn the loop until the condition holds.
+    Until(&'static str, Box<dyn Fn() -> bool>),
+    /// Turn the loop until it no longer asks to be woken in 16 ms.
+    Settle,
+    /// Turn the loop for the duration; at each turn the wake-up it asks for must pass the check.
+    Hold(
+        Duration,
+        &'static str,
+        Box<dyn Fn(Option<Duration>) -> bool>,
+    ),
+}
+struct Turns {
+    steps: VecDeque<Turn>,
+    since: Option<std::time::Instant>,
+}
+impl Turns {
+    fn new(steps: Vec<Turn>) -> Self {
+        Self {
+            steps: steps.into(),
+            since: None,
+        }
+    }
+}
+impl EventSource for Turns {
+    fn next(&mut self, wait: Option<Duration>) -> Next {
+        loop {
+            match self.steps.pop_front() {
+                None => return Next::End,
+                Some(Turn::Key(c)) => return Next::Event(AppEvent::Key(Key::char(c))),
+                Some(Turn::Do(mut f)) => f(),
+                Some(Turn::Settle) => {
+                    let since = *self.since.get_or_insert_with(std::time::Instant::now);
+                    if wait == Some(Duration::from_millis(16)) {
+                        assert!(
+                            since.elapsed() < DEADLINE,
+                            "the loop keeps asking to be woken in 16 ms"
+                        );
+                        self.steps.push_front(Turn::Settle);
+                        std::thread::yield_now();
+                        return Next::Timeout;
+                    }
+                    self.since = None;
+                }
+                Some(Turn::Until(what, done)) => {
+                    let since = *self.since.get_or_insert_with(std::time::Instant::now);
+                    if done() {
+                        self.since = None;
+                        continue;
+                    }
+                    assert!(since.elapsed() < DEADLINE, "never held: {what}");
+                    self.steps.push_front(Turn::Until(what, done));
+                    std::thread::yield_now();
+                    return Next::Timeout;
+                }
+                Some(Turn::Hold(span, what, ok)) => {
+                    let since = *self.since.get_or_insert_with(std::time::Instant::now);
+                    assert!(ok(wait), "{what} (woken in {wait:?})");
+                    if since.elapsed() < span {
+                        self.steps.push_front(Turn::Hold(span, what, ok));
+                        std::thread::sleep(Duration::from_millis(5));
+                        return Next::Timeout;
+                    }
+                    self.since = None;
+                }
+            }
+        }
+    }
+}
+
+/// A file plugin that reads the file on each open: `*.gif` shows the picture, `*.md` the document.
+struct PreviewFiles;
+impl Plugin for PreviewFiles {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("cover-preview-files", "0")
+            .bind(Bind::files(["*.md"]))
+            .shows(ViewKind::Document)
+    }
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::File { path, .. } = input else {
+            unreachable!()
+        };
+        let body = std::fs::read_to_string(&path)?;
+        Ok(Box::new(PreviewFile(path, body)))
+    }
+}
+struct PictureFiles;
+impl Plugin for PictureFiles {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("cover-picture-files", "0")
+            .bind(Bind::files(["*.gif"]))
+            .shows(ViewKind::Image)
+    }
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::File { path, .. } = input else {
+            unreachable!()
+        };
+        Ok(Box::new(PreviewFile(path, String::new())))
+    }
+}
+struct PreviewFile(PathBuf, String);
+impl Session for PreviewFile {
+    fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        Ok(if self.0.extension().is_some_and(|e| e == "gif") {
+            View::Image(crate::view::ImageView::new(crate::view::ImageData::File(
+                self.0.clone(),
+            )))
+        } else {
+            View::Document(crate::view::DocumentView {
+                markdown: self.1.clone(),
+                origin: crate::input::Origin::File(self.0.clone()),
+                resources: Default::default(),
+                options: Default::default(),
+                title: None,
+                truncated: false,
+            })
+        })
+    }
+}
+
+/// The VCS program's services (own diff chrome) that count the Preview's gutter answers and, once
+/// armed, hold each one until the test lets it go.
+struct GutterGate {
+    answers: AtomicUsize,
+    armed: std::sync::atomic::AtomicBool,
+    permits: Mutex<mpsc::Receiver<()>>,
+}
+struct GutterServices(Arc<GutterGate>);
+impl crate::app::project::ProjectServices for GutterServices {
+    fn diff_reply_observer_for_test(&self) -> Option<crate::app::project::ProjectReplyObserver> {
+        let gate = self.0.clone();
+        Some(Arc::new(move |kind, published| {
+            if kind != "preview" || published {
+                return;
+            }
+            gate.answers.fetch_add(1, Ordering::SeqCst);
+            if gate.armed.load(Ordering::SeqCst) {
+                gate.permits
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(DEADLINE)
+                    .expect("the test lets the held gutter answer go");
+            }
+        }))
+    }
+    fn project_diff_chrome(&self) -> bool {
+        true
+    }
+    fn inspect(
+        &self,
+        p: &MatchedProject,
+        s: &crate::app::project::ProjectSettings,
+    ) -> Result<crate::app::project::ProjectServiceInfo, Failure> {
+        Services.inspect(p, s)
+    }
+    fn file_diff(&self, _: &crate::app::project::ProjectServiceInfo, _: &Path) -> Vec<DiffLine> {
+        Vec::new()
+    }
+    fn changed_files(&self, _: &crate::app::project::ProjectServiceInfo) -> Vec<ChangeEntry> {
+        Vec::new()
+    }
+    fn base_contents(
+        &self,
+        _: &crate::app::project::ProjectServiceInfo,
+        _: &Path,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+    fn spawn_file_diff(self: Arc<Self>, r: FileDiffRequest) -> Result<FileDiffReply, Failure> {
+        crate::app::project::ProjectServices::spawn_file_diff(Arc::new(ChromeServices), r)
+    }
+}
+
+/// A project whose diff screen opens `file` in its Preview (`diff_view='preview'`), opened through
+/// the project's own navigation; nothing has run the loop yet.
+fn preview_fixture(
+    name: &str,
+    file: &str,
+    body: &[u8],
+    services: Arc<dyn crate::app::project::ProjectServices>,
+) -> (
+    konoma_test_support::TmpDir,
+    PathBuf,
+    PreparedProjects,
+    Terminal<TestBackend>,
+) {
+    let dir = konoma_test_support::unique_tmp(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("project.marker"), "").unwrap();
+    let path = dir.join(file);
+    std::fs::write(&path, body).unwrap();
+    let mut prepared = crate::app::project::prepare::prepare_projects_with_previews(
+        vec![Arc::new(Project)],
+        vec![Arc::new(PreviewFiles), Arc::new(PictureFiles)],
+        &dir,
+        TermCaps::new(),
+        (
+            SharedConfig::parse("[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n").unwrap(),
+            None,
+        ),
+        services,
+    )
+    .unwrap_or_else(|e| panic!("{}", e.error));
+    let mut terminal = Terminal::new(TestBackend::new(54, 14)).unwrap();
+    opening(&mut prepared, &mut terminal, "changes");
+    let mut state = ProjectLoopState::new(&mut prepared, false);
+    let info = state.info(&prepared, &ProjectLoopCx::default());
+    let mut update = ProjectUpdate::handled();
+    update.commands.push(ProjectCommand::Navigation {
+        outcome: Outcome::OpenDiff { path: path.clone() },
+        save_return: true,
+    });
+    state.apply(&mut prepared, &info, update);
+    assert!(state.diff.as_ref().unwrap().project_owned);
+    state.diff.as_mut().unwrap().settle_preview_for_test();
+    prepared.diff = state.diff.take();
+    prepared.screen = state.screen.take();
+    prepared.runtimes = std::mem::take(&mut state.runtimes);
+    (dir, path, prepared, terminal)
+}
+
+fn frame_text() -> String {
+    let frame = crate::app::draw::test_frame();
+    frame.content.iter().map(|c| c.symbol()).collect()
+}
+
+/// The cells of the last frame drawn in the colour.
+fn cells_in(rgb: [u8; 3]) -> usize {
+    let color = ratatui::style::Color::Rgb(rgb[0], rgb[1], rgb[2]);
+    crate::app::draw::test_frame()
+        .content
+        .iter()
+        .filter(|c| c.fg == color || c.bg == color)
+        .count()
+}
+
+/// The Preview's animated picture is the diff screen's view too: a project screen that covers it
+/// leaves it as a konoma tab is left. Behind the project screen no frame steps and nothing wakes
+/// the loop for it, and the return shows it again from its first frame.
+#[test]
+fn covering_the_preview_leaves_its_animated_picture_and_the_return_starts_it_again() {
+    const FIRST: [u8; 3] = [200, 10, 10];
+    const SECOND: [u8; 3] = [10, 10, 200];
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture(
+        "project_preview_cover_gif",
+        "picture.gif",
+        &konoma_test_support::build_animated_gif(16, 16, &[(FIRST, 60), (SECOND, 60)]),
+        Arc::new(ChromeServices),
+    );
+    let pictures = crate::app::Pictures::new(
+        ratatui_image::picker::Picker::halfblocks(),
+        "cover-picture-files",
+        &path,
+        128,
+    )
+    .with_out(Box::new(Vec::<u8>::new()));
+    let steps = crate::app::still::gif_steps_for_test;
+    let covered_at = std::rc::Rc::new(std::cell::Cell::new(0));
+    let (mark, held) = (covered_at.clone(), covered_at.clone());
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(vec![
+            // 1. The Preview in front plays the animation.
+            Turn::Until(
+                "the animation plays in front",
+                Box::new(move || steps() >= 2),
+            ),
+            // 2. `p` covers it: no frame steps and nothing wakes the loop for the picture.
+            Turn::Key('p'),
+            Turn::Settle,
+            Turn::Do(Box::new(move || mark.set(steps()))),
+            Turn::Hold(
+                Duration::from_millis(400),
+                "the covered Preview's animation keeps waking the loop or stepping frames",
+                Box::new(move |wait| {
+                    held.get() == steps() && wait.is_none_or(|w| w >= Duration::from_millis(100))
+                }),
+            ),
+            // 3. `q` returns: the picture is shown again, from its first frame.
+            Turn::Key('q'),
+            Turn::Until(
+                "the picture is drawn again",
+                Box::new(move || cells_in(FIRST) + cells_in(SECOND) > 0),
+            ),
+        ]),
+        &ProjectLoopCx::default(),
+        Some(pictures),
+    )
+    .unwrap();
+    assert!(!prepared.preview_project, "the Preview is in front again");
+    assert!(
+        cells_in(FIRST) > 0 && cells_in(SECOND) == 0,
+        "the return shows the animation from its first frame"
+    );
+}
+
+/// The Preview's gutter is the diff screen's view too: a project screen that covers the Preview
+/// while its Markdown gutter is computed leaves it. Behind the project screen nothing wakes the
+/// loop for it and its answer is not taken; the return computes the gutter once, for the file as
+/// it is then.
+#[test]
+fn covering_the_preview_drops_its_pending_gutter_and_the_return_computes_it_once() {
+    let (permit, permits) = mpsc::channel();
+    let gate = Arc::new(GutterGate {
+        answers: AtomicUsize::new(0),
+        armed: std::sync::atomic::AtomicBool::new(true),
+        permits: Mutex::new(permits),
+    });
+    let (_dir, _path, mut prepared, mut terminal) = preview_fixture(
+        "project_preview_cover_gutter",
+        "notes.md",
+        b"# Notes\n\nA paragraph.\n",
+        Arc::new(GutterServices(gate.clone())),
+    );
+    let (asked, armed) = (gate.clone(), gate.clone());
+    let late = std::rc::Rc::new(std::cell::Cell::new(Some(permit.clone())));
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(vec![
+            // 1. The Preview in front asks its gutter; the answer is held.
+            Turn::Until(
+                "the Preview's gutter is computed",
+                Box::new(move || asked.answers.load(Ordering::SeqCst) == 1),
+            ),
+            // 2. `p` covers the Preview while the gutter answer is out, which then arrives.
+            Turn::Key('p'),
+            Turn::Do(Box::new(move || {
+                armed.armed.store(false, Ordering::SeqCst);
+                late.take().unwrap().send(()).unwrap();
+            })),
+            Turn::Settle,
+            Turn::Hold(
+                Duration::from_millis(100),
+                "the covered Preview's gutter keeps waking the loop",
+                Box::new(|wait| wait.is_none_or(|w| w >= Duration::from_millis(100))),
+            ),
+        ]),
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    assert!(
+        prepared.preview_project,
+        "the project screen covers the Preview"
+    );
+    let preview = prepared.file_preview.as_ref().expect("the Preview is kept");
+    assert!(
+        preview.gutter.outcome_for_test().is_none(),
+        "a gutter answer was taken behind the project screen"
+    );
+    assert_eq!(gate.answers.load(Ordering::SeqCst), 1);
+
+    // 3. `q` returns: the gutter is computed once more and taken.
+    let asked = gate.clone();
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(vec![
+            Turn::Key('q'),
+            Turn::Until(
+                "the return computes the gutter",
+                Box::new(move || asked.answers.load(Ordering::SeqCst) >= 2),
+            ),
+            Turn::Settle,
+        ]),
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!prepared.preview_project, "the Preview is in front again");
+    assert_eq!(
+        gate.answers.load(Ordering::SeqCst),
+        2,
+        "the return computes the gutter once"
+    );
+    assert!(
+        prepared
+            .file_preview
+            .as_ref()
+            .is_some_and(|p| p.gutter.outcome_for_test().is_some()),
+        "the gutter computed for the return is taken"
+    );
+}
+
+/// The return to a covered Preview reads the file again, as a konoma tab that comes back reads
+/// its preview again: a change made behind the project screen is shown.
+#[test]
+fn the_return_to_a_covered_preview_shows_the_file_as_it_is_then() {
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture(
+        "project_preview_cover_body",
+        "notes.md",
+        b"# Notes\n\nThe old body.\n",
+        Arc::new(ChromeServices),
+    );
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(vec![
+            Turn::Until(
+                "the Preview shows the file",
+                Box::new(|| frame_text().contains("The old body.")),
+            ),
+            Turn::Key('p'),
+            Turn::Settle,
+            Turn::Do(Box::new(move || {
+                std::fs::write(&path, "# Notes\n\nThe new body.\n").unwrap()
+            })),
+            Turn::Key('q'),
+            Turn::Until(
+                "the return shows the file as it is now",
+                Box::new(|| frame_text().contains("The new body.")),
+            ),
+        ]),
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!prepared.preview_project, "the Preview is in front again");
+}

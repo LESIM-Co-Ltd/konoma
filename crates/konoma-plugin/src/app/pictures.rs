@@ -299,13 +299,49 @@ impl Pictures {
         }
     }
 
-    /// The view that drew the document pictures is left (a project screen covers it, or it went
-    /// back to its project screen): what animates or may yet animate goes, as in a konoma tab
-    /// that is left (`DocPics::stop_animations`). Nothing to do before a document was drawn.
-    pub(crate) fn stop_doc_animations(&mut self) {
-        if let Some(d) = self.doc.as_mut() {
-            d.stop_animations();
+    /// The view that drew these pictures (the diff screen or its Preview) is left: a project
+    /// screen covers it, or it went back to its project screen. Covering is leaving, as in a
+    /// konoma tab that is left (`leave_tab_view`): the canvas and the still picture go with their
+    /// decodes, and what animates or may yet animate in the document goes
+    /// (`DocPics::stop_animations`). The return opens the file again (a new session) and places
+    /// them again. Every field is named, so a new one is decided here.
+    pub(crate) fn leave_view(&mut self) {
+        let Self {
+            // The terminal, the encoder and the file: the return draws the same file there.
+            overlay: _,
+            plugin_id: _,
+            path: _,
+            raster_px: _,
+            svg: _,
+            out: _,
+            picker: _,
+            doc_env: _,
+            // The workers' channels: a canvas answer is refused once its job went (`forget`).
+            enc_rx: _,
+            done_tx: _,
+            done_rx: _,
+            // Left by `forget`: the canvas job, its pictures and their cache entries.
+            cache: _,
+            host: _,
+            gen: _,
+            job: _,
+            last: _,
+            latest: _,
+            unlanded: _,
+            again_at: _,
+            on_canvas,
+            still,
+            doc,
+        } = self;
+        // Nothing of the canvas is on screen: its animations ask for no wake-up.
+        *on_canvas = false;
+        if let Some(still) = still {
+            still.leave();
         }
+        if let Some(doc) = doc {
+            doc.stop_animations();
+        }
+        self.forget();
     }
 
     /// Whether the page must be laid out again (a picture's result changed what it reserves).

@@ -117,8 +117,56 @@ pub(in crate::app) struct PreviewGutter {
 }
 
 impl PreviewGutter {
+    /// The Preview is left (a project screen covers it): nothing it asked is taken and nothing
+    /// wakes the loop for it. The return opens the file again with a new gutter
+    /// (`PendingPreview::finish`), so this one asks nothing more. Every field is named, so a new
+    /// one is decided here.
+    fn leave(&mut self) {
+        let Self {
+            // What the gutter is for and what it drew: kept until the return replaces it.
+            project_owned: _,
+            path: _,
+            root: _,
+            enabled: _,
+            settings: _,
+            lines: _,
+            outcome: _,
+            options: _,
+            yield_on_timeout: _,
+            // The landing on the first change: the return's gutter keeps the position instead
+            // (`retain_position`).
+            reservation: _,
+            // The receiver: an answer in it is refused by the worker's generation (below).
+            markdown_rx: _,
+            // The test-only observation of the loop.
+            #[cfg(any(test, feature = "test-hooks"))]
+                idle: _,
+            #[cfg(any(test, feature = "test-hooks"))]
+                detection: _,
+            #[cfg(any(test, feature = "test-hooks"))]
+                observed: _,
+            #[cfg(any(test, feature = "test-hooks"))]
+                probe: _,
+            eligible,
+            markdown,
+            raw,
+            owner_wake,
+        } = self;
+        // The file's view is not asked again by this gutter.
+        *eligible = false;
+        markdown.invalidate();
+        *raw = None;
+        // The owners it yielded to are the project screen's now, which wakes the loop itself.
+        *owner_wake = None;
+    }
+
     pub(super) fn retain_position(&mut self) {
         self.reservation = None;
+    }
+    /// The answer this gutter took, of any kind (a file with no baseline lands `NoBaseline`).
+    #[cfg(test)]
+    pub(in crate::app) fn outcome_for_test(&self) -> Option<&MdDiffOutcome> {
+        self.outcome.as_ref()
     }
     #[cfg(any(test, feature = "test-hooks"))]
     pub(in crate::app) fn baseline_text_for_test(&self) -> Option<String> {
@@ -433,6 +481,22 @@ impl PendingPreview {
 }
 
 impl FilePreviewState {
+    /// The Preview is left (a project screen covers it); see `ProjectLoopState::leave_diff_view`.
+    /// Every field is named, so a new one is decided here.
+    pub(super) fn leave(&mut self) {
+        let Self {
+            // The file opened and the diff to go back to: the return opens the file again from
+            // them (`PendingPreview::start`) and the new session replaces this one.
+            opened: _,
+            source: _,
+            // The caret, the scroll and the search: kept for the return
+            // (`resume_project_preview`). It is not run while covered, so it asks nothing.
+            runner: _,
+            gutter,
+        } = self;
+        gutter.leave();
+    }
+
     pub(super) fn context(&self, prepared: &PreparedProjects, cx: &ProjectLoopCx) -> AppCx {
         context(&self.opened, prepared, cx)
     }

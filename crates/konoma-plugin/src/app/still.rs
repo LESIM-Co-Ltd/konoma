@@ -139,6 +139,19 @@ pub struct Still {
     resize_failed: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times an animation of a still picture stepped to its next frame on this thread
+    /// (the project loop's thread in a test).
+    static GIF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The frame steps of still-picture animations made on this thread so far.
+#[cfg(test)]
+pub(in crate::app) fn gif_steps_for_test() -> usize {
+    GIF_STEPS.with(std::cell::Cell::get)
+}
+
 impl Still {
     pub fn new(
         picker: &Picker,
@@ -240,6 +253,48 @@ impl Still {
         self.resize_failed = false;
     }
 
+    /// The view that shows the picture is left (a project screen covers it): the picture, its
+    /// decode and its animation go, as in a konoma tab that is left; the return decodes it again.
+    /// Every field is named, so a new one is decided here.
+    pub(super) fn leave(&mut self) {
+        let Self {
+            // The terminal and the file: the return shows the same file in the same terminal.
+            picker: _,
+            use_kitty: _,
+            is_tmux: _,
+            render_scale: _,
+            plugin_id: _,
+            path: _,
+            raster_px: _,
+            svg: _,
+            // The workers' channels: an answer in them is refused by `gen` (bumped by `forget`)
+            // or by the viewer it was made for (cleared by `forget`).
+            resize: _,
+            kitty_tx: _,
+            kitty_rx: _,
+            done_tx: _,
+            done_rx: _,
+            sharp_tx: _,
+            sharp_rx: _,
+            // The spinner's phase: drawn only while a picture loads.
+            spinner: _,
+            // Left by `forget`: the job and its redraw, the picture, its pose and its animation.
+            gen: _,
+            cancel: _,
+            vector: _,
+            sharp_inflight: _,
+            sharp_cancel: _,
+            key: _,
+            state: _,
+            held: _,
+            pose: _,
+            viewer: _,
+            gif: _,
+            resize_failed: _,
+        } = self;
+        self.forget();
+    }
+
     pub(super) fn begin_file(&mut self, plugin_id: &str, path: &Path) {
         self.forget();
         self.plugin_id = plugin_id.into();
@@ -250,6 +305,9 @@ impl Still {
         if let Some(c) = self.cancel.take() {
             c.store(true, Ordering::Relaxed);
         }
+        // The answer of a cancelled job is stale: a decode that lands after `forget` must not
+        // make the picture (and its animation) come back.
+        self.gen += 1;
         // A redraw of the picture that is going away is dropped with it (its answer is stale by
         // `gen` as well).
         if let Some(c) = self.sharp_cancel.take() {
@@ -491,6 +549,8 @@ impl Still {
         }
         // The frame that is due, once per call (a late tick advances one frame, as konoma's).
         if matches!(self.state, State::Gif) && self.gif.advance_if_due(now) {
+            #[cfg(test)]
+            GIF_STEPS.with(|steps| steps.set(steps.get() + 1));
             changed = true;
         }
         if self.loading() {

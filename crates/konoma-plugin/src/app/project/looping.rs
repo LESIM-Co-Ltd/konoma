@@ -275,10 +275,55 @@ impl ProjectLoopState {
         };
         self.screen = Some(ProjectHost::start_screen(project, first));
         self.preview_project = true;
-        if let Some(diff) = self.diff.as_mut() {
+        self.leave_diff_view(None);
+        self.ensure(info);
+    }
+
+    /// The diff screen's view (the diff screen or its Preview representation) stops being in
+    /// front: a project screen covers it, or it went back to its project screen. Covering is
+    /// leaving, as in the host (`App::leave_tab_view`): what the view owns that asks a worker,
+    /// takes an answer or wakes the loop is left here, in one place, and the return reads it all
+    /// once, after the file is read again (`ProjectDispatch::LeaveProject`). The pictures are
+    /// owned by the run loop, which calls this again with them (`diff_view_in_front`); leaving
+    /// twice is leaving once. Every field is named, so a new one is decided here.
+    fn leave_diff_view(&mut self, pictures: Option<&mut Pictures>) {
+        let Self {
+            // The project screens and their owners: what is in front now.
+            runtimes: _,
+            screen: _,
+            dialog: _,
+            replay: _,
+            pending_acts: _,
+            presentation: _,
+            root_switch: _,
+            project_gone: _,
+            // Where the view goes back to, and whether it is covered: the return's own state.
+            diff_return: _,
+            preview_project: _,
+            // The program's keys, size, help, menu and launcher: they serve the screen in front.
+            launch_enabled: _,
+            launch: _,
+            viewport: _,
+            keys: _,
+            help: _,
+            menu: _,
+            // A write that runs goes on to its end (the quit guard asks about it).
+            quit_confirm: _,
+            file_preview,
+            preview_open,
+            diff,
+        } = self;
+        // An open of the Preview that is out: the return asks it again (`resume_project_diff`).
+        *preview_open = None;
+        if let Some(diff) = diff {
             diff.leave();
         }
-        self.ensure(info);
+        if let Some(preview) = file_preview {
+            preview.leave();
+        }
+        if let Some(pictures) = pictures {
+            pictures.leave_view();
+        }
     }
 
     fn content(
@@ -393,15 +438,13 @@ pub fn run_project_with<B: Backend, E: EventSource>(
         // The pictures of the diff screen's view, left as a konoma tab leaves its own
         // (`leave_tab_view`): when the view stops being in front by any road (a project screen
         // covers it, it goes back to its project screen, it is discarded or fails), what
-        // animates or may yet animate goes (`Pictures::stop_doc_animations`); the return draws
+        // animates or may yet animate goes (`ProjectLoopState::leave_diff_view`); the return draws
         // and decodes them again.
         let mut diff_view_was_in_front = state.diff_view_in_front();
         loop {
             let diff_view_in_front = state.diff_view_in_front();
             if diff_view_was_in_front && !diff_view_in_front {
-                if let Some(p) = pictures.as_mut() {
-                    p.stop_doc_animations();
-                }
+                state.leave_diff_view(pictures.as_mut());
             }
             diff_view_was_in_front = diff_view_in_front;
             if state.poll_root_switch(prepared, pictures.as_mut()) {

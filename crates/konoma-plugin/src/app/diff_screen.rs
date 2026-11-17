@@ -417,9 +417,59 @@ impl DiffScreenState {
     /// raw diff, the Markdown block diff and the media diff. The scroll, the chosen
     /// representation, the media page and the reservation to land on the first change stay;
     /// the return reads it all once (`resume_project_diff`).
+    ///
+    /// Every field is named, so a new one is decided here.
     pub(in crate::app) fn leave(&mut self) {
-        self.preview_reply = None;
-        self.pending = None;
+        let Self {
+            // A confirmed write (a discard) runs to its end, as a write does when a tab is left.
+            discard: _,
+            // What the diff is, how it is shown and where: the return shows the same.
+            project_owned: _,
+            file_previews: _,
+            launch_enabled: _,
+            closed: _,
+            request: _,
+            choice: _,
+            effective: _,
+            layout: _,
+            scroll: _,
+            hscroll: _,
+            split_drawn: _,
+            keys: _,
+            app_keys: _,
+            help: _,
+            menu: _,
+            extra_menu: _,
+            display: _,
+            lang: _,
+            block: _,
+            viewport: _,
+            options: _,
+            notice: _,
+            // What was read, answered and laid out: the return reads it again (`reload`).
+            data: _,
+            resolved_preview: _,
+            rendered: _,
+            // The landing on the first change: the return lands as the first load would.
+            pending_first_change: _,
+            first_answer_awaited: _,
+            // A held read: taken by the return.
+            refresh_held: _,
+            // What answers the reads.
+            services: _,
+            // The receiver: an answer in it is refused by the worker's generation.
+            markdown_rx: _,
+            // Left by `leave_markdown` and `leave_media` below.
+            markdown: _,
+            media: _,
+            command,
+            preview_reply,
+            pending,
+        } = self;
+        // The open of the Preview it wants: the return's read wants it again (`choose_effective`).
+        *command = None;
+        *preview_reply = None;
+        *pending = None;
         self.leave_markdown();
         self.leave_media();
     }
