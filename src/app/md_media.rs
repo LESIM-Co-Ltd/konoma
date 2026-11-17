@@ -995,6 +995,15 @@ impl App {
         self.md_images.advance_gifs_if_due()
     }
 
+    /// Drop every animating entry of the inline-picture cache (an entry with two frames or more):
+    /// the screen that drew them is left (`leave_tab_view`), and an entry that holds frames keeps
+    /// the run loop's animation timer running (`advance_md_gifs_if_due`, `md_gif_poll_timeout`).
+    /// A still picture stays cached: it costs no work while it is not drawn. The screen that
+    /// shows the document again decodes the animation again and plays it from its first frame.
+    pub(super) fn stop_md_animations(&mut self) {
+        self.md_images.cache.retain(|_, entry| entry.frames.len() < 2);
+    }
+
     /// Every filesystem path the Markdown preview currently draws an inline image from.
     ///
     /// This is what makes an FS event about `diagram.png` count as an event about the *document*

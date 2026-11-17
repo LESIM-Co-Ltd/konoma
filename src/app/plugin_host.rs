@@ -1389,6 +1389,8 @@ impl App {
     }
 
     fn open_plugin(&mut self, keep_previous: bool) {
+        #[cfg(test)]
+        crate::test_support::note_tab_view_load();
         // A delegated command's show is started with the media load (`start_command_plugin`),
         // which owns it; this is not the place to drop it.
         if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. })) {

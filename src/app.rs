@@ -3935,6 +3935,8 @@ impl App {
     /// opening is instant even for small files and behavior is symmetric with huge files. Images/md/mermaid are excluded
     /// (md/mermaid need their whole structure understood and are usually small).
     fn setup_windowed(&mut self) {
+        #[cfg(test)]
+        crate::test_support::note_tab_view_load();
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
@@ -4313,6 +4315,8 @@ impl App {
     /// within [`RACY_WINDOW`] of the moment the stamp was taken (a coarse-mtime filesystem can
     /// leave the stamp equal across a real rewrite); an old file's equal stamp is believed.
     pub(crate) fn reload_preview_named(&mut self, named: bool) {
+        #[cfg(test)]
+        crate::test_support::note_tab_view_load();
         self.md_cache = None;
         self.win_cache = None;
         // The ordinary preview's own change-gutter baseline (`docs/STATUS.md` ★未修正 item 4) is a

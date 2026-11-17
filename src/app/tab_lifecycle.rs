@@ -362,9 +362,11 @@ impl App {
     /// covers it (`navigation_over_here`, `return_to_project`). What is dropped lives on `App` and
     /// runs for the screen in front only: the plugin show and its queued work, the media and its
     /// loads, the Word document, the filter-pool scan, the outline, the table cell popup, the
-    /// `<details>` state, the decoration cache and its items, the preview's visual selection and
-    /// the diff's follow scope. The tab's own fields are not touched (a tab that is left keeps them
-    /// in its saved copy); the return to the screen (`put_tab_back`) reads it again from the files.
+    /// `<details>` state, the decoration cache and its items, the preview's visual selection, the
+    /// diff's follow scope, the diff target resolution, the block diff and the media diff on their
+    /// workers (with the media diff's queued want), and the animated pictures embedded in a
+    /// Markdown document. The tab's own fields are not touched (a tab that is left keeps them in
+    /// its saved copy); the return to the screen (`put_tab_back`) reads it again from the files.
     pub(super) fn leave_tab_view(&mut self) {
         // The parsed Word document is App-level (too big to clone into every tab snapshot): drop
         // it and let the return re-read it on the worker. (A spreadsheet's sheet is the plugin
@@ -403,6 +405,19 @@ impl App {
         // one: a tab switch drops its answer because the next tab shows another kind, and a
         // project screen over the same tab drops it here. The return resolves the target again.
         self.drop_diff_target_resolution();
+        // The block diff (a Markdown diff's Rendered presentation, the preview's change gutter)
+        // and the media diff (an image / PDF / SVG diff) asked for the screen that is left: their
+        // results must not land behind another screen. A media diff that was waiting for the busy
+        // worker (its queued want) is that screen's too, and would be sent as soon as the busy one
+        // lands. The return asks for them again when it draws.
+        self.invalidate_md_diff();
+        self.invalidate_media_diff();
+        let _ = self.media_diff.take_queued();
+        // The animated pictures a Markdown document embeds advance on the run loop's timer
+        // (`animation_timers_due`) for as long as their entries hold frames: they go, and the
+        // return decodes them again and plays them from their first frame, as the full-screen GIF
+        // does (`release_image` above). The canvas pictures of the plugin show went with it.
+        self.stop_md_animations();
     }
 
     classes! {

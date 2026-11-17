@@ -1250,18 +1250,27 @@ fn vcs_project_external_return_leaves_the_covered_preview_alone_until_it_is_in_f
         let mut sim = preview_session(&repo, config("git", "en"), "lines.txt", true, &cfg_base);
         let _ = sim.app.project_frame().unwrap();
         std::fs::write(repo.join("lines.txt"), "edited-one\nedited-two\n").unwrap();
-        sim.app.external_returned(what);
-        drain(&mut sim);
+        // Nothing of the covered view is read again behind the project screen (the windowed
+        // reader, the plugin show, the media load, the preview reload).
+        let ((), behind) = crate::test_support::count_tab_view_loads(|| {
+            sim.app.external_returned(what);
+            drain(&mut sim);
+            sim.draw();
+        });
+        assert_eq!(behind, 0, "{what:?}: the covered view was read again behind the screen");
         assert!(sim.app.project_active(), "{what:?}: the return left the project");
-        sim.draw();
         assert_project_screen_in_front(&sim, &format!("{what:?}: after the return"), &[]);
         assert!(
             !sim.screen().contains("edited-one"),
             "{what:?}: the preview is drawn over the project screen:\n{}",
             sim.screen()
         );
-        sim.app.leave_project_screens();
-        drain(&mut sim);
+        // The counter sees the read of the return (a lower bound, so the zero above is a count).
+        let ((), on_return) = crate::test_support::count_tab_view_loads(|| {
+            sim.app.leave_project_screens();
+            drain(&mut sim);
+        });
+        assert!(on_return >= 1, "{what:?}: the return read nothing again");
         assert!(!sim.app.project_active());
         sim.draw();
         assert!(
@@ -1395,18 +1404,25 @@ fn vcs_project_watched_change_leaves_the_covered_preview_alone_until_it_is_in_fr
     let old = preview_text(&mut sim);
     std::fs::write(repo.join("lines.txt"), "edited-one\nedited-two\n").unwrap();
     assert!(old.contains("one"), "{old}");
-    sim.app.refresh_fs_watched(false, &[repo.join("lines.txt")]);
-    drain(&mut sim);
+    // Nothing of the covered view is read again behind the project screen.
+    let ((), behind) = crate::test_support::count_tab_view_loads(|| {
+        sim.app.refresh_fs_watched(false, &[repo.join("lines.txt")]);
+        drain(&mut sim);
+        sim.draw();
+    });
+    assert_eq!(behind, 0, "the covered view was read again behind the screen");
     assert!(sim.app.project_active(), "the watched change left the project");
-    sim.draw();
     assert_project_screen_in_front(&sim, "after the watched change", &[]);
     assert!(
         !sim.screen().contains("edited-one"),
         "the preview is drawn over the project screen:\n{}",
         sim.screen()
     );
-    sim.app.leave_project_screens();
-    drain(&mut sim);
+    let ((), on_return) = crate::test_support::count_tab_view_loads(|| {
+        sim.app.leave_project_screens();
+        drain(&mut sim);
+    });
+    assert!(on_return >= 1, "the return read nothing again");
     sim.draw();
     assert!(
         sim.screen().contains("edited-one"),
@@ -1892,11 +1908,13 @@ fn vcs_project_picture_rewritten_while_covered_is_drawn_new_after_leaving() {
 }
 
 /// A tab whose screen a project screen covers is switched away from and back (`]`, then `[`). The
-/// return puts the tab back from its saved copy, which reads its preview again from the files (a
-/// picture here), but the screen in front is the project's: the tab view stays left as the cover
-/// left it (`put_tab_back` ends with `leave_tab_view` while a project screen covers it). So no
-/// picture is shown behind the project screen and the load the return started is not applied
-/// (its generation is gone). Leaving the project screen (`q`) then shows the picture again.
+/// picture is rewritten while covered, so the return cannot reuse the stashed pixels: it puts the
+/// tab back from its saved copy and starts a real load of the new file. The screen in front is
+/// the project's: the tab view stays left as the cover left it (`put_tab_back` ends with
+/// `leave_tab_view` while a project screen covers it). So no picture is shown behind the project
+/// screen and none of the results of that load is applied (its generation is gone); at least one
+/// result is seen, so the check is not vacuous. Leaving the project screen (`q`) then shows the
+/// new picture.
 #[test]
 fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_screen() {
     if isolated("vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_screen") {
@@ -1923,6 +1941,9 @@ fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_scree
         !sim.app.is_image_preview(),
         "premise: the cover leaves the picture"
     );
+    // Another size and colour: the stash of the picture no longer matches the file (its length
+    // and time differ), so the return loads it again.
+    crate::test_support::write_solid_png(&repo.join("pic.png"), 44, 22, [210, 10, 10]);
 
     sim.app.tab_new().unwrap();
     drain(&mut sim);
@@ -1934,12 +1955,15 @@ fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_scree
 
     // Whatever the return's reload sent is from a generation the cover has left.
     let rx = sim.media_rx.as_ref().expect("with_media");
+    let mut seen = 0;
     while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        seen += 1;
         assert!(
             !sim.app.apply_media(res),
             "a picture load of the covered tab was applied behind the project screen"
         );
     }
+    assert!(seen >= 1, "the return started no load of the rewritten picture");
     sim.draw();
     assert!(
         !sim.app.is_image_preview(),
@@ -1951,6 +1975,9 @@ fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_scree
     assert_eq!(sim.app.tab.mode, Mode::Preview);
     sim.await_media("leaving the project screen");
     assert!(sim.app.is_image_preview(), "the picture is shown again after leaving");
+    sim.draw();
+    assert!(drawn_has_red(&sim.term), "the rewritten picture (red) is not drawn after leaving");
+    assert!(!drawn_has_green(&sim.term), "the old picture (green) is drawn after leaving");
 }
 
 /// e4-review item 3: a clean tracked file is edited while a project screen covers the tree, the
@@ -2085,6 +2112,326 @@ fn vcs_project_filter_pool_scan_landing_while_covered_leaves_the_covered_list_al
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("the return asks for a scan of its own");
+    assert!(sim.app.apply_filter_pool(res), "the return's scan is applied");
+    sim.draw();
+    let names = overlay_tree_names(&sim);
+    for i in 0..6 {
+        assert!(
+            names.iter().any(|n| *n == format!("deep{i}.csv")),
+            "the return's scan did not fill the list in: {names:?}"
+        );
+    }
+    assert_eq!(overlay_cursor_file(&sim), covered_cursor, "the cursor left its file");
+    crate::app::set_filter_scan_budget(None);
+}
+
+/// A tracked file of `repo`, committed as `old` and then rewritten as `new` (a working-tree change).
+fn overlay_tracked_change(repo: &std::path::Path, name: &str, old: &[u8], new: &[u8]) -> std::path::PathBuf {
+    let path = repo.join(name);
+    std::fs::write(&path, old).unwrap();
+    crate::test_support::run_git(repo, &["add", name]);
+    crate::test_support::run_git(repo, &["commit", "-qm", name, "--", name]);
+    std::fs::write(&path, new).unwrap();
+    path
+}
+
+/// fix-e6a A: a Markdown diff shown Rendered asks the block diff of its worker; the answer lands
+/// after `p` covered the diff. The screen it was asked for is left (`leave_tab_view` drops the
+/// block diff of the screen that is left, as a tab switch does), so the answer is not applied
+/// behind the project screen. Leaving the project (`q`) shows the diff Rendered again with the
+/// answer to its own new request.
+#[test]
+fn vcs_project_md_diff_landing_after_the_cover_is_not_applied_behind_the_screen() {
+    if isolated("vcs_project_md_diff_landing_after_the_cover_is_not_applied_behind_the_screen") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_md_diff_covered") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_md_diff_covered_cfg");
+    let doc = overlay_tracked_change(
+        &repo,
+        "doc.md",
+        b"# Title\n\nold paragraph\n",
+        b"# Title\n\nnew paragraph\n\nadded block\n",
+    );
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30).with_async_md_diff();
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.app.open_git_diff(&doc);
+    assert_eq!(sim.app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    assert!(sim.app.md_diff_pending_for_current(), "premise: the block diff is out");
+    sim.key('p');
+    assert!(sim.app.project_active(), "p covers the diff");
+    let rx = sim.md_diff_rx.as_ref().expect("with_async_md_diff");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the block diff asked before the cover lands");
+    assert!(
+        !sim.app.apply_md_diff(res),
+        "the block diff of the covered diff was applied behind the project screen"
+    );
+    drain(&mut sim);
+    assert_project_screen_in_front(&sim, "after the block diff landed", &[]);
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert_eq!(sim.app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    sim.drain_md_diff();
+    let marks = sim
+        .app
+        .diff_rendered_marks_for_test()
+        .expect("the Rendered diff is built after leaving");
+    assert!(!marks.is_empty(), "the Rendered diff has no change marks: {marks:?}");
+}
+
+/// fix-e6a A: an image diff asks its pictures of the media-diff worker; the answer lands after
+/// `p` covered the diff. It is not applied behind the project screen (`leave_tab_view` drops the
+/// media diff of the screen that is left); leaving the project asks again and that answer lands.
+#[test]
+fn vcs_project_media_diff_landing_after_the_cover_is_not_applied_behind_the_screen() {
+    if isolated("vcs_project_media_diff_landing_after_the_cover_is_not_applied_behind_the_screen") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_media_diff_covered") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_media_diff_covered_cfg");
+    let png = repo.join("pic.png");
+    crate::test_support::write_solid_png(&png, 40, 20, [10, 210, 10]);
+    crate::test_support::run_git(&repo, &["add", "pic.png"]);
+    crate::test_support::run_git(&repo, &["commit", "-qm", "pic", "--", "pic.png"]);
+    crate::test_support::write_solid_png(&png, 40, 20, [210, 10, 10]);
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_media_diff_loader(tx);
+    let ((), asked) = crate::test_support::count_media_diff_dispatch_calls(|| {
+        sim.app.open_git_diff(&png);
+        sim.draw();
+    });
+    assert_eq!(asked, 1, "premise: the image diff asked its worker once");
+    let view = sim.app.diff_view_for_test();
+    sim.key('p');
+    assert!(sim.app.project_active(), "p covers the image diff");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the media diff asked before the cover lands");
+    assert!(
+        !sim.app.apply_media_diff(res),
+        "the media diff of the covered diff was applied behind the project screen"
+    );
+    drain(&mut sim);
+    assert_project_screen_in_front(&sim, "after the media diff landed", &[]);
+    let ((), again) = crate::test_support::count_media_diff_dispatch_calls(|| {
+        press(&mut sim, KeyCode::Char('q'));
+        sim.draw();
+    });
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert_eq!(sim.app.diff_view_for_test(), view, "the diff's view came back");
+    assert!(again >= 1, "leaving did not ask the media diff again");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the media diff asked after leaving lands");
+    assert!(sim.app.apply_media_diff(res), "the answer asked after leaving is applied");
+}
+
+/// fix-e6a A: an SVG diff whose worker is busy when the terminal is resized holds the new size as
+/// its queued want, sent as soon as the busy answer lands. `p` covers the diff: the queued want is
+/// the left screen's and goes with it, so the busy answer landing behind the project screen sends
+/// nothing (and is not applied).
+#[test]
+fn vcs_project_queued_media_diff_is_not_sent_behind_the_screen() {
+    if isolated("vcs_project_queued_media_diff_is_not_sent_behind_the_screen") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_media_diff_queued") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_media_diff_queued_cfg");
+    let svg = |fill: &str| {
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"40\">\
+             <rect width=\"80\" height=\"40\" fill=\"{fill}\"/></svg>\n"
+        )
+    };
+    let path = overlay_tracked_change(
+        &repo,
+        "pic.svg",
+        svg("#10d210").as_bytes(),
+        svg("#d21010").as_bytes(),
+    );
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_media_diff_loader(tx);
+    sim.app.open_git_diff(&path);
+    sim.draw();
+    assert_eq!(
+        sim.app.media_diff_busy_and_queued_for_test(),
+        (true, false),
+        "premise: the SVG diff is on the worker"
+    );
+    // Another size: an SVG is drawn to the size of its area, so this is another want, and the
+    // busy worker keeps it queued.
+    sim.resize(120, 26);
+    assert_eq!(
+        sim.app.media_diff_busy_and_queued_for_test(),
+        (true, true),
+        "premise: the new size waits for the busy worker"
+    );
+    sim.key('p');
+    assert!(sim.app.project_active(), "p covers the SVG diff");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the busy media diff lands");
+    let (applied, sent) =
+        crate::test_support::count_media_diff_dispatch_calls(|| sim.app.apply_media_diff(res));
+    assert!(!applied, "the busy media diff was applied behind the project screen");
+    assert_eq!(sent, 0, "the queued want of the covered diff was sent behind the project screen");
+    drain(&mut sim);
+    assert_project_screen_in_front(&sim, "after the busy media diff landed", &[]);
+}
+
+/// fix-e6a A: a Markdown document embedding an animated GIF plays it on the run loop's timer
+/// (`animation_timers_due`). While a project screen covers the document the animation does not
+/// advance and asks no wake-up (`md_gif_poll_timeout`); leaving the project plays it again.
+#[test]
+fn vcs_project_embedded_gif_stops_while_covered_and_plays_after_leaving() {
+    if isolated("vcs_project_embedded_gif_stops_while_covered_and_plays_after_leaving") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_embedded_gif_covered") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_embedded_gif_covered_cfg");
+    write_animated_gif(&repo.join("anim.gif"), &[[220, 20, 20], [20, 220, 20], [20, 20, 220]]);
+    std::fs::write(repo.join("anim.md"), "before\n\n![anim](anim.gif)\n\nafter\n").unwrap();
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30).with_media();
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.select("anim.md");
+    sim.enter();
+    sim.drain_md_images();
+    sim.drain_md_encodes();
+    // The run loop's sequence: the first tick starts the frame timer, a due frame advances.
+    let plays = |sim: &mut Sim| {
+        let _ = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+        sim.app.age_md_gif_frames_for_test();
+        crate::animation_timers_due(&mut sim.app, std::time::Instant::now())
+    };
+    assert!(sim.app.md_gif_poll_timeout().is_some(), "premise: the GIF asks for wake-ups");
+    assert!(plays(&mut sim), "premise: the embedded GIF plays");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers the document");
+    assert_eq!(
+        sim.app.md_gif_poll_timeout(),
+        None,
+        "the covered GIF still wakes the run loop"
+    );
+    assert!(!plays(&mut sim), "the covered GIF advanced behind the project screen");
+    assert!(!plays(&mut sim), "the covered GIF advanced behind the project screen");
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    sim.drain_md_images();
+    sim.drain_md_encodes();
+    assert!(sim.app.md_gif_poll_timeout().is_some(), "the GIF asks no wake-up after leaving");
+    assert!(plays(&mut sim), "the GIF does not play again after leaving");
+}
+
+/// fix-e6a A: a `/` filter confirmed, `p` over it, then a tab switch away and back. The return to
+/// the covered tab is a tab switch (`put_tab_back`, then `refresh_fs_after_tab_switch`), and the
+/// tab's screen is covered: the refresh at its end is routed as a watch event while covered, so no
+/// filter-pool scan is asked for behind the project screen and the list stays as it was covered.
+/// Leaving the project asks the scan of the return, which fills the list in.
+#[test]
+fn vcs_project_tab_switch_back_to_a_covered_filter_asks_no_scan_behind_the_screen() {
+    if isolated("vcs_project_tab_switch_back_to_a_covered_filter_asks_no_scan_behind_the_screen") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_filter_pool_tab_switch") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_filter_pool_tab_switch_cfg");
+    std::fs::write(repo.join("deep_root1.txt"), "r\n").unwrap();
+    std::fs::write(repo.join("deep_root2.txt"), "r\n").unwrap();
+    for i in 0..6 {
+        let sub = repo.join(format!("pkg{i}"));
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(format!("deep{i}.csv")), "a,b\n").unwrap();
+    }
+    crate::app::set_filter_scan_budget(Some(Some(std::time::Duration::ZERO)));
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_filter_pool_loader(tx);
+    let ((), asked) = crate::test_support::count_filter_pool_asks(|| {
+        sim.key('/');
+        sim.keys("deep");
+        sim.enter();
+        drain(&mut sim);
+    });
+    assert!(asked >= 1, "premise: the filter asked its scan");
+    assert!(sim.app.filter_query().is_some(), "the filter is on");
+    sim.select("deep_root2.txt");
+    let covered = overlay_tree_names(&sim);
+    let covered_cursor = overlay_cursor_file(&sim);
+    assert!(
+        !covered.iter().any(|n| n.ends_with(".csv")),
+        "premise: the scan is not on the worker: {covered:?}"
+    );
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers the filtered list");
+    sim.app.tab_new().unwrap();
+    drain(&mut sim);
+    assert_eq!(sim.app.active_tab_index(), 1, "premise: on the new tab");
+    let ((), behind) = crate::test_support::count_filter_pool_asks(|| {
+        sim.app.tab_cycle(-1);
+        drain(&mut sim);
+    });
+    assert_eq!(sim.app.active_tab_index(), 0, "premise: back on the covered tab");
+    assert_project_screen_in_front(&sim, "back on the covered tab", &[]);
+    assert_eq!(behind, 0, "a filter-pool scan was asked for behind the project screen");
+    assert_eq!(overlay_tree_names(&sim), covered, "the covered list changed behind the screen");
+    // The scan asked before the cover lands while covered: it changes nothing.
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the scan asked before the cover lands");
+    let ((applied, asked_on_landing), _) = (
+        crate::test_support::count_filter_pool_asks(|| sim.app.apply_filter_pool(res)),
+        (),
+    );
+    assert_eq!(asked_on_landing, 0, "the landing asked a scan behind the project screen");
+    drain(&mut sim);
+    assert_eq!(
+        overlay_tree_names(&sim),
+        covered,
+        "the scan asked for the covered list changed it behind the screen (applied={applied})"
+    );
+    let ((), on_return) = crate::test_support::count_filter_pool_asks(|| {
+        press(&mut sim, KeyCode::Char('q'));
+    });
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert!(on_return >= 1, "the return asked no scan of its own");
+    sim.draw();
+    assert_eq!(overlay_cursor_file(&sim), covered_cursor, "the cursor left its file");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the return's scan lands");
     assert!(sim.app.apply_filter_pool(res), "the return's scan is applied");
     sim.draw();
     let names = overlay_tree_names(&sim);

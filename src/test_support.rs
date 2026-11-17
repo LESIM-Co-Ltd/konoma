@@ -138,6 +138,44 @@ pub(crate) fn count_diff_resolution_asks<T>(f: impl FnOnce() -> T) -> (T, usize)
     )
 }
 
+thread_local! {
+    /// How many times the view of the tab in front started reading its file again **on this
+    /// thread**: `App::reload_preview_named`, `App::open_plugin`, `App::start_media_load` and
+    /// `App::setup_windowed` (the windowed reader). Thread-local for the same reason as
+    /// `STAT_CALLS`.
+    static TAB_VIEW_LOADS: Cell<usize> = const { Cell::new(0) };
+    /// How many filter-pool scans of the tree were asked for **on this thread**
+    /// (`App::kick_filter_pool_start`, `App::kick_filter_pool_refresh`, whether the refresh then
+    /// runs a walk or records the request for the walk already out).
+    static FILTER_POOL_ASKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called where the tab view starts reading its file again (see `TAB_VIEW_LOADS`).
+pub(crate) fn note_tab_view_load() {
+    let _ = TAB_VIEW_LOADS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many tab view loads started while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_tab_view_loads<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = TAB_VIEW_LOADS.with(|c| c.get());
+    let out = f();
+    (out, TAB_VIEW_LOADS.with(|c| c.get()).saturating_sub(before))
+}
+
+/// Called where a filter-pool scan is asked for (see `FILTER_POOL_ASKS`).
+pub(crate) fn note_filter_pool_ask() {
+    let _ = FILTER_POOL_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many filter-pool scans were asked for while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_filter_pool_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = FILTER_POOL_ASKS.with(|c| c.get());
+    let out = f();
+    (out, FILTER_POOL_ASKS.with(|c| c.get()).saturating_sub(before))
+}
+
 // The `diff_align` call counter lives in `konoma-widgets` (the function does); the host's tests
 // reach it through this path.
 #[allow(unused_imports)]

@@ -565,6 +565,8 @@ impl App {
     /// collected so far are usable immediately: filtering a partial pool is not wrong, just
     /// incomplete, and it fills in while the user is still typing.
     fn kick_filter_pool_start(&mut self) {
+        #[cfg(test)]
+        crate::test_support::note_filter_pool_ask();
         // Supersede anything in flight (an FS-driven refresh from the previous filter session).
         self.invalidate_filter_pool_scan();
         let gen = self.filter_pool_gen;
@@ -628,6 +630,8 @@ impl App {
     /// have), so there is no synchronous part at all — the current pool keeps showing until the new
     /// one lands, exactly the way `kick_status_refresh` keeps the previous statuses on screen.
     fn kick_filter_pool_refresh(&mut self) {
+        #[cfg(test)]
+        crate::test_support::note_filter_pool_ask();
         // Already scanning this very root: record the request and honour it once, on arrival.
         // Without this, an agent writing a burst of files would stack up one whole-tree walk per
         // event — the same pile-up `kick_status_refresh` guards against, and for the same reason
@@ -1609,7 +1613,7 @@ impl App {
     /// to, so reporting is done **here** instead of leaving a `let _ = …` for a future edit to
     /// forget. See `refresh_reporting_staleness` for why the flash is edge-triggered.
     pub(super) fn refresh_fs_after_tab_switch(&mut self) {
-        self.refresh_reporting_staleness(|app| app.refresh_fs_inner(false, &[], false));
+        self.refresh_fs_routed(false, &[], false);
     }
 
     /// The fs-watch driven refresh, for `main`'s run loop. Same reason as
@@ -1617,19 +1621,31 @@ impl App {
     /// so there is no `?` to ride and no `resolve_key_result` to reach — a swallowed error here
     /// leaves the tree silently stale.
     pub fn refresh_fs_watched(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
-        // One routing point: is a tab's view in front? A project screen that covers the tab's
-        // screen has left that screen as a tab switch leaves a tab (`leave_tab_view` dropped its
-        // live work), so the event is handled as for a tab in the background: the App-level
-        // freshness runs (git status, the follow reads, the diff caches, the picture cache by
-        // changed path), and the view itself is not refreshed: the return reads it again from the
-        // files as they are then (`put_tab_back`, then `refresh_fs_after_tab_switch`). Nothing is
-        // recorded for later; refreshing the view here would only restart, behind the screen, the
-        // work (plugin show, media loads) the cover dropped.
+        self.refresh_fs_routed(recompute_ignored, changed, true);
+    }
+
+    /// The one routing point of the refreshes that do not come from the user (a watch event, the
+    /// end of a tab switch): is a tab's view in front? A project screen that covers the tab's
+    /// screen has left that screen as a tab switch leaves a tab (`leave_tab_view` dropped its
+    /// live work), so the refresh is handled as for a tab in the background: the App-level
+    /// freshness runs (git status, the follow reads, the diff caches, the picture cache by
+    /// changed path), and the view itself is not refreshed: the return reads it again from the
+    /// files as they are then (`put_tab_back`, then `refresh_fs_after_tab_switch`). Nothing is
+    /// recorded for later; refreshing the view here would only restart, behind the screen, the
+    /// work the cover dropped (plugin show, media loads, the filter-pool scan of the tree).
+    fn refresh_fs_routed(
+        &mut self,
+        recompute_ignored: bool,
+        changed: &[std::path::PathBuf],
+        reload_preview: bool,
+    ) {
         if self.project_screen_covers() {
             self.refresh_while_covered(recompute_ignored, changed);
             return;
         }
-        self.refresh_reporting_staleness(|app| app.refresh_fs_changed(recompute_ignored, changed));
+        self.refresh_reporting_staleness(|app| {
+            app.refresh_fs_inner(recompute_ignored, changed, reload_preview)
+        });
     }
 
     /// Note which file each filtered view is "on", **before** a `rebuild_tree` replaces `entries`

@@ -197,6 +197,14 @@ impl App {
         self.media_diff.invalidate();
     }
 
+    /// Test-only: whether a media diff waits for the busy worker (its queued want), and whether
+    /// the worker is busy.
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn media_diff_busy_and_queued_for_test(&self) -> (bool, bool) {
+        (self.media_diff.busy(), self.media_diff.queued().is_some())
+    }
+
     /// Removes every `media-diff://` entry from `md_image_cache` unconditionally — never touches a
     /// mermaid/math key (`is_media_diff_url` alone gates the predicate). Called wherever the diff
     /// surface stops being able to ever repopulate them itself, which `App::apply_media_diff`'s own

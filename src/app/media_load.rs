@@ -112,6 +112,8 @@ impl App {
     /// Still images are synchronous, while **heavy SVG rasterization / GIF full-frame decode are offloaded to a separate thread**
     /// (to start display fast without blocking the UI thread). With no media_tx (tests, etc.), a synchronous fallback is used.
     pub(super) fn start_media_load(&mut self, kind: &PreviewKind, path: &Path) {
+        #[cfg(test)]
+        crate::test_support::note_tab_view_load();
         // Record the baseline time for auto-reloading media (`reload_media_if_changed` uses it for
         // the mtime comparison).
         self.preview_media_mtime = file_mtime(path);
