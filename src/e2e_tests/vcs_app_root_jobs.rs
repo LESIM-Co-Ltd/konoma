@@ -370,6 +370,7 @@ struct RootJobs {
     stall: Option<(String, std::time::Instant)>,
     expecting_switch: bool,
     failure_cursor: usize,
+    failure_j_pressed: bool,
 }
 
 /// Row 0 of the host frame carries the busy segment ("{spinner} {label}  ", DIM) only while a
@@ -452,6 +453,7 @@ impl RootJobs {
             stall: None,
             expecting_switch: false,
             failure_cursor: 0,
+            failure_j_pressed: false,
         }
     }
     fn attach(&mut self, host: &mut Sim, app: &mut PreparedProjects) {
@@ -877,6 +879,11 @@ impl RootJobs {
                 }
                 self.compare(&state, &frame, host, fixture, graph);
                 if state.cursor == self.failure_cursor {
+                    assert!(
+                        !self.failure_j_pressed,
+                        "j after a failed preparation did not move the cursor: {state:?}"
+                    );
+                    self.failure_j_pressed = true;
                     return self.press(
                         host,
                         KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
