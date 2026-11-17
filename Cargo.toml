@@ -125,7 +125,7 @@ hayro = { version = "0.8", default-features = false, features = ["embed-fonts", 
 #     推移依存(byteorder/bytes/num-rational/serde/serde_json/thiserror)は全て既に konoma の
 #     Cargo.lock に互換版で在るので、新規パッケージはこの 3 つだけ。
 # VP9/AV1 と旧世代コーデック(および .avi)は引き続き ffmpeg 側の担当(原則#3 で降格)。
-rust_h264 = "0.4"
+rust_h264 = "0.5"
 rust_h265 = "0.1"
 re_mp4 = "0.5"
 
