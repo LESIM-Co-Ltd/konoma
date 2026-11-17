@@ -198,6 +198,14 @@ impl DiffScreenState {
         );
     }
 
+    /// The diff screen stops being in front (a project screen covers it): its Markdown block diff
+    /// is dropped as a host tab that is left drops it (`App::invalidate_md_diff` in
+    /// `App::leave_tab_view`): the held result and the ask in flight, whose answer is refused by
+    /// generation. The return asks again (`resume_project_diff`).
+    pub(in crate::app) fn leave_markdown(&mut self) {
+        self.markdown.invalidate();
+    }
+
     pub(super) fn adopt_markdown(&mut self, result: MdDiffResult) -> bool {
         let on_screen = result.path == self.request.path && result.kind == MdDiffKind::Rendered;
         let unavailable = matches!(

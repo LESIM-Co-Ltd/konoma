@@ -1,6 +1,7 @@
 //! A project screen that covers the diff screen leaves it, as a host tab that is left: the diff
-//! screen's media diff (the held result, the ask in flight, the want queued behind it) is
-//! dropped, nothing of it lands behind the project screen, and the return asks it again.
+//! screen's media diff (the held result, the ask in flight, the want queued behind it) and its
+//! Markdown block diff (the held result, the ask in flight) are dropped, nothing of them lands
+//! behind the project screen, and the return asks them again.
 use super::*;
 use crate::host::project::media_diff::{
     MediaBase, MediaDiffComputed, MediaDiffKind, MediaDiffPictureDecoded, MediaDiffSideDecoded,
@@ -277,5 +278,154 @@ fn covering_the_diff_screen_drops_its_media_diff_and_the_return_asks_it_again() 
         held(&prepared),
         (true, false, None),
         "the media diff comes back after the return"
+    );
+}
+
+fn held_markdown(prepared: &PreparedProjects) -> (bool, bool) {
+    prepared
+        .diff
+        .as_ref()
+        .unwrap()
+        .markdown_held_and_pending_for_test()
+}
+
+/// The Markdown block diff (the Rendered presentation of a Markdown diff) is the left screen's
+/// too: covering drops the held result and the ask in flight, as the host's `leave_tab_view`
+/// drops them (`App::invalidate_md_diff`), an answer published behind the project screen is not
+/// applied there, and the return asks the block diff again.
+#[test]
+fn covering_the_diff_screen_drops_its_markdown_block_diff_and_the_return_asks_it_again() {
+    use crate::host::project::md_diff::MdDiffWorker;
+    let dir = konoma_test_support::unique_tmp("project_markdown_cover");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("project.marker"), "").unwrap();
+    let path = dir.join("notes.md");
+    std::fs::write(&path, "# Notes\n\nA paragraph.\n").unwrap();
+    let mut prepared = crate::app::project::prepare::prepare_projects_with_previews(
+        vec![Arc::new(Project)],
+        Vec::new(),
+        &dir,
+        TermCaps::new(),
+        (
+            SharedConfig::parse("[ui]\nlang='en'\ndiff_view='rendered'\nwrap=false\n").unwrap(),
+            None,
+        ),
+        Arc::new(ChromeServices),
+    )
+    .unwrap_or_else(|e| panic!("{}", e.error));
+    let mut terminal = Terminal::new(TestBackend::new(54, 14)).unwrap();
+    opening(&mut prepared, &mut terminal, "changes");
+
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, waiting) = mpsc::channel::<()>();
+    let waiting = Mutex::new(waiting);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let mut markdown = MdDiffWorker::with_compute(Arc::new(move |req| {
+        count.fetch_add(1, Ordering::SeqCst);
+        entered_tx.send(()).unwrap();
+        waiting.lock().unwrap().recv().unwrap();
+        MdDiffWorker::compute_md_diff(req)
+    }));
+    let (tx, rx) = mpsc::channel();
+    markdown.attach(tx);
+    let (forward, replies) = mpsc::channel();
+    let (published, ready) = mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(r) = rx.recv() {
+            if forward.send(r).is_err() || published.send(()).is_err() {
+                break;
+            }
+        }
+    });
+    let worker = Worker {
+        entered,
+        release,
+        ready,
+        calls,
+    };
+
+    // Open the document's diff through the project's own navigation (the VCS program's road),
+    // then hand it the controlled block-diff worker and read it again so that worker is asked.
+    let mut state = ProjectLoopState::new(&mut prepared, false);
+    let info = state.info(&prepared, &ProjectLoopCx::default());
+    let mut update = ProjectUpdate::handled();
+    update.commands.push(ProjectCommand::Navigation {
+        outcome: Outcome::OpenDiff { path: path.clone() },
+        save_return: true,
+    });
+    state.apply(&mut prepared, &info, update);
+    assert!(state.diff.as_ref().unwrap().project_owned);
+    state.diff.as_mut().unwrap().settle_preview_for_test();
+    let mut diff = state
+        .diff
+        .take()
+        .unwrap()
+        .with_markdown_worker_for_test(markdown, replies);
+    diff.reload().unwrap();
+    diff.settle_preview_for_test();
+    prepared.diff = Some(diff);
+    prepared.screen = state.screen.take();
+    prepared.runtimes = std::mem::take(&mut state.runtimes);
+
+    // 1. The diff screen in front asks its block diff, and the result lands there.
+    run(
+        &mut prepared,
+        &mut terminal,
+        &worker,
+        vec![Step::Entered, Step::Land],
+    );
+    assert!(prepared.diff_return.is_some() && !prepared.preview_project);
+    assert_eq!(held_markdown(&prepared), (true, false), "landed in front");
+    assert_eq!(worker.calls.load(Ordering::SeqCst), 1);
+
+    // 2. `p` covers it: the held result goes, and nothing is asked behind the project screen.
+    run(&mut prepared, &mut terminal, &worker, vec![Step::Key('p')]);
+    assert!(
+        prepared.preview_project,
+        "the project screen covers the diff"
+    );
+    assert_eq!(
+        held_markdown(&prepared),
+        (false, false),
+        "covering is leaving: the block diff is not held behind the project screen"
+    );
+    assert_eq!(worker.calls.load(Ordering::SeqCst), 1);
+
+    // 3. `q` returns and asks again; `p` covers while that ask is out, and its result is
+    // published while the project screen is in front.
+    run(
+        &mut prepared,
+        &mut terminal,
+        &worker,
+        vec![Step::Key('q'), Step::Entered, Step::Key('p'), Step::Land],
+    );
+    assert!(prepared.preview_project);
+    assert_eq!(worker.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        held_markdown(&prepared),
+        (false, false),
+        "the ask made before the cover is still the covered screen's: held or waited for behind \
+         the project screen"
+    );
+
+    // 4. `q` returns: the answer of the ask made before the cover is refused (another
+    // generation), and the return asks the block diff again; that answer lands in front.
+    run(
+        &mut prepared,
+        &mut terminal,
+        &worker,
+        vec![Step::Key('q'), Step::Entered, Step::Land],
+    );
+    assert!(!prepared.preview_project && prepared.diff_return.is_some());
+    assert_eq!(
+        worker.calls.load(Ordering::SeqCst),
+        3,
+        "the return asks again"
+    );
+    assert_eq!(
+        held_markdown(&prepared),
+        (true, false),
+        "the block diff comes back after the return"
     );
 }

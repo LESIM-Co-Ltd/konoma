@@ -86,6 +86,29 @@ impl DiffScreenState {
             }),
         }
     }
+    /// Supply a controlled Markdown block-diff worker and its receiver (the media diff has
+    /// `with_media_worker`). The next `choose_effective` asks it.
+    #[cfg(test)]
+    pub(in crate::app) fn with_markdown_worker_for_test(
+        mut self,
+        worker: crate::host::project::md_diff::MdDiffWorker,
+        rx: std::sync::mpsc::Receiver<crate::host::project::md_diff::MdDiffResult>,
+    ) -> Self {
+        self.markdown = worker.with_read_context(self.request.info.backend.diff_read_context());
+        self.markdown_rx = rx;
+        self
+    }
+    /// The Markdown block diff of the shown file: whether a result is held, and whether an ask
+    /// is out.
+    #[cfg(test)]
+    pub(in crate::app) fn markdown_held_and_pending_for_test(&self) -> (bool, bool) {
+        (
+            self.markdown
+                .landed_for(&self.request.path, MdDiffKind::Rendered)
+                .is_some(),
+            self.markdown.pending_for(&self.request.path),
+        )
+    }
     pub(in crate::app) fn settle_representations_for_test(&mut self) {
         self.settle_representations_with_pictures_for_test(None);
     }
