@@ -598,11 +598,8 @@ fn load_ods(
     // ods dates run from the table's null date and have no 1900 leap-year bug.
     ctx.null_day = Some(extra.null_day);
     assemble(&ctx, metas, which, cancel.as_ref(), |name| {
-        let mut data = wb.worksheet_range(name).map_err(map_ods)?;
+        let data = wb.worksheet_range(name).map_err(map_ods)?;
         let ods = extra.sheets.get(name);
-        if let Some(o) = ods {
-            apply_ods_texts(&mut data, &o.texts);
-        }
         let mut sheet = build_sheet(
             &ctx,
             name,
@@ -619,26 +616,6 @@ fn load_ods(
         }
         Ok(sheet)
     })
-}
-
-/// Puts back the text `calamine` loses from an ods string cell (`<text:tab/>`, `<text:line-break/>`).
-fn apply_ods_texts(data: &mut Range<Data>, runs: &[fmt_ods::TextRun]) {
-    let (Some(start), Some(end)) = (data.start(), data.end()) else {
-        return;
-    };
-    for run in runs {
-        for r in run.row0..run.row0.saturating_add(run.rows) {
-            for c in run.col0..run.col0.saturating_add(run.cols) {
-                // Only cells the reader has: never grows the matrix.
-                if r < start.0 || r > end.0 || c < start.1 || c > end.1 {
-                    continue;
-                }
-                if matches!(data.get_value((r, c)), Some(Data::String(_))) {
-                    data.set_value((r, c), Data::String(run.text.clone()));
-                }
-            }
-        }
-    }
 }
 
 /// xls. Not streamable, like [`load_ods`]: `fmt_xls::read` checks the size of every sheet first.
@@ -1067,7 +1044,7 @@ impl<'a> SheetBuilder<'a> {
 
     /// The cell for a value, and the text bytes it costs.
     fn make_cell(&self, row: u32, col: u32, fmt: Option<u16>, mut value: CellValue) -> (Cell, u64) {
-        // ods: an error cell reaches us as an empty string; the format pass knows better.
+        // ods: calamine 0.38 returns displayed error text; the format pass supplies its type.
         if let Some(code) = self.fmts.and_then(|s| s.error_at(row, col)) {
             value = CellValue::Error(code);
         }
