@@ -418,6 +418,20 @@ impl Pictures {
         self.still.as_ref().and_then(Still::pose_held)
     }
 
+    /// The terminal was another program's meanwhile (an editor, a terminal opener, a tool): what
+    /// was drawn on it goes and is drawn again, and the user's view of the still picture waits for
+    /// it (the picture shown next, by the same loop or by the Preview opened again, is put in it,
+    /// as a konoma tab keeps its `image_view`). Every hand-off of the terminal ends here.
+    pub(in crate::app) fn after_hand_off(&mut self) {
+        let pose = self.still_pose();
+        self.forget();
+        self.forget_still();
+        self.reset_document();
+        if let Some(pose) = pose {
+            self.restore_still_pose(pose);
+        }
+    }
+
     /// The still picture the session shows next is put in `pose` (a left Preview opened again).
     pub(in crate::app) fn restore_still_pose(
         &mut self,

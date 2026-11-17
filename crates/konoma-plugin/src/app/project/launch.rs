@@ -311,16 +311,7 @@ impl LaunchState {
                 .clear()
                 .map_err(|e| AppError::Terminal(e.to_string()))?;
             if let Some(p) = pictures {
-                // What was drawn went with the terminal; the user's view of the still picture
-                // waits for it to be drawn again (the Preview opened again after the hand-off is
-                // put in it, as a konoma tab keeps its `image_view` over the reload).
-                let pose = p.still_pose();
-                p.forget();
-                p.forget_still();
-                p.reset_document();
-                if let Some(pose) = pose {
-                    p.restore_still_pose(pose);
-                }
+                p.after_hand_off();
             }
         }
         Ok(changed)

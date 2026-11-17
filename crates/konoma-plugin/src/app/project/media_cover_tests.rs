@@ -1820,6 +1820,26 @@ fn image_pose_kept_over(
     cx: &ProjectLoopCx,
     between: Vec<Turn>,
 ) {
+    image_pose_kept_over_with(
+        name,
+        project,
+        config,
+        cx,
+        Arc::new(GatedPictures(Arc::default())),
+        between,
+    );
+}
+
+/// [`image_pose_kept_over`] with the picture shown by `pictures` (a plugin named
+/// `cover-gated-pictures` for `*.png`).
+fn image_pose_kept_over_with(
+    name: &str,
+    project: Arc<dyn Plugin>,
+    config: &str,
+    cx: &ProjectLoopCx,
+    pictures: Arc<dyn Plugin>,
+    between: Vec<Turn>,
+) {
     const QUARTERS: [[u8; 3]; 4] = [[220, 20, 20], [20, 220, 20], [20, 20, 220], [220, 220, 20]];
     let (_dir, path, mut prepared, mut terminal) = preview_fixture_in(
         name,
@@ -1828,7 +1848,7 @@ fn image_pose_kept_over(
             QUARTERS[usize::from(x >= 16) + 2 * usize::from(y >= 16)]
         }),
         Arc::new(ChromeServices),
-        vec![Arc::new(GatedPictures(Arc::default()))],
+        vec![pictures],
         project,
         config,
     );
@@ -1944,6 +1964,103 @@ fn the_tool_return_to_an_image_preview_keeps_its_zoom_and_pan() {
         1,
         "one tool was handed over"
     );
+}
+
+/// A launch context for the configuration `config` whose terminal hand-off counts itself in
+/// `launches` and then lets the program exit (`starts`) or fails to start it.
+fn counted_hand_off(config: &str, launches: Arc<AtomicUsize>, starts: bool) -> ProjectLoopCx {
+    let config = SharedConfig::parse(config).unwrap();
+    ProjectLoopCx {
+        home: None,
+        launch: Some(
+            crate::app::LaunchCx::new(config.editor.clone(), &config.external, vec![])
+                .with_hand_off(Arc::new(move |_, _, redraw| {
+                    launches.fetch_add(1, Ordering::SeqCst);
+                    if !starts {
+                        return Err(std::io::Error::other("the program does not start"));
+                    }
+                    redraw()?;
+                    Ok(Some(0))
+                })),
+        ),
+    }
+}
+
+/// The turns that press `key` in the Preview and wait for the terminal to be handed over once.
+fn hand_over_with(key: char, launches: &Arc<AtomicUsize>) -> Vec<Turn> {
+    let handed = launches.clone();
+    vec![
+        Turn::Key(key),
+        Turn::Until(
+            "the terminal was handed over",
+            Box::new(move || handed.load(Ordering::SeqCst) == 1),
+        ),
+    ]
+}
+
+/// The return from the editor started from an image Preview (`e`) keeps its zoom and pan over
+/// the reload that follows, as a konoma tab keeps its `image_view`.
+#[test]
+fn the_editor_return_to_an_image_preview_keeps_its_zoom_and_pan() {
+    let config = "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n";
+    let launches = Arc::new(AtomicUsize::new(0));
+    image_pose_kept_over(
+        "project_preview_edit_pose",
+        Arc::new(Project),
+        config,
+        &counted_hand_off(config, launches.clone(), true),
+        hand_over_with('e', &launches),
+    );
+    assert_eq!(launches.load(Ordering::SeqCst), 1, "one editor was started");
+}
+
+/// An editor that does not start from an image Preview (`e`) had the terminal all the same: the
+/// picture is drawn again (no reload follows) in the zoom and pan it had.
+#[test]
+fn an_editor_that_does_not_start_from_an_image_preview_keeps_its_zoom_and_pan() {
+    let config = "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n";
+    let launches = Arc::new(AtomicUsize::new(0));
+    image_pose_kept_over(
+        "project_preview_edit_fails_pose",
+        Arc::new(Project),
+        config,
+        &counted_hand_off(config, launches.clone(), false),
+        hand_over_with('e', &launches),
+    );
+    assert_eq!(launches.load(Ordering::SeqCst), 1, "one editor was tried");
+}
+
+/// [`GatedPictures`] whose `o` hands the terminal to a viewer (a chain in terminal mode).
+struct TerminalOpenPictures(GatedPictures);
+impl Plugin for TerminalOpenPictures {
+    fn manifest(&self) -> Manifest {
+        self.0.manifest().verb(
+            crate::manifest::VerbDecl::new(crate::manifest::Verb::Open)
+                .launcher(crate::manifest::Launcher::Command(vec![
+                    "fixture-terminal-viewer".into(),
+                ]))
+                .mode(crate::manifest::LaunchMode::Terminal),
+        )
+    }
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        self.0.open(input, cx)
+    }
+}
+
+/// The return from a terminal viewer opened from an image Preview (`o`) keeps its zoom and pan.
+#[test]
+fn the_terminal_viewer_return_to_an_image_preview_keeps_its_zoom_and_pan() {
+    let config = "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n";
+    let launches = Arc::new(AtomicUsize::new(0));
+    image_pose_kept_over_with(
+        "project_preview_terminal_open_pose",
+        Arc::new(Project),
+        config,
+        &counted_hand_off(config, launches.clone(), true),
+        Arc::new(TerminalOpenPictures(GatedPictures(Arc::default()))),
+        hand_over_with('o', &launches),
+    );
+    assert_eq!(launches.load(Ordering::SeqCst), 1, "one viewer was started");
 }
 
 /// A picture inside the covered Markdown is the left view's too: the return decodes what it

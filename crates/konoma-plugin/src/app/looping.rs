@@ -3712,11 +3712,9 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                             }
                             if done.handed {
                                 // The terminal was another program's meanwhile: the pictures
-                                // placed on it are drawn again.
+                                // placed on it are drawn again, the still one in its pose.
                                 if let Some(p) = pictures.as_deref_mut() {
-                                    p.forget();
-                                    p.forget_still();
-                                    p.reset_document();
+                                    p.after_hand_off();
                                 }
                                 *need_view = true;
                             }
