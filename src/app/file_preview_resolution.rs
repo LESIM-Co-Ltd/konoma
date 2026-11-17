@@ -42,7 +42,7 @@ fn deliver(tx: &std::sync::mpsc::Sender<MediaResult>, kind: Reply) {
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "git"))]
 impl MediaResult {
     /// Test-only: whether this is the answer of a diff target resolution
     /// (`App::resolve_diff_on_worker`).

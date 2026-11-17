@@ -4519,7 +4519,7 @@ impl App {
     }
 
     /// The file names in the tab's tree-filter pool. Test-only.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "git"))]
     pub fn filter_pool_names_for_test(&self) -> Vec<String> {
         self.tab
             .filter_pool
@@ -4542,26 +4542,26 @@ impl App {
     }
 
     /// Test-only: the preview load identity (`PerTab::load_id`) of the working tab.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "git"))]
     pub fn load_id_for_test(&self) -> u64 {
         self.tab.load_id
     }
 
     /// Test-only: whether the tab's pending landing waits with the kind resolved (`Some(true)`:
     /// only the document body is awaited), still unresolved (`Some(false)`), or there is none.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "git"))]
     pub fn pending_kind_known_for_test(&self) -> Option<bool> {
         self.tab.pending.as_ref().map(|p| p.kind_known)
     }
 
     /// Test-only: whether the tab has any landing pending.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "git"))]
     pub fn has_pending_landing_for_test(&self) -> bool {
         self.tab.pending.is_some()
     }
 
     /// Test-only: whether a confirmed search waits for the table that is still loading.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "git"))]
     pub fn search_waits_for_table_for_test(&self) -> bool {
         self.tab.search_pending
     }
