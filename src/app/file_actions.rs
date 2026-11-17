@@ -528,8 +528,18 @@ impl App {
         self.fileop_progress = None;
         self.fileop_total = 0;
         // Reload unconditionally (the disk has actually changed regardless of which tab is being
-        // viewed).
-        let mut post = self.refresh();
+        // viewed), through the one routing of the filesystem refreshes: while a project screen
+        // covers the tab's view, the view was left as a tab is left, so only the `App`-level
+        // freshness runs and there is no view to reveal in (the reveal hangs on the refresh of the
+        // view; the return reads the tree again, as a tab switch back does).
+        let mut post = Ok(());
+        let view_refreshed = match self.refresh_routed() {
+            Some(result) => {
+                post = result;
+                true
+            }
+            None => false,
+        };
         // Reveal (= move the cursor) only **when we're back on the tab that dispatched it**.
         // `reveal_and_select` unconditionally calls rebuild_tree, so doing it on another tab
         // would collapse its filter (`/`) or changed view (`C`) and even move that tab's cursor.
@@ -549,7 +559,7 @@ impl App {
         //     `refresh_fs_after_tab_switch` → `rebuild_tree`, so the new entries are there. Only
         //     the cursor position differs, and `n`/`N`, `/` and `C` are there to find them.
         // Pinned by `file_op_reveal_is_not_replayed_on_returning_to_the_tab`.
-        if post.is_ok() && res.root == self.tab.root {
+        if view_refreshed && post.is_ok() && res.root == self.tab.root {
             if let Some(p) = &res.last {
                 post = self.reveal_and_select(p);
             }

@@ -2077,13 +2077,12 @@ fn vcs_project_picture_rewritten_while_covered_is_drawn_new_after_leaving() {
 }
 
 /// A tab whose screen a project screen covers is switched away from and back (`]`, then `[`). The
-/// picture is rewritten while covered, so the return cannot reuse the stashed pixels: it puts the
-/// tab back from its saved copy and starts a real load of the new file. The screen in front is
-/// the project's: the tab view stays left as the cover left it (`put_tab_back` ends with
-/// `leave_tab_view` while a project screen covers it). So no picture is shown behind the project
-/// screen and none of the results of that load is applied (its generation is gone); at least one
-/// result is seen, so the check is not vacuous. Leaving the project screen (`q`) then shows the
-/// new picture.
+/// picture is rewritten while covered, so a return to the view cannot reuse the stashed pixels.
+/// The screen in front of the tab that comes back is the project's: the tab view is not in front,
+/// so the return asks none of its workers (no media load, no windowed reader, no plugin open) and
+/// no picture is shown behind the project screen. Leaving the project screen (`q`) is the return
+/// to the view: it starts the load of the new picture once, as a tab switch back to the same
+/// picture starts it, and shows the new picture.
 #[test]
 fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_screen() {
     if isolated("vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_screen") {
@@ -2122,37 +2121,57 @@ fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_scree
     sim.app.tab_new().unwrap();
     drain(&mut sim);
     assert_eq!(sim.app.active_tab_index(), 1, "premise: on the new tab");
-    sim.app.tab_cycle(-1);
-    drain(&mut sim);
+    let ((), behind) = crate::test_support::count_tab_view_loads(|| {
+        sim.app.tab_cycle(-1);
+        drain(&mut sim);
+    });
     assert_eq!(sim.app.active_tab_index(), 0, "premise: back on the covered tab");
     assert_project_screen_in_front(&sim, "back on the covered tab", &[]);
-
-    // Whatever the return's reload sent is from a generation the cover has left.
-    let rx = sim.media_rx.as_ref().expect("with_media");
-    let mut seen = 0;
-    while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
-        seen += 1;
-        assert!(
-            !sim.app.apply_media(res),
-            "a picture load of the covered tab was applied behind the project screen"
-        );
-    }
-    assert!(seen >= 1, "the return started no load of the rewritten picture");
+    assert_eq!(
+        behind, 0,
+        "the return to the covered tab started a load of its view behind the project screen"
+    );
+    assert!(
+        !sim.app.is_media_loading(),
+        "a picture load of the covered tab is in flight behind the project screen"
+    );
     sim.draw();
     assert!(
         !sim.app.is_image_preview(),
         "the covered tab's picture is held behind the project screen"
     );
 
-    press(&mut sim, KeyCode::Char('q'));
+    let ((), on_uncover) = crate::test_support::count_tab_view_loads(|| {
+        press(&mut sim, KeyCode::Char('q'));
+    });
     assert!(!sim.app.project_active(), "q left the project screen");
     assert_eq!(sim.app.tab.mode, Mode::Preview);
+    assert!(on_uncover >= 1, "leaving the project screen read nothing of the view");
+    assert!(sim.app.is_media_loading(), "leaving the project screen started no picture load");
     sim.await_media("leaving the project screen");
     assert!(sim.app.is_image_preview(), "the picture is shown again after leaving");
     sim.draw();
     sim.answer_image_resizes();
     assert!(drawn_has_red(&sim.term), "the rewritten picture (red) is not drawn after leaving");
     assert!(!drawn_has_green(&sim.term), "the old picture (green) is drawn after leaving");
+
+    // The reference: a tab switch back to the same picture, not covered, after it was rewritten.
+    // Leaving the project screen read the view as many times as that return does (once each).
+    crate::test_support::write_solid_png(&repo.join("pic.png"), 48, 24, [10, 10, 210]);
+    sim.app.tab_cycle(1);
+    drain(&mut sim);
+    assert_eq!(sim.app.active_tab_index(), 1, "premise: on the other tab");
+    let ((), on_tab_return) = crate::test_support::count_tab_view_loads(|| {
+        sim.app.tab_cycle(-1);
+        drain(&mut sim);
+    });
+    assert!(!sim.app.project_active(), "premise: the picture tab is not covered");
+    assert_eq!(
+        on_uncover, on_tab_return,
+        "leaving the project screen read the view another number of times than a tab return"
+    );
+    sim.await_media("the tab return");
+    assert!(sim.app.is_image_preview(), "premise: the tab return shows the picture");
 }
 
 /// e4-review item 3: a clean tracked file is edited while a project screen covers the tree, the
@@ -2714,4 +2733,206 @@ fn vcs_project_tab_switch_back_to_a_covered_filter_asks_no_scan_behind_the_scree
     }
     assert_eq!(overlay_cursor_file(&sim), covered_cursor, "the cursor left its file");
     crate::app::set_filter_scan_budget(None);
+}
+
+/// e6b-review item 2: a text preview (the windowed reader) and a table preview (the plugin open)
+/// are covered by `p`, the tab is switched away from, the file is changed, and the tab is switched
+/// back to. The tab view is not in front of the tab that comes back (the project screen is), so
+/// the return asks none of the view's workers: the decision is made once at the start of the
+/// return. Leaving the project screen reads the view again and shows the change.
+#[test]
+fn vcs_project_tab_switch_back_to_a_covered_preview_reads_nothing_behind_the_screen() {
+    if isolated("vcs_project_tab_switch_back_to_a_covered_preview_reads_nothing_behind_the_screen") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_covered_switch_preview") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_covered_switch_preview_cfg");
+    for (file, before, after, shown) in [
+        ("lines.txt", LINES_TXT, "edited-one\nedited-two\n", "edited-one"),
+        ("table.csv", "head,col\nold,1\n", "head,col\nchangedcell,2\n", "changedcell"),
+    ] {
+        std::fs::write(repo.join(file), before).unwrap();
+        let mut sim = preview_session(&repo, config("git", "en"), file, true, &cfg_base);
+        sim.app.tab_new().unwrap();
+        drain(&mut sim);
+        assert_eq!(sim.app.active_tab_index(), 1, "{file}: premise: on the new tab");
+        std::fs::write(repo.join(file), after).unwrap();
+        let ((), behind) = crate::test_support::count_tab_view_loads(|| {
+            sim.app.tab_cycle(-1);
+            drain(&mut sim);
+        });
+        assert_eq!(sim.app.active_tab_index(), 0, "{file}: premise: back on the covered tab");
+        assert_project_screen_in_front(&sim, &format!("{file}: back on the covered tab"), &[]);
+        assert_eq!(behind, 0, "{file}: the covered view was read again behind the project screen");
+        assert!(
+            !sim.screen().contains(shown),
+            "{file}: the preview is drawn over the project screen:\n{}",
+            sim.screen()
+        );
+        let ((), on_uncover) = crate::test_support::count_tab_view_loads(|| {
+            press(&mut sim, KeyCode::Char('q'));
+            drain(&mut sim);
+        });
+        assert!(!sim.app.project_active(), "{file}: q left the project screen");
+        assert!(on_uncover >= 1, "{file}: leaving the project screen read nothing again");
+        assert_eq!(sim.app.tab.mode, Mode::Preview, "{file}: the preview comes back");
+        sim.draw();
+        assert!(
+            sim.screen().contains(shown),
+            "{file}: stale preview after leaving:\n{}",
+            sim.screen()
+        );
+    }
+}
+
+/// e6b-review item 3: a copy is started, a `/` filter is confirmed, `p` covers the filtered list,
+/// and the copy completes behind it. The completion's refresh goes through the one routing of the
+/// filesystem refreshes: the tab view is not in front, so only the `App`-level freshness runs,
+/// no filter-pool scan is asked for, the list is not rebuilt and no reveal moves the cursor.
+/// Leaving the project screen reads the tree again and the copied file is in the list.
+#[test]
+fn vcs_project_file_operation_completing_under_a_covered_filter_asks_no_scan() {
+    if isolated("vcs_project_file_operation_completing_under_a_covered_filter_asks_no_scan") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_fileop_covered_filter") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_fileop_covered_filter_cfg");
+    std::fs::create_dir_all(repo.join("deepdest")).unwrap();
+    std::fs::write(repo.join("deep_root1.txt"), "r\n").unwrap();
+    std::fs::write(repo.join("deep_root2.txt"), "r\n").unwrap();
+    std::fs::write(repo.join("deep_copied.txt"), "c\n").unwrap();
+    // Every scan goes to the worker, so each one asked is seen on the channel.
+    crate::app::set_filter_scan_budget(Some(Some(std::time::Duration::ZERO)));
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30).with_async_file_ops();
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_filter_pool_loader(tx);
+    // The copy is started; its result is held until the cover is up.
+    sim.select("deep_copied.txt");
+    sim.key(' ');
+    sim.key('c');
+    sim.select("deepdest");
+    sim.key(' ');
+    sim.key('p');
+    let done = sim
+        .fileop_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the copy answers");
+    sim.key('/');
+    sim.keys("deep");
+    sim.enter();
+    drain(&mut sim);
+    assert!(sim.app.filter_query().is_some(), "the filter is on");
+    // The scan the filter asked lands before the cover.
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the filter's scan lands");
+    sim.app.apply_filter_pool(res);
+    sim.draw();
+    sim.select("deep_root2.txt");
+    let covered = overlay_tree_names(&sim);
+    let covered_cursor = overlay_cursor_file(&sim);
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers the filtered list");
+    let ((applied, asks), loads) = crate::test_support::count_tab_view_loads(|| {
+        crate::test_support::count_filter_pool_asks(|| sim.app.apply_file_op(done))
+    });
+    assert!(applied, "premise: the copy's result is the current one");
+    drain(&mut sim);
+    assert_project_screen_in_front(&sim, "after the copy completed", &[]);
+    assert_eq!(asks, 0, "the copy's completion asked a filter-pool scan behind the project screen");
+    assert_eq!(loads, 0, "the copy's completion read the covered view again");
+    assert!(
+        rx.try_recv().is_err(),
+        "a filter-pool scan is on its way behind the project screen"
+    );
+    assert_eq!(overlay_tree_names(&sim), covered, "the covered list changed behind the screen");
+    assert_eq!(overlay_cursor_file(&sim), covered_cursor, "the cursor moved behind the screen");
+    let ((), on_return) = crate::test_support::count_filter_pool_asks(|| {
+        press(&mut sim, KeyCode::Char('q'));
+    });
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert!(on_return >= 1, "the return asked no scan of its own");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the return's scan lands");
+    assert!(sim.app.apply_filter_pool(res), "the return's scan is applied");
+    sim.draw();
+    assert_eq!(overlay_cursor_file(&sim), covered_cursor, "the cursor left its file");
+    assert!(
+        repo.join("deepdest").join("deep_copied.txt").is_file(),
+        "premise: the copy was made"
+    );
+    crate::app::set_filter_scan_budget(None);
+}
+
+/// e6b-review item 3, the preview: a copy is started, a text preview is entered and `p` covers
+/// it, and the copy completes behind it. The completion reads nothing of the covered view; leaving
+/// the project screen reads it again.
+#[test]
+fn vcs_project_file_operation_completing_under_a_covered_preview_reads_nothing() {
+    if isolated("vcs_project_file_operation_completing_under_a_covered_preview_reads_nothing") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_fileop_covered_preview") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_fileop_covered_preview_cfg");
+    std::fs::create_dir_all(repo.join("dest")).unwrap();
+    std::fs::write(repo.join("src-file.txt"), "s\n").unwrap();
+    std::fs::write(repo.join("lines.txt"), LINES_TXT).unwrap();
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30).with_async_file_ops();
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.select("src-file.txt");
+    sim.key(' ');
+    sim.key('c');
+    sim.select("dest");
+    sim.key(' ');
+    sim.key('p');
+    let done = sim
+        .fileop_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the copy answers");
+    sim.select("lines.txt");
+    sim.enter();
+    drain(&mut sim);
+    assert_eq!(sim.app.tab.mode, Mode::Preview, "premise: the preview is in front");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers the preview");
+    std::fs::write(repo.join("lines.txt"), "edited-one\nedited-two\n").unwrap();
+    let (applied, behind) =
+        crate::test_support::count_tab_view_loads(|| sim.app.apply_file_op(done));
+    assert!(applied, "premise: the copy's result is the current one");
+    drain(&mut sim);
+    assert_project_screen_in_front(&sim, "after the copy completed", &[]);
+    assert_eq!(behind, 0, "the copy's completion read the covered preview again");
+    let ((), on_return) = crate::test_support::count_tab_view_loads(|| {
+        press(&mut sim, KeyCode::Char('q'));
+        drain(&mut sim);
+    });
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert!(on_return >= 1, "the return read nothing again");
+    assert_eq!(sim.app.tab.mode, Mode::Preview, "the preview comes back");
+    sim.draw();
+    assert!(
+        sim.screen().contains("edited-one"),
+        "stale preview after leaving:\n{}",
+        sim.screen()
+    );
 }

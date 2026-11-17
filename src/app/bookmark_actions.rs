@@ -1610,9 +1610,16 @@ impl App {
     ///   retrying a doomed download on every single one is exactly what `md_remote_failed` exists to
     ///   prevent (see that field's own doc comment on `App`).
     pub fn refresh(&mut self) -> Result<()> {
+        self.refresh_routed().unwrap_or(Ok(()))
+    }
+
+    /// [`App::refresh`], telling whether the tab's view was in front and refreshed (`None`: a
+    /// project screen covers it, and only the `App`-level freshness ran; see
+    /// `refresh_fs_routed`). For a caller whose own view work (a reveal) hangs on the refresh.
+    pub(super) fn refresh_routed(&mut self) -> Option<Result<()>> {
         self.md_remote_failed.clear();
         // An explicit reload (`r` / fileops / returning from an external tool) also rebuilds the ignore set (full recompute).
-        self.refresh_fs(true)
+        self.refresh_fs_routed(true, &[], true)
     }
 
     /// `r`, the user's own refresh: [`App::refresh`], and a plugin's file is read again even when
@@ -1629,6 +1636,9 @@ impl App {
     /// and refetch only the cheap `statuses`+`branch`. Ignore rules (`.gitignore` /
     /// `.git/info/exclude`) rarely change, so this is called with `true` only when they actually change, also rebuilding
     /// `ignored`. This avoids a few-hundred-ms freeze per event on large repositories.
+    /// No production caller: the run loop's events come through `refresh_fs_watched`, the user's
+    /// and the file operations' reloads through `refresh`; the tests use it as an FS event.
+    #[cfg(test)]
     pub fn refresh_fs(&mut self, recompute_ignored: bool) -> Result<()> {
         // Unknown changed paths = the safe side (also reload the preview).
         self.refresh_fs_changed(recompute_ignored, &[])
@@ -1640,12 +1650,16 @@ impl App {
     /// Purpose: while an agent keeps rewriting `src/`, avoid rebuilding the decoration of an
     /// unrelated `docs/foo.md` on every single event (= re-rendering the whole Markdown / re-parsing
     /// the entire CSV). Tree rebuild, git status, the changed filter, and the git view still follow along on every event as before.
+    /// Routed as every refresh of the filesystem view (`refresh_fs_routed`). No production
+    /// caller (see `refresh_fs`).
+    #[cfg(test)]
     pub fn refresh_fs_changed(
         &mut self,
         recompute_ignored: bool,
         changed: &[std::path::PathBuf],
     ) -> Result<()> {
-        self.refresh_fs_inner(recompute_ignored, changed, true)
+        self.refresh_fs_routed(recompute_ignored, changed, true)
+            .unwrap_or(Ok(()))
     }
 
     /// The tab-switch variant: refresh the tree / git status / derived views, but **do not reload the
@@ -1656,10 +1670,10 @@ impl App {
     /// Returns nothing on purpose: the caller (`load_active`) has nowhere to propagate a failure
     /// to, so reporting is done **here** instead of leaving a `let _ = …` for a future edit to
     /// forget. See `refresh_reporting_staleness` for why the flash is edge-triggered.
-    /// Returns whether the tab's view is the one in front (the routing of `refresh_fs_routed`):
-    /// only then does the caller let the restored view ask for its workers.
-    pub(super) fn refresh_fs_after_tab_switch(&mut self) -> bool {
-        self.refresh_fs_routed(false, &[], false)
+    pub(super) fn refresh_fs_after_tab_switch(&mut self) {
+        self.refresh_reporting_staleness(|app| {
+            app.refresh_fs_routed(false, &[], false).unwrap_or(Ok(()))
+        });
     }
 
     /// The fs-watch driven refresh, for `main`'s run loop. Same reason as
@@ -1667,11 +1681,15 @@ impl App {
     /// so there is no `?` to ride and no `resolve_key_result` to reach — a swallowed error here
     /// leaves the tree silently stale.
     pub fn refresh_fs_watched(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
-        let _ = self.refresh_fs_routed(recompute_ignored, changed, true);
+        self.refresh_reporting_staleness(|app| {
+            app.refresh_fs_routed(recompute_ignored, changed, true)
+                .unwrap_or(Ok(()))
+        });
     }
 
-    /// The one routing point of the refreshes that do not come from the user (a watch event, the
-    /// end of a tab switch): is a tab's view in front? A project screen that covers the tab's
+    /// The one routing point of every refresh of the filesystem view (a watch event, the end of a
+    /// tab switch, `r`, a file operation's completion, a follow change; `refresh_fs_inner` has no
+    /// other caller): is a tab's view in front? A project screen that covers the tab's
     /// screen has left that screen as a tab switch leaves a tab (`leave_tab_view` dropped its
     /// live work), so the refresh is handled as for a tab in the background: the App-level
     /// freshness runs (git status, the follow reads, the diff caches, the picture cache by
@@ -1679,21 +1697,19 @@ impl App {
     /// files as they are then (`put_tab_back`, then `refresh_fs_after_tab_switch`). Nothing is
     /// recorded for later; refreshing the view here would only restart, behind the screen, the
     /// work the cover dropped (plugin show, media loads, the filter-pool scan of the tree).
-    /// Returns whether the tab's view is in front (and was refreshed).
+    /// Returns the result of the view's refresh when the tab's view is in front, `None` when a
+    /// project screen covers it.
     fn refresh_fs_routed(
         &mut self,
         recompute_ignored: bool,
         changed: &[std::path::PathBuf],
         reload_preview: bool,
-    ) -> bool {
+    ) -> Option<Result<()>> {
         if self.project_screen_covers() {
             self.refresh_while_covered(recompute_ignored, changed);
-            return false;
+            return None;
         }
-        self.refresh_reporting_staleness(|app| {
-            app.refresh_fs_inner(recompute_ignored, changed, reload_preview)
-        });
-        true
+        Some(self.refresh_fs_inner(recompute_ignored, changed, reload_preview))
     }
 
     /// Note which file each filtered view is "on", **before** a `rebuild_tree` replaces `entries`
@@ -1801,11 +1817,7 @@ impl App {
     /// A filesystem change (a watch event, an external program's return) while a project screen
     /// covers the tab's screen: the `App`-level freshness, and the outage of the root the canvas
     /// in front reads.
-    pub(super) fn refresh_while_covered(
-        &mut self,
-        recompute_ignored: bool,
-        changed: &[std::path::PathBuf],
-    ) {
+    fn refresh_while_covered(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
         self.refresh_app_freshness(recompute_ignored, changed);
         // The canvas in front reads the same root: a root that is gone is an outage of the screen
         // in front, shown by its `STALE` chip. This is the canvas's own state, not a record for

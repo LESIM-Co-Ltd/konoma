@@ -96,6 +96,19 @@ impl App {
     /// was covered, and the state that went on moving meanwhile is kept from it
     /// (`PerTab::restored`). A tab switch has no such state: `self.tab` is another tab's.
     pub(super) fn put_tab_back(&mut self, mut t: PerTab, covered: bool) {
+        // The one decision of the return: is the tab's view in front once the tab is put back?
+        // A project screen in front of the tab that comes back covers its view (the tab switch
+        // back to a covered tab): the view is not read again and none of its workers is asked
+        // (media load, windowed reader, plugin open, kind resolution, block diff); it is read
+        // again when the screen is left (the return from the project screen comes here, with the
+        // view in front). The navigation that decides it is the one `restored` keeps: the working
+        // tab's on the return to the same tab (its `live` group), the saved copy's on a tab switch.
+        let navigation = if covered {
+            &self.tab.project_navigation
+        } else {
+            &t.project_navigation
+        };
+        let in_front = navigation.is_none();
         if covered {
             // The area the screen under was last drawn at is what is drawn now: the saved size
             // is the one of a moment before the screens opened.
@@ -164,6 +177,25 @@ impl App {
         // The screen this tab replaces is left: its live work goes (the same drop a project screen
         // that covers a tab's screen makes, `leave_tab_view`).
         self.leave_tab_view();
+        if in_front {
+            self.read_tab_view_again(t, covered);
+        } else {
+            // No reader is opened behind the screen (`setup_windowed` is a worker request of the
+            // view in front): the reader of the screen left is not this tab's, so it goes.
+            self.preview_win = None;
+            self.win_cache = None;
+            self.preview_total_lines = None;
+            self.restore_tab(t, covered);
+            self.refresh_after_return();
+        }
+        debug_assert_eq!(in_front, !self.project_screen_covers());
+    }
+
+    /// The return of a tab whose view is in front (`put_tab_back`): its view is read again from
+    /// the files as they are now (the media, the windowed reader, the plugin), the tab is restored,
+    /// the `App`-level freshness runs, and the view asks for its workers. Every worker request of
+    /// the return is made here, and only here.
+    fn read_tab_view_again(&mut self, mut t: PerTab, covered: bool) {
         // Images don't carry over their heavy state (protocol/source image/GIF frames) — for an
         // image-type preview, restore it by reloading instead. The view fields `clear_image`
         // resets (image_view.center/page/page_count) are overwritten by `self.tab = t` at the end
@@ -284,8 +316,7 @@ impl App {
                 t.page_count = self.tab.page_count;
             }
         }
-        let working = covered.then(|| std::mem::take(&mut self.tab));
-        self.tab = Self::restored(t, working);
+        self.restore_tab(t, covered);
         let saved_stamp = std::mem::replace(&mut self.tab.preview_win_stamp, win_stamp_now);
         if self.preview_win.is_some() || self.tab.mode == Mode::Preview {
             self.settle_windowed_position(saved_stamp);
@@ -307,6 +338,29 @@ impl App {
                 self.resolve_preview_on_worker(&path);
             }
         }
+        self.clamp_table_cursor();
+        // The search the tab came back with is found again on the text it shows now (a text
+        // that is not here yet does it when it lands).
+        self.rescan_stale_search();
+
+        self.refresh_after_return();
+        // A diff comes back with the view, the page and the scroll it was left at (they are the
+        // tab's own, restored above); what is read again is the diff itself, from git (the
+        // freshness above dropped its caches, on a tab switch and on the return from a project
+        // screen alike). The block diff of a Rendered view is asked for once, here (its result is
+        // not the tab's).
+        if let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() {
+            let view = self.tab.diff_view;
+            self.apply_diff_view(view, &path);
+        }
+    }
+
+    /// The bulk restore of a tab that comes back (`put_tab_back`), whether its view is in front
+    /// or not, and the `App`-level state that follows the tab (the follow worker of another root,
+    /// the VCS of its watch).
+    fn restore_tab(&mut self, t: PerTab, covered: bool) {
+        let working = covered.then(|| std::mem::take(&mut self.tab));
+        self.tab = Self::restored(t, working);
         #[cfg(feature = "git")]
         if self.follow_root.as_ref() != Some(&self.tab.root) {
             self.follow_worker.cancel();
@@ -314,52 +368,34 @@ impl App {
         if let Some(cache) = &self.tab.vcs_watch {
             self.git_vcs = cache.kind;
         }
-        self.clamp_table_cursor();
-        // The search the tab came back with is found again on the text it shows now (a text
-        // that is not here yet does it when it lands).
-        self.rescan_stale_search();
+    }
 
-        // **Reload the tab that just became active from disk.** File watching only looks at the
-        // active root (rewatch), so external changes made while this tab sat in the background
-        // (file create/delete/rename, git status, the change gutter/diff) are still stale in the
-        // snapshot. Route it through the same refresh_fs path used for fs events, so the tree
-        // rebuild, git status, diff/gutter cache, changed filter, git view, and preview reload all
-        // catch up together. `false` = keep the cache for the heavy ignore set (gitignore) instead
-        // of rebuilding it (if the root changes, the next render's refresh_git_if_needed handles it
-        // via the per-workdir cache anyway = doesn't break the huge-repo perf work
-        // [[git-watch-feedback-loop-perf]]). The preview's display position is preserved by
-        // reload_preview (scroll/zoom/table cursor).
+    /// The `App`-level freshness of a return (`put_tab_back`), whether the tab's view is in front
+    /// or not. It runs before the restored view asks for its workers: it drops the diff caches and
+    /// the block diff and media diff asked before it, so an ask made before it was dropped and
+    /// asked again by the draw (every return computed the block diff twice).
+    ///
+    /// **Reload the tab that just became active from disk.** File watching only looks at the
+    /// active root (rewatch), so external changes made while this tab sat in the background
+    /// (file create/delete/rename, git status, the change gutter/diff) are still stale in the
+    /// snapshot. Route it through the same refresh_fs path used for fs events, so the tree
+    /// rebuild, git status, diff/gutter cache, changed filter and git view catch up together;
+    /// the routing leaves the view alone when a project screen covers it. The preview itself has
+    /// already been rebuilt from disk by the return, so it is **not reloaded again** here
+    /// (previously refresh_fs → reload_preview repeated the same work, running the full-row CSV
+    /// parse twice for a CSV tab). `false` = keep the cache for the heavy ignore set (gitignore)
+    /// instead of rebuilding it (if the root changes, the next render's refresh_git_if_needed
+    /// handles it via the per-workdir cache anyway = doesn't break the huge-repo perf work
+    /// [[git-watch-feedback-loop-perf]]).
+    fn refresh_after_return(&mut self) {
         // While this tab sat in the background it was outside fs watching, so its git status may
         // have missed an external change (for another tab on the same repo, the per-workdir cache
         // gets reused and the staleness lingers). Mark it dirty at the tab-switch checkpoint for
         // re-verification, and let the next render's refresh_git_if_needed refetch it (the same
-        // shape as back_to_tree; rapid h/l presses don't mark it dirty, so that optimization is preserved).
+        // shape as back_to_tree; rapid h/l presses don't mark it dirty, so that optimization is
+        // preserved).
         self.git_status_dirty = true;
-        // A tab whose screen a project screen covers comes back covered: its screen is put back
-        // (so the return from the project finds it whole) but stays left, as the cover left it.
-        if self.project_screen_covers() {
-            self.leave_tab_view();
-        }
-        // The preview itself has already been rebuilt from disk above, so **don't reload it again**
-        // here (previously refresh_fs → reload_preview repeated the same work, running the
-        // full-row CSV parse twice for a CSV tab).
-        //
-        // The App-level freshness runs first (in the refresh: it drops the diff caches and the
-        // block diff and media diff asked before it), and only then does the restored view ask
-        // for its workers, when it is the view in front: an ask made before the freshness was
-        // dropped by it and asked again by the draw, so every return computed the block diff
-        // twice and threw the first answer away.
-        if self.refresh_fs_after_tab_switch() {
-            // A diff comes back with the view, the page and the scroll it was left at (they are
-            // the tab's own, restored above); what is read again is the diff itself, from git
-            // (the freshness above dropped its caches, on a tab switch and on the return from a
-            // project screen alike). The block diff of a Rendered view is asked for once, here
-            // (its result is not the tab's).
-            if let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() {
-                let view = self.tab.diff_view;
-                self.apply_diff_view(view, &path);
-            }
-        }
+        self.refresh_fs_after_tab_switch();
     }
 
     /// The live work of the screen a tab shows, dropped when that screen is left: by a tab switch

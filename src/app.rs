@@ -4281,8 +4281,8 @@ impl App {
         if self.project_screen_covers() {
             self.project_refresh();
             if what == ExternalReturn::Tree {
-                self.md_remote_failed.clear();
-                self.refresh_while_covered(true, &[]);
+                // Routed: the `App`-level freshness only (`refresh_fs_routed`).
+                let _ = self.refresh();
             }
             return;
         }
