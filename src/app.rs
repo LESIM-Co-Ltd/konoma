@@ -2144,10 +2144,11 @@ pub(crate) struct PerTab {
     /// The file the `C` cursor was on, for a changed-list rebuild that had to be **deferred** until
     /// the in-flight `git status` lands (`refresh_fs_inner` hands it to `apply_statuses`).
     ///
-    /// The identity has to travel with the deferred work because `rebuild_tree` has already replaced
-    /// `entries` with the ordinary listing by the time the scan arrives — `apply_statuses` reading
-    /// the cursor for itself there gets a file from the *whole tree* (measured: a cursor on the third
-    /// changed file read back as an unchanged, committed one). See `reapply_changed_filter`.
+    /// The identity has to travel with the deferred work: every rebuild under `C` keeps the list it
+    /// had while the scan is out (`rebuild_tree_under_changed_list`), where the identity is usually
+    /// `entries[selected]`, but a reveal after a file operation aims at a file that list has no row
+    /// for yet (one it just created), so `apply_statuses` cannot read it from `entries`. See
+    /// `reapply_changed_filter`.
     ///
     /// Lives on `PerTab` (not `App`) precisely so it travels with a tab switch rather than being
     /// lost by one: this used to be an `App`-level field that `save_active` explicitly reset to
@@ -2757,7 +2758,15 @@ impl App {
     /// Used on paths that cannot bail out with `?` (bookmark jump, clearing the filter, rebuilding after a git discard).
     /// The return value lets the caller decide whether to show a subsequent success flash (=false means don't).
     fn rebuild_tree_notify(&mut self) -> bool {
-        if let Err(e) = self.rebuild_tree() {
+        // Under `C` (the rebuild after a discard) the list is the changed files, not the walk:
+        // the rebuild goes through the one place that owns that rule.
+        let rebuilt = if self.tab.changed_filter {
+            let anchor = self.changed_filter_anchor();
+            self.rebuild_tree_under_changed_list(anchor)
+        } else {
+            self.rebuild_tree()
+        };
+        if let Err(e) = rebuilt {
             self.flash = Some(format!(
                 "{}{e}",
                 crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
@@ -2827,12 +2836,11 @@ impl App {
             // reading it again would name a different file (or, while `C` is up, a plain-tree
             // directory that was never in the changed list).
             let anchor = self.visibility_change_anchor();
-            self.rebuild_tree()?;
-            // `rebuild_tree` always produces the plain tree, so while `C` is up it must be
-            // reapplied here too, the same way `toggle_hidden` does — otherwise the header keeps
+            // `rebuild_tree` always produces the plain tree, so while `C` is up the list must be
+            // put back here too, the same way `toggle_hidden` does — otherwise the header keeps
             // claiming CHANGED while the list underneath silently becomes the ordinary tree (the
             // sort order itself never applies to `C`'s list, which stays a fixed path order).
-            self.refilter_after_visibility_change(anchor);
+            self.rebuild_tree_refiltered(anchor)?;
         }
         Ok(())
     }
@@ -3475,24 +3483,19 @@ impl App {
 
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.tab.show_hidden = !self.tab.show_hidden;
-        // Which file the cursor is on, captured **before** the rebuild below replaces `entries` with
-        // the unfiltered listing — same hazard, and same ordering, as `refresh_fs_inner`. Goes
-        // through `visibility_change_anchor` (not a plain `filter_anchor` read) so that, while `C`
-        // is up, an already-published still-pending anchor from a deferred rebuild is honored
-        // rather than clobbered by a read of `entries` in the wrong (whole-tree) state — see
-        // `changed_filter_anchor`.
+        // Which file the cursor is on, captured **before** the rebuild below replaces `entries` —
+        // same hazard, and same ordering, as `refresh_fs_inner`. Goes through
+        // `visibility_change_anchor` (not a plain `filter_anchor` read) so that, while `C` is up,
+        // an already-published still-pending anchor from a deferred rebuild is honored rather than
+        // clobbered by a read of the kept list — see `changed_filter_anchor`.
         let anchor = self.visibility_change_anchor();
-        // Keep the tree's Err (a rebuild can fail transiently) but don't let it skip the filter
-        // work below, which depends on the pool rather than on the new tree — same reasoning as
-        // `refresh_fs_inner`.
-        let tree = self.rebuild_tree();
         // `rebuild_tree` puts the *whole* tree back into `entries`, so while a filter is up the
         // screen would go from filtered results to a plain directory listing under a heading that
-        // still says it is filtering. Re-apply it. The pool also has to be collected again: it was
-        // walked with the previous `show_hidden`, so without this `.` could reveal dotfiles in the
-        // tree that `/` still refused to find.
-        self.refilter_after_visibility_change(anchor);
-        tree
+        // still says it is filtering: the filter is put back on top. The pool also has to be
+        // collected again: it was walked with the previous `show_hidden`, so without this `.`
+        // could reveal dotfiles in the tree that `/` still refused to find. The tree's Err (a
+        // rebuild can fail transiently) is kept, but the filter work runs anyway.
+        self.rebuild_tree_refiltered(anchor)
     }
 
     /// The diff lines for a GitDiff preview of `path`. `follow` = this is a follow-opened diff, so

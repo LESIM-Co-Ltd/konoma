@@ -1502,6 +1502,32 @@ fn vcs_project_status_landed_while_covered_stays_with_its_tab() {
     sim.app.leave_project_screens();
     drain(&mut sim);
     sim.draw();
+    // Leaving is a return to the tab: the tree saved at the cover comes back, the list it had,
+    // and its refresh asks for a scan. Until that scan lands the list it had is kept (as on a tab
+    // switch); it is not the whole tree, which would show dirty-two.txt as a plain file.
+    assert!(
+        sim.app.git_status_in_flight(),
+        "leaving asked for no scan:\n{}",
+        sim.screen()
+    );
+    let names = overlay_tree_names(&sim);
+    assert!(
+        names.iter().any(|n| n == "dirty-one.txt") && !names.iter().any(|n| n == "dirty-two.txt"),
+        "tab 0's list while the return's scan is out is not the list it had: {names:?}\n{}",
+        sim.screen()
+    );
+    for _ in 0..4 {
+        if !sim.app.git_status_in_flight() {
+            break;
+        }
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the return's status result");
+        sim.app.apply_statuses(res);
+    }
+    assert!(!sim.app.git_status_in_flight(), "the return's scan did not land");
+    sim.draw();
+    assert!(sim.app.changed_filter(), "tab 0 lost its C list after the scan");
     assert!(
         sim.screen().contains("dirty-two.txt"),
         "tab 0's list does not show the status that landed while covered:\n{}",
@@ -1666,33 +1692,148 @@ fn vcs_project_two_repos_quit_before_the_status_keeps_the_changed_list_and_its_c
     );
     sim.draw();
     assert_project_screen_in_front(&sim, "tab 0 again", &[]);
-    // `q` before the scan lands.
+    // `q` before the scan lands: the `C` list is drawn at once, with the cursor on its file (no
+    // moment of the plain tree, no cursor on the first row).
     press(&mut sim, KeyCode::Char('q'));
     assert!(!sim.app.project_active(), "q left the project screen");
-    assert!(sim.app.changed_filter(), "q dropped tab 0's C list");
+    assert!(
+        sim.app.git_status_in_flight(),
+        "the scan landed before the check"
+    );
+    assert_two_repos_changed_list_drawn(&mut sim, &on, "after q, before the scan lands");
     let mut landed = 0;
     while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
         sim.app.apply_statuses(res);
         landed += 1;
     }
     assert!(landed >= 1, "no scan landed");
+    assert_two_repos_changed_list_drawn(&mut sim, &on, "after the scan landed");
+    // Covered again, tab 0 is switched to tab 1 and back while covered: each switch drops the
+    // other repository's statuses and asks for a scan. `q` before that scan lands shows the same.
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers tab 0's list again");
+    sim.app.tab_goto(1);
+    drain(&mut sim);
+    assert!(sim.app.tab.root.ends_with("b-repo"), "{:?}", sim.app.tab.root);
+    assert!(sim.app.project_active(), "tab 1 comes back covered");
+    sim.app.tab_goto(0);
+    drain(&mut sim);
+    assert!(sim.app.tab.root.ends_with("a-repo"));
+    assert!(
+        sim.app.git_status_in_flight(),
+        "the switch back to repository A asked for its scan"
+    );
     sim.draw();
-    assert!(sim.app.changed_filter(), "the C list was turned off");
-    let names = overlay_tree_names(&sim);
+    assert_project_screen_in_front(&sim, "tab 0 after the round trip", &[]);
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert!(
+        sim.app.git_status_in_flight(),
+        "the scan landed before the check"
+    );
+    assert_two_repos_changed_list_drawn(
+        &mut sim,
+        &on,
+        "after the round trip and q, before the scan lands",
+    );
+    let mut landed = 0;
+    while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        sim.app.apply_statuses(res);
+        landed += 1;
+    }
+    assert!(landed >= 1, "no scan landed after the round trip");
+    assert_two_repos_changed_list_drawn(&mut sim, &on, "after the round trip's scan landed");
+}
+
+/// e4-review item 1 on a plain tab switch (no project screen): the same rule. Tab 0's `C` list on
+/// repository A, tab 1 on repository B; switching back to tab 0 drops B's statuses and asks for
+/// A's scan. Until it lands the list tab 0 had is drawn, cursor and reversed row on its file, not
+/// the whole tree under the "CHANGED (n)" title; once it lands the list is the same.
+#[test]
+fn vcs_two_repos_tab_switch_before_the_status_keeps_the_changed_list_and_its_cursor() {
+    if isolated("vcs_two_repos_tab_switch_before_the_status_keeps_the_changed_list_and_its_cursor")
+    {
+        return;
+    }
+    let parent = sandbox("vcs_two_repos_tab_switch");
+    let make = |name: &str| {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("k-clean.txt"), "clean\n").unwrap();
+        super::vcs_changes::git_repo_at(&dir, true);
+        dir.canonicalize().unwrap()
+    };
+    let a = make("a-repo");
+    let _b = make("b-repo");
+    let cfg_base = crate::test_support::unique_tmp("vcs_two_repos_tab_switch_cfg");
+    let mut sim = Sim::with_config_sized(&a, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &a);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.key('C');
+    drain(&mut sim);
+    assert!(sim.app.changed_filter(), "C turns the changed-files list on");
+    press(&mut sim, KeyCode::Char('j'));
+    press(&mut sim, KeyCode::Char('j'));
+    let on = overlay_cursor_file(&sim).expect("the cursor is on a file");
+    assert_ne!(sim.app.tab.selected, 0, "the cursor is off the first row");
+    assert_two_repos_changed_list_drawn(&mut sim, &on, "before the switch");
+    sim.app.tab_new().unwrap();
+    drain(&mut sim);
+    sim.key('h');
+    drain(&mut sim);
+    sim.select("b-repo");
+    sim.key('l');
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    assert!(sim.app.tab.root.ends_with("b-repo"), "{:?}", sim.app.tab.root);
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_status_loader(tx);
+    sim.app.tab_goto(0);
+    drain(&mut sim);
+    assert!(sim.app.tab.root.ends_with("a-repo"));
+    assert!(
+        sim.app.git_status_in_flight(),
+        "the switch to repository A asked for its scan"
+    );
+    assert_two_repos_changed_list_drawn(&mut sim, &on, "tab switch, before the scan lands");
+    let mut landed = 0;
+    while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        sim.app.apply_statuses(res);
+        landed += 1;
+    }
+    assert!(landed >= 1, "no scan landed");
+    assert_two_repos_changed_list_drawn(&mut sim, &on, "tab switch, after the scan landed");
+}
+
+/// The `C` list of `vcs_project_two_repos_quit_before_the_status_keeps_the_changed_list_and_its_cursor`
+/// is on, drawn without the clean file, with the cursor on `on` and its drawn row reversed.
+fn assert_two_repos_changed_list_drawn(sim: &mut Sim, on: &str, when: &str) {
+    sim.draw();
+    assert!(sim.app.changed_filter(), "{when}: the C list was turned off");
+    let names = overlay_tree_names(sim);
     assert!(
         !names.iter().any(|n| n == "k-clean.txt"),
-        "after the scan the list is not the changed list: {names:?}\n{}",
+        "{when}: the list is not the changed list: {names:?}\n{}",
+        sim.screen()
+    );
+    assert!(
+        !sim.screen().contains("k-clean.txt"),
+        "{when}: the drawn list is the plain tree\n{}",
         sim.screen()
     );
     assert_eq!(
-        overlay_cursor_file(&sim).as_deref(),
-        Some(on.as_str()),
-        "the cursor left its file\n{}",
+        overlay_cursor_file(sim).as_deref(),
+        Some(on),
+        "{when}: the cursor left its file\n{}",
         sim.screen()
     );
     assert!(
-        overlay_drawn_reversed(&sim, &on),
-        "the drawn cursor is not on {on}\n{}",
+        overlay_drawn_reversed(sim, on),
+        "{when}: the drawn cursor is not on {on}\n{}",
         sim.screen()
     );
 }
@@ -1748,6 +1889,68 @@ fn vcs_project_picture_rewritten_while_covered_is_drawn_new_after_leaving() {
         "the new pixels (red) are not drawn after leaving"
     );
     assert!(!drawn_has_green(&sim.term), "the old pixels (green) are drawn");
+}
+
+/// A tab whose screen a project screen covers is switched away from and back (`]`, then `[`). The
+/// return puts the tab back from its saved copy, which reads its preview again from the files (a
+/// picture here), but the screen in front is the project's: the tab view stays left as the cover
+/// left it (`put_tab_back` ends with `leave_tab_view` while a project screen covers it). So no
+/// picture is shown behind the project screen and the load the return started is not applied
+/// (its generation is gone). Leaving the project screen (`q`) then shows the picture again.
+#[test]
+fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_screen() {
+    if isolated("vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_screen") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_covered_switch_picture") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_covered_switch_picture_cfg");
+    crate::test_support::write_solid_png(&repo.join("pic.png"), 40, 20, [10, 210, 10]);
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30).with_media();
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.select("pic.png");
+    sim.enter();
+    sim.drain_media();
+    assert!(sim.app.is_image_preview(), "premise: the picture is shown");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers the picture");
+    assert!(
+        !sim.app.is_image_preview(),
+        "premise: the cover leaves the picture"
+    );
+
+    sim.app.tab_new().unwrap();
+    drain(&mut sim);
+    assert_eq!(sim.app.active_tab_index(), 1, "premise: on the new tab");
+    sim.app.tab_cycle(-1);
+    drain(&mut sim);
+    assert_eq!(sim.app.active_tab_index(), 0, "premise: back on the covered tab");
+    assert_project_screen_in_front(&sim, "back on the covered tab", &[]);
+
+    // Whatever the return's reload sent is from a generation the cover has left.
+    let rx = sim.media_rx.as_ref().expect("with_media");
+    while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        assert!(
+            !sim.app.apply_media(res),
+            "a picture load of the covered tab was applied behind the project screen"
+        );
+    }
+    sim.draw();
+    assert!(
+        !sim.app.is_image_preview(),
+        "the covered tab's picture is held behind the project screen"
+    );
+
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert_eq!(sim.app.tab.mode, Mode::Preview);
+    sim.await_media("leaving the project screen");
+    assert!(sim.app.is_image_preview(), "the picture is shown again after leaving");
 }
 
 /// e4-review item 3: a clean tracked file is edited while a project screen covers the tree, the

@@ -395,39 +395,62 @@ impl App {
         self.reapply_filter(None);
     }
 
-    /// Re-establish whichever tree filter is up after something changed *what the tree contains*
-    /// (currently `.` = `toggle_hidden`). A no-op when nothing is filtering.
+    /// Rebuild the tree after something changed *what the tree contains* (`.` = `toggle_hidden`,
+    /// the sort menu, a reveal after a file operation), with whichever tree filter is up put back
+    /// on top. Without a filter it is `rebuild_tree`.
     ///
     /// The pool is re-collected rather than re-filtered, because `show_hidden` is baked into the
     /// walk that produced it — re-running the query over the old pool would keep the filter's idea
     /// of "every file under here" from before the toggle.
     ///
-    /// `anchor` must be taken by the caller **before** it rebuilds the tree — by the time this runs,
-    /// `entries` is the unfiltered listing again (see `filter_anchor`).
-    pub(super) fn refilter_after_visibility_change(&mut self, anchor: Option<PathBuf>) {
+    /// `anchor` must be taken by the caller **before** this runs (`visibility_change_anchor`), from
+    /// the list the cursor is on. The filter work runs even when the walk fails (a rebuild can
+    /// fail transiently and keeps the last good `entries`); the walk's result is returned.
+    pub(super) fn rebuild_tree_refiltered(&mut self, anchor: Option<PathBuf>) -> Result<()> {
+        if self.tab.changed_filter {
+            return self.rebuild_tree_under_changed_list(anchor);
+        }
+        let tree = self.rebuild_tree();
         if self.tab.tree_filter.is_some() {
             self.kick_filter_pool_start();
             self.reapply_filter(anchor);
-        } else if self.tab.changed_filter {
-            // The changed-files list is derived from git status, not from a pool, so it only needs
-            // rebuilding — but it needs it for the same reason: `rebuild_tree` just replaced it
-            // with the ordinary listing. Which is also why the anchor is the caller's: it was taken
-            // before that rebuild.
-            //
-            // Must not rebuild synchronously while a status scan is still in flight — the same
-            // hazard `refresh_fs_inner` already guards against: switching to a different repo's
-            // tab and back can leave `git_status` empty for the moment between the kick and its
-            // landing (the workdir changed, so the kick clears it), and rebuilding against it here
-            // would make the filter judge "zero changes" and silently turn itself off, even
-            // showing a false "no changed files". Publish the anchor instead and let
-            // `apply_statuses` do the rebuild once the real result lands.
-            if self.git_status_pending.is_none() {
-                self.tab.changed_anchor_pending = None;
-                self.reapply_changed_filter(anchor);
-            } else {
-                self.tab.changed_anchor_pending = anchor;
-            }
         }
+        tree
+    }
+
+    /// Rebuild the tree while the `C` list is up: the one place every rebuild under `C` goes
+    /// through (a watch event, a tab switch and the return from a project screen, which are the
+    /// same refresh; a sort or hidden-file toggle; a reveal; the rebuild after a discard).
+    ///
+    /// The `C` list is derived from git status alone, never from the directory walk. While the
+    /// scan that will derive it again is out, the list keeps the list it had (its rows, the cursor
+    /// on its file, the visual range over those rows) and `anchor` is published for
+    /// `apply_statuses`, which rebuilds the list when the scan lands, with the sort and hidden
+    /// setting as they are then. The walk's whole tree is no `C` list: drawing it under the
+    /// "CHANGED (n)" title contradicts the title, with the cursor on a row of the wrong list. It
+    /// must also not rebuild against the statuses while a scan is out: right after switching back
+    /// from a different repo's tab `git_status` is empty, and the filter would judge "zero
+    /// changes" and silently turn itself off (see `rebuild_changed_list_when_status_ready`).
+    ///
+    /// The walk still runs for what it owns besides `entries` (whether the listing is stale, the
+    /// VCS detection, the detail cells) and its result is returned.
+    pub(super) fn rebuild_tree_under_changed_list(
+        &mut self,
+        anchor: Option<PathBuf>,
+    ) -> Result<()> {
+        let kept = (
+            self.tab.entries.clone(),
+            self.tab.selected,
+            self.tab.visual_anchor,
+        );
+        // Published before a synchronous scan in `rebuild_changed_list_when_status_ready` can land
+        // and consume it (the same order as `capture_view_anchors`).
+        self.tab.changed_anchor_pending = anchor.clone();
+        let tree = self.rebuild_tree();
+        if !self.rebuild_changed_list_when_status_ready(anchor) {
+            (self.tab.entries, self.tab.selected, self.tab.visual_anchor) = kept;
+        }
+        tree
     }
 
     /// Add one character to the filter input (live filtering).
@@ -780,12 +803,11 @@ impl App {
     /// reimplemented (and re-broken) at each call site.
     ///
     /// **Honors an already-published, not-yet-consumed `changed_anchor_pending` instead of
-    /// re-reading `entries`.** Once a refresh captures an anchor and defers the rebuild (a status
-    /// scan is in flight), `entries` stops being the changed list until that rebuild actually runs
-    /// — it is the *whole tree* left behind by `rebuild_tree` in the meantime. A caller that reads
-    /// `entries` again in that window (a second FS event before the first scan lands, or a sort/
-    /// hidden-file toggle pressed in the same window) would silently anchor to whatever sits at
-    /// `selected` in the wrong structure and clobber the correct, still-pending identity.
+    /// re-reading `entries`.** Once a rebuild is deferred to a status scan in flight, every
+    /// rebuild under `C` keeps the list it had (`rebuild_tree_under_changed_list`), but the
+    /// pending identity can name a file that list has no row for yet (a reveal of a file just
+    /// created). A caller that reads `entries` again in that window would anchor to the old
+    /// cursor's file and clobber that still-pending identity.
     /// `None` when `C` isn't the active filter, so callers can call this unconditionally.
     pub(super) fn changed_filter_anchor(&self) -> Option<PathBuf> {
         if !self.tab.changed_filter {
@@ -799,7 +821,7 @@ impl App {
 
     /// The anchor to capture right before a caller's own `rebuild_tree()`, for whichever of the two
     /// mutually-exclusive tree filters (`/` or `C`) is currently active — feeds
-    /// `refilter_after_visibility_change`. `/`'s anchor is always a fresh `entries` read (its pool
+    /// `rebuild_tree_refiltered`. `/`'s anchor is always a fresh `entries` read (its pool
     /// isn't touched by a caller's rebuild the way `C`'s status-driven list is); `C`'s goes through
     /// `changed_filter_anchor` for the reason documented there.
     pub(super) fn visibility_change_anchor(&self) -> Option<PathBuf> {
@@ -1389,12 +1411,14 @@ impl App {
         // The "changed files only" filter's list is entries **already derived** from statuses, so a
         // re-render alone won't fix it. Rebuild it the moment the new status arrives (live follow-along for an agent's edits).
         if self.tab.changed_filter {
-            // Whoever rebuilt the tree out from under the list and left the rebuild to us also left
-            // the cursor's identity (`changed_anchor_pending`) — `entries` is the whole tree by now,
-            // so it cannot be recovered here. When nobody did, `entries` still *is* the list (this
-            // lands straight from the channel, or from a synchronous scan before any rebuild) and
-            // reading it live is right — and necessary, because this is the path an agent's writes
-            // take: without it the list re-sorts under a cursor that never moved.
+            // Whoever left the rebuild to us also left the cursor's identity
+            // (`changed_anchor_pending`). While the scan was out `entries` kept the list it had,
+            // but the identity can name a file that list has no row for yet: a reveal after a
+            // file operation aims at the file it just created. When nobody left one, `entries`
+            // *is* the list (this lands straight from the channel, or from a synchronous scan
+            // before any rebuild) and reading it live is right — and necessary, because this is
+            // the path an agent's writes take: without it the list re-sorts under a cursor that
+            // never moved.
             let anchor = self
                 .tab
                 .changed_anchor_pending
@@ -1630,17 +1654,17 @@ impl App {
         };
         // The same value for the `C` list, and taken here for the same reason. It is *also* published
         // on `App`, because the rebuild is frequently deferred to whenever the status scan lands
-        // (below) — by then this stack frame is long gone, and `entries` is the whole tree, so
-        // `apply_statuses` has no way to work it out for itself.
+        // (below) — by then this stack frame is long gone. Every rebuild under `C` keeps the list it
+        // had meanwhile, but another rebuild in that window (a reveal after a file operation) can
+        // publish a file that list has no row for yet, and `apply_statuses` cannot work that
+        // identity out from `entries`.
         //
-        // Captured via `changed_filter_anchor`, which honors a previous refresh's still-unconsumed
-        // anchor instead of re-reading `entries` (see that method's doc comment). Re-reading it
-        // unconditionally here was the bug: once one refresh defers its rebuild, `entries` stays the
-        // *whole tree* (left behind by `rebuild_tree` below) until that deferred rebuild actually
-        // runs — a second refresh landing in that window (an agent writing files back-to-back,
-        // faster than one `git status` scan) would read `selected`'s position in the wrong
-        // structure and overwrite the correct pending identity with it, so the eventual landing
-        // dragged the cursor onto a file the user was never on.
+        // Captured via `changed_filter_anchor`, which honors a previous rebuild's still-unconsumed
+        // anchor instead of re-reading `entries` (see that method's doc comment): after such a
+        // reveal, a refresh landing in the window (an agent writing files back-to-back, faster
+        // than one `git status` scan) would otherwise read the old cursor's file from the kept
+        // list and overwrite the pending identity with it, so the eventual landing put the cursor
+        // back on a file the user had moved off.
         let changed = self.changed_filter_anchor();
         self.tab.changed_anchor_pending = changed.clone();
         ViewAnchors { filter, changed }
@@ -1674,11 +1698,13 @@ impl App {
     /// (with the anchors from `capture_view_anchors`) anywhere the tree is re-derived.
     /// Returns `rebuild_tree`'s result unchanged; the view work happens either way.
     fn rebuild_tree_preserving_filtered_view(&mut self, anchors: ViewAnchors) -> Result<()> {
-        let tree = self.rebuild_tree();
-        // While the changed-files-only filter is active, rebuild the list from the latest statuses (follows an agent's edits).
+        // While the changed-files-only filter is active, rebuild the list from the latest statuses
+        // (follows an agent's edits), through the one place that owns the `C` list's rule.
         if self.tab.changed_filter {
-            self.rebuild_changed_list_when_status_ready(anchors.changed);
-        } else if self.tab.tree_filter.is_some() {
+            return self.rebuild_tree_under_changed_list(anchors.changed);
+        }
+        let tree = self.rebuild_tree();
+        if self.tab.tree_filter.is_some() {
             // While the text filter (`/`) is active, rebuild_tree resets entries back to showing
             // everything, so re-filter **immediately** with the pool we already have (fixing the
             // inconsistency where the query is restored but the list shows everything).

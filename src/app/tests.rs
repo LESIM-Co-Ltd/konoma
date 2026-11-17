@@ -19976,8 +19976,9 @@ fn changed_cursor_follows_its_file_when_a_new_change_sorts_above_it() {
 }
 
 /// The asynchronous half — **the path the real app takes**. `refresh_fs` only *kicks* the scan, so
-/// the rebuild is deferred to `apply_statuses`, by which time `entries` is the whole tree. Fixing
-/// only the synchronous call site leaves this one broken while the test above goes green.
+/// the rebuild is deferred to `apply_statuses`; meanwhile the list it had is kept, with the cursor
+/// on its file. Fixing only the synchronous call site leaves this one broken while the test above
+/// goes green.
 #[cfg(feature = "git")]
 #[test]
 fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
@@ -19991,24 +19992,27 @@ fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
     let newfile = add_change_above(&dir);
     app.refresh_fs_changed(false, &[newfile]).unwrap();
 
-    // Ground truth for what makes this the harder half: the rebuild really was deferred, and what
-    // is in `entries` right now is the *tree* — so the cursor's identity cannot be recovered from it.
+    // Ground truth: the rebuild really was deferred, and until the scan lands the list it had is
+    // kept (not the whole tree), with the cursor still on its file.
     assert!(
         app.git_status_pending.is_some(),
         "土台: 走査中なので一覧の作り直しは apply_statuses に先送りされる"
     );
     assert!(
-        app.tab
+        !app.tab
             .entries
             .iter()
             .any(|e| e.path.ends_with("committed_a.txt")),
-        "土台: この時点の entries は変更一覧ではなく通常ツリー"
+        "走査中も entries は持っていた変更一覧のまま(通常ツリーではない)"
     );
-    assert!(
-        !app.tab.entries[app.tab.selected]
-            .path
-            .ends_with("m_two.txt"),
-        "土台: ここで entries から読むと別のファイルになる(だから呼び出し元が持ち越す)"
+    assert_eq!(
+        app.tab.entries.len(),
+        3,
+        "走査中は持っていた一覧(新しいファイルはまだ入らない)"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "走査中もカーソルは同じファイルの上"
     );
 
     let res = rx
@@ -20026,6 +20030,153 @@ fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
     assert_eq!(
         app.tab.entries[app.tab.selected].path, target,
         "先送りされた作り直しでもカーソルは同じファイルに残る"
+    );
+}
+
+/// Every rebuild under `C` while its scan is out keeps the list it had, not only the refresh: a
+/// sort, `.` (hidden files) and the rebuild after a discard each run `rebuild_tree`, which puts
+/// the whole tree in `entries`. Until the scan lands the list stays the changed list with the
+/// cursor on its file; when it lands the list is rebuilt from the new statuses (the new change
+/// above appears) and the cursor is still on its file.
+#[cfg(feature = "git")]
+#[test]
+fn changed_list_is_kept_by_every_rebuild_while_its_scan_is_out() {
+    type Op = fn(&mut App);
+    let ops: [(&str, Op); 4] = [
+        ("並べ替え", |app| app.sort_menu_key('s').unwrap()),
+        ("並べ替えの逆順", |app| {
+            app.sort_menu_key('r').unwrap()
+        }),
+        ("隠しファイルの切り替え", |app| {
+            app.toggle_hidden().unwrap()
+        }),
+        ("破棄の後の作り直し", |app| {
+            assert!(app.rebuild_tree_notify());
+        }),
+    ];
+    for (name, op) in ops {
+        let dir = changed_cursor_repo("konoma_changed_kept_by_rebuild");
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_status_loader(tx);
+        app.toggle_changed_filter();
+        let target = park_on_last_change(&mut app);
+        let kept: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+        let newfile = add_change_above(&dir);
+        app.refresh_fs_changed(false, std::slice::from_ref(&newfile))
+            .unwrap();
+        assert!(
+            app.git_status_pending.is_some(),
+            "{name}: 土台: 走査が出ている"
+        );
+
+        op(&mut app);
+
+        assert!(app.tab.changed_filter, "{name}: C は付いたまま");
+        let now: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            now, kept,
+            "{name}: 走査中の作り直しで、持っていた変更一覧が保たれない"
+        );
+        assert_eq!(
+            app.tab.entries[app.tab.selected].path, target,
+            "{name}: 走査中もカーソルは同じファイルの上"
+        );
+
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("スキャン結果");
+        app.apply_statuses(res);
+        assert!(app.tab.changed_filter, "{name}: 到着後も C は付いたまま");
+        assert!(
+            app.tab.entries.iter().any(|e| e.path == newfile),
+            "{name}: 到着で一覧が新しい状態から作り直される"
+        );
+        assert!(
+            !app.tab
+                .entries
+                .iter()
+                .any(|e| e.path.ends_with("committed_a.txt")),
+            "{name}: 到着後の一覧は変更一覧(通常ツリーではない)"
+        );
+        assert_eq!(
+            app.tab.entries[app.tab.selected].path, target,
+            "{name}: 到着後もカーソルは同じファイルの上"
+        );
+    }
+}
+
+/// The hard side that is left: a reveal after a file operation (`reveal_and_select`) aims the
+/// cursor at a file the kept list cannot name yet. The file was just created, so it has no row in
+/// the list kept while the scan is out, and `entries[selected]` is still the old cursor's file.
+/// The target travels with the deferred rebuild (`changed_anchor_pending`), so when the scan
+/// lands the cursor is on the new file, as it is when no scan is out (the list rebuilt at once
+/// and the cursor on the target).
+#[cfg(feature = "git")]
+#[test]
+fn changed_cursor_reveal_of_a_new_file_lands_on_it_when_the_deferred_scan_lands() {
+    // No scan out: the reveal rebuilds the list from the statuses at once and lands on the file.
+    let dir = changed_cursor_repo("konoma_changed_reveal_sync");
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    let old = park_on_last_change(&mut app);
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, std::slice::from_ref(&newfile))
+        .unwrap();
+    app.reveal_and_select(&newfile).unwrap();
+    assert!(app.git_status_pending.is_none(), "土台: 同期の走査");
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, newfile,
+        "土台: 走査が無い時はカーソルが作ったファイルに乗る"
+    );
+
+    // A scan out: the same reveal keeps the list it had, so the new file has no row yet and the
+    // cursor stays where it was; the identity waits with the deferred rebuild.
+    let dir = changed_cursor_repo("konoma_changed_reveal_async");
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.toggle_changed_filter();
+    let old_async = park_on_last_change(&mut app);
+    assert!(old_async.ends_with(old.file_name().unwrap()));
+    let kept: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, std::slice::from_ref(&newfile))
+        .unwrap();
+    app.reveal_and_select(&newfile).unwrap();
+    assert!(
+        app.git_status_pending.is_some(),
+        "土台: 走査中なので一覧の作り直しは apply_statuses に先送りされる"
+    );
+    let now: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(
+        now, kept,
+        "走査中の reveal で、持っていた変更一覧が保たれない"
+    );
+    assert!(
+        !app.tab.entries.iter().any(|e| e.path == newfile),
+        "持っていた一覧にはまだ作ったファイルの行が無い(entries からは辿れない)"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, old_async,
+        "走査中のカーソルは元のファイルの上(entries[selected] は作ったファイルではない)"
+    );
+    assert_eq!(
+        app.tab.changed_anchor_pending.as_deref(),
+        Some(newfile.as_path()),
+        "作ったファイルが先送りされた作り直しの行き先として持ち越される"
+    );
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("スキャン結果");
+    app.apply_statuses(res);
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == newfile),
+        "土台: 到着で一覧が作り直されている"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, newfile,
+        "走査が着いたら、走査が無い時と同じく作ったファイルの上"
     );
 }
 
@@ -20308,7 +20459,7 @@ fn changed_cursor_survives_two_refreshes_deferred_to_the_same_scan() {
     );
 }
 
-/// **Bug 2**: `toggle_hidden`'s reapply of `C` (via `refilter_after_visibility_change`) rebuilt the
+/// **Bug 2**: `toggle_hidden`'s reapply of `C` (via `rebuild_tree_refiltered`) rebuilt the
 /// changed list *unconditionally*, without the same "a scan is in flight" guard `refresh_fs_inner`
 /// already has. Switching to a different repo's tab and back leaves `git_status` briefly empty
 /// (the kick clears it because the workdir changed) while the real result is still on its way —
@@ -20384,7 +20535,7 @@ fn toggle_hidden_does_not_falsely_disable_changed_filter_during_a_pending_scan()
 }
 
 /// **Bug 3**: `sort_menu_key` rebuilt the tree on `n`/`s`/`m`/`e`/`r`/`.` without ever reapplying
-/// `C` (unlike `toggle_hidden`, which does via `refilter_after_visibility_change`) — so pressing a
+/// `C` (unlike `toggle_hidden`, which does via `rebuild_tree_refiltered`) — so pressing a
 /// sort key while the changed-files view was up silently replaced the flat changed list with the
 /// ordinary tree, while the header/chip kept claiming CHANGED (`changed_filter` itself was never
 /// touched, so nothing else noticed the mismatch).

@@ -731,7 +731,7 @@ impl App {
     /// `apply_file_op`, create/rename via `dialog_submit`) used to silently drop out of `C`/`/` while
     /// the header kept claiming CHANGED/the query, because nothing reapplied the filter afterward.
     ///
-    /// The anchor passed to `refilter_after_visibility_change` is **`target` itself**, not the
+    /// The anchor passed to `rebuild_tree_refiltered` is **`target` itself**, not the
     /// pre-operation cursor: this method's whole point is "put the cursor on the thing that was just
     /// created/moved/duplicated", so re-finding `target` directly in the freshly filtered/changed
     /// list is what the caller wants, and (while a status scan is still in flight) is also what
@@ -749,8 +749,7 @@ impl App {
             }
         }
         let anchor = Some(target.to_path_buf());
-        self.rebuild_tree()?;
-        self.refilter_after_visibility_change(anchor);
+        self.rebuild_tree_refiltered(anchor)?;
         if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
             self.tab.selected = i;
         }

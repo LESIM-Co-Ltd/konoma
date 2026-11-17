@@ -1663,7 +1663,7 @@ fn assert_c3_drawn_under_the_cursor(s: &Sim, what: &str) {
 }
 
 /// `C` on, cursor on c3 (real keys); a new file makes the next `C` rebuild wait for a status scan
-/// (the real loader), so the list is the whole tree and the cursor identity waits with it; Enter
+/// (the real loader), so the list it had is kept and the cursor identity waits with it; Enter
 /// opens a preview, the tab goes away (`p`, or a new tab), the scan lands while it is away,
 /// `meanwhile` is done, the tab comes back (`q`, or `[`). The return puts the tree back from the
 /// saved copy with the identity it waits with, and the scan that follows lands the list on c3.
@@ -1686,11 +1686,17 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
     let newfile = root.join("aaa_new.txt");
     std::fs::write(&newfile, "y\n").unwrap();
     s.app.refresh_fs_watched(false, &[newfile]);
-    // The rebuild waits for the scan: the list is the whole tree meanwhile.
-    assert!(
-        tree_names(&s).iter().any(|n| n == "k.txt"),
-        "{what}: the rebuild did not wait for the scan: {:?}",
-        tree_names(&s)
+    // The rebuild waits for the scan: the list it had is kept meanwhile (the new file is not in
+    // it yet), with the cursor on its file.
+    assert_eq!(
+        tree_names(&s),
+        ["c1.txt", "c2.txt", "c3.txt"],
+        "{what}: the list it had is not kept while the rebuild waits for the scan"
+    );
+    assert_eq!(
+        cursor_file(&s).as_deref(),
+        Some("c3.txt"),
+        "{what}: the cursor left its file while the rebuild waits for the scan"
     );
     s.enter();
     settled(&mut s);
@@ -1699,7 +1705,7 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
     go_away(&mut s, away);
     // The scan lands while the tab is away, on both roads alike. Over a project screen the working
     // tab consumes the anchor there (its list is rebuilt behind the screen and thrown away on the
-    // return), which is what tells the anchor's group apart: the return puts the saved one back.
+    // return); the return puts the saved tree back, the list it had with the cursor on c3.
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(60))
         .expect("the deferred scan lands");
@@ -1742,7 +1748,7 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
     come_back(&mut s, away);
     assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
     assert_eq!(s.app.tab.preview_path, shown, "{what}");
-    // The return's refresh waits for its own scan again (the list is the whole tree until then).
+    // The return's refresh waits for its own scan again (the list it had is kept until then).
     let landed = land_scans(&mut s, &rx);
     assert!(landed >= 1, "{what}: the return asked for no scan");
     assert_cursor_on_c3(&s, &format!("{what}, after the return's scan"));
@@ -1759,13 +1765,14 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
 /// The paste jump to k.txt made while the project screen covers the tab: a jump, like a bookmark
 /// jump, leaves the project screens first (`leave_project_screens_for_jump`) and lands on the base
 /// screen, so it is not an open under the cover and there is no screen left to come back from.
-/// Leaving puts the saved tree back (`put_tab_back`): the whole tree, as it was saved while its
-/// `C` rebuild waited for a scan, with the identity (c3) still waiting with it. The scan that
-/// landed while covered rebuilt only the working copy's list, which the saved tree replaces, and
-/// the return's refresh leaves the rebuild to the scan it asked for (one is in flight). The jump then reveals k.txt in that whole tree, which moves `selected` only, not
-/// the waiting identity. So when the scan lands, `apply_statuses` rebuilds the `C` list on the
-/// identity it waits with: the changed files with the cursor on c3 (k.txt, unchanged, is not in
-/// the list), while the preview stays k.txt's. Back in the tree it is the same.
+/// Leaving puts the saved tree back (`put_tab_back`): the list it had, as it was saved while its
+/// `C` rebuild waited for a scan (c1-c3, the cursor on c3), with the identity (c3) still waiting
+/// with it. The scan that landed while covered rebuilt only the working copy's list, which the
+/// saved tree replaces, and the return's refresh leaves the rebuild to the scan it asked for (one
+/// is in flight), keeping that list meanwhile. k.txt, unchanged, has no row in the `C` list, so
+/// the jump reveals nothing and the cursor stays on c3, while the preview is k.txt's. When the
+/// scan lands, `apply_statuses` rebuilds the `C` list on the identity it waits with: the changed
+/// files with the cursor on c3, while the preview stays k.txt's. Back in the tree it is the same.
 #[track_caller]
 fn pasted_jump_leaves_the_project_screens(
     s: &mut Sim,
@@ -1780,10 +1787,10 @@ fn pasted_jump_leaves_the_project_screens(
         s.screen()
     );
     assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
-    assert!(
-        tree_names(s).iter().any(|n| n == "k.txt"),
-        "{what}: the saved tree (the whole tree waiting for its scan) was not put back: {:?}",
-        tree_names(s)
+    assert_eq!(
+        tree_names(s),
+        ["c1.txt", "c2.txt", "c3.txt"],
+        "{what}: the saved tree (the list it had, waiting for its scan) was not put back"
     );
     assert!(
         s.app.changed_anchor_left_to_status() && s.app.git_status_in_flight(),
@@ -1791,8 +1798,8 @@ fn pasted_jump_leaves_the_project_screens(
     );
     assert_eq!(
         cursor_file(s).as_deref(),
-        Some("k.txt"),
-        "{what}: the jump did not land on k.txt in the tree"
+        Some("c3.txt"),
+        "{what}: the jump to k.txt (no row in the `C` list) moved the cursor off c3"
     );
     let landed = land_scans(s, rx);
     assert!(landed >= 1, "{what}: the return asked for no scan");
@@ -1823,6 +1830,128 @@ fn a_changed_list_cursor_waiting_for_a_scan_comes_back_on_its_file_after_another
         for meanwhile in [Meanwhile::OpenFile, Meanwhile::PasteJump] {
             changed_anchor_road("prp_anchor_other", away, meanwhile);
         }
+    }
+}
+
+/// A paste jump to the unchanged k.txt (no row in the `C` list) gives the same outcome whether or
+/// not a status scan is out. With no scan out (`C` on, statuses fresh) the jump reveals nothing
+/// (`reveal_path_deep` finds no row and leaves the cursor alone): the list is unchanged, the
+/// cursor stays on c3, the preview is k.txt's. With a scan out after the tab came back (`q` from a
+/// project screen, or `[` from another tab, each asking for a scan), the jump gives that same
+/// outcome on the list kept while the scan is out, and again once the scan lands.
+#[test]
+fn a_paste_jump_outside_the_changed_list_is_the_same_with_or_without_a_scan_out() {
+    // Up to the jump: `C` on, the cursor on c3, a new change written. `away` = None: no scan
+    // out (the statuses are read at once); Some: the scan is held back and the tab comes back
+    // by that road, which asks for another scan.
+    fn up_to_the_jump(
+        name: &str,
+        away: Option<Away>,
+    ) -> (
+        Sim,
+        std::path::PathBuf,
+        Option<std::sync::mpsc::Receiver<crate::app::StatusResult>>,
+    ) {
+        let root = changed_files_repo(name);
+        let mut s = road(&root, cfg_en(), false);
+        s.key('C');
+        settled(&mut s);
+        for _ in 0..3 {
+            if cursor_file(&s).as_deref() == Some("c3.txt") {
+                break;
+            }
+            s.key('j');
+        }
+        assert_eq!(cursor_file(&s).as_deref(), Some("c3.txt"));
+        let rx = away.map(|_| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            s.app.attach_status_loader(tx);
+            rx
+        });
+        let newfile = root.join("aaa_new.txt");
+        std::fs::write(&newfile, "y\n").unwrap();
+        s.app.refresh_fs_watched(false, &[newfile]);
+        if let (Some(away), Some(rx)) = (away, rx.as_ref()) {
+            go_away(&mut s, away);
+            land_scans(&mut s, rx);
+            come_back(&mut s, away);
+        }
+        settled(&mut s);
+        (s, root, rx)
+    }
+
+    #[track_caller]
+    fn assert_jumped(s: &Sim, root: &std::path::Path, list: &[&str], what: &str) {
+        assert_eq!(
+            tree_names(s),
+            list,
+            "{what}: the jump changed the list\n{}",
+            s.screen()
+        );
+        assert_eq!(
+            cursor_file(s).as_deref(),
+            Some("c3.txt"),
+            "{what}: the jump to k.txt (no row in the `C` list) moved the cursor off c3\n{}",
+            s.screen()
+        );
+        assert_eq!(
+            s.app.tab.preview_path.as_deref(),
+            Some(root.join("k.txt").as_path()),
+            "{what}: the preview is not k.txt's"
+        );
+        assert_eq!(s.app.tab.mode, Mode::Preview, "{what}");
+    }
+
+    // The reference: no scan out.
+    let (mut s, root, _) = up_to_the_jump("prp_paste_outside_ref", None);
+    assert!(!s.app.git_status_in_flight(), "premise: no scan out");
+    assert_eq!(
+        tree_names(&s),
+        ["aaa_new.txt", "c1.txt", "c2.txt", "c3.txt"],
+        "premise: the list is rebuilt at once"
+    );
+    s.app.paste_jump_to(&root.join("k.txt"), None);
+    settled(&mut s);
+    assert!(s.app.changed_filter(), "no scan out: `C` was turned off");
+    assert_jumped(
+        &s,
+        &root,
+        &["aaa_new.txt", "c1.txt", "c2.txt", "c3.txt"],
+        "no scan out",
+    );
+
+    for away in BOTH {
+        let what = format!("{away:?}, a scan out");
+        let (mut s, root, rx) = up_to_the_jump("prp_paste_outside_flight", Some(away));
+        let rx = rx.unwrap();
+        assert!(
+            s.app.git_status_in_flight(),
+            "{what}: premise: the return's scan is out"
+        );
+        let before = tree_names(&s);
+        assert_eq!(
+            before,
+            ["c1.txt", "c2.txt", "c3.txt"],
+            "{what}: the list it had is not kept while the return's scan is out"
+        );
+        assert_eq!(
+            cursor_file(&s).as_deref(),
+            Some("c3.txt"),
+            "{what}: premise"
+        );
+        s.app.paste_jump_to(&root.join("k.txt"), None);
+        settled(&mut s);
+        assert!(s.app.changed_filter(), "{what}: `C` was turned off");
+        let before: Vec<&str> = before.iter().map(String::as_str).collect();
+        assert_jumped(&s, &root, &before, &what);
+        let landed = land_scans(&mut s, &rx);
+        assert!(landed >= 1, "{what}: no scan landed");
+        assert_jumped(
+            &s,
+            &root,
+            &["aaa_new.txt", "c1.txt", "c2.txt", "c3.txt"],
+            &format!("{what}, after the scan landed"),
+        );
     }
 }
 
