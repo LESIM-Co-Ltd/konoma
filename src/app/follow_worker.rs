@@ -198,6 +198,10 @@ impl App {
                                 lines,
                             }),
                             view,
+                            // The answer to the jump that already opened this file's preview
+                            // (`follow_jump` kept the ordinary preview until it came): the same
+                            // open going on, so the load identity the jump made is kept.
+                            same_open: true,
                             ..Default::default()
                         },
                     );
@@ -342,6 +346,52 @@ mod tests {
             app.is_git_diff_preview(),
             "the landed result replaces the pending preview"
         );
+    }
+
+    /// The answer the jump waited for is the same open going on: the load identity the jump made
+    /// stays when the diff replaces the ordinary preview it kept meanwhile, and the next jump to
+    /// another file is a new open with an identity of its own.
+    #[test]
+    fn jj_follow_answer_keeps_the_jumps_load_identity_and_the_next_jump_renews_it() {
+        let Some((mut app, rx, dir)) = fixture("jj_follow_worker_identity") else {
+            return;
+        };
+        std::fs::write(dir.join("b.txt"), b"bee\n").unwrap();
+        assert!(run_jj(&dir, &["status"]));
+        // The tree learns of the new file as from a watch event.
+        let b = app.tab.root.join("b.txt");
+        app.refresh_fs_watched(false, std::slice::from_ref(&b));
+        assert!(app.tab.entries.iter().any(|e| e.path == b));
+        app.toggle_follow();
+        let captured = receive(&rx);
+        assert!(app.apply_follow(captured));
+        let a = app.tab.root.join("a.txt");
+        std::fs::write(&a, b"after\n").unwrap();
+        assert!(app.follow_note_change(&a));
+        app.follow_jump(&a);
+        // The answer is held: the jump shows the ordinary preview meanwhile.
+        assert_eq!(app.tab.preview_path.as_ref(), Some(&a));
+        assert!(!app.is_git_diff_preview(), "the diff is not here yet");
+        let jumped = app.load_id_for_test();
+        assert_ne!(jumped, 0);
+        let answer = receive(&rx);
+        assert!(app.apply_follow(answer));
+        assert!(app.is_git_diff_preview(), "the answer opens the diff");
+        assert_eq!(
+            app.load_id_for_test(),
+            jumped,
+            "the answer to the jump renewed the load identity"
+        );
+        std::fs::write(&b, b"bee changed\n").unwrap();
+        assert!(app.follow_note_change(&b));
+        app.follow_jump(&b);
+        assert_eq!(app.tab.preview_path.as_ref(), Some(&b));
+        let next = app.load_id_for_test();
+        assert_ne!(next, jumped, "a jump to another file is a new open");
+        let answer = receive(&rx);
+        assert!(app.apply_follow(answer));
+        assert!(app.is_git_diff_preview());
+        assert_eq!(app.load_id_for_test(), next);
     }
 
     #[test]

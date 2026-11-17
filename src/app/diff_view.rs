@@ -88,6 +88,14 @@ impl App {
         self.tab.preview_from_diff
     }
 
+    /// Test-only view of `PerTab::diff_read_context` (the baseline backend of the diff the
+    /// preview belongs to).
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn diff_read_context_for_test(&self) -> konoma_plugin::host::project::DiffReadContext {
+        self.tab.diff_read_context
+    }
+
     /// Test-only view of the `Rendered` presentation's own gutter marks (row range, `DiffMark`) —
     /// `MdCache::diff_marks`, `None` when there is no such cache built yet (or the cache on hand is
     /// `MdCacheSource::File`, which never populates this field). See `diff_view_for_test`'s own doc

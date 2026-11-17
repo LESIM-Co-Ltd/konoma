@@ -97,17 +97,6 @@ impl App {
     /// (`PerTab::restored`). A tab switch has no such state: `self.tab` is another tab's.
     pub(super) fn put_tab_back(&mut self, mut t: PerTab, covered: bool) {
         if covered {
-            // What the project screens changed meanwhile and the reload below reads from `t`:
-            // the diff-only state a project diff preview owns (it is the working tab's, put into
-            // the saved copy before anything reads it).
-            t.preview_from_diff = self.tab.preview_from_diff;
-            t.diff_read_context = if self.tab.preview_from_diff {
-                self.tab.diff_read_context
-            } else {
-                Default::default()
-            };
-        }
-        if covered {
             // The area the screen under was last drawn at is what is drawn now: the saved size
             // is the one of a moment before the screens opened.
             if self.tab.preview_cols != 0 {
@@ -148,6 +137,11 @@ impl App {
         // are restored early here (mirroring `self.tab.repr = t.repr.clone();` further down).
         self.tab.preview_path = t.preview_path.clone();
         self.tab.preview_kind = t.preview_kind.clone();
+        // Which open the preview came from (the diff's own Preview representation or not) and the
+        // baseline of its diff are read by the reload below (a diff gutter, a media diff, a block
+        // diff ask for the backend): the restored preview's own, not the working tab's.
+        self.tab.preview_from_diff = t.preview_from_diff;
+        self.tab.diff_read_context = t.diff_read_context;
         // The text a command or a plugin generated is the output of the run that was made before:
         // the reload below makes it again, and what is read is the new output when it arrives,
         // never the old file (a reader opened on it would take the old content for the current
@@ -331,14 +325,6 @@ impl App {
         }
         let working = covered.then(|| std::mem::take(&mut self.tab));
         self.tab = Self::restored(t, working);
-        if covered
-            && !self.tab.preview_from_diff
-            && !matches!(self.tab.preview_kind, Some(PreviewKind::GitDiff(_)))
-        {
-            // The diff-only state belongs to a diff preview of the project: an ordinary preview
-            // has none.
-            self.tab.diff_read_context = Default::default();
-        }
         // A diff comes back with the view, the page and the scroll it was left at (they are the
         // tab's own, restored above); what is read again is the diff itself, from git, when the
         // project that covered it may have changed the files. The block diff of a Rendered view is
@@ -409,14 +395,17 @@ impl App {
             // Preview: everything that describes the preview of the tab: what is shown (the kind
             // and its representation), its positions and carets, the table cursor and the search
             // with its pending request, the pending landing, the one-shot reservations, the
-            // fence zoom. Already decided by the load rule when this runs (`adopt_preview`).
+            // fence zoom, which open it came from (`preview_from_diff`: the diff's own Preview
+            // representation) and the baseline of its diff (`diff_read_context`). Already decided
+            // by the load rule when this runs (`adopt_preview`).
             preview: [
                 preview_kind, preview_scroll, preview_hscroll, table_cur_row, table_cur_col,
                 table_top_row, table_left_col, diff_view, diff_view_choice, diff_media_page,
                 diff_scroll_pending, diff_answer_awaited, pending, preview_byte_top,
                 preview_top_line, preview_cursor_line, preview_cursor_col, image_view, page,
                 repr, deck_pending_slide, focused_item, fence_zoom, fence_center, fence_return,
-                preview_search, search_input, search_pending,
+                preview_search, search_input, search_pending, preview_from_diff,
+                diff_read_context,
             ],
             // Tree: the tree part of the tab and the identity of its load. Not affected by the
             // load rule: a project screen does not move them, the tab switch puts them back as
@@ -425,10 +414,14 @@ impl App {
             // `preview_viewport_drawn` are the measure of the area (put back above from what was
             // drawn last). `selection` and `visual_anchor` are the tree's file multi-select and
             // visual range, not the preview's caret (`preview_visual_anchor` is on `App`).
+            // `changed_anchor_pending` is the pending cursor identity of the `C` list: the anchor
+            // and the list it is an identity in (`entries`, `selected`, `changed_filter`) have one
+            // owner. At the return the tree is put back from the saved copy and rebuilt by the
+            // return's refresh, which finishes the saved anchor.
             tree: [
                 id, root, open_dir, entries, selected, mode, preview_path, load_id,
                 preview_viewport, preview_cols, preview_viewport_drawn, selection,
-                visual_anchor, tree_filter, filter_input, changed_filter,
+                visual_anchor, tree_filter, filter_input, changed_filter, changed_anchor_pending,
             ],
             // Live: state the tab keeps moving while it is covered, owned by the tab and not by
             // what it showed. Never reverted to its value at the cover: the project detection
@@ -436,14 +429,11 @@ impl App {
             // of the tree. `filter_pool` is live, not derived: the return starts a scan of its
             // own (`refresh_fs_after_tab_switch`), but that scan lands later on the worker, and
             // until then the pool the tab shows is the one a scan delivered while covered, not
-            // the older one saved at the cover. `changed_anchor_pending` belongs to the tree's
-            // `C` list rebuild (made and consumed by it), not to a preview load: opening another
-            // preview does not end it.
+            // the older one saved at the cover.
             live: [
                 projects, project_navigation, project_return, project_enter_pending,
                 project_enter_op, project_effects, project_pending_acts, vcs_watch,
-                show_hidden, tree_viewport, filter_pool, diff_read_context, preview_from_diff,
-                changed_anchor_pending,
+                show_hidden, tree_viewport, filter_pool,
             ],
             // Derived, set by the restore itself from the current files before this runs: the
             // reader's stamp, the generated output and the page count of what was read now.

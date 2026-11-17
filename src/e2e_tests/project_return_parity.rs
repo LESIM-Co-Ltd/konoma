@@ -1202,3 +1202,291 @@ fn the_search_of_a_table_that_is_here_is_current_on_the_hit_nearest_the_restored
         assert_eq!(s.app.search_status(), Some((1, 2)), "{what}");
     }
 }
+
+// --- The `C` list's pending cursor identity goes with the tree it belongs to.
+
+/// Changed c1, c2, c3 and an unchanged k.txt, committed: `C` lists the three changed files.
+fn changed_files_repo(name: &str) -> std::path::PathBuf {
+    let root = repo(
+        name,
+        &[
+            ("c1.txt", "c\n"),
+            ("c2.txt", "c\n"),
+            ("c3.txt", "c\n"),
+            ("k.txt", "c\n"),
+        ],
+    );
+    for n in ["c1.txt", "c2.txt", "c3.txt"] {
+        std::fs::write(root.join(n), "changed\n").unwrap();
+    }
+    root
+}
+
+/// The file the tree cursor is on.
+fn cursor_file(s: &Sim) -> Option<String> {
+    s.app
+        .tab
+        .entries
+        .get(s.app.tab.selected)
+        .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+}
+
+fn tree_names(s: &Sim) -> Vec<String> {
+    s.app
+        .tab
+        .entries
+        .iter()
+        .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Lands every status scan that arrives, until none comes for a while.
+fn land_scans(s: &mut Sim, rx: &std::sync::mpsc::Receiver<crate::app::StatusResult>) -> usize {
+    let mut n = 0;
+    while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        s.app.apply_statuses(res);
+        n += 1;
+    }
+    s.draw();
+    n
+}
+
+/// What is done while the tab is away, after the scan of the deferred `C` rebuild has landed.
+#[derive(Clone, Copy, Debug)]
+enum Meanwhile {
+    /// Nothing: the working tab still holds the preview load the tab was saved with.
+    Nothing,
+    /// Another file opened (Enter on the project screen, or on the other tab's tree), then `q`.
+    OpenFile,
+    /// A pasted path to the unchanged k.txt jumped to (a preview of another file).
+    PasteJump,
+}
+
+/// The `C` list with the cursor on c3, the tree drawn with that row reversed.
+#[track_caller]
+fn assert_cursor_on_c3(s: &Sim, what: &str) {
+    assert_eq!(
+        tree_names(s),
+        ["aaa_new.txt", "c1.txt", "c2.txt", "c3.txt"],
+        "{what}: not the changed list\n{}",
+        s.screen()
+    );
+    assert_eq!(
+        cursor_file(s).as_deref(),
+        Some("c3.txt"),
+        "{what}: the cursor left its file\n{}",
+        s.screen()
+    );
+}
+
+#[track_caller]
+fn assert_c3_drawn_under_the_cursor(s: &Sim, what: &str) {
+    let reversed = |name: &str| {
+        s.style_of(name)
+            .is_some_and(|st| st.add_modifier.contains(ratatui::style::Modifier::REVERSED))
+    };
+    assert!(
+        reversed("c3.txt") && !reversed("c2.txt") && !reversed("c1.txt"),
+        "{what}: the drawn cursor is not on c3.txt\n{}",
+        s.screen()
+    );
+}
+
+/// `C` on, cursor on c3 (real keys); a new file makes the next `C` rebuild wait for a status scan
+/// (the real loader), so the list is the whole tree and the cursor identity waits with it; Enter
+/// opens a preview, the tab goes away (`p`, or a new tab), the scan lands while it is away,
+/// `meanwhile` is done, the tab comes back (`q`, or `[`). The return puts the tree back from the
+/// saved copy with the identity it waits with, and the scan that follows lands the list on c3.
+fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
+    let what = format!("{away:?} {meanwhile:?}");
+    let root = changed_files_repo(name);
+    let mut s = road(&root, cfg_en(), false);
+    s.key('C');
+    settled(&mut s);
+    assert_eq!(tree_names(&s), ["c1.txt", "c2.txt", "c3.txt"], "{what}");
+    for _ in 0..3 {
+        if cursor_file(&s).as_deref() == Some("c3.txt") {
+            break;
+        }
+        s.key('j');
+    }
+    assert_eq!(cursor_file(&s).as_deref(), Some("c3.txt"), "{what}");
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.app.attach_status_loader(tx);
+    let newfile = root.join("aaa_new.txt");
+    std::fs::write(&newfile, "y\n").unwrap();
+    s.app.refresh_fs_watched(false, &[newfile]);
+    // The rebuild waits for the scan: the list is the whole tree meanwhile.
+    assert!(
+        tree_names(&s).iter().any(|n| n == "k.txt"),
+        "{what}: the rebuild did not wait for the scan: {:?}",
+        tree_names(&s)
+    );
+    s.enter();
+    settled(&mut s);
+    assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
+    let shown = s.app.tab.preview_path.clone();
+    go_away(&mut s, away);
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the deferred scan lands");
+    s.app.apply_statuses(res);
+    match meanwhile {
+        Meanwhile::Nothing => {}
+        Meanwhile::OpenFile => {
+            s.enter();
+            settle_projects(&mut s);
+            settled(&mut s);
+            assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
+            assert_ne!(s.app.tab.preview_path, shown, "{what}: not another file");
+            s.key('q');
+            settle_projects(&mut s);
+            assert_eq!(
+                s.app.project_active(),
+                matches!(away, Away::ProjectScreen),
+                "{what}: `q` did not go back to where the file was opened\n{}",
+                s.screen()
+            );
+        }
+        Meanwhile::PasteJump => {
+            s.app.paste_jump_to(&root.join("k.txt"), None);
+            settled(&mut s);
+            assert_eq!(
+                s.app.tab.preview_path.as_deref(),
+                Some(root.join("k.txt").as_path()),
+                "{what}"
+            );
+        }
+    }
+    come_back(&mut s, away);
+    assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
+    assert_eq!(s.app.tab.preview_path, shown, "{what}");
+    // The return's refresh waits for its own scan again (the list is the whole tree until then).
+    let landed = land_scans(&mut s, &rx);
+    assert!(landed >= 1, "{what}: the return asked for no scan");
+    assert_cursor_on_c3(&s, &format!("{what}, after the return's scan"));
+    // Back to the tree: the drawn list has the cursor on c3, also once the scan that the tree's own
+    // refresh asks for has landed.
+    s.key('q');
+    settled(&mut s);
+    assert_eq!(s.app.tab.mode, Mode::Tree, "{what}");
+    land_scans(&mut s, &rx);
+    assert_cursor_on_c3(&s, &format!("{what}, in the tree"));
+    assert_c3_drawn_under_the_cursor(&s, &what);
+}
+
+#[test]
+fn a_changed_list_cursor_waiting_for_a_scan_comes_back_on_its_file() {
+    for away in BOTH {
+        changed_anchor_road("prp_anchor_same", away, Meanwhile::Nothing);
+    }
+}
+
+#[test]
+fn a_changed_list_cursor_waiting_for_a_scan_comes_back_on_its_file_after_another_file() {
+    for away in BOTH {
+        for meanwhile in [Meanwhile::OpenFile, Meanwhile::PasteJump] {
+            changed_anchor_road("prp_anchor_other", away, meanwhile);
+        }
+    }
+}
+
+// --- Which open a preview came from and the baseline of its diff are the preview's.
+
+/// What the restored preview says of the diff it belongs to.
+fn diff_origin(
+    s: &Sim,
+) -> (
+    Option<std::path::PathBuf>,
+    bool,
+    bool,
+    konoma_vcs_core::vcs::Preference,
+) {
+    (
+        s.app.tab.preview_path.clone(),
+        s.app.preview_from_diff_for_test(),
+        s.app.preview_is_diff_representation(),
+        s.app.diff_read_context_for_test().backend,
+    )
+}
+
+/// A.md's diff opened from the project screen (the Git backend's baseline) and moved to its
+/// Preview representation (`R`); the tab goes away (`p`, or a new tab), an ordinary preview of
+/// b.txt is opened there (it is no diff's and has no baseline), the tab comes back (`q`, or `[`).
+/// A comes back as the diff's Preview with the Git baseline, and `R` goes back to the Source
+/// diff of that baseline, the same on both roads.
+#[test]
+fn a_diff_preview_comes_back_with_its_origin_and_baseline_after_another_preview() {
+    use konoma_vcs_core::vcs::Preference;
+    let mut results = Vec::new();
+    for away in BOTH {
+        let root = repo(
+            "prp_diff_origin",
+            &[("a.md", "# A\n\nORIGINAL LINE\n"), ("b.txt", "plain bee\n")],
+        );
+        std::fs::write(root.join("a.md"), "# A\n\nCHANGED LINE\n").unwrap();
+        let a = root.join("a.md");
+        let mut s = road(&root, cfg_en(), false);
+        open_project(&mut s);
+        s.enter();
+        settle_projects(&mut s);
+        settled(&mut s);
+        assert!(s.app.is_git_diff_preview(), "{away:?}\n{}", s.screen());
+        assert_eq!(
+            s.app.tab.preview_path.as_deref(),
+            Some(a.as_path()),
+            "{away:?}"
+        );
+        assert_eq!(
+            s.app.diff_read_context_for_test().backend,
+            Preference::Git,
+            "{away:?}: the project's diff has no explicit baseline"
+        );
+        for _ in 0..3 {
+            if s.app.preview_is_diff_representation() {
+                break;
+            }
+            s.key('R');
+            settled(&mut s);
+        }
+        let before = diff_origin(&s);
+        assert_eq!(
+            before,
+            (Some(a.clone()), true, true, Preference::Git),
+            "{away:?}: not the diff's Preview\n{}",
+            s.screen()
+        );
+        go_away(&mut s, away);
+        s.app.paste_jump_to(&root.join("b.txt"), None);
+        settled(&mut s);
+        assert_eq!(
+            diff_origin(&s),
+            (Some(root.join("b.txt")), false, false, Preference::Auto),
+            "{away:?}: the preview opened meanwhile is not an ordinary one\n{}",
+            s.screen()
+        );
+        come_back(&mut s, away);
+        settled(&mut s);
+        let back = diff_origin(&s);
+        assert_eq!(back, before, "{away:?}: after the return\n{}", s.screen());
+        s.see("CHANGED LINE");
+        // `R` from the diff's Preview goes back to its Source diff, with the same baseline.
+        s.key('R');
+        settled(&mut s);
+        let source = (
+            s.app.is_git_diff_preview(),
+            s.app.diff_view_for_test(),
+            s.app.diff_read_context_for_test().backend,
+        );
+        assert_eq!(
+            source,
+            (true, crate::app::DiffView::Source, Preference::Git),
+            "{away:?}: `R` did not go back to the Source diff\n{}",
+            s.screen()
+        );
+        s.see("ORIGINAL LINE");
+        s.see("CHANGED LINE");
+        results.push((back.1, back.2, back.3, source));
+    }
+    assert_eq!(results[0], results[1], "the two roads differ");
+}
