@@ -157,6 +157,9 @@ pub fn inspect(path: &Path, limits: &Limits) -> Result<Detected, OfficeError> {
             Err(OfficeError::Unsupported) if is_encrypted_ods(path, &names, limits) => {
                 Err(OfficeError::Encrypted)
             }
+            Err(OfficeError::Unsupported) if super::xlsx::has_workbook_part(path, limits)? => {
+                Ok(Detected::Xlsx)
+            }
             r => r,
         };
     }
