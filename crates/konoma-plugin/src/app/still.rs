@@ -1165,6 +1165,43 @@ mod tests {
         assert_eq!(s.wake_in_at(t0 + ms(50_000)), None);
     }
 
+    /// The decode of an animation is held back (its answer taken off the worker channel), the view
+    /// is left, and the answer is let go afterwards: it is stale (`cancel_job` bumps `gen`), so the
+    /// picture and its animation do not come back behind the cover. The return decodes it again.
+    #[test]
+    fn a_decode_answering_after_the_leave_is_refused_and_the_return_decodes_again() {
+        let dir = unique_tmp("still_late_answer_after_leave");
+        let g = gif_file(&dir, "a.gif", 40, &[(RED, 100), (BLUE, 100)]);
+        let t0 = Instant::now();
+        let mut s = new_still(false, &g);
+        let iv = ImageView::new(ImageData::File(g.clone()));
+        s.submit(&iv, false);
+        assert_eq!(s.shape(), StillShape::Loading);
+        // Hold the decode back: its answer waits here, not in the loop's channel.
+        let late = s
+            .done_rx
+            .recv_timeout(TMO)
+            .expect("the worker always answers");
+        assert_eq!(late.gen, s.gen, "the answer is for the submitted picture");
+        // The cover leaves the view; the cancelled job's answer lands afterwards.
+        s.leave();
+        s.done_tx.send(late).unwrap();
+        assert!(!s.poll_at(t0), "the stale answer changes nothing");
+        assert!(!s.holds(), "no picture is adopted behind the cover");
+        assert!(!s.gif.has_frames(), "no frames of the animation");
+        assert!(!s.poll_at(t0 + ms(50_000)), "nothing advances");
+        assert_eq!(
+            s.wake_in_at(t0 + ms(50_000)),
+            None,
+            "nothing wakes the loop"
+        );
+        // The return asks for the file again and it is shown from its first frame.
+        land(&mut s, &g, false, t0);
+        assert!(s.holds() && s.gif.has_frames());
+        assert_eq!(s.gif.frame_index(), 0);
+        assert!(has_rgb(&drawn(&mut s), RED));
+    }
+
     #[test]
     fn a_new_picture_without_a_turn_drops_the_old_frames_at_once() {
         // Not held: the old animation's frames are freed when the next picture is asked for,
