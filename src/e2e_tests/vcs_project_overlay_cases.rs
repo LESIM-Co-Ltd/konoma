@@ -1934,6 +1934,11 @@ fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_scree
     sim.enter();
     sim.drain_media();
     assert!(sim.app.is_image_preview(), "premise: the picture is shown");
+    // A full-screen picture reaches the drawn cells once its resizes are answered (the run loop's
+    // resize worker).
+    sim.draw();
+    sim.answer_image_resizes();
+    assert!(drawn_has_green(&sim.term), "premise: the first picture (green) is drawn");
     sim.key('p');
     drain(&mut sim);
     assert!(sim.app.project_active(), "p covers the picture");
@@ -1976,6 +1981,7 @@ fn vcs_project_tab_switch_back_to_a_covered_tab_runs_no_picture_behind_the_scree
     sim.await_media("leaving the project screen");
     assert!(sim.app.is_image_preview(), "the picture is shown again after leaving");
     sim.draw();
+    sim.answer_image_resizes();
     assert!(drawn_has_red(&sim.term), "the rewritten picture (red) is not drawn after leaving");
     assert!(!drawn_has_green(&sim.term), "the old picture (green) is drawn after leaving");
 }
@@ -2265,7 +2271,10 @@ fn vcs_project_queued_media_diff_is_not_sent_behind_the_screen() {
         svg("#10d210").as_bytes(),
         svg("#d21010").as_bytes(),
     );
-    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    // With a picker: the raster box of an SVG diff is the drawn area in pixels
+    // (`media_diff_raster_px`). Without one the box is the fixed placeholder (64, 64), so no
+    // resize would ever be another want.
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30).with_picker();
     sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
     sim.app.tab.projects.wait_for_result();
     sim.app.poll_projects();

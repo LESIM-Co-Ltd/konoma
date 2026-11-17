@@ -173,7 +173,10 @@ pub(crate) fn note_filter_pool_ask() {
 pub(crate) fn count_filter_pool_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
     let before = FILTER_POOL_ASKS.with(|c| c.get());
     let out = f();
-    (out, FILTER_POOL_ASKS.with(|c| c.get()).saturating_sub(before))
+    (
+        out,
+        FILTER_POOL_ASKS.with(|c| c.get()).saturating_sub(before),
+    )
 }
 
 // The `diff_align` call counter lives in `konoma-widgets` (the function does); the host's tests

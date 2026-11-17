@@ -1001,7 +1001,9 @@ impl App {
     /// A still picture stays cached: it costs no work while it is not drawn. The screen that
     /// shows the document again decodes the animation again and plays it from its first frame.
     pub(super) fn stop_md_animations(&mut self) {
-        self.md_images.cache.retain(|_, entry| entry.frames.len() < 2);
+        self.md_images
+            .cache
+            .retain(|_, entry| entry.frames.len() < 2);
     }
 
     /// Every filesystem path the Markdown preview currently draws an inline image from.
