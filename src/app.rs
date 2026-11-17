@@ -1359,6 +1359,7 @@ pub struct App {
     preview_resolution_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
     preview_resolution_serial: std::cell::Cell<u64>,
     diff_resolution_serial: u64,
+
     pending_file_verbs: Vec<file_preview_resolution::PendingFileVerb>,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
@@ -1435,6 +1436,8 @@ pub struct App {
     tabs: Vec<PerTab>,
     /// Source of `PerTab::id`. Only ever incremented, so an id is never reused for a later tab.
     tab_seq: u64,
+    /// Source of `PerTab::load_id`.
+    load_seq: u64,
     active_tab: usize,
     /// Tab-list overlay (`T`). App-global (not per-tab).
     tab_list: bool,
@@ -2076,6 +2079,16 @@ pub(crate) struct PerTab {
     /// [`PendingResolution`]). It belongs to **that file preview**: `App::set_preview_kind`, the one
     /// place a preview is replaced or left, drops it.
     pending: Option<PendingResolution>,
+    /// The identity of the preview load this tab holds: given by `App::begin_preview_load` each
+    /// time a preview is opened (or left), never reused. The state that belongs to one load of one
+    /// preview (the pending landing, the kind it resolved, a search waiting for the table, the
+    /// first-change reservations) is compared by it when a covered tab is put back
+    /// (`App::put_tab_back`): the same identity means the working tab continued the saved load.
+    load_id: u64,
+    /// A diff opened on the worker still waits for the first answer of its target resolution: that
+    /// answer reserves the scroll to the first change (the landing of the diff's first load). Later
+    /// answers (a read made when the diff is put back) keep the view. One-shot state of the load.
+    diff_answer_awaited: bool,
     // --- Internal scroll state for a windowed (Code/Text/raw md) preview ---
     preview_byte_top: u64,
     /// Length and mtime of the file the windowed reader was opened on (see `setup_windowed`): a
@@ -2250,6 +2263,8 @@ impl Default for PerTab {
             changed_anchor_pending: None,
             covered_reload: None,
             covered_changed_filter: false,
+            load_id: 0,
+            diff_answer_awaited: false,
             preview_search: None,
             search_input: None,
             search_matches: Vec::new(),
@@ -2392,6 +2407,7 @@ impl App {
                 ..PerTab::default()
             },
             tab_seq: 1,
+            load_seq: 0,
             table_viewport_rows: 0,
             table_cell_open: false,
             table_cell_scroll: 0,
@@ -3750,6 +3766,14 @@ impl App {
         }
     }
 
+    /// Gives the tab a new preview load identity (`PerTab::load_id`): called wherever the tab's
+    /// preview is opened or left, so a load is never mistaken for the one that came before it
+    /// (even when it is the same file).
+    pub(super) fn begin_preview_load(&mut self) {
+        self.load_seq += 1;
+        self.tab.load_id = self.load_seq;
+    }
+
     fn enter_preview(&mut self, path: &Path) {
         self.enter_preview_landing(path, Landing::None);
     }
@@ -3774,6 +3798,7 @@ impl App {
         // than only from apply_payload's CommandText handler, is what covers "left a command
         // preview for something else entirely") is done for.
         self.clear_command_out();
+        self.begin_preview_load();
         self.tab.preview_path = Some(path.to_path_buf());
         // Resolve the preview kind via config. Unsupported kinds become CanNotPreview.
         //
@@ -3809,6 +3834,7 @@ impl App {
         // `enter_diff_preview_representation`) re-arms it immediately after this call returns, via
         // `follow_scroll_to_first_change`.
         self.tab.diff_scroll_pending = None;
+        self.tab.diff_answer_awaited = false;
         // Reset image state every time. SVG/GIF start loading on a separate thread (doesn't block the UI).
         self.clear_image();
         // A new preview target: the previous Word document (if any) is done for. (The previous
@@ -4544,6 +4570,12 @@ impl App {
         self.tab.pending.is_some()
     }
 
+    /// Test-only: whether a confirmed search waits for the table that is still loading.
+    #[cfg(test)]
+    pub fn search_waits_for_table_for_test(&self) -> bool {
+        self.tab.search_pending
+    }
+
     /// The windowed preview's caret line (0-based). Test-only.
     #[cfg(test)]
     pub fn preview_caret_line(&self) -> usize {
@@ -4687,6 +4719,7 @@ impl App {
         // bypassed for this deliberate re-verify — otherwise the stale markers would linger.
         self.git_status_for = None;
         self.git_status_dirty = true;
+        self.begin_preview_load();
         self.tab.preview_path = None;
         self.set_preview_kind(None);
         self.clear_command_out(); // release any delegated-command temp output

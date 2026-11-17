@@ -484,7 +484,9 @@ impl App {
             self.tab.search_idx = self.first_table_match_from_cursor();
             self.jump_to_match();
         } else if stale {
-            self.tab.search_idx = self.first_table_match_from_cursor();
+            // The hit nearest the cursor (the earlier one on a tie), not the first after it.
+            self.tab.search_idx =
+                self.nearest_match_to(self.tab.table_cur_row, self.tab.table_cur_col);
         } else {
             let last = self.tab.search_matches.len() - 1;
             self.tab.search_idx = match was {

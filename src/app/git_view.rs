@@ -230,6 +230,7 @@ impl App {
     /// `DiffOpen` up front and call this once.
     pub(super) fn open_git_diff_with(&mut self, path: &Path, open: DiffOpen) {
         self.tab.diff_read_context = open.read_context;
+        self.begin_preview_load();
         self.tab.preview_path = Some(path.to_path_buf());
         self.set_preview_kind(Some(PreviewKind::GitDiff(path.to_path_buf())));
         // The diff preview draws itself (it doesn't use window/image/md). Reset the related state.
@@ -241,6 +242,8 @@ impl App {
         // the bottom of this fn, whether to arm a new one for `path` — mirrors `App::enter_preview`'s
         // own up-front clear (`diff_scroll_pending`'s own doc comment).
         self.tab.diff_scroll_pending = None;
+        // The first answer of the target resolution (worker on) makes the reservation below.
+        self.tab.diff_answer_awaited = self.preview_resolution_tx.is_some();
         // A fresh diff target: the media diff's page position belongs to *this* file, not whatever
         // page a previously-open PDF diff happened to be on.
         self.tab.diff_media_page = 1;

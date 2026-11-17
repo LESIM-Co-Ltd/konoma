@@ -216,7 +216,13 @@ impl App {
                     return true;
                 }
                 self.apply_diff_view(view, &path);
-                self.tab.diff_scroll_pending = (view == DiffView::Rendered).then_some(path);
+                // The reservation to scroll to the first change is the landing of a diff's first
+                // load: only the first answer makes it. The answer to the read made when the diff
+                // was put back (a project screen or another tab covered it) keeps the view it was
+                // left at.
+                if std::mem::take(&mut self.tab.diff_answer_awaited) {
+                    self.tab.diff_scroll_pending = (view == DiffView::Rendered).then_some(path);
+                }
                 true
             }
             Reply::Preview {

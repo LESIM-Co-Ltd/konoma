@@ -264,7 +264,8 @@ impl App {
                     return;
                 }
                 self.table_search_scan(&q);
-                self.tab.search_idx = self.first_table_match_from_cursor();
+                self.tab.search_idx =
+                    self.nearest_match_to(self.tab.table_cur_row, self.tab.table_cur_col);
             }
             SearchTarget::Markdown => {
                 // The decorated lines are built by the draw: stale until they are.
@@ -296,7 +297,7 @@ impl App {
     }
 
     /// The index of the match nearest the position (line, then column), the earlier one on a tie.
-    fn nearest_match_to(&self, line: usize, col: usize) -> usize {
+    pub(super) fn nearest_match_to(&self, line: usize, col: usize) -> usize {
         self.tab
             .search_matches
             .iter()

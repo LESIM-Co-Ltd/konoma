@@ -73,43 +73,23 @@ impl App {
                 t.preview_viewport = self.tab.preview_viewport;
             }
         }
-        // A landing the tab waited for may have ended while the screen covered it (the text
-        // failed, or landed and the landing ran): the copy saved at the cover is then not
-        // waiting any more and is not revived (a later read would land a line asked of a read
-        // that is over). Where it ran, the position it produced is the tab's position. A
-        // different preview shown meanwhile (the project's own) says nothing about the saved
-        // one: its landing never ran, and stays.
-        let live_pending = std::mem::take(&mut self.tab.pending);
-        let same_preview = covered
+        // One rule for the state that belongs to one load of one preview (`PerTab::load_id`): the
+        // pending landing, the kind it resolved, the reservations to scroll to a first change, the
+        // deck slide and the table search waiting for its sheet. When the working tab still holds
+        // the load the saved copy was made in, its values continue the saved ones (a landing that
+        // ended while covered stays ended, a kind resolved meanwhile stays resolved). When it moved
+        // to another load (another file, or the same file loaded again), the saved values belong
+        // to a load it no longer has: they stay, and the reload below finishes them.
+        // The working pending is taken off `self.tab` in any case: a text that lands inside the
+        // reload below must not run a landing of the tab that was showing.
+        let working_pending = std::mem::take(&mut self.tab.pending);
+        let same_load = covered
             && self.tab.mode == Mode::Preview
             && self.tab.preview_path.is_some()
-            && self.tab.preview_path == t.preview_path;
-        // The reservation to scroll a diff to its first change is the draw's to consume: it stays
-        // consumed when the same preview was drawn meanwhile, and stays armed when it was not
-        // (another preview took the screen, or nothing drew this one yet).
-        if covered && !same_preview {
-            self.tab.diff_scroll_pending = t.diff_scroll_pending.clone();
-            self.tab.changed_anchor_pending = t.changed_anchor_pending.clone();
-        }
-        // Only a landing on a line (a position the tab keeps) is dropped: the first-change
-        // landings steer a view that is built again from nothing, and are run again on it.
-        let by_line = matches!(
-            t.pending.as_ref().map(|p| &p.landing),
-            Some(Landing::GotoLine(_) | Landing::Line { .. })
-        );
-        if same_preview && by_line && live_pending.is_none() {
-            t.pending = None;
-            t.preview_scroll = self.tab.preview_scroll;
-            t.preview_hscroll = self.tab.preview_hscroll;
-            t.preview_byte_top = self.tab.preview_byte_top;
-            t.preview_top_line = self.tab.preview_top_line;
-            t.preview_cursor_line = self.tab.preview_cursor_line;
-            t.preview_cursor_col = self.tab.preview_cursor_col;
-            t.table_cur_row = self.tab.table_cur_row;
-            t.table_cur_col = self.tab.table_cur_col;
-            t.table_top_row = self.tab.table_top_row;
-            t.table_left_col = self.tab.table_left_col;
-            t.focused_item = self.tab.focused_item;
+            && self.tab.load_id != 0
+            && self.tab.load_id == t.load_id;
+        if same_load {
+            Self::continue_load(&mut t, &self.tab, working_pending);
         }
         // The search this tab held was confirmed against the text it was saved with: it is found
         // again once the reload below has put the current text up (`PerTab::restored`).
@@ -380,6 +360,38 @@ impl App {
         self.refresh_fs_after_tab_switch();
     }
 
+    /// The saved copy of a tab takes the state of the load the working tab continued while the
+    /// screen covered it (the rule in `put_tab_back`). Every field of one load's state is listed
+    /// in `restored`'s `one_load` class and handled here.
+    fn continue_load(
+        saved: &mut PerTab,
+        working: &PerTab,
+        working_pending: Option<PendingResolution>,
+    ) {
+        let landing_ended = saved.pending.is_some() && working_pending.is_none();
+        saved.pending = working_pending;
+        saved.preview_kind = working.preview_kind.clone();
+        saved.search_pending = working.search_pending;
+        saved.diff_scroll_pending = working.diff_scroll_pending.clone();
+        saved.changed_anchor_pending = working.changed_anchor_pending.clone();
+        saved.deck_pending_slide = working.deck_pending_slide;
+        saved.diff_answer_awaited = working.diff_answer_awaited;
+        if landing_ended {
+            // Where the landing ran, the position it produced is the tab's position.
+            saved.preview_scroll = working.preview_scroll;
+            saved.preview_hscroll = working.preview_hscroll;
+            saved.preview_byte_top = working.preview_byte_top;
+            saved.preview_top_line = working.preview_top_line;
+            saved.preview_cursor_line = working.preview_cursor_line;
+            saved.preview_cursor_col = working.preview_cursor_col;
+            saved.table_cur_row = working.table_cur_row;
+            saved.table_cur_col = working.table_cur_col;
+            saved.table_top_row = working.table_top_row;
+            saved.table_left_col = working.table_left_col;
+            saved.focused_item = working.focused_item;
+        }
+    }
+
     /// The tab a saved one becomes when it is put back (`put_tab_back`). `working` is the tab as
     /// it is working now when the saved one is that same tab coming back after its screen was
     /// covered, `None` on a tab switch.
@@ -390,10 +402,11 @@ impl App {
         macro_rules! classes {
             (view: [$($view:ident),* $(,)?],
              live: [$($live:ident),* $(,)?],
+             one_load: [$($load:ident),* $(,)?],
              derived_by_the_restore: [$($made:ident),* $(,)?],
              derived_again: [$($again:ident => $value:expr),* $(,)?]) => {
                 // The exhaustive pattern: no `..`.
-                let PerTab { $($view: _,)* $($live: _,)* $($made: _,)* $($again: _,)* } = &saved;
+                let PerTab { $($view: _,)* $($live: _,)* $($load: _,)* $($made: _,)* $($again: _,)* } = &saved;
                 // live: kept from the working tab (swapped in), when there is one.
                 if let Some(working) = working.as_mut() {
                     $(std::mem::swap(&mut saved.$live, &mut working.$live);)*
@@ -405,12 +418,12 @@ impl App {
             // View: what the reader was looking at. Put back as saved, then corrected against
             // the files as they are now by the restore.
             view: [
-                id, root, open_dir, entries, selected, mode, preview_path, preview_kind,
+                id, root, open_dir, entries, selected, mode, preview_path, load_id,
                 preview_scroll, preview_hscroll, preview_viewport, preview_cols,
                 preview_viewport_drawn, table_cur_row, table_cur_col, table_top_row,
                 table_left_col, diff_view, diff_view_choice, diff_media_page,
                 preview_byte_top, preview_top_line, preview_cursor_line, preview_cursor_col,
-                image_view, page, repr, deck_pending_slide, focused_item, fence_zoom,
+                image_view, page, repr, focused_item, fence_zoom,
                 fence_center, fence_return, selection, visual_anchor, tree_filter,
                 filter_input, changed_filter, preview_search, search_input,
             ],
@@ -426,7 +439,13 @@ impl App {
                 projects, project_navigation, project_return, project_enter_pending,
                 project_enter_op, project_effects, project_pending_acts, vcs_watch,
                 show_hidden, tree_viewport, filter_pool, diff_read_context, preview_from_diff,
-                diff_scroll_pending, changed_anchor_pending, search_pending,
+            ],
+            // One load: the state that belongs to one load of one preview. Decided before the
+            // reload (`continue_load`, see `put_tab_back`): the working tab's values when it still
+            // holds the saved load, the saved ones when it moved to another.
+            one_load: [
+                preview_kind, diff_scroll_pending, changed_anchor_pending, search_pending,
+                deck_pending_slide, diff_answer_awaited,
             ],
             // Derived, set by the restore itself from the current files before this runs: the
             // pending landing (decided by the cover/return rule), the reader's stamp, the
@@ -557,6 +576,7 @@ impl App {
         // preview state).
         self.tab.mode = Mode::Tree;
         self.clear_image();
+        self.begin_preview_load();
         self.tab.preview_path = None;
         self.set_preview_kind(None);
         self.tab.preview_scroll = 0;

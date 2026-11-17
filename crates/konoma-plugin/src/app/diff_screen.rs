@@ -406,9 +406,17 @@ impl DiffScreenState {
         config: &SharedConfig,
     ) -> Result<(), Failure> {
         // The covered diff is put back as it was: the chosen representation, the media page and
-        // the scroll stay; only the data is read again.
+        // the scroll stay; only the data is read again. The reservation to scroll to the first
+        // change is the landing of the first load: it stays as it was at the cover (armed when
+        // nothing had drawn it yet, consumed when it had), and the read for the return does not
+        // make it again.
         let _ = config;
-        self.reload()
+        let landing = self.pending_first_change.clone();
+        self.reload()?;
+        if landing.is_none() {
+            self.pending_first_change = None;
+        }
+        Ok(())
     }
 
     pub fn handle_key(

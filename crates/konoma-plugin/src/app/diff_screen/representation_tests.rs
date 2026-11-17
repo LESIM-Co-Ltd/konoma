@@ -233,3 +233,112 @@ fn preview_hints_exist_exactly_when_keys_act() {
         }
     }
 }
+
+/// A formatted Markdown diff resumed after a project screen is read again, but the reservation to
+/// scroll to the first change belongs to the first load: a landing consumed before the cover is
+/// not made again, and the reader's scroll stays.
+#[test]
+fn resumed_rendered_diff_keeps_its_scroll_and_does_not_land_again() {
+    use crate::app::project::ProjectBackend;
+    use crate::host::project::md_diff::{MdDiffOutcome, MdDiffWorker};
+    struct MarkdownServices;
+    impl ProjectServices for MarkdownServices {
+        fn inspect(
+            &self,
+            _: &crate::host::project::MatchedProject,
+            _: &crate::app::project::ProjectSettings,
+        ) -> Result<ProjectServiceInfo, Failure> {
+            unreachable!()
+        }
+        fn file_diff(&self, _: &ProjectServiceInfo, _: &std::path::Path) -> Vec<DiffLine> {
+            unreachable!()
+        }
+        fn changed_files(&self, _: &ProjectServiceInfo) -> Vec<konoma_vcs_core::git::ChangeEntry> {
+            unreachable!()
+        }
+        fn base_contents(&self, _: &ProjectServiceInfo, _: &std::path::Path) -> Option<Vec<u8>> {
+            unreachable!()
+        }
+        fn diff_target(&self, _: &std::path::Path, _: Option<&[u8]>) -> DiffTarget {
+            DiffTarget::Markdown
+        }
+        fn spawn_file_diff(
+            self: Arc<Self>,
+            request: FileDiffRequest,
+        ) -> Result<FileDiffReply, Failure> {
+            let (tx, rx) = mpsc::channel();
+            tx.send(Ok(FileDiffData {
+                lines: Vec::new(),
+                paths: vec![request.path],
+            }))
+            .unwrap();
+            Ok(rx)
+        }
+    }
+    let dir = konoma_test_support::unique_tmp("resume_rendered_landing");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = (0..25)
+        .map(|i| format!("paragraph {i}\n\n"))
+        .collect::<String>();
+    let new = format!("{old}changed\n\n{}", "tail\n\n".repeat(20));
+    let mut worker = MdDiffWorker::with_compute(Arc::new(move |_| {
+        let (_, _, ops) = konoma_widgets::markdown::diff_align(&old, &new);
+        MdDiffOutcome::Ready {
+            old_pre: old.clone(),
+            new_pre: new.clone(),
+            ops,
+            any_change: true,
+            front_matter_only: false,
+        }
+    }));
+    let (tx, rx) = mpsc::channel();
+    let (published_tx, published_rx) = mpsc::channel();
+    let (forward_tx, forward_rx) = mpsc::channel();
+    worker.attach(tx);
+    std::thread::spawn(move || {
+        for result in rx {
+            if forward_tx.send(result).is_err() {
+                break;
+            }
+            let _ = published_tx.send(());
+        }
+    });
+    let config = SharedConfig::parse("[ui]\nlang='en'").unwrap();
+    let mut state = DiffScreenState::open_with_markdown_worker(
+        FileDiffRequest {
+            root: dir.to_path_buf(),
+            path: dir.join("doc.md"),
+            info: ProjectServiceInfo {
+                workdir: dir.to_path_buf(),
+                backend: ProjectBackend::Git,
+            },
+        },
+        Arc::new(MarkdownServices),
+        &config,
+        DiffLayout::Unified,
+        Some(DiffView::Rendered),
+        worker,
+        forward_rx,
+    )
+    .unwrap();
+    let area = Rect::new(0, 1, 54, 12);
+    published_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    state.poll().unwrap();
+    state.prepare_frame(area, None);
+    assert!(
+        state.scroll > 20,
+        "the first load lands on the first change"
+    );
+    // The reader scrolls, then a project screen covers the diff and is left.
+    state.scroll = 3;
+    state.prepare_frame(area, None);
+    assert_eq!(state.scroll, 3, "the landing was consumed");
+    state.resume_project_diff(&config).unwrap();
+    published_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    state.poll().unwrap();
+    state.prepare_frame(area, None);
+    assert_eq!(
+        state.scroll, 3,
+        "the return did not land on the first change again"
+    );
+}

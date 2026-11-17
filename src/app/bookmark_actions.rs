@@ -218,6 +218,7 @@ impl App {
         self.tab.selected = 0;
         self.rebuild_tree_notify();
         self.tab.mode = Mode::Tree;
+        self.begin_preview_load();
         self.tab.preview_path = None;
         self.set_preview_kind(None);
     }

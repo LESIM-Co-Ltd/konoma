@@ -729,3 +729,354 @@ fn a_filter_pool_delivered_while_covered_is_still_the_pool_right_after_the_retur
         );
     }
 }
+
+// --- One load of one preview: the state that belongs to the load follows the load.
+
+fn paragraph_doc() -> String {
+    let mut doc = String::from("# Title\n\n");
+    for i in 0..60 {
+        doc.push_str(&format!("Paragraph {i} with some **bold** words.\n\n"));
+    }
+    doc
+}
+
+/// (1) A Markdown diff in the representation it opens in (no `R`), scrolled after its first
+/// landing: the return reads the diff again but does not land on the first change again.
+#[test]
+fn a_default_markdown_diff_keeps_its_scroll_after_the_return() {
+    let (mut original, mut changed) = (String::from("# Title\n\n"), String::from("# Title\n\n"));
+    for i in 0..80 {
+        original.push_str(&format!(
+            "Filler paragraph number {i} to take up space.\n\n"
+        ));
+        changed.push_str(&format!("Filler paragraph number {i} was edited here.\n\n"));
+    }
+    for worker in [false, true] {
+        for away in BOTH {
+            let root = repo("prp_md_diff_default", &[("doc.md", &original)]);
+            std::fs::write(root.join("doc.md"), &changed).unwrap();
+            let mut s = road(&root, cfg_en(), worker);
+            s.select("doc.md");
+            s.key('d');
+            wait_diff_target(&mut s, worker);
+            settled(&mut s);
+            for _ in 0..12 {
+                s.key('j');
+            }
+            s.draw();
+            let before = (
+                s.app.diff_view_for_test(),
+                s.app.tab.preview_scroll,
+                s.app.preview_top_line(),
+                s.app.preview_caret_line(),
+            );
+            assert!(
+                before.1 > 0 || before.2 > 0 || before.3 > 0,
+                "{away:?} worker={worker}: the diff did not scroll: {before:?}"
+            );
+            go_away(&mut s, away);
+            come_back(&mut s, away);
+            wait_diff_target(&mut s, worker);
+            settled(&mut s);
+            let after = (
+                s.app.diff_view_for_test(),
+                s.app.tab.preview_scroll,
+                s.app.preview_top_line(),
+                s.app.preview_caret_line(),
+            );
+            assert_eq!(after, before, "{away:?} worker={worker}:\n{}", s.screen());
+            s.see("edited here");
+        }
+    }
+}
+
+/// (2) `doc.md:40` asked while the kind is not decided; the kind and the body arrive while the
+/// screen is covered. The return shows the document at line 40, not a provisional kind, and does
+/// not land a second time.
+#[test]
+fn a_line_landed_and_a_kind_resolved_while_covered_stay_resolved_after_the_return() {
+    for away in BOTH {
+        let root = repo(
+            "prp_kind_while_covered",
+            &[("doc.md", &paragraph_doc()), ("x.txt", "x\n")],
+        );
+        let path = root.join("doc.md");
+        let mut s = road(&root, cfg_en(), true);
+        s.app.paste_jump_to(&path, Some(40));
+        match away {
+            Away::ProjectScreen => {
+                s.key('p');
+                settle_projects_leaving_media(&mut s);
+                assert!(s.app.project_active(), "{}", s.screen());
+            }
+            Away::Tab => s.key('t'),
+        }
+        // Kind and body arrive while covered.
+        if matches!(away, Away::ProjectScreen) {
+            settled(&mut s);
+        }
+        match away {
+            Away::ProjectScreen => leave_project(&mut s),
+            Away::Tab => {
+                s.key('[');
+                settled(&mut s);
+            }
+        }
+        settled(&mut s);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert!(!what.contains("can not preview"), "{what}");
+        assert!(s.app.document_error().is_none(), "{what}");
+        assert!(!s.app.has_pending_landing_for_test(), "{what}");
+        let top = s.app.preview_top_line();
+        assert!(top > 0, "not at the asked line: {what}");
+        let pos = s.app.reading_position_for_test();
+        s.draw();
+        settled(&mut s);
+        assert_eq!(
+            s.app.reading_position_for_test(),
+            pos,
+            "landed again: {what}"
+        );
+    }
+}
+
+/// (3) A diff Preview waiting for its body is covered, the load fails while covered, the file is
+/// readable again: no DiffPreview landing is revived on the return.
+#[test]
+fn a_diff_preview_landing_that_failed_while_covered_is_not_revived() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo(
+        "prp_diff_failed_covered",
+        &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+    );
+    std::fs::write(
+        root.join("doc.md"),
+        long_doc("", "CHANGED MARKER paragraph."),
+    )
+    .unwrap();
+    let path = root.join("doc.md");
+    let mut s = road(&root, cfg_en(), true);
+    s.select("doc.md");
+    s.key('d');
+    wait_diff_target(&mut s, true);
+    settled(&mut s);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    s.key('R');
+    assert!(
+        s.app.diff_landing_state_for_test().0,
+        "the landing is not pending:\n{}",
+        s.screen()
+    );
+    s.key('p');
+    settle_projects_leaving_media(&mut s);
+    // The failure arrives while covered.
+    settled(&mut s);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    leave_project(&mut s);
+    settled(&mut s);
+    let what = s.screen();
+    assert!(
+        !s.app.diff_landing_state_for_test().0,
+        "a DiffPreview landing was revived:\n{what}"
+    );
+    // A revived landing would have run on the return and moved to the change at the end.
+    assert_eq!(s.app.reading_position_for_test().0, 0, "scrolled: {what}");
+    assert!(s.find_text("CHANGED MARKER").is_none(), "landed: {what}");
+}
+
+fn apple_rows(rows: &[u32]) -> String {
+    let mut out = format!(r#"<row r="1">{}</row>"#, x_str("A1", "head"));
+    for r in rows {
+        out += &format!(
+            r#"<row r="{r}">{}</row>"#,
+            x_str(&format!("A{r}"), &format!("apple {r}"))
+        );
+    }
+    out
+}
+
+/// A repository with a sheet (untracked) and a changed Markdown file to show in the project.
+fn sheet_repo(name: &str, rows: &[u32]) -> (std::path::PathBuf, std::path::PathBuf) {
+    let root = repo(name, &[("b.md", "# B\n\nbee\n")]);
+    std::fs::write(root.join("b.md"), "# B\n\nbee changed\n").unwrap();
+    let book = root.join("t.xlsx");
+    build_xlsx(&book, &[("S", "visible", &apple_rows(rows), "")]);
+    (root, book)
+}
+
+fn search_on_loading_sheet(root: &std::path::Path) -> Sim {
+    let mut s = road(root, cfg_en(), false);
+    s.select("t.xlsx");
+    s.enter();
+    assert!(s.app.is_sheet_loading(), "{}", s.screen());
+    s.key('/');
+    s.keys("apple");
+    s.enter();
+    assert!(s.app.search_waits_for_table_for_test(), "{}", s.screen());
+    s
+}
+
+/// (4a) A search confirmed while the table loads waits for it. Covered, with another file shown
+/// meanwhile (the project screen) or in another tab, the request is still there on the return and
+/// lands on the first hit when the table arrives.
+#[test]
+fn a_search_waiting_for_a_table_survives_another_preview_while_covered() {
+    for away in BOTH {
+        let (root, _) = sheet_repo("prp_search_wait", &[5, 40]);
+        let mut s = search_on_loading_sheet(&root);
+        match away {
+            Away::ProjectScreen => {
+                s.key('p');
+                settle_projects_leaving_media(&mut s);
+                // Another file's preview is made on the tab under the screen.
+                s.app.paste_jump_to(&root.join("b.md"), None);
+                s.key('q');
+                settle_projects_leaving_media(&mut s);
+            }
+            Away::Tab => {
+                s.key('t');
+                settled(&mut s);
+                s.select("b.md");
+                s.enter();
+                settled(&mut s);
+                s.key('[');
+                settle_projects_leaving_media(&mut s);
+            }
+        }
+        let what = format!("{away:?}\n{}", s.screen());
+        assert!(!s.app.project_active(), "{what}");
+        assert_eq!(s.app.preview_search_query(), Some("apple"), "{what}");
+        assert!(
+            s.app.search_waits_for_table_for_test(),
+            "request lost: {what}"
+        );
+        settled(&mut s);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert_eq!(s.app.search_status(), Some((1, 2)), "{what}");
+        assert_eq!(s.app.table_cursor(), (4, 0), "first hit: {what}");
+        assert!(!s.app.search_waits_for_table_for_test(), "{what}");
+    }
+}
+
+/// (4b) The request consumed while covered (the same load: the table arrived under the screen)
+/// is not made again by the return.
+#[test]
+fn a_search_request_consumed_while_covered_is_not_made_again() {
+    let (root, _) = sheet_repo("prp_search_consumed", &[5, 40]);
+    let mut s = search_on_loading_sheet(&root);
+    s.key('p');
+    settle_projects_leaving_media(&mut s);
+    // The table arrives under the project screen: the request is consumed there.
+    settled(&mut s);
+    assert!(!s.app.search_waits_for_table_for_test(), "{}", s.screen());
+    s.key('q');
+    settle_projects_leaving_media(&mut s);
+    let what = s.screen();
+    assert!(!s.app.project_active(), "{what}");
+    assert!(
+        !s.app.search_waits_for_table_for_test(),
+        "the request was made again: {what}"
+    );
+    settled(&mut s);
+    assert!(!s.app.search_waits_for_table_for_test(), "{}", s.screen());
+}
+
+/// (5) The hit that was current is gone while covered; the restored caret is between a near
+/// earlier hit and a far later one. The re-derivation makes the nearest hit current (a tie goes to
+/// the earlier one), and `n`/`N` move on from it.
+#[test]
+fn the_search_after_the_return_is_current_on_the_hit_nearest_the_restored_caret() {
+    for away in BOTH {
+        let root = repo("prp_search_nearest", &[("x.txt", "x\n")]);
+        let book = root.join("t.xlsx");
+        let write = |rows: &[u32], k: u64| {
+            build_xlsx(&book, &[("S", "visible", &apple_rows(rows), "")]);
+            let f = std::fs::OpenOptions::new().write(true).open(&book).unwrap();
+            f.set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_000 + k),
+            )
+            .unwrap();
+        };
+        write(&[12, 60], 0);
+        let mut s = road(&root, cfg_en(), false);
+        s.select("t.xlsx");
+        s.enter();
+        settled(&mut s);
+        s.key('/');
+        s.keys("apple");
+        s.enter();
+        settled(&mut s);
+        assert_eq!(s.app.search_status(), Some((1, 2)), "{away:?}");
+        assert_eq!(s.app.table_cursor(), (11, 0), "{away:?}");
+        go_away(&mut s, away);
+        write(&[10, 60], 1);
+        come_back(&mut s, away);
+        settled(&mut s);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert_eq!(s.app.table_cursor(), (11, 0), "{what}");
+        assert!(s.app.table_cell_is_hit(9, 0), "{what}");
+        assert_eq!(
+            s.app.search_status(),
+            Some((1, 2)),
+            "the nearer hit: {what}"
+        );
+        s.key('n');
+        settled(&mut s);
+        assert_eq!(s.app.search_status(), Some((2, 2)), "{what}");
+        assert_eq!(s.app.table_cursor(), (59, 0), "{what}");
+        s.key('N');
+        settled(&mut s);
+        assert_eq!(s.app.search_status(), Some((1, 2)), "{what}");
+        assert_eq!(s.app.table_cursor(), (9, 0), "{what}");
+    }
+}
+
+/// (5b) The same as (5) for a table that is already here when the search is found again (a CSV is
+/// read in the app, not on a sheet worker, so `sheet_load_in_flight()` is false and
+/// `rescan_stale_search` itself picks the hit; `rescan_table_search` of a sheet that lands is not
+/// the code that runs).
+#[test]
+fn the_search_of_a_table_that_is_here_is_current_on_the_hit_nearest_the_restored_caret() {
+    for away in BOTH {
+        let root = repo("prp_search_nearest_csv", &[("x.txt", "x\n")]);
+        let book = root.join("t.csv");
+        let write = |hits: &[u32]| {
+            let mut text = String::from("name,qty\n");
+            for r in 2..=80u32 {
+                let word = if hits.contains(&r) { "apple" } else { "pear" };
+                text.push_str(&format!("{word} {r},{r}\n"));
+            }
+            std::fs::write(&book, text).unwrap();
+        };
+        write(&[12, 60]);
+        let mut s = road(&root, cfg_en(), false);
+        s.select("t.csv");
+        s.enter();
+        settled(&mut s);
+        assert!(s.app.is_table_preview(), "{away:?}\n{}", s.screen());
+        assert!(!s.app.is_sheet_loading(), "{away:?}");
+        s.key('/');
+        s.keys("apple");
+        s.enter();
+        settled(&mut s);
+        assert_eq!(s.app.search_status(), Some((1, 2)), "{away:?}");
+        let caret = s.app.table_cursor();
+        go_away(&mut s, away);
+        write(&[10, 60]);
+        come_back(&mut s, away);
+        settled(&mut s);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert_eq!(s.app.table_cursor(), caret, "{what}");
+        assert_eq!(
+            s.app.search_status(),
+            Some((1, 2)),
+            "the nearer hit: {what}"
+        );
+        s.key('n');
+        settled(&mut s);
+        assert_eq!(s.app.search_status(), Some((2, 2)), "{what}");
+        s.key('N');
+        settled(&mut s);
+        assert_eq!(s.app.search_status(), Some((1, 2)), "{what}");
+    }
+}
