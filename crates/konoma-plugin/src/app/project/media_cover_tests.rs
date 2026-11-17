@@ -1331,13 +1331,40 @@ fn preview_fixture_with(
     PreparedProjects,
     Terminal<TestBackend>,
 ) {
+    preview_fixture_in(
+        name,
+        file,
+        body,
+        services,
+        more,
+        Arc::new(Project),
+        "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n",
+    )
+}
+
+/// [`preview_fixture_with`] in the project `project` with the configuration `config` (a
+/// version-control project and a tool to hand over).
+fn preview_fixture_in(
+    name: &str,
+    file: &str,
+    body: &[u8],
+    services: Arc<dyn crate::app::project::ProjectServices>,
+    more: Vec<Arc<dyn Plugin>>,
+    project: Arc<dyn Plugin>,
+    config: &str,
+) -> (
+    konoma_test_support::TmpDir,
+    PathBuf,
+    PreparedProjects,
+    Terminal<TestBackend>,
+) {
     let dir = konoma_test_support::unique_tmp(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("project.marker"), "").unwrap();
     let path = dir.join(file);
     std::fs::write(&path, body).unwrap();
     let mut prepared = crate::app::project::prepare::prepare_projects_with_previews(
-        vec![Arc::new(Project)],
+        vec![project],
         [
             vec![
                 Arc::new(PreviewFiles) as Arc<dyn Plugin>,
@@ -1348,10 +1375,7 @@ fn preview_fixture_with(
         .concat(),
         &dir,
         TermCaps::new(),
-        (
-            SharedConfig::parse("[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n").unwrap(),
-            None,
-        ),
+        (SharedConfig::parse(config).unwrap(), None),
         services,
     )
     .unwrap_or_else(|e| panic!("{}", e.error));
@@ -1783,6 +1807,143 @@ fn the_return_to_a_covered_image_preview_keeps_its_zoom_and_pan() {
     assert!(!prepared.preview_project, "the Preview is in front again");
     assert_eq!(counts(), posed.get(), "the pose is the one left");
     assert_ne!(posed.get(), fit.get(), "the left pose is not the fit");
+}
+
+/// The pose a reopen of an image Preview keeps: the picture is zoomed and panned, `between`
+/// opens the file again (a Refresh, a tool's return) with the Preview in front, and the new open
+/// draws the picture in that pose, not at fit, as a konoma tab keeps its `image_view` over a
+/// reload.
+fn image_pose_kept_over(
+    name: &str,
+    project: Arc<dyn Plugin>,
+    config: &str,
+    cx: &ProjectLoopCx,
+    between: Vec<Turn>,
+) {
+    const QUARTERS: [[u8; 3]; 4] = [[220, 20, 20], [20, 220, 20], [20, 20, 220], [220, 220, 20]];
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture_in(
+        name,
+        "picture.png",
+        &png(32, 32, |x, y| {
+            QUARTERS[usize::from(x >= 16) + 2 * usize::from(y >= 16)]
+        }),
+        Arc::new(ChromeServices),
+        vec![Arc::new(GatedPictures(Arc::default()))],
+        project,
+        config,
+    );
+    let pictures = crate::app::Pictures::new(
+        ratatui_image::picker::Picker::halfblocks(),
+        "cover-gated-pictures",
+        &path,
+        128,
+    )
+    .with_out(Box::new(Vec::<u8>::new()));
+    let counts = || QUARTERS.map(cells_in);
+    let decodes = crate::app::still::decodes_for_test;
+    let fit = std::rc::Rc::new(std::cell::Cell::new([0; 4]));
+    let posed = std::rc::Rc::new(std::cell::Cell::new([0; 4]));
+    let posed_at = std::rc::Rc::new(std::cell::Cell::new(0));
+    let (fit_set, fit_seen) = (fit.clone(), fit.clone());
+    let (posed_set, posed_seen) = (posed.clone(), posed.clone());
+    let (mark, reopened) = (posed_at.clone(), posed_at.clone());
+    let mut turns = vec![
+        Turn::Until(
+            "the picture is drawn at fit",
+            Box::new(move || counts().iter().all(|&c| c > 0)),
+        ),
+        Turn::Settle,
+        Turn::Do(Box::new(move || fit_set.set(counts()))),
+        Turn::Key('+'),
+        Turn::Key('+'),
+        Turn::Key('l'),
+        Turn::Key('l'),
+        Turn::Settle,
+        Turn::Until(
+            "the zoomed and panned picture is drawn",
+            Box::new(move || counts() != fit_seen.get() && counts().iter().any(|&c| c > 0)),
+        ),
+        Turn::Settle,
+        Turn::Do(Box::new(move || {
+            posed_set.set(counts());
+            mark.set(decodes());
+        })),
+    ];
+    turns.extend(between);
+    turns.extend([
+        Turn::Until(
+            "the file opened again draws its picture zoomed and panned as it was",
+            Box::new(move || decodes() > reopened.get() && counts() == posed_seen.get()),
+        ),
+        Turn::Settle,
+    ]);
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(turns),
+        cx,
+        Some(pictures),
+    )
+    .unwrap();
+    assert!(!prepared.preview_project, "the Preview is in front");
+    assert!(
+        decodes() > posed_at.get(),
+        "the picture was decoded again from the new open"
+    );
+    assert_eq!(counts(), posed.get(), "the pose is the one the user had");
+    assert_ne!(posed.get(), fit.get(), "the pose is not the fit");
+}
+
+/// A Refresh (`r`) of an image Preview keeps its zoom and pan (the host keeps them over a reload).
+#[test]
+fn a_refresh_of_an_image_preview_keeps_its_zoom_and_pan() {
+    image_pose_kept_over(
+        "project_preview_refresh_pose",
+        Arc::new(Project),
+        "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n",
+        &ProjectLoopCx::default(),
+        vec![Turn::Key('r')],
+    );
+}
+
+/// The return from a tool handed over from an image Preview (`!`) keeps its zoom and pan.
+#[test]
+fn the_tool_return_to_an_image_preview_keeps_its_zoom_and_pan() {
+    let launches = Arc::new(AtomicUsize::new(0));
+    let counted = launches.clone();
+    let config =
+        "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n[git]\ntool='fixture-git-tool'\n";
+    let editor = SharedConfig::parse(config).unwrap();
+    let cx = ProjectLoopCx {
+        home: None,
+        launch: Some(
+            crate::app::LaunchCx::new(editor.editor.clone(), &editor.external, vec![])
+                .with_hand_off(Arc::new(move |_, _, redraw| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    redraw()?;
+                    Ok(Some(0))
+                })),
+        ),
+    };
+    let handed = launches.clone();
+    image_pose_kept_over(
+        "project_preview_tool_pose",
+        Arc::new(VcsProject),
+        config,
+        &cx,
+        vec![
+            Turn::Key('!'),
+            Turn::Until(
+                "the tool was handed over",
+                Box::new(move || handed.load(Ordering::SeqCst) == 1),
+            ),
+        ],
+    );
+    assert_eq!(
+        launches.load(Ordering::SeqCst),
+        1,
+        "one tool was handed over"
+    );
 }
 
 /// A picture inside the covered Markdown is the left view's too: the return decodes what it

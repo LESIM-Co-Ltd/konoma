@@ -271,9 +271,10 @@ impl Still {
         self.resize_failed = false;
     }
 
-    /// The pose of the picture held, if one is: what a left view keeps for its return.
+    /// The pose of the picture held, if one is, or the pose the next picture is to be shown in
+    /// (`pose_back`): the user's view, which a left view keeps for its return.
     pub(super) fn pose_held(&self) -> Option<ImageViewState> {
-        self.key.as_ref().map(|_| self.pose)
+        self.key.as_ref().map(|_| self.pose).or(self.pose_back)
     }
 
     /// The next new picture is shown in `pose` (a left view opened again), not at fit.
@@ -1149,6 +1150,37 @@ mod tests {
         assert_eq!(pose, (s.zoom(), s.center()));
         s.zoom_reset();
         assert_eq!((s.zoom(), s.center()), (1.0, (0.5, 0.5)));
+    }
+
+    /// A pose waiting for the next picture (`pose_back`, kept over a hand-off of the terminal)
+    /// is the user's view while no picture is held: a reopen or a cover that comes before the
+    /// picture is shown again takes that pose, not none.
+    #[test]
+    fn a_pose_waiting_for_its_picture_is_the_pose_held() {
+        let dir = unique_tmp("still_pose_waiting");
+        let f = png_file(&dir, "a.png");
+        let t0 = Instant::now();
+        let mut s = new_still(false, &f);
+        land(&mut s, &f, false, t0);
+        drawn(&mut s);
+        s.zoom_steps(1);
+        s.zoom_steps(1);
+        s.pan(1.0, 1.0);
+        drawn(&mut s);
+        let posed = (s.zoom(), s.center());
+        assert_ne!(posed, (1.0, (0.5, 0.5)), "the picture is zoomed and panned");
+        let pose = s.pose_held().expect("a picture is held");
+        // The hand-off: what was drawn goes, the pose waits for the picture.
+        s.forget();
+        assert!(s.pose_held().is_none(), "nothing is held or waiting");
+        s.pose_back(pose);
+        let waiting = s.pose_held().expect("the waiting pose is the user's view");
+        // The view opened again is put in that pose.
+        let mut again = new_still(false, &f);
+        again.pose_back(waiting);
+        land(&mut again, &f, false, t0);
+        drawn(&mut again);
+        assert_eq!((again.zoom(), again.center()), posed);
     }
 
     #[test]

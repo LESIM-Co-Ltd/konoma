@@ -411,8 +411,9 @@ impl Pictures {
         }
     }
 
-    /// The pose of the still picture held, if one is: the user's view a left Preview keeps for
-    /// its return (a konoma tab keeps its `image_view`).
+    /// The pose of the still picture held, or the one the next picture waits to be shown in: the
+    /// user's view a Preview keeps over its leave, a reload or a hand-off (a konoma tab keeps its
+    /// `image_view`).
     pub(in crate::app) fn still_pose(&self) -> Option<konoma_widgets::image_view::ImageViewState> {
         self.still.as_ref().and_then(Still::pose_held)
     }

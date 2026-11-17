@@ -517,16 +517,19 @@ impl FilePreviewState {
         gutter.leave();
     }
 
-    /// What the Preview opened again is put back to: the live loop's position (a Refresh, a
-    /// tool's return), or what the left one kept (the return from a cover).
+    /// What the Preview opened again is put back to: the live loop's position and `live_pose`,
+    /// the pose of the picture it shows now (a Refresh, a tool's return), or what the left one
+    /// kept (the return from a cover). Both roads give the position and the pose, as a konoma
+    /// tab keeps its `image_view` over a reload.
     pub(super) fn into_position(
         self,
+        live_pose: Option<konoma_widgets::image_view::ImageViewState>,
     ) -> Option<(
         crate::app::looping::ViewPosition,
         Option<konoma_widgets::image_view::ImageViewState>,
     )> {
         match (self.runner, self.left) {
-            (Some(runner), _) => Some((runner.position(), None)),
+            (Some(runner), _) => Some((runner.position(), live_pose)),
             (None, Some(left)) => Some((left.position, left.pose)),
             (None, None) => None,
         }

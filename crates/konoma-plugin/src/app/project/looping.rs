@@ -632,18 +632,23 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 match result {
                     Ok(opened) => {
                         crate::app::edit_line::clear();
+                        // The file opened again (a Refresh, a tool's return, the return to a
+                        // covered Preview): where the user was is taken first, the pose of the
+                        // picture with it, before the pictures begin the file again (that
+                        // forgets the still and its pose).
+                        let old = state.file_preview.take().map(|old| {
+                            old.into_position(pictures.as_ref().and_then(Pictures::still_pose))
+                        });
                         if let Some(p) = pictures.as_mut() {
                             p.begin_file(&opened.plugin_id, &opened.path);
                         }
                         let mut refreshed =
                             pending.finish(opened, prepared, cx, state.diff.as_mut().unwrap());
-                        // The file opened again (a Refresh, a tool's return, the return to a
-                        // covered Preview): the new loop is put where the user was, once, and
-                        // the pictures of the old document go, so the new one decodes what it
-                        // draws (a konoma tab drops its changed pictures). Nothing of the old
-                        // loop (the session it converted to) is kept.
-                        if let Some(old) = state.file_preview.take() {
-                            let back = old.into_position();
+                        // The new loop is put where the user was, once, and the pictures of the
+                        // old document go, so the new one decodes what it draws (a konoma tab
+                        // drops its changed pictures). Nothing of the old loop (the session it
+                        // converted to) is kept.
+                        if let Some(back) = old {
                             if let Some(p) = pictures.as_mut() {
                                 p.reset_document();
                             }
