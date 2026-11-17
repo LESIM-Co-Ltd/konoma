@@ -3948,6 +3948,141 @@ mod tests {
         assert!(second, "the deletes are flushed under the guard");
     }
 
+    /// Every async result kind and every timer of the run loop, read from its source, has a
+    /// decision for a result that lands while a project screen covers the tab it was asked for: a
+    /// test that delivers it under a project screen and after a tab switch away (applied to
+    /// App-level state or dropped, nothing drawn in front, the same screen after the return), or
+    /// the reason it cannot be delivered in a test. A new receiver or timer fails this test until
+    /// it is added to the list.
+    #[test]
+    fn every_async_result_kind_and_timer_of_the_run_loop_has_a_covered_test() {
+        enum Covered {
+            Test(&'static str),
+            /// The project screen's own answers: they are for the screen in front.
+            Front,
+            /// No test can deliver it without a new production seam (file:line).
+            NoSeam(&'static str),
+        }
+        use Covered::*;
+        const KINDS: &[(&str, Covered)] = &[
+            ("rx.plugin_updates", NoSeam("src/plugin_cli/update_check.rs:48")),
+            ("app.poll_projects", Front),
+            ("hl_rx", Test("vcs_kind_highlight_warm_delivered_while_away")),
+            ("resp_rx", Test("vcs_kind_image_resize_delivered_while_away")),
+            ("rx.media", Test("vcs_kind_media_load_delivered_while_away")),
+            ("rx.kitty", Test("vcs_kind_kitty_build_delivered_while_away")),
+            ("rx.md_img", Test("vcs_kind_md_image_decode_delivered_while_away")),
+            ("rx.md_remote", Test("vcs_kind_md_remote_fetch_delivered_while_away")),
+            ("rx.md_enc", Test("vcs_kind_md_image_encode_delivered_while_away")),
+            ("rx.ignored", Test("vcs_kind_ignored_scan_delivered_while_away")),
+            ("rx.status", Test("vcs_kind_status_scan_delivered_while_away")),
+            ("rx.md_diff", Test("vcs_kind_md_block_diff_delivered_while_away")),
+            ("rx.follow", Test("vcs_kind_follow_baseline_delivered_while_away")),
+            ("rx.media_diff", Test("vcs_kind_media_diff_delivered_while_away")),
+            ("rx.fileop", Test("vcs_kind_file_operation_delivered_while_away")),
+            ("rx.office", Test("vcs_kind_office_launch_delivered_while_away")),
+            ("rx.gitop", Test("vcs_kind_git_write_delivered_while_away")),
+            ("rx.pool", Test("vcs_kind_filter_pool_delivered_while_away")),
+            ("fs_rx", Test("vcs_kind_watch_event_delivered_while_away")),
+            ("app.follow_jump", Test("vcs_kind_follow_jump_delivered_while_away")),
+            ("app.advance_gif_if_due", Test("vcs_kind_gif_timer_delivered_while_away")),
+            ("app.advance_md_gifs_if_due", Test("vcs_kind_md_gif_timer_delivered_while_away")),
+            (
+                "app.canvas_redraw_if_due",
+                Test("e2e_canvas_timer_asks_nothing_behind_a_project_screen_and_asks_again_after_leaving"),
+            ),
+            // Process-wide (idle plugin children), run by every `animation_timers_due` call.
+            ("plugins::external::reap_if_due", Test("vcs_kind_gif_timer_delivered_while_away")),
+        ];
+        let src = include_str!("lib.rs");
+        let production = &src[..src.find("\nmod tests {").expect("tests module")];
+        // The code of one top-level item, comments left out.
+        let item = |head: &str| -> String {
+            let at = production
+                .find(head)
+                .unwrap_or_else(|| panic!("{head} not found (the self-scan is broken)"));
+            let rest = &production[at..];
+            rest[..rest.find("\n}\n").expect("end of the item")]
+                .lines()
+                .map(|l| l.split("//").next().unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let run = item("\nfn run(");
+        let timers = item("\nfn animation_timers_due(");
+        let worker = item("\nstruct WorkerRx {");
+        let path_char = |c: char| c.is_alphanumeric() || c == '_' || c == '.' || c == ':';
+        let mut found = std::collections::BTreeSet::new();
+        // 1. Every receiver drained by the loop.
+        for (at, _) in run.match_indices(".try_recv()") {
+            let start = run[..at].rfind(|c| !path_char(c)).map_or(0, |i| i + 1);
+            found.insert(run[start..at].to_string());
+        }
+        // 2. Every `WorkerRx` field, whatever reads it (`apply`, a helper of its own).
+        for line in worker.lines().skip(1) {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            if let Some((field, _)) = line.split_once(':') {
+                let key = format!("rx.{}", field.trim());
+                assert!(run.contains(&key), "{key} is never read by the run loop");
+                found.insert(key);
+            }
+        }
+        // 3. Answers the loop polls the App for.
+        for (at, _) in run.match_indices("app.poll_") {
+            let end = at + run[at..].find('(').expect("a call");
+            found.insert(run[at..end].to_string());
+        }
+        // 4. Timers: every `*_if_due` of `animation_timers_due`, and the follow dwell's jump.
+        for (at, _) in timers.match_indices("_if_due(") {
+            let start = timers[..at].rfind(|c| !path_char(c)).map_or(0, |i| i + 1);
+            found.insert(timers[start..at + "_if_due".len()].to_string());
+        }
+        if run.contains("app.follow_jump(") {
+            found.insert("app.follow_jump".to_string());
+        }
+        let listed: std::collections::BTreeSet<String> =
+            KINDS.iter().map(|(k, _)| k.to_string()).collect();
+        assert_eq!(listed.len(), KINDS.len(), "a kind is listed twice");
+        assert!(
+            found.len() >= 24,
+            "the self-scan found only {} kinds: {found:?}",
+            found.len()
+        );
+        assert_eq!(
+            found, listed,
+            "the run loop's result kinds and timers are not the listed ones: decide how a result \
+             that lands while a project screen covers the tab is handled, and list it"
+        );
+        let tests = [
+            include_str!("e2e_tests/vcs_project_covered_kinds_cases.rs"),
+            include_str!("e2e_tests/canvas_input.rs"),
+        ];
+        let mut no_seam = 0;
+        for (kind, covered) in KINDS {
+            match covered {
+                Test(name) => {
+                    let decl = format!("fn {name}() {{");
+                    assert!(
+                        tests.iter().any(|t| t.contains(&decl)),
+                        "{kind}: the test {name} does not exist"
+                    );
+                }
+                Front => assert_eq!(
+                    *kind, "app.poll_projects",
+                    "only the project runtime is the front's own"
+                ),
+                NoSeam(at) => {
+                    no_seam += 1;
+                    assert!(at.contains(".rs:"), "{kind}: name the file:line");
+                }
+            }
+        }
+        assert!(no_seam <= 1, "{no_seam} kinds have no test");
+    }
+
     /// Every `terminal.draw(` and `terminal.clear(` in this file (the run loop, the return from an
     /// editor or an external tool) has the guard within the lines before it, in the same block.
     #[test]
