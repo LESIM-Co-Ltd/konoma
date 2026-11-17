@@ -2023,12 +2023,15 @@ pub(in crate::app) struct FileLoopState {
     launch_tx: std::sync::mpsc::Sender<Result<crate::launch::Opener, String>>,
     launch_rx: std::sync::mpsc::Receiver<Result<crate::launch::Opener, String>>,
     launching: usize,
+    /// Where the loop is put once its first view lands (`restore`).
+    back: Option<ViewPosition>,
 }
 
 /// Where the user is in a file screen, as plain data: the scroll, the caret, the search (the
-/// change block `n`/`N` stand on), the page and the display options. A file opened again (a
-/// Refresh, a tool's return, the return to a covered Preview) is put back there; nothing of the
-/// session, the laid-out page or the pictures is in it.
+/// change block `n`/`N` stand on), the page, the table's cell cursor and scroll, and the display
+/// options. A file opened again (a Refresh, a tool's return, the return to a covered Preview) is
+/// put back there; nothing of the session, the laid-out page or the pictures is in it.
+#[derive(Clone)]
 pub(in crate::app) struct ViewPosition {
     scroll: usize,
     change_at: Option<usize>,
@@ -2037,27 +2040,41 @@ pub(in crate::app) struct ViewPosition {
     caret_col: usize,
     hscroll: u16,
     at_page: usize,
+    /// The table's cell cursor and scroll: put on the first table drawn, kept to its grid by the
+    /// table's own clamp (`TableFrame::clamp_cursor`), as a table read again keeps them.
+    table: Option<konoma_widgets::table::TableViewState>,
     display: super::Display,
     own: AppKeys,
 }
 
 impl FileLoopState {
+    /// The user's view position. Every field of the loop and of its state is named, so a new one
+    /// is decided here: kept for the file opened again, or dropped with this loop.
     pub(in crate::app) fn position(&self) -> ViewPosition {
-        ViewPosition {
-            scroll: self.st.scroll,
-            change_at: self.st.change_at,
-            caret_on: self.st.caret_on,
-            caret_line: self.st.caret_line,
-            caret_col: self.st.caret_col,
-            hscroll: self.st.hscroll,
-            at_page: self.st.at_page,
-            display: self.st.display.clone(),
-            own: self.own.clone(),
+        let Self {
+            st,
+            own,
+            // The session the file converted to, the remembered failure, the timers and the
+            // launches: this loop's own, they go with it (the file is opened again).
+            swapped: _,
+            reopen_failed: _,
+            // The page on screen: its table's cursor and scroll are the user's; the rest is laid
+            // out again.
+            base,
+            view_due: _,
+            need_view: _,
+            refresh_on_resume: _,
+            launch_tx: _,
+            launch_rx: _,
+            launching: _,
+            back,
+        } = self;
+        // Put back but not yet shown (no view landed since): that is still where the user is.
+        if let Some(back) = back {
+            return back.clone();
         }
-    }
-    /// A new loop (its file just opened) is put at `p`, once, before its first view.
-    pub(in crate::app) fn restore(&mut self, p: ViewPosition) {
-        let ViewPosition {
+        let State {
+            // The position itself.
             scroll,
             change_at,
             caret_on,
@@ -2066,19 +2083,66 @@ impl FileLoopState {
             hscroll,
             at_page,
             display,
-            own,
-        } = p;
-        self.st.scroll = scroll;
-        self.st.change_at = change_at;
-        self.st.caret_on = caret_on;
-        self.st.caret_line = caret_line;
-        self.st.caret_col = caret_col;
-        self.st.hscroll = hscroll;
-        self.st.at_page = at_page;
-        self.st.display = display;
-        self.own = own;
+            // What the document turned out to be, its measures and its laid-out page: read again
+            // from the file opened again.
+            reload: _,
+            reopened_as: _,
+            file_text: _,
+            doc_edit: _,
+            lines: _,
+            text_rows: _,
+            counted: _,
+            win: _,
+            page: _,
+            total: _,
+            scrolls: _,
+            pages: _,
+            last_image: _,
+            image_failed: _,
+            turned: _,
+            table_failed: _,
+            table_sheets: _,
+            failed_body: _,
+            width: _,
+            half: _,
+            doc: _,
+            // What was open over the page or on its way (help, a menu, a note, typed keys): of
+            // this view, not of where the user is.
+            help: _,
+            menu: _,
+            flash: _,
+            input_left: _,
+            user_act: _,
+            key_queue: _,
+            act_queue: _,
+        } = st;
+        ViewPosition {
+            scroll: *scroll,
+            change_at: *change_at,
+            caret_on: *caret_on,
+            caret_line: *caret_line,
+            caret_col: *caret_col,
+            hscroll: *hscroll,
+            at_page: *at_page,
+            table: match base {
+                Frame::Table(table) => Some(table.state),
+                _ => None,
+            },
+            display: display.clone(),
+            own: own.clone(),
+        }
+    }
+    /// A new loop (its file just opened) is put at `p`. What its first view asks with (the page,
+    /// the display options, the keys) is set now; where it stands in the text and in the table
+    /// is put once the first view lands, after the file converted (`Reopen`, which starts its
+    /// document from the top), so the converted document is put there too.
+    pub(in crate::app) fn restore(&mut self, p: ViewPosition) {
+        self.st.at_page = p.at_page;
+        self.st.display = p.display.clone();
+        self.own = p.own.clone();
         // The entry note is for a file first shown, not for one put back.
         self.st.flash = None;
+        self.back = Some(p);
     }
     pub(in crate::app) fn display(&self) -> &super::Display {
         &self.st.display
@@ -2101,6 +2165,7 @@ impl FileLoopState {
             launch_tx,
             launch_rx,
             launching: 0,
+            back: None,
         }
     }
 }
@@ -2234,6 +2299,7 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
         launch_tx,
         launch_rx,
         launching,
+        back,
     } = state;
     // Refreshing on entry must not postpone a timer that was armed before leaving.
     let mut resume_due = if *refresh_on_resume { *view_due } else { None };
@@ -2383,8 +2449,35 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                 };
             }
             let frame_name = frame_name_of(cx, st.display.path_style);
+            // The table's part of a position put back: for the table this view draws.
+            let mut table_back = None;
             let shown = match viewed {
                 Ok(v) => {
+                    // The first view of a loop put back (after any conversion): where the user
+                    // was, once. The frame below keeps it to the text (`clamp`) and the table to
+                    // its grid (`clamp_cursor`).
+                    if let Some(p) = back.take() {
+                        let ViewPosition {
+                            scroll,
+                            change_at,
+                            caret_on,
+                            caret_line,
+                            caret_col,
+                            hscroll,
+                            table,
+                            // Set by `restore`, before the first view asked.
+                            at_page: _,
+                            display: _,
+                            own: _,
+                        } = p;
+                        st.scroll = scroll;
+                        st.change_at = change_at;
+                        st.caret_on = caret_on;
+                        st.caret_line = caret_line;
+                        st.caret_col = caret_col;
+                        st.hscroll = hscroll;
+                        table_back = table;
+                    }
                     st.table_failed = false;
                     st.image_failed = false;
                     st.failed_body = None;
@@ -2456,6 +2549,8 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                 if let Frame::Table(old) = &mut *base {
                     new.state = old.state;
                     new.popup = old.popup.take();
+                } else if let Some(state) = table_back.take() {
+                    new.state = state;
                 }
                 new.clamp_cursor();
                 st.table_sheets = new.addressed;

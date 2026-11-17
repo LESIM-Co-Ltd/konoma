@@ -1984,23 +1984,56 @@ fn view_after_open_again_with(
     between: impl FnOnce(PathBuf) -> Vec<Turn>,
     landed: &'static str,
 ) {
-    let (_dir, path, mut prepared, mut terminal) = preview_fixture(
+    put_back_case(PutBack {
         name,
-        "rows.md",
-        rows(60, "row 60").as_bytes(),
-        Arc::new(ChromeServices),
-    );
-    let mut turns = vec![
-        Turn::Until(
-            "the Preview shows the file",
-            Box::new(|| frame_text().contains("row 01")),
-        ),
-        Turn::Key('G'),
-        Turn::Until(
-            "the view is at the end",
-            Box::new(|| frame_text().contains("row 60") && !frame_text().contains("row 01")),
-        ),
-    ];
+        file: "rows.md",
+        body: rows(60, "row 60"),
+        more: Vec::new(),
+        top: "row 01",
+        moves: &['G'],
+        at_end: "row 60",
+        between: Box::new(between),
+        landed,
+    });
+}
+
+/// A Preview moved away from its start (`moves`, until `at_end` is shown and `top` is not), then
+/// opened again (`between`, given the file's path), and the view the open landed on.
+struct PutBack<'a> {
+    name: &'a str,
+    file: &'a str,
+    body: String,
+    more: Vec<Arc<dyn Plugin>>,
+    top: &'static str,
+    moves: &'a [char],
+    at_end: &'static str,
+    between: Box<dyn FnOnce(PathBuf) -> Vec<Turn> + 'a>,
+    landed: &'static str,
+}
+
+fn put_back_case(case: PutBack<'_>) {
+    let PutBack {
+        name,
+        file,
+        body,
+        more,
+        top,
+        moves,
+        at_end,
+        between,
+        landed,
+    } = case;
+    let (_dir, path, mut prepared, mut terminal) =
+        preview_fixture_with(name, file, body.as_bytes(), Arc::new(ChromeServices), more);
+    let mut turns = vec![Turn::Until(
+        "the Preview shows the file",
+        Box::new(move || frame_text().contains(top)),
+    )];
+    turns.extend(moves.iter().map(|&key| Turn::Key(key)));
+    turns.push(Turn::Until(
+        "the view is at the end",
+        Box::new(move || frame_text().contains(at_end) && !frame_text().contains(top)),
+    ));
     turns.extend(between(path.clone()));
     turns.push(Turn::Until(
         "the file opened again is shown where the view was",
@@ -2010,10 +2043,7 @@ fn view_after_open_again_with(
     turns.push(Turn::Do(Box::new(move || {
         let text = frame_text();
         assert!(text.contains(landed), "the view stays where it was: {text}");
-        assert!(
-            !text.contains("row 01"),
-            "the view is not at the top: {text}"
-        );
+        assert!(!text.contains(top), "the view is not at the start: {text}");
     })));
     run_project_with(
         &mut terminal,
@@ -2030,6 +2060,176 @@ fn view_after_open_again_with(
             .as_ref()
             .is_some_and(|p| p.runner.is_some()),
         "the Preview runs"
+    );
+}
+
+/// Opens the file again: covered by its project screen (`p`) and returned to (`q`), the file
+/// written as `now` behind the cover.
+fn cover_round_trip(now: String) -> impl FnOnce(PathBuf) -> Vec<Turn> {
+    move |path| {
+        vec![
+            Turn::Key('p'),
+            Turn::Settle,
+            Turn::Do(Box::new(move || std::fs::write(&path, &now).unwrap())),
+            Turn::Key('q'),
+        ]
+    }
+}
+
+/// Opens the file again: written as `now`, then refreshed (`r`).
+fn refresh_with(now: String) -> impl FnOnce(PathBuf) -> Vec<Turn> {
+    move |path| {
+        vec![
+            Turn::Do(Box::new(move || std::fs::write(&path, &now).unwrap())),
+            Turn::Key('r'),
+        ]
+    }
+}
+
+/// A converted file (`Reopen`) is put back after it converted: the conversion starts its
+/// document from the top, and the position is put on the converted document.
+#[test]
+fn the_return_to_a_covered_converted_preview_puts_the_view_where_it_was() {
+    put_back_case(PutBack {
+        name: "project_preview_cover_converted_position",
+        file: "rows.conv",
+        body: rows(60, "row 60"),
+        more: vec![Arc::new(Converts), Arc::new(MarkdownContent)],
+        top: "row 01",
+        moves: &['G'],
+        at_end: "row 60",
+        between: Box::new(cover_round_trip(rows(60, "ROW 60"))),
+        landed: "ROW 60",
+    });
+}
+
+#[test]
+fn a_refresh_of_a_converted_preview_puts_the_view_where_it_was() {
+    put_back_case(PutBack {
+        name: "project_preview_refresh_converted_position",
+        file: "rows.conv",
+        body: rows(60, "row 60"),
+        more: vec![Arc::new(Converts), Arc::new(MarkdownContent)],
+        top: "row 01",
+        moves: &['G'],
+        at_end: "row 60",
+        between: Box::new(refresh_with(rows(60, "ROW 60"))),
+        landed: "ROW 60",
+    });
+}
+
+/// A CSV file of `rows` x `cols` cells named by their place, the last one written as `last`.
+fn csv(rows: usize, cols: usize, last: &str) -> String {
+    (1..=rows)
+        .map(|r| {
+            (1..=cols)
+                .map(|c| {
+                    if (r, c) == (rows, cols) {
+                        last.to_string()
+                    } else {
+                        format!("r{r:02}c{c:02}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .map(|line| line + "\n")
+        .collect()
+}
+
+/// A file plugin for `*.csv` that shows the cells as a table. It declares its text too (the file
+/// itself), so its diff offers the Preview representation; a plugin that shows only a table has
+/// no Preview in the diff (`diff_representations`).
+struct CsvTables;
+impl Plugin for CsvTables {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("cover-csv-tables", "0")
+            .bind(Bind::files(["*.csv"]))
+            .shows(ViewKind::Table)
+            .shows(ViewKind::Text)
+            .file_text()
+    }
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::File { path, .. } = input else {
+            unreachable!()
+        };
+        let cells = std::fs::read_to_string(&path)?
+            .lines()
+            .map(|line| line.split(',').map(str::to_string).collect())
+            .collect();
+        Ok(Box::new(CsvSession(Arc::new(CsvCells(cells)))))
+    }
+}
+struct CsvCells(Vec<Vec<String>>);
+impl Grid for CsvCells {
+    fn header(&self, _: usize) -> Option<String> {
+        None
+    }
+    fn nrows(&self) -> usize {
+        self.0.len()
+    }
+    fn ncols(&self) -> usize {
+        self.0.first().map_or(0, Vec::len)
+    }
+    fn cell(&self, row: usize, col: usize) -> String {
+        self.0[row][col].clone()
+    }
+}
+struct CsvSession(Arc<CsvCells>);
+impl Session for CsvSession {
+    fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        Ok(View::Table(TableView {
+            grid: self.0.clone(),
+            title: None,
+            rainbow: false,
+            addressed: false,
+        }))
+    }
+}
+
+/// The table's cell cursor and scroll at its last cell (`G`, `$`), then the file opened again.
+fn table_put_back(name: &str, between: impl FnOnce(PathBuf) -> Vec<Turn>, landed: &'static str) {
+    put_back_case(PutBack {
+        name,
+        file: "cells.csv",
+        body: csv(30, 12, "r30c12"),
+        more: vec![Arc::new(CsvTables)],
+        top: "r01c01",
+        moves: &['G', '$'],
+        at_end: "r30c12",
+        between: Box::new(between),
+        landed,
+    });
+}
+
+/// The return to a covered table puts its cell cursor and scroll where the user left them, as a
+/// konoma tab keeps its table cursor.
+#[test]
+fn the_return_to_a_covered_table_preview_puts_its_cursor_where_it_was() {
+    table_put_back(
+        "project_preview_cover_table",
+        cover_round_trip(csv(30, 12, "END")),
+        "END",
+    );
+}
+
+#[test]
+fn a_refresh_of_a_table_preview_puts_its_cursor_where_it_was() {
+    table_put_back(
+        "project_preview_refresh_table",
+        refresh_with(csv(30, 12, "END")),
+        "END",
+    );
+}
+
+/// The table shrank behind the cover: the cursor kept is past its last cell, and the return puts
+/// it on the last cell of the table as it is now (the table keeps the cursor to its grid).
+#[test]
+fn the_return_to_a_covered_table_preview_that_shrank_shows_its_last_cell() {
+    table_put_back(
+        "project_preview_cover_table_shrank",
+        cover_round_trip(csv(20, 8, "TAIL")),
+        "TAIL",
     );
 }
 
