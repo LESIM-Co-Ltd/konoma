@@ -112,6 +112,34 @@ fn kind_unnumbered(screen: &str) -> String {
         .join("\n")
 }
 
+/// The live work of a tab's view that `App` holds: what the screen in front would draw or ask
+/// for. A tab that is away holds none of it (covering is leaving, `leave_tab_view`): neither
+/// after it is left nor after a result for it is delivered. Still pictures of the inline cache
+/// stay (they cost nothing while they are not drawn) and are not listed.
+fn kind_held(app: &App) -> Vec<&'static str> {
+    let mut held = Vec::new();
+    let mut note = |on: bool, what: &'static str| {
+        if on {
+            held.push(what);
+        }
+    };
+    note(app.is_gif_active(), "a full-screen GIF plays");
+    note(app.gif_poll_timeout().is_some(), "the full-screen GIF asks for wake-ups");
+    note(app.md_gif_poll_timeout().is_some(), "an inline GIF asks for wake-ups");
+    note(app.is_image_preview(), "a picture is shown");
+    note(app.is_media_loading(), "a media load is awaited");
+    note(app.kitty_build_pending(), "a kitty build is awaited");
+    note(app.plugin_layout_for_test().is_some(), "a plugin show is held");
+    note(app.md_cache_width_for_test().is_some(), "a Markdown decoration is held");
+    note(app.md_diff_pending_for_current(), "a block diff is awaited");
+    note(app.diff_target_resolved_for_test(), "a diff target answer is held");
+    note(
+        !app.md_image_cache_media_diff_keys_for_test().is_empty(),
+        "media diff pictures are held",
+    );
+    held
+}
+
 /// A session with two tabs on the same root, the first in front: both roads start from it (the
 /// tab road switches to the second tab, the project road covers the first).
 fn kind_sim(repo: &std::path::Path, sim: Sim) -> Sim {
@@ -200,9 +228,19 @@ fn kind_parity_with<T>(
         let repo_name = repo.file_name().unwrap().to_string_lossy().into_owned();
         kind_away(&mut sim, road, kind);
         let front = kind_front(&mut sim);
+        assert_eq!(
+            kind_held(&sim.app),
+            Vec::<&str>::new(),
+            "{kind} {road:?}: the tab that is away still holds its view's live work"
+        );
         deliver(&mut sim, &extra);
         drain(&mut sim);
         if road == KindRoad::Cover || front_rule == KindFront::Unchanged {
+            assert_eq!(
+                kind_held(&sim.app),
+                Vec::<&str>::new(),
+                "{kind} {road:?}: the result delivered while the tab is away was applied to its view"
+            );
             assert_eq!(
                 kind_front(&mut sim),
                 front,
@@ -687,7 +725,14 @@ fn vcs_kind_filter_pool_delivered_while_away() {
             (sim, repo, (held(res), rx))
         },
         |sim, (h, _)| {
-            sim.app.apply_filter_pool(take(h));
+            // The scan was asked for the tab that is away: it lands nowhere (the screen in front
+            // keeps its own pool), and the return scans again.
+            let pool = sim.app.filter_pool_names_for_test();
+            assert!(
+                !sim.app.apply_filter_pool(take(h)),
+                "filter pool: the scan of the tab that is away was applied"
+            );
+            assert_eq!(sim.app.filter_pool_names_for_test(), pool, "filter pool: the pool in front changed");
         },
         |sim, (_, rx)| kind_settle_rx(sim, rx, |app, r| app.apply_filter_pool(r)),
     );
@@ -808,10 +853,12 @@ fn vcs_kind_gif_timer_delivered_while_away() {
             (sim, repo, ())
         },
         |sim, ()| {
-            // Every timer of the loop, past any frame's time.
-            let _ = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            // Every timer of the loop, past any frame's time: nothing of the tab that is away
+            // advances (its GIF went with the leave), so nothing asks to be drawn.
+            let due = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
             std::thread::sleep(std::time::Duration::from_millis(300));
-            let _ = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            let due_later = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            assert!(!due && !due_later, "gif timer: a timer of the tab that is away fired");
         },
         |sim, ()| sim.settle_inline_images("back", DRAIN_WAIT),
     );
@@ -837,9 +884,12 @@ fn vcs_kind_md_gif_timer_delivered_while_away() {
             (sim, repo, ())
         },
         |sim, ()| {
-            let _ = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            // Nothing of the tab that is away advances (its animated entries went with the
+            // leave), so nothing asks to be drawn.
+            let due = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
             sim.app.age_md_gif_frames_for_test();
-            let _ = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            let due_later = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            assert!(!due && !due_later, "md gif timer: a timer of the tab that is away fired");
         },
         |sim, ()| sim.settle_inline_images("back", DRAIN_WAIT),
     );
