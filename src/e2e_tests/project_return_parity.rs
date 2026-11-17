@@ -147,6 +147,25 @@ fn come_back(s: &mut Sim, away: Away) {
 
 const BOTH: [Away; 2] = [Away::ProjectScreen, Away::Tab];
 
+/// Moves the project screen's cursor (`j`) onto the row of `target`.
+#[track_caller]
+fn project_cursor_to(s: &mut Sim, target: &std::path::Path, what: &str) {
+    for _ in 0..8 {
+        if s.app.project_row_target().as_deref() == Some(target) {
+            break;
+        }
+        s.key('j');
+        settle_projects(s);
+    }
+    assert_eq!(
+        s.app.project_row_target().as_deref(),
+        Some(target),
+        "{what}: the project screen does not list {}\n{}",
+        target.display(),
+        s.screen()
+    );
+}
+
 // --- (a) A project lost while it covers a preview does not come back with the preview.
 
 #[test]
@@ -1139,8 +1158,28 @@ fn a_search_waiting_for_a_table_survives_another_preview_while_covered() {
             Away::ProjectScreen => {
                 s.key('p');
                 settle_projects_leaving_media(&mut s);
-                // Another file's preview is made on the tab under the screen.
-                s.app.paste_jump_to(&root.join("b.md"), None);
+                // Another file's preview is made on the tab under the screen by the project
+                // screen's own open (Enter on b.md's row, then `q` back to the screen): a paste
+                // jump would leave the project screens first and land on the base screen. The
+                // working tab then holds another load (b.md's project diff) when the screen is
+                // left.
+                let b = root.join("b.md");
+                project_cursor_to(&mut s, &b, &format!("{away:?}"));
+                s.enter();
+                settle_projects_leaving_media(&mut s);
+                assert_eq!(
+                    s.app.tab.preview_path.as_deref(),
+                    Some(b.as_path()),
+                    "{away:?}: b.md was not opened under the cover\n{}",
+                    s.screen()
+                );
+                s.key('q');
+                settle_projects_leaving_media(&mut s);
+                assert!(
+                    s.app.project_active(),
+                    "{away:?}: `q` did not go back to the project screen\n{}",
+                    s.screen()
+                );
                 s.key('q');
                 settle_projects_leaving_media(&mut s);
             }
@@ -1366,7 +1405,8 @@ enum Meanwhile {
     Nothing,
     /// Another file opened (Enter on the project screen, or on the other tab's tree), then `q`.
     OpenFile,
-    /// A pasted path to the unchanged k.txt jumped to (a preview of another file).
+    /// A pasted path to the unchanged k.txt jumped to (a preview of another file). Over a project
+    /// screen the jump leaves the screens first (`pasted_jump_leaves_the_project_screens`).
     PasteJump,
 }
 
@@ -1435,10 +1475,17 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
     assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
     let shown = s.app.tab.preview_path.clone();
     go_away(&mut s, away);
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(60))
-        .expect("the deferred scan lands");
-    s.app.apply_statuses(res);
+    // Over a project screen the OpenFile case lands the scan while the preview opened from it is
+    // in front: the tree under a project screen is frozen while the screen covers it, and only
+    // then does the working tab consume the anchor, which is what tells the anchor's group apart.
+    let scan_under_the_opened_preview =
+        matches!(away, Away::ProjectScreen) && matches!(meanwhile, Meanwhile::OpenFile);
+    if !scan_under_the_opened_preview {
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the deferred scan lands");
+        s.app.apply_statuses(res);
+    }
     match meanwhile {
         Meanwhile::Nothing => {}
         Meanwhile::OpenFile => {
@@ -1447,6 +1494,16 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
             settled(&mut s);
             assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
             assert_ne!(s.app.tab.preview_path, shown, "{what}: not another file");
+            if scan_under_the_opened_preview {
+                let res = rx
+                    .recv_timeout(std::time::Duration::from_secs(60))
+                    .expect("the deferred scan lands");
+                s.app.apply_statuses(res);
+                assert!(
+                    !s.app.changed_anchor_left_to_status(),
+                    "{what}: the scan did not consume the working tab's anchor"
+                );
+            }
             s.key('q');
             settle_projects(&mut s);
             assert_eq!(
@@ -1457,6 +1514,12 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
             );
         }
         Meanwhile::PasteJump => {
+            if matches!(away, Away::ProjectScreen) {
+                assert!(
+                    s.app.covered_changed_filter_pending(),
+                    "{what}: the scan that landed while covered is not owed to the list"
+                );
+            }
             s.app.paste_jump_to(&root.join("k.txt"), None);
             settled(&mut s);
             assert_eq!(
@@ -1464,6 +1527,10 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
                 Some(root.join("k.txt").as_path()),
                 "{what}"
             );
+            if matches!(away, Away::ProjectScreen) {
+                pasted_jump_leaves_the_project_screens(&mut s, &rx, &root, &what);
+                return;
+            }
         }
     }
     come_back(&mut s, away);
@@ -1483,6 +1550,65 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
     assert_c3_drawn_under_the_cursor(&s, &what);
 }
 
+/// The paste jump to k.txt made while the project screen covers the tab: a jump, like a bookmark
+/// jump, leaves the project screens first (`leave_project_screens_for_jump`) and lands on the base
+/// screen, so it is not an open under the cover and there is no screen left to come back from.
+/// Leaving puts the saved tree back (`put_tab_back`): the whole tree, as it was saved while its
+/// `C` rebuild waited for a scan, with the identity (c3) still waiting with it. The scan that
+/// landed while covered was owed to that list (`covered_changed_filter`), and
+/// `settle_covered_reload` leaves the rebuild to the scan the return's refresh asked for (one is
+/// in flight). The jump then reveals k.txt in that whole tree, which moves `selected` only, not
+/// the waiting identity. So when the scan lands, `apply_statuses` rebuilds the `C` list on the
+/// identity it waits with: the changed files with the cursor on c3 (k.txt, unchanged, is not in
+/// the list), while the preview stays k.txt's. Back in the tree it is the same.
+#[track_caller]
+fn pasted_jump_leaves_the_project_screens(
+    s: &mut Sim,
+    rx: &std::sync::mpsc::Receiver<crate::app::StatusResult>,
+    root: &std::path::Path,
+    what: &str,
+) {
+    let k = root.join("k.txt");
+    assert!(
+        !s.app.project_active() && s.app.tab.project_navigation.is_none(),
+        "{what}: the jump did not leave the project screens\n{}",
+        s.screen()
+    );
+    assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
+    assert!(
+        tree_names(s).iter().any(|n| n == "k.txt"),
+        "{what}: the saved tree (the whole tree waiting for its scan) was not put back: {:?}",
+        tree_names(s)
+    );
+    assert!(
+        s.app.changed_anchor_left_to_status() && s.app.git_status_in_flight(),
+        "{what}: the `C` rebuild does not wait for the return's scan with its identity"
+    );
+    assert_eq!(
+        cursor_file(s).as_deref(),
+        Some("k.txt"),
+        "{what}: the jump did not land on k.txt in the tree"
+    );
+    let landed = land_scans(s, rx);
+    assert!(landed >= 1, "{what}: the return asked for no scan");
+    assert_eq!(
+        s.app.tab.preview_path.as_deref(),
+        Some(k.as_path()),
+        "{what}: the scan moved the preview off k.txt"
+    );
+    assert_cursor_on_c3(s, &format!("{what}, after the scan that follows the jump"));
+    s.key('q');
+    settled(s);
+    assert_eq!(s.app.tab.mode, Mode::Tree, "{what}");
+    land_scans(s, rx);
+    assert_cursor_on_c3(s, &format!("{what}, in the tree"));
+    assert_c3_drawn_under_the_cursor(s, what);
+}
+
+/// This road cannot catch the group of `changed_anchor_pending` (`tree`, not `live`): the tree
+/// under a project screen is frozen while covered (the scan is only recorded as
+/// `covered_changed_filter`), so the working tab still holds the anchor saved at the cover. The
+/// OpenFile case of the next test is the one that guards the group.
 #[test]
 fn a_changed_list_cursor_waiting_for_a_scan_comes_back_on_its_file() {
     for away in BOTH {
@@ -1519,10 +1645,12 @@ fn diff_origin(
 }
 
 /// A.md's diff opened from the project screen (the Git backend's baseline) and moved to its
-/// Preview representation (`R`); the tab goes away (`p`, or a new tab), an ordinary preview of
-/// b.txt is opened there (it is no diff's and has no baseline), the tab comes back (`q`, or `[`).
-/// A comes back as the diff's Preview with the Git baseline, and `R` goes back to the Source
-/// diff of that baseline, the same on both roads.
+/// Preview representation (`R`); the tab goes away (`p`, or a new tab) and another preview of
+/// b.txt is opened there: under the project screen by its own open (b.txt's project diff: its
+/// Source diff, no diff's Preview, then an ordinary preview of c.txt jumped to from it, still
+/// under the cover), in the other tab by a paste jump (an ordinary preview, no baseline); the tab
+/// comes back (`q`, or `[`). A comes back as the diff's Preview with the Git
+/// baseline, and `R` goes back to the Source diff of that baseline, the same on both roads.
 #[test]
 fn a_diff_preview_comes_back_with_its_origin_and_baseline_after_another_preview() {
     use konoma_vcs_core::vcs::Preference;
@@ -1530,9 +1658,15 @@ fn a_diff_preview_comes_back_with_its_origin_and_baseline_after_another_preview(
     for away in BOTH {
         let root = repo(
             "prp_diff_origin",
-            &[("a.md", "# A\n\nORIGINAL LINE\n"), ("b.txt", "plain bee\n")],
+            &[
+                ("a.md", "# A\n\nORIGINAL LINE\n"),
+                ("b.txt", "plain bee\n"),
+                ("c.txt", "plain sea\n"),
+            ],
         );
         std::fs::write(root.join("a.md"), "# A\n\nCHANGED LINE\n").unwrap();
+        // b.txt is changed too, so the project screen lists it (the open made under the cover).
+        std::fs::write(root.join("b.txt"), "plain bee changed\n").unwrap();
         let a = root.join("a.md");
         let mut s = road(&root, cfg_en(), false);
         open_project(&mut s);
@@ -1565,14 +1699,61 @@ fn a_diff_preview_comes_back_with_its_origin_and_baseline_after_another_preview(
             s.screen()
         );
         go_away(&mut s, away);
-        s.app.paste_jump_to(&root.join("b.txt"), None);
-        settled(&mut s);
-        assert_eq!(
-            diff_origin(&s),
-            (Some(root.join("b.txt")), false, false, Preference::Auto),
-            "{away:?}: the preview opened meanwhile is not an ordinary one\n{}",
-            s.screen()
-        );
+        let b = root.join("b.txt");
+        match away {
+            Away::ProjectScreen => {
+                // Under the cover the other file is opened by the project screen's own open
+                // (Enter on b.txt's row, then `q` back to the screen): a paste jump would leave
+                // the project screens first and land on the base screen. That open is b.txt's
+                // project diff, not an ordinary preview: its Source diff (a text file has no
+                // Preview representation, so it is no diff's Preview) with the project's (Git)
+                // baseline.
+                project_cursor_to(&mut s, &b, &format!("{away:?}"));
+                s.enter();
+                settle_projects(&mut s);
+                settled(&mut s);
+                assert!(s.app.is_git_diff_preview(), "{away:?}\n{}", s.screen());
+                assert_eq!(
+                    diff_origin(&s),
+                    (Some(b.clone()), false, false, Preference::Git),
+                    "{away:?}: the file opened meanwhile is not b.txt's project diff\n{}",
+                    s.screen()
+                );
+                // b.txt's diff has A's baseline (Git: both are the git project's opens), so a
+                // baseline taken from the working tab would not show. From that preview a paste
+                // jump opens c.txt as an ordinary preview (no baseline, `Auto`) and the cover is
+                // kept: the project screens are behind the preview opened from them (no project
+                // screen is in front for the jump to leave), and `q` goes back to them.
+                // The one close rule this follows: `close_preview` (src/lib.rs), back to the
+                // project canvas the preview was opened from.
+                let c = root.join("c.txt");
+                s.app.paste_jump_to(&c, None);
+                settled(&mut s);
+                assert_eq!(
+                    diff_origin(&s),
+                    (Some(c.clone()), false, false, Preference::Auto),
+                    "{away:?}: the preview jumped to meanwhile is not an ordinary one\n{}",
+                    s.screen()
+                );
+                s.key('q');
+                settle_projects(&mut s);
+                assert!(
+                    s.app.project_active(),
+                    "{away:?}: `q` did not go back to the project screen\n{}",
+                    s.screen()
+                );
+            }
+            Away::Tab => {
+                s.app.paste_jump_to(&b, None);
+                settled(&mut s);
+                assert_eq!(
+                    diff_origin(&s),
+                    (Some(b.clone()), false, false, Preference::Auto),
+                    "{away:?}: the preview opened meanwhile is not an ordinary one\n{}",
+                    s.screen()
+                );
+            }
+        }
         come_back(&mut s, away);
         settled(&mut s);
         let back = diff_origin(&s);
