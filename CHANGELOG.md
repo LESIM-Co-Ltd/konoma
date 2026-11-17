@@ -6,7 +6,14 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Security
+- Updated `calamine` to 0.38 (RUSTSEC-2026-0436: malformed compound files could panic or cause unbounded allocation in its CFB reader). The XLS preview already checked the original CFB with its own guarded reader and passed only a newly built container holding the checked workbook bytes to `calamine`; the original malformed container did not reach that reader. Those checks remain. The formula and text budgets now follow 0.38's BIFF5 string literals and ODS text, including displayed error text, tabs and line breaks; malformed XLSB defined-name records are checked before `calamine` opens them.
+
 ### Fixed
+- BIFF5 `.xls` text in multibyte code pages (including Japanese Shift-JIS) no longer acquires stray NUL or replacement characters. Formula string literals without a BIFF8 flags byte are read and charged to the formula budget correctly.
+- `.xlsx` previews now combine escaped UTF-16 surrogate pairs into one character and replace an unpaired surrogate with U+FFFD, matching `calamine` 0.38. Workbooks whose main part is named somewhere other than `xl/workbook.xml` now open with the sheets, date system, styles and shared strings of the part selected by `_rels/.rels`.
+- Whole-number RK cells in `.xlsb` with a date or duration format now have the date/time type in the cell detail. Their displayed value and date system are unchanged.
+- ODS cells longer than the former 1 MiB text-repair limit now keep their tabs and soft line breaks too. `calamine` 0.38 preserves these itself, so the format pass no longer collects a second copy of string cells to repair them.
 - The first keys typed after starting konoma were lost when the terminal did not answer the startup graphics query (a detached tmux, or a tmux pane without `allow-passthrough`, even inside Ghostty). The query ran on a helper thread inside `ratatui-image` that, after the 2 second timeout, stayed blocked reading stdin: it swallowed the next key, it could leave the main loop's own read waiting until the key after that (so a plugin redraw also stalled), and it later called `disable_raw_mode()` on its own. konoma now asks the terminal itself, on the main thread, with `poll(2)` and a hard deadline, using `ratatui-image`'s own query and reply parser, and reads exactly up to the final status report, so nothing is left reading stdin and keys typed after the reply (or typed while it was in flight) are kept.
 
 ## [0.31.2] - 2026-10-21
