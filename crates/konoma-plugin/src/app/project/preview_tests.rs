@@ -18,6 +18,8 @@ mod chooser_tests;
 mod global_help_tests;
 #[path = "idle_resize_tests.rs"]
 mod idle_resize_tests;
+#[path = "media_cover_tests.rs"]
+mod media_cover_tests;
 #[path = "quit_guard_tests.rs"]
 mod quit_guard_tests;
 

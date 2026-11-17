@@ -253,6 +253,24 @@ impl ProjectLoopState {
         self.with_host(info, |host, context| host.ensure_view(context, info));
     }
 
+    /// The one place where the diff screen stops being in front: the first project screen
+    /// covers it (`p` from the diff screen or from its Preview representation). Covering is
+    /// leaving, as in the host (`App::navigation_over_here`): the diff screen's media diff goes,
+    /// and the return (`ProjectDispatch::LeaveProject`) asks it again.
+    fn cover_diff_screen(&mut self, info: &ProjectContextInfo<StandaloneSurface>) {
+        let project = self.diff_return.as_ref().unwrap().project.clone();
+        let Some(first) = self.with_host(info, |host, _| host.first_screen(&project, info.id))
+        else {
+            return;
+        };
+        self.screen = Some(ProjectHost::start_screen(project, first));
+        self.preview_project = true;
+        if let Some(diff) = self.diff.as_mut() {
+            diff.leave_media();
+        }
+        self.ensure(info);
+    }
+
     fn content(
         &self,
         info: &ProjectContextInfo<StandaloneSurface>,
@@ -593,16 +611,7 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     }
                 }
                 match exit {
-                    crate::app::looping::FileLoopExit::Project => {
-                        let project = state.diff_return.as_ref().unwrap().project.clone();
-                        if let Some(first) =
-                            state.with_host(&info, |host, _| host.first_screen(&project, info.id))
-                        {
-                            state.screen = Some(ProjectHost::start_screen(project, first));
-                            state.preview_project = true;
-                            state.ensure(&info);
-                        }
-                    }
+                    crate::app::looping::FileLoopExit::Project => state.cover_diff_screen(&info),
                     crate::app::looping::FileLoopExit::Tool => {
                         let service = state.diff.as_ref().unwrap().request.info.clone();
                         state.launch.tool(prepared, &service);

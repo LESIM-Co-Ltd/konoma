@@ -98,6 +98,16 @@ impl DiffScreenState {
         self
     }
 
+    /// The diff screen stops being in front (a project screen covers it): its media diff is
+    /// dropped as a host tab that is left drops it (`App::leave_tab_view`): the held result, the
+    /// ask in flight (its answer is refused by generation) and the want queued behind it. The
+    /// page and the layout stay; the return asks again when it prepares its first frame.
+    pub(in crate::app) fn leave_media(&mut self) {
+        self.media.worker.invalidate();
+        let _ = self.media.worker.take_queued();
+        self.media.outcome = None;
+    }
+
     pub fn media_page(&self) -> u32 {
         self.media.page.max(1)
     }

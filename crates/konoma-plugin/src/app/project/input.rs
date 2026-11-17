@@ -229,16 +229,7 @@ impl ProjectLoopState {
                     );
                     self.launch.copy(prepared, text);
                 }
-                Ok((DiffScreenAction::Project, _)) => {
-                    let project = self.diff_return.as_ref().unwrap().project.clone();
-                    if let Some(first) =
-                        self.with_host(info, |host, _| host.first_screen(&project, info.id))
-                    {
-                        self.screen = Some(ProjectHost::start_screen(project, first));
-                        self.preview_project = true;
-                        self.ensure(info);
-                    }
-                }
+                Ok((DiffScreenAction::Project, _)) => self.cover_diff_screen(info),
                 Err(error) => prepared.notice = Some(error.message.get(prepared.lang).into()),
             }
             return false;
