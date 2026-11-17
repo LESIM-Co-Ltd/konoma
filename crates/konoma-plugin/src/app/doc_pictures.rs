@@ -236,6 +236,12 @@ impl DocPics {
         self
     }
 
+    /// The screen that drew these pictures is left: drop what animates or may yet animate, by the
+    /// rule konoma's tab leave uses (`InlineImageCache::stop_animations`).
+    pub(crate) fn stop_animations(&mut self) {
+        self.cache.stop_animations();
+    }
+
     /// Leave the media diff, releasing only its pictures from the shared document cache.
     pub fn prune_media_diff_picture_cache(&mut self) {
         self.prune_media(None);

@@ -959,3 +959,166 @@ fn the_tool_return_behind_the_project_screen_reads_the_diff_screen_on_its_return
     );
     assert_eq!(held_markdown(&f.prepared), (true, false));
 }
+
+/// A media diff of an animated GIF: each side holds two frames.
+fn animated() -> MediaDiffComputed {
+    let side = |old: bool| {
+        let frame = |shade: u8| {
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                2,
+                1,
+                image::Rgba([shade, 20, 30, 255]),
+            ))
+        };
+        MediaDiffSideDecoded::Picture(Box::new(MediaDiffPictureDecoded {
+            natural_px: (8, 8),
+            bytes: 8,
+            page_count: None,
+            image: frame(10),
+            frames: Some(vec![
+                (frame(10), Duration::from_millis(50)),
+                (frame(90), Duration::from_millis(50)),
+            ]),
+            svg: None,
+            svg_base: None,
+            cache_key: format!("media-diff://{}/1/64x64", if old { "o" } else { "n" }).into(),
+        }))
+    };
+    MediaDiffComputed::Ready {
+        kind: MediaDiffKind::Image,
+        base: MediaBase::Head,
+        same_bytes: false,
+        old: side(true),
+        new: side(false),
+    }
+}
+
+/// The pictures of the diff screen's view are left as a konoma tab leaves its own
+/// (`leave_tab_view` -> `stop_md_animations`): when a project screen covers the diff screen, and
+/// when the diff screen goes back to its project screen, the animated pictures of its media diff
+/// go (they would keep the animation timer running behind the screen in front), and the return
+/// decodes and plays them again.
+#[test]
+fn leaving_the_diff_screen_drops_its_animated_media_pictures_on_cover_and_on_back() {
+    let dir = konoma_test_support::unique_tmp("project_media_cover_gif");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("project.marker"), "").unwrap();
+    let path = dir.join("picture.gif");
+    std::fs::write(&path, b"GIF89a").unwrap();
+    let mut prepared = crate::app::project::prepare::prepare_projects_with_previews(
+        vec![Arc::new(Project)],
+        Vec::new(),
+        &dir,
+        TermCaps::new(),
+        (
+            SharedConfig::parse("[ui]\nlang='en'\ndiff_view='rendered'\nwrap=false\n").unwrap(),
+            None,
+        ),
+        Arc::new(ChromeServices),
+    )
+    .unwrap_or_else(|e| panic!("{}", e.error));
+    let mut terminal = Terminal::new(TestBackend::new(54, 14)).unwrap();
+    opening(&mut prepared, &mut terminal, "changes");
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let mut media = MediaDiffWorker::with_compute(Arc::new(move |_| {
+        count.fetch_add(1, Ordering::SeqCst);
+        animated()
+    }));
+    let (tx, replies) = mpsc::channel();
+    media.attach(tx);
+
+    // Open the picture's diff through the project's own navigation (the VCS program's road).
+    let mut state = ProjectLoopState::new(&mut prepared, false);
+    let info = state.info(&prepared, &ProjectLoopCx::default());
+    let mut update = ProjectUpdate::handled();
+    update.commands.push(ProjectCommand::Navigation {
+        outcome: Outcome::OpenDiff { path: path.clone() },
+        save_return: true,
+    });
+    state.apply(&mut prepared, &info, update);
+    assert!(state.diff.as_ref().unwrap().project_owned);
+    state.diff.as_mut().unwrap().settle_preview_for_test();
+    prepared.diff = Some(state.diff.take().unwrap().with_media_worker(media, replies));
+    prepared.screen = state.screen.take();
+    prepared.runtimes = std::mem::take(&mut state.runtimes);
+    prepared.observe_media_for_test();
+
+    let pictures = crate::app::Pictures::new(
+        ratatui_image::picker::Picker::halfblocks(),
+        "media-cover-gif",
+        &path,
+        128,
+    )
+    .with_out(Box::new(Vec::<u8>::new()));
+    // At each fence: whether a project screen covers the diff screen, whether the diff screen
+    // is open, and (key, frames) of every entry of the pictures cache.
+    type Fence = (bool, bool, Vec<(String, usize)>);
+    let mut seen: Vec<Fence> = Vec::new();
+    let mut keys = VecDeque::from(['p', 'q', 'q']);
+    crate::app::project::idle_test_hooks::run_project_fenced_state_for_test(
+        &mut terminal,
+        &mut prepared,
+        &ProjectLoopCx::default(),
+        Some(pictures),
+        |_, _, state| {
+            let cache = state.media.as_ref().map_or_else(Vec::new, |m| {
+                m.cache
+                    .iter()
+                    .map(|c| (c.key.to_string_lossy().into_owned(), c.frames))
+                    .collect::<Vec<_>>()
+            });
+            seen.push((state.return_to_preview, state.diff.is_some(), cache));
+            match keys.pop_front() {
+                Some(c) => Next::Event(AppEvent::Key(Key::char(c))),
+                None => Next::End,
+            }
+        },
+    )
+    .unwrap();
+
+    let animated_entries = |cache: &[(String, usize)]| {
+        cache
+            .iter()
+            .filter(|(key, frames)| key.starts_with("media-diff://") && *frames >= 2)
+            .count()
+    };
+    assert_eq!(seen.len(), 4, "one fence per step: {seen:?}");
+    // 1. The diff screen in front holds the GIF's two sides, each with its frames.
+    assert!(!seen[0].0 && seen[0].1, "the diff screen is in front");
+    assert_eq!(
+        animated_entries(&seen[0].2),
+        2,
+        "the premise: both sides of the GIF are animated pictures in front: {:?}",
+        seen[0].2
+    );
+    // 2. `p` covers it: the animated pictures go, as in a konoma tab that is left.
+    assert!(seen[1].0, "the project screen covers the diff screen");
+    assert_eq!(
+        animated_entries(&seen[1].2),
+        0,
+        "covering is leaving: no animated picture stays behind the project screen: {:?}",
+        seen[1].2
+    );
+    // 3. `q` returns: the media diff is asked again and its pictures are placed again.
+    assert!(!seen[2].0 && seen[2].1, "the diff screen is in front again");
+    assert_eq!(
+        animated_entries(&seen[2].2),
+        2,
+        "the return places the GIF's pictures again: {:?}",
+        seen[2].2
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "the return asks again");
+    // 4. `q` goes back to the project screen: the animated pictures go there too.
+    assert!(
+        !seen[3].1,
+        "the diff screen was left for its project screen"
+    );
+    assert_eq!(
+        animated_entries(&seen[3].2),
+        0,
+        "going back is leaving: no animated picture stays behind the project screen: {:?}",
+        seen[3].2
+    );
+}

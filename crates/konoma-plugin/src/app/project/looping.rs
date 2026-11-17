@@ -253,12 +253,20 @@ impl ProjectLoopState {
         self.with_host(info, |host, context| host.ensure_view(context, info));
     }
 
-    /// The one place where the diff screen stops being in front: the first project screen
-    /// covers it (`p` from the diff screen or from its Preview representation). Covering is
-    /// leaving, as in the host (`App::navigation_over_here`): everything the diff screen's view
-    /// asked goes (`DiffScreenState::leave`), nothing asks it again while covered (a refresh is
-    /// held, `DiffScreenState::hold_refresh`), and the return (`ProjectDispatch::LeaveProject`)
-    /// asks it once.
+    /// Whether the diff screen's view (the diff screen, or its Preview representation) is in
+    /// front: it is open, it was opened from a project screen, and no project screen covers it.
+    fn diff_view_in_front(&self) -> bool {
+        self.diff.as_ref().is_some_and(|diff| !diff.closed)
+            && self.diff_return.is_some()
+            && !self.preview_project
+    }
+
+    /// The first project screen covers the diff screen (`p` from the diff screen or from its
+    /// Preview representation). Covering is leaving, as in the host
+    /// (`App::navigation_over_here`): everything the diff screen's view asked goes
+    /// (`DiffScreenState::leave`), nothing asks it again while covered (a refresh is held,
+    /// `DiffScreenState::hold_refresh`), and the return (`ProjectDispatch::LeaveProject`) asks it
+    /// once. Its pictures are left by the run loop, which owns them (`diff_view_in_front`).
     fn cover_diff_screen(&mut self, info: &ProjectContextInfo<StandaloneSurface>) {
         let project = self.diff_return.as_ref().unwrap().project.clone();
         let Some(first) = self.with_host(info, |host, _| host.first_screen(&project, info.id))
@@ -382,7 +390,20 @@ pub fn run_project_with<B: Backend, E: EventSource>(
         if prepared.watch_failed {
             prepared.notice = Some(super::watch_warning(prepared.lang).into());
         }
+        // The pictures of the diff screen's view, left as a konoma tab leaves its own
+        // (`leave_tab_view`): when the view stops being in front by any road (a project screen
+        // covers it, it goes back to its project screen, it is discarded or fails), what
+        // animates or may yet animate goes (`Pictures::stop_doc_animations`); the return draws
+        // and decodes them again.
+        let mut diff_view_was_in_front = state.diff_view_in_front();
         loop {
+            let diff_view_in_front = state.diff_view_in_front();
+            if diff_view_was_in_front && !diff_view_in_front {
+                if let Some(p) = pictures.as_mut() {
+                    p.stop_doc_animations();
+                }
+            }
+            diff_view_was_in_front = diff_view_in_front;
             if state.poll_root_switch(prepared, pictures.as_mut()) {
                 redraw = true;
             }

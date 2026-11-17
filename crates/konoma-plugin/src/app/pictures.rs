@@ -299,6 +299,15 @@ impl Pictures {
         }
     }
 
+    /// The view that drew the document pictures is left (a project screen covers it, or it went
+    /// back to its project screen): what animates or may yet animate goes, as in a konoma tab
+    /// that is left (`DocPics::stop_animations`). Nothing to do before a document was drawn.
+    pub(crate) fn stop_doc_animations(&mut self) {
+        if let Some(d) = self.doc.as_mut() {
+            d.stop_animations();
+        }
+    }
+
     /// Whether the page must be laid out again (a picture's result changed what it reserves).
     pub fn take_doc_relayout(&mut self) -> bool {
         self.doc.as_mut().is_some_and(DocPics::take_relayout)

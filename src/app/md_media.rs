@@ -997,21 +997,11 @@ impl App {
 
     /// Drop every entry of the inline-picture cache that animates or may yet animate: the screen
     /// that drew them is left (`leave_tab_view`), and an entry that holds frames keeps the run
-    /// loop's animation timer running (`advance_md_gifs_if_due`, `md_gif_poll_timeout`). That is
-    /// an entry with two frames or more, and an entry whose decode answer is still owed (the first
-    /// decode, or a rebuild of pixels the cache dropped): the answer was asked for by the screen
-    /// that is left and may bring the frames of a GIF. The entry is what a decode answers to
-    /// (`MdImgEntry::request`), so with it gone the answer is stale when it lands
-    /// (`file_decoded` drops a result whose entry is missing) and nothing is filed behind the
-    /// screen in front. A still picture that has its pixels stays cached: it costs no work while it
-    /// is not drawn. The screen that shows the document again decodes what it draws again and plays
-    /// an animation from its first frame.
+    /// loop's animation timer running (`advance_md_gifs_if_due`, `md_gif_poll_timeout`). The rule
+    /// (which entries go) is `InlineImageCache::stop_animations`, shared with the standalone
+    /// program's diff screen, which leaves its view by the same rule.
     pub(super) fn stop_md_animations(&mut self) {
-        self.md_images.cache.retain(|_, entry| {
-            let decode_owed =
-                (entry.decoded.is_none() && !entry.failed && !entry.evicted) || entry.rebuilding;
-            entry.frames.len() < 2 && !decode_owed
-        });
+        self.md_images.stop_animations();
     }
 
     /// Every filesystem path the Markdown preview currently draws an inline image from.
