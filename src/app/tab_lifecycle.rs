@@ -137,11 +137,6 @@ impl App {
         // are restored early here (mirroring `self.tab.repr = t.repr.clone();` further down).
         self.tab.preview_path = t.preview_path.clone();
         self.tab.preview_kind = t.preview_kind.clone();
-        // Which open the preview came from (the diff's own Preview representation or not) and the
-        // baseline of its diff are read by the reload below (a diff gutter, a media diff, a block
-        // diff ask for the backend): the restored preview's own, not the working tab's.
-        self.tab.preview_from_diff = t.preview_from_diff;
-        self.tab.diff_read_context = t.diff_read_context;
         // The text a command or a plugin generated is the output of the run that was made before:
         // the reload below makes it again, and what is read is the new output when it arrives,
         // never the old file (a reader opened on it would take the old content for the current
