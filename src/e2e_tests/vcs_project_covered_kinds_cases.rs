@@ -894,3 +894,55 @@ fn vcs_kind_md_gif_timer_delivered_while_away() {
         |sim, ()| sim.settle_inline_images("back", DRAIN_WAIT),
     );
 }
+
+/// An embedded GIF whose decode has not been applied when the tab is left: the decode was asked
+/// for by the screen that is left, so its answer, delivered while the tab is away, is not filed
+/// behind the screen in front (no frames, no animation timer). The return asks for it again and
+/// it plays.
+#[test]
+fn vcs_kind_md_gif_decode_delivered_while_away() {
+    if isolated("vcs_kind_md_gif_decode_delivered_while_away") {
+        return;
+    }
+    kind_parity(
+        "md gif decode",
+        |name| {
+            let repo = super::vcs_changes::git_repo(name, true);
+            write_animated_gif(&repo.join("anim.gif"), &[[220, 20, 20], [20, 220, 20], [20, 20, 220]]);
+            std::fs::write(repo.join("anim.md"), "before\n\n![anim](anim.gif)\n\nafter\n").unwrap();
+            let mut sim = kind_media(&repo);
+            sim.select("anim.md");
+            sim.enter();
+            sim.await_media("open");
+            sim.draw();
+            let res = sim.md_img_rx.as_ref().unwrap().recv_timeout(DRAIN_WAIT).expect("the decode answers");
+            assert_eq!(sim.app.md_animated_entries_for_test(), 0, "premise: the decode is not applied yet");
+            (sim, repo, held(res))
+        },
+        |sim, h| {
+            sim.app.apply_md_image(take(h));
+            assert_eq!(
+                sim.app.md_animated_entries_for_test(),
+                0,
+                "md gif decode: the frames were filed behind the screen in front"
+            );
+            assert!(sim.app.md_gif_poll_timeout().is_none(), "md gif decode: the GIF asks for wake-ups");
+            let due = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            sim.app.age_md_gif_frames_for_test();
+            let due_later = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            assert!(!due && !due_later, "md gif decode: a timer of the tab that is away fired");
+        },
+        |sim, _| {
+            sim.settle_inline_images("back", DRAIN_WAIT);
+            assert_eq!(sim.app.md_animated_entries_for_test(), 1, "md gif decode: the return did not decode the GIF again");
+            assert!(sim.app.md_gif_poll_timeout().is_some(), "md gif decode: the GIF does not play after the return");
+            // The first tick starts the shown frame's clock; past its time the next one advances.
+            crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            sim.app.age_md_gif_frames_for_test();
+            assert!(
+                crate::animation_timers_due(&mut sim.app, std::time::Instant::now()),
+                "md gif decode: the GIF does not advance after the return"
+            );
+        },
+    );
+}

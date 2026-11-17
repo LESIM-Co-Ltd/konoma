@@ -455,9 +455,11 @@ impl App {
         self.invalidate_media_diff();
         let _ = self.media_diff.take_queued();
         // The animated pictures a Markdown document embeds advance on the run loop's timer
-        // (`animation_timers_due`) for as long as their entries hold frames: they go, and the
-        // return decodes them again and plays them from their first frame, as the full-screen GIF
-        // does (`release_image` above). The canvas pictures of the plugin show went with it.
+        // (`animation_timers_due`) for as long as their entries hold frames: they go, and so do the
+        // entries whose decode answer is still owed (an answer that lands for a missing entry is
+        // stale, so a GIF decoded late is not filed behind the screen in front). The return
+        // decodes them again and plays them from their first frame, as the full-screen GIF does
+        // (`release_image` above). The canvas pictures of the plugin show went with it.
         self.stop_md_animations();
     }
 
