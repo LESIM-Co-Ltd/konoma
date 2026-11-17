@@ -256,6 +256,25 @@ pub(crate) fn count_plugin_id_reads<T>(f: impl FnOnce() -> T) -> (T, usize) {
 }
 
 thread_local! {
+    /// How many times the idle-child reaper was asked to run (`plugins::external::reap_if_due`,
+    /// before its throttle) **on this thread**.
+    static REAP_ASKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `plugins::external::reap_if_due` on entry, before the throttle decides.
+pub(crate) fn note_reap_ask() {
+    let _ = REAP_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times the reaper was asked to run while it did)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_reap_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = REAP_ASKS.with(|c| c.get());
+    let out = f();
+    (out, REAP_ASKS.with(|c| c.get()).saturating_sub(before))
+}
+
+thread_local! {
     /// How many times `App::dispatch_media_diff` actually dispatched a media-diff request (spawned a
     /// worker thread, or ran the synchronous no-`Sender` fallback) **on this thread** —
     /// `App::kick_media_diff`/`App::apply_media_diff`'s own "at most one worker in flight, latest

@@ -357,7 +357,20 @@ fn vcs_kind_kitty_build_delivered_while_away() {
             (sim, repo, (held(res), rx))
         },
         |sim, (h, _)| {
-            sim.app.apply_kitty(take(h));
+            // The leave dropped the view's picture and made the build stale: the viewer refuses
+            // it, so no picture is held behind the screen in front (the return builds again).
+            assert!(
+                sim.app.kitty_image_ref().is_none(),
+                "kitty build: the tab that is away still holds its kitty picture"
+            );
+            assert!(
+                !sim.app.apply_kitty(take(h)),
+                "kitty build: the build asked before the leave was applied while the tab is away"
+            );
+            assert!(
+                sim.app.kitty_image_ref().is_none(),
+                "kitty build: the build asked before the leave is held while the tab is away"
+            );
         },
         |sim, (_, rx)| {
             sim.settle_inline_images("back", DRAIN_WAIT);
@@ -569,7 +582,12 @@ fn vcs_kind_md_block_diff_delivered_while_away() {
             (sim, repo, held(res))
         },
         |sim, h| {
-            sim.app.apply_md_diff(take(h));
+            // The leave made the answer stale: the worker refuses it, so nothing lands behind the
+            // screen in front (the return asks again).
+            assert!(
+                !sim.app.apply_md_diff(take(h)),
+                "md block diff: the answer asked before the leave was applied while the tab is away"
+            );
         },
         |sim, _| {
             sim.draw();
@@ -797,7 +815,16 @@ fn vcs_kind_watch_event_delivered_while_away() {
         },
         |sim, path| {
             std::fs::write(path, "rewritten while away\n").unwrap();
-            sim.app.refresh_fs_watched(false, std::slice::from_ref(path));
+            // The event names the file the tab that is away shows: its view is not read again
+            // behind the screen in front (the return reads it), and the tab in front on the tab
+            // road lists the tree, which has no file view to read.
+            let ((), loads) = crate::test_support::count_tab_view_loads(|| {
+                sim.app.refresh_fs_watched(false, std::slice::from_ref(path));
+            });
+            assert_eq!(
+                loads, 0,
+                "watch event: the view of the tab that is away read its file again while the tab is away"
+            );
         },
         |_, _| {},
     );
@@ -835,6 +862,67 @@ fn vcs_kind_follow_jump_delivered_while_away() {
     );
 }
 
+/// A follow jump to a file that is already a row of the list the tab that is away shows: the
+/// reveal finds it, so only the surface refusal keeps the jump from opening it behind the
+/// screen in front. On the tab road the jump moves the tab in front (follow is App-level), which
+/// shows that the fixture reaches the open.
+#[test]
+fn vcs_kind_follow_jump_to_a_listed_file_delivered_while_away() {
+    if isolated("vcs_kind_follow_jump_to_a_listed_file_delivered_while_away") {
+        return;
+    }
+    kind_parity_with(
+        "follow jump listed",
+        KindFront::MayChangeOnTheTabRoad,
+        &[],
+        |name| {
+            let repo = super::vcs_changes::git_repo(name, true);
+            std::fs::write(repo.join("lines.txt"), LINES_TXT).unwrap();
+            std::fs::write(repo.join("a-followed.txt"), "listed\n").unwrap();
+            let mut sim = kind_plain(&repo);
+            sim.select("lines.txt");
+            sim.enter();
+            sim.app.toggle_follow();
+            assert!(sim.app.follow_enabled(), "premise: follow is on");
+            let path = repo.join("a-followed.txt");
+            assert!(
+                sim.app.tab.entries.iter().any(|e| e.path == path),
+                "premise: the followed file is a row of the list"
+            );
+            (sim, repo, path)
+        },
+        |sim, path| {
+            let covered = sim.app.project_active();
+            let shown = sim.app.tab.preview_path.clone();
+            // The run loop's dwell: a noted change, then the jump once the dwell is over.
+            std::fs::write(path, "followed\n").unwrap();
+            sim.app.refresh_fs_watched(false, std::slice::from_ref(path));
+            let ((), loads) = crate::test_support::count_tab_view_loads(|| {
+                if sim.app.follow_note_change(path) {
+                    sim.app.follow_jump(path);
+                }
+            });
+            if covered {
+                assert_eq!(
+                    sim.app.tab.preview_path, shown,
+                    "follow jump listed: the jump opened the file behind the project screen"
+                );
+                assert_eq!(
+                    loads, 0,
+                    "follow jump listed: the tab under the project screen read a file while covered"
+                );
+            } else {
+                assert_eq!(
+                    sim.app.tab.preview_path.as_deref(),
+                    Some(path.as_path()),
+                    "premise: on the tab road the jump opens the listed file in the tab in front"
+                );
+            }
+        },
+        |_, _| {},
+    );
+}
+
 #[test]
 fn vcs_kind_gif_timer_delivered_while_away() {
     if isolated("vcs_kind_gif_timer_delivered_while_away") {
@@ -855,10 +943,19 @@ fn vcs_kind_gif_timer_delivered_while_away() {
         |sim, ()| {
             // Every timer of the loop, past any frame's time: nothing of the tab that is away
             // advances (its GIF went with the leave), so nothing asks to be drawn.
-            let due = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let due_later = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+            // The reaper of idle plugin children is App-level, not the tab's: every pass still
+            // asks it, whatever screen is in front.
+            let ((due, due_later), reap_asks) = crate::test_support::count_reap_asks(|| {
+                let due = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let due_later = crate::animation_timers_due(&mut sim.app, std::time::Instant::now());
+                (due, due_later)
+            });
             assert!(!due && !due_later, "gif timer: a timer of the tab that is away fired");
+            assert_eq!(
+                reap_asks, 2,
+                "gif timer: a pass of the run loop's timers did not ask the reaper while the tab is away"
+            );
         },
         |sim, ()| sim.settle_inline_images("back", DRAIN_WAIT),
     );
