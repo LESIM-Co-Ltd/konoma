@@ -421,3 +421,200 @@ fn resumed_rendered_diff_keeps_its_scroll_and_does_not_land_again() {
 fn resumed_rendered_diff_keeps_its_scroll_when_the_target_answers_after_the_return() {
     resumed_rendered_diff(true);
 }
+
+/// A file-preview source attached after `open` (the standalone builder `with_file_previews`): the
+/// host's classification at `open` sees an unknown extension as text (only Source), the attached
+/// resolver answers on its worker that a Document plugin shows it (a Markdown diff, Rendered). That
+/// answer is the diff's first answer: the view lands on the first change, late in the document.
+/// After the landing was consumed, a return does not land again.
+#[test]
+fn a_source_attached_after_open_lands_its_first_answer_on_the_first_change_once() {
+    use crate::app::project::ProjectBackend;
+    use crate::host::project::md_diff::{MdDiffOutcome, MdDiffWorker};
+    struct UnknownExtensionServices;
+    impl ProjectServices for UnknownExtensionServices {
+        fn inspect(
+            &self,
+            _: &crate::host::project::MatchedProject,
+            _: &crate::app::project::ProjectSettings,
+        ) -> Result<ProjectServiceInfo, Failure> {
+            unreachable!()
+        }
+        fn file_diff(&self, _: &ProjectServiceInfo, _: &std::path::Path) -> Vec<DiffLine> {
+            unreachable!()
+        }
+        fn changed_files(&self, _: &ProjectServiceInfo) -> Vec<konoma_vcs_core::git::ChangeEntry> {
+            unreachable!()
+        }
+        fn base_contents(&self, _: &ProjectServiceInfo, _: &std::path::Path) -> Option<Vec<u8>> {
+            Some(b"base".to_vec())
+        }
+        // Without a source, an extension no built-in format knows is text.
+        fn diff_target(&self, _: &std::path::Path, _: Option<&[u8]>) -> DiffTarget {
+            DiffTarget::Text
+        }
+        fn spawn_file_diff(
+            self: Arc<Self>,
+            request: FileDiffRequest,
+        ) -> Result<FileDiffReply, Failure> {
+            let (tx, rx) = mpsc::channel();
+            tx.send(Ok(FileDiffData {
+                lines: Vec::new(),
+                paths: vec![request.path],
+            }))
+            .unwrap();
+            Ok(rx)
+        }
+    }
+    struct FooDocument;
+    impl crate::Plugin for FooDocument {
+        fn manifest(&self) -> crate::Manifest {
+            crate::Manifest::new("foo-document", "0")
+                .bind(crate::Bind::files(["*.foo"]))
+                .shows(crate::ViewKind::Document)
+        }
+        fn open(
+            &self,
+            _: crate::Input,
+            _: &crate::OpenCx,
+        ) -> Result<Box<dyn crate::Session>, Failure> {
+            unreachable!()
+        }
+    }
+    let dir = konoma_test_support::unique_tmp("attached_source_landing");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = (0..25)
+        .map(|i| format!("paragraph {i}\n\n"))
+        .collect::<String>();
+    let new = format!("{old}changed\n\n{}", "tail\n\n".repeat(20));
+    std::fs::write(dir.join("doc.foo"), &new).unwrap();
+    // The file as the worker reads it: changed while the diff is covered.
+    let current = Arc::new(std::sync::Mutex::new(new));
+    let read = current.clone();
+    let old_text = old.clone();
+    let mut worker = MdDiffWorker::with_compute(Arc::new(move |_| {
+        let new = read.lock().unwrap().clone();
+        let old = old_text.clone();
+        let (_, _, ops) = konoma_widgets::markdown::diff_align(&old, &new);
+        MdDiffOutcome::Ready {
+            old_pre: old.clone(),
+            new_pre: new.clone(),
+            ops,
+            any_change: true,
+            front_matter_only: false,
+        }
+    }));
+    let (tx, rx) = mpsc::channel();
+    worker.attach(tx);
+    let config = SharedConfig::parse("[ui]\nlang='en'").unwrap();
+    let state = DiffScreenState::open_with_markdown_worker(
+        FileDiffRequest {
+            root: dir.to_path_buf(),
+            path: dir.join("doc.foo"),
+            info: ProjectServiceInfo {
+                workdir: dir.to_path_buf(),
+                backend: ProjectBackend::Git,
+            },
+        },
+        Arc::new(UnknownExtensionServices),
+        &config,
+        DiffLayout::Unified,
+        Some(DiffView::Rendered),
+        worker,
+        rx,
+    )
+    .unwrap();
+    // Before the source: only Source can show it.
+    assert_eq!(state.effective, DiffView::Source);
+    let mut registry = Registry::new();
+    registry
+        .register(
+            Arc::new(FooDocument),
+            crate::registry::PluginOrigin::Standard,
+        )
+        .unwrap();
+    let mut state = state.with_file_previews(FilePreviewSource::new(
+        Arc::new(registry),
+        Vec::new(),
+        false,
+    ));
+    let area = Rect::new(0, 1, 54, 12);
+    let drawn = |state: &mut DiffScreenState| {
+        let mut frame = Buffer::empty(area);
+        state.draw(&mut frame, area);
+        frame
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let settle =
+        |state: &mut DiffScreenState, what: &str, done: &dyn Fn(&DiffScreenState) -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                state.poll().unwrap();
+                state.prepare_frame(area, None);
+                if done(state) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("never settled: {what}");
+        };
+    settle(
+        &mut state,
+        "the resolver's answer and the block diff",
+        &|s| {
+            s.preview_reply.is_none()
+                && s.effective == DiffView::Rendered
+                && s.rendered.is_some()
+                && s.data.is_some()
+        },
+    );
+    // Every answer is in: give the landing every chance to run.
+    for _ in 0..20 {
+        state.poll().unwrap();
+        state.prepare_frame(area, None);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        state.scroll > 20,
+        "the first answer of the attached resolver did not land on the first change: scroll {}",
+        state.scroll
+    );
+    assert!(
+        state.pending_first_change.is_none(),
+        "the reservation was not consumed"
+    );
+    let text = drawn(&mut state);
+    assert!(text.contains("changed"), "not on the first change: {text}");
+    assert!(!text.contains("paragraph 0"), "still at the top: {text}");
+    // The reader scrolls, then a project screen covers the diff and is left.
+    state.scroll = 3;
+    state.prepare_frame(area, None);
+    assert_eq!(state.scroll, 3, "the landing was consumed");
+    let revised = current
+        .lock()
+        .unwrap()
+        .replace("paragraph 3\n", "paragraph 3 REVISED\n");
+    *current.lock().unwrap() = revised;
+    state.resume_project_diff(&config).unwrap();
+    settle(&mut state, "the read for the return", &|s| {
+        s.preview_reply.is_none() && s.rendered.is_some() && s.data.is_some()
+    });
+    for _ in 0..20 {
+        state.poll().unwrap();
+        state.prepare_frame(area, None);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(state.effective, DiffView::Rendered);
+    assert_eq!(
+        state.scroll, 3,
+        "the return's answer of the same resolver landed on the first change again"
+    );
+    let text = drawn(&mut state);
+    assert!(
+        text.contains("REVISED"),
+        "the current content is drawn: {text}"
+    );
+}

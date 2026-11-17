@@ -44,6 +44,12 @@ impl DiffScreenState {
         source: crate::host::file_preview::FilePreviewSource,
     ) -> Self {
         self.file_previews = Some(source);
+        // From here the attached resolver decides the effective representation: the answer taken
+        // without it (the services' classification at `open`) was not the one that decides, so
+        // the first answer of this resolver is the diff's first answer and reserves the landing
+        // on the first change. Its later answers (a reload, a return) are not first answers:
+        // `choose_effective` consumes the flag on this one.
+        self.first_answer_awaited = true;
         self.resolve_preview();
         self.choose_effective();
         self

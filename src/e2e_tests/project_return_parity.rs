@@ -926,6 +926,114 @@ fn a_diff_preview_landing_that_failed_while_covered_is_not_revived() {
     assert!(s.find_text("CHANGED MARKER").is_none(), "landed: {what}");
 }
 
+/// (3b) The other waiting state of the same landing: the kind is resolved and only the document's
+/// body is awaited (the plugin's `open` is held by the gate). Covered there by a project screen,
+/// the read fails while covered (in the working tab, which holds the open), the file is readable
+/// again: the failure ended the landing, so the return does not land on the first change.
+///
+/// Project path only: on a tab switch the held open is the tab's no longer (the switch moves the
+/// generation, so its answer is dropped as stale) and the tab never sees the failure; the return
+/// opens the file again and the landing it still holds runs on a readable file.
+#[test]
+fn a_diff_preview_landing_whose_body_failed_while_covered_is_not_revived() {
+    use crate::app::HoldOpens;
+    use crate::plugins::test_plugins::Latch;
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo(
+        "prp_diff_body_failed_covered",
+        &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+    );
+    std::fs::write(
+        root.join("doc.md"),
+        long_doc("", "CHANGED MARKER paragraph."),
+    )
+    .unwrap();
+    let path = root.join("doc.md");
+    let mut s = road(&root, cfg_en(), true);
+    s.select("doc.md");
+    s.key('d');
+    wait_diff_target(&mut s, true);
+    settled(&mut s);
+    // From here every plugin `open` waits for the gate: the body cannot arrive.
+    let gate = std::sync::Arc::new(Latch::default());
+    let _hold = HoldOpens::until(&gate);
+    s.key('R');
+    assert!(
+        s.app.diff_landing_state_for_test().0,
+        "the landing is not pending:\n{}",
+        s.screen()
+    );
+    // The worker's plan of the file resolves the kind; the document's open is then held.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while s.app.pending_kind_known_for_test() == Some(false) {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("the kind was never resolved");
+        let res = s
+            .media_rx
+            .as_ref()
+            .expect("with_media")
+            .recv_timeout(left)
+            .expect("the worker answers");
+        s.app.apply_media(res);
+    }
+    assert_eq!(
+        s.app.pending_kind_known_for_test(),
+        Some(true),
+        "the landing is not waiting for the body with the kind resolved:\n{}",
+        s.screen()
+    );
+    assert!(
+        s.app.diff_landing_state_for_test().0,
+        "not a DiffPreview landing:\n{}",
+        s.screen()
+    );
+    assert!(
+        s.app.document_text_missing() && s.app.document_error().is_none(),
+        "the body must still be on its way:\n{}",
+        s.screen()
+    );
+    // The file cannot be read when the held open goes on.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    s.key('p');
+    settle_projects_leaving_media(&mut s);
+    assert!(s.app.project_active(), "{}", s.screen());
+    gate.open();
+    settled(&mut s);
+    // The failure arrives while covered, in the tab that holds the open, and ends the landing.
+    assert!(
+        s.app.document_error().is_some(),
+        "the body load did not fail while covered:\n{}",
+        s.screen()
+    );
+    assert!(
+        !s.app.has_pending_landing_for_test(),
+        "the failure did not end the landing:\n{}",
+        s.screen()
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    leave_project(&mut s);
+    settled(&mut s);
+    let what = s.screen();
+    assert!(
+        !s.app.diff_landing_state_for_test().0,
+        "a DiffPreview landing was revived:\n{what}"
+    );
+    assert!(
+        !s.app.has_pending_landing_for_test(),
+        "a landing is pending:\n{what}"
+    );
+    // A revived landing would have run on the return and moved to the change at the end; the
+    // document is read again from the top.
+    assert_eq!(s.app.reading_position_for_test().0, 0, "scrolled:\n{what}");
+    assert!(s.app.document_error().is_none(), "still failed:\n{what}");
+    assert!(s.find_text("CHANGED MARKER").is_none(), "landed:\n{what}");
+    assert!(
+        s.find_text("Filler paragraph number 0 ").is_some(),
+        "not the top of the document:\n{what}"
+    );
+}
+
 /// (5) The identity names the user's open: the diff's own answer that moves it to the Preview
 /// representation is progress of the same open and keeps it. Covered before that answer, the
 /// answer and the failure of its body load happen while covered; the file is readable again on the
