@@ -445,7 +445,7 @@ impl App {
         );
         // Published before a synchronous scan in `rebuild_changed_list_when_status_ready` can land
         // and consume it (the same order as `capture_view_anchors`).
-        self.tab.changed_anchor_pending = anchor.clone();
+        self.publish_changed_anchor(anchor.clone());
         let tree = self.rebuild_tree();
         if !self.rebuild_changed_list_when_status_ready(anchor) {
             (self.tab.entries, self.tab.selected, self.tab.visual_anchor) = kept;
@@ -502,7 +502,7 @@ impl App {
         // explicit `reapply_changed_filter(None)` gets there — `toggle_changed_filter`'s ON branch
         // always calls this right before setting `changed_filter = true`, so clearing it here closes
         // that window at its one entry point rather than at every place `changed_filter` goes false.
-        self.tab.changed_anchor_pending = None;
+        self.retire_changed_anchor();
     }
 
     /// Attach the Sender of the worker that finishes filter-pool scans in the background (called by
@@ -811,16 +811,45 @@ impl App {
     /// rebuild under `C` keeps the list it had (`rebuild_tree_under_changed_list`), but the
     /// pending identity can name a file that list has no row for yet (a reveal of a file just
     /// created). A caller that reads `entries` again in that window would anchor to the old
-    /// cursor's file and clobber that still-pending identity.
+    /// cursor's file and clobber that still-pending identity. Honored only while it still stands
+    /// for the cursor (`standing_changed_anchor`): after a move by the user, the cursor's file.
     /// `None` when `C` isn't the active filter, so callers can call this unconditionally.
     pub(super) fn changed_filter_anchor(&self) -> Option<PathBuf> {
         if !self.tab.changed_filter {
             return None;
         }
-        self.tab
-            .changed_anchor_pending
-            .clone()
+        self.standing_changed_anchor()
             .or_else(|| self.filter_anchor())
+    }
+
+    /// Publish `anchor` as the identity a deferred `C` rebuild lands the cursor on
+    /// (`apply_statuses`). The one place it is published: by every rebuild under `C`
+    /// (`capture_view_anchors`, `rebuild_tree_under_changed_list`) and by a jump that cannot select
+    /// its target in the list kept while a scan is out (`reveal_path_deep`). The identity stands
+    /// for the cursor's row as it is now, so that row's file is recorded with it; called while
+    /// `entries` is still the `C` list.
+    pub(super) fn publish_changed_anchor(&mut self, anchor: Option<PathBuf>) {
+        self.tab.changed_anchor_row = anchor.as_ref().and_then(|_| self.filter_anchor());
+        self.tab.changed_anchor_pending = anchor;
+    }
+
+    /// Retire the published identity: nothing waits for a scan any more (the list was rebuilt, or
+    /// `C` is being discarded).
+    fn retire_changed_anchor(&mut self) {
+        self.tab.changed_anchor_pending = None;
+        self.tab.changed_anchor_row = None;
+    }
+
+    /// The published identity while it still stands for the cursor, the one rule both readers
+    /// (`changed_filter_anchor`, `apply_statuses`) go through: it stands for the cursor only until
+    /// the user moves it. Once the cursor is on another row than the one the identity was
+    /// published for, the cursor's own file is the identity and this is `None`. Every way the
+    /// user moves the cursor (keys, the mouse, a search or `n`/`N` jump) puts it on another row of
+    /// `entries`, so this one comparison covers them all and no move path clears anything. Compared
+    /// by file, not by index: a rebuild that keeps the list keeps the cursor on its file.
+    fn standing_changed_anchor(&self) -> Option<PathBuf> {
+        let pending = self.tab.changed_anchor_pending.as_ref()?;
+        (self.filter_anchor() == self.tab.changed_anchor_row).then(|| pending.clone())
     }
 
     /// The anchor to capture right before a caller's own `rebuild_tree()`, for whichever of the two
@@ -957,6 +986,15 @@ impl App {
     /// still have the changed list?" instead of inheriting an answer. `None` = don't follow anything
     /// (the cursor is being reset or retargeted anyway).
     pub(super) fn reapply_changed_filter(&mut self, anchor: Option<PathBuf>) {
+        self.reapply_changed_filter_following([anchor]);
+    }
+
+    /// `reapply_changed_filter` with the files to keep the cursor on in order of preference: the
+    /// cursor goes to the first one the new list has a row for.
+    fn reapply_changed_filter_following(
+        &mut self,
+        anchors: impl IntoIterator<Item = Option<PathBuf>>,
+    ) {
         let entries: Vec<super::Entry> = self
             .changed_paths()
             .into_iter()
@@ -978,10 +1016,13 @@ impl App {
         // Follow the file the cursor was on to wherever the re-sorted list put it. If it is no longer
         // listed (committed, reverted, deleted) there is nothing to follow, so fall back to the
         // positional clamp below — exactly the old behaviour.
-        if let Some(p) = anchor {
-            if let Some(i) = self.tab.entries.iter().position(|e| e.path == p) {
-                self.tab.selected = i;
-            }
+        let entries = &self.tab.entries;
+        if let Some(i) = anchors
+            .into_iter()
+            .flatten()
+            .find_map(|p| entries.iter().position(|e| e.path == p))
+        {
+            self.tab.selected = i;
         }
         if self.tab.selected >= self.tab.entries.len() {
             self.tab.selected = self.tab.entries.len().saturating_sub(1);
@@ -1423,12 +1464,15 @@ impl App {
             // before any rebuild) and reading it live is right — and necessary, because this is
             // the path an agent's writes take: without it the list re-sorts under a cursor that
             // never moved.
-            let anchor = self
-                .tab
-                .changed_anchor_pending
-                .take()
-                .or_else(|| self.filter_anchor());
-            self.reapply_changed_filter(anchor);
+            //
+            // The identity stands for the cursor (`standing_changed_anchor`): once the user moved
+            // the cursor meanwhile, the cursor's file is the identity. When the new list has no row
+            // for the identity (a jump to a file that turns out not to be changed), the cursor stays
+            // on its own file, as the same jump leaves it with no scan out.
+            let standing = self.standing_changed_anchor();
+            let cursor = self.filter_anchor();
+            self.retire_changed_anchor();
+            self.reapply_changed_filter_following([standing, cursor]);
         }
         true
     }
@@ -1686,7 +1730,7 @@ impl App {
         // list and overwrite the pending identity with it, so the eventual landing put the cursor
         // back on a file the user had moved off.
         let changed = self.changed_filter_anchor();
-        self.tab.changed_anchor_pending = changed.clone();
+        self.publish_changed_anchor(changed.clone());
         ViewAnchors { filter, changed }
     }
 
@@ -1707,7 +1751,7 @@ impl App {
         // Rebuilding here and now, so nothing is deferred: drop the published copy rather
         // than leave it for an unrelated later scan to pick up. The local is the same value
         // (a synchronous scan above may already have taken the published one).
-        self.tab.changed_anchor_pending = None;
+        self.retire_changed_anchor();
         self.reapply_changed_filter(anchor);
         true
     }

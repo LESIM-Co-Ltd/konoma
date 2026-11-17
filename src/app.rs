@@ -2163,6 +2163,12 @@ pub(crate) struct PerTab {
     /// anchor rides along in its own snapshot across any number of switches until it is actually
     /// consumed (no loss *out*).
     changed_anchor_pending: Option<PathBuf>,
+    /// The file of the row the cursor was on when `changed_anchor_pending` was published: the
+    /// pending identity stands for the cursor only while the cursor is still on that row. A move by
+    /// the user (any key, the mouse, a search jump) puts the cursor on another row, and from then
+    /// on the cursor's own file is the identity (`App::standing_changed_anchor`). Published and
+    /// retired with `changed_anchor_pending`, never on its own.
+    changed_anchor_row: Option<PathBuf>,
     preview_search: Option<String>,
     search_input: Option<String>,
     search_matches: Vec<(u64, usize, usize)>,
@@ -2252,6 +2258,7 @@ impl Default for PerTab {
             filter_pool: Vec::new(),
             changed_filter: false,
             changed_anchor_pending: None,
+            changed_anchor_row: None,
             load_id: 0,
             diff_answer_awaited: false,
             preview_search: None,

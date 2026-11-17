@@ -448,14 +448,16 @@ impl App {
             // `preview_viewport_drawn` are the measure of the area (put back above from what was
             // drawn last). `selection` and `visual_anchor` are the tree's file multi-select and
             // visual range, not the preview's caret (`preview_visual_anchor` is on `App`).
-            // `changed_anchor_pending` is the pending cursor identity of the `C` list: the anchor
-            // and the list it is an identity in (`entries`, `selected`, `changed_filter`) have one
-            // owner. At the return the tree is put back from the saved copy and rebuilt by the
-            // return's refresh, which finishes the saved anchor.
+            // `changed_anchor_pending` is the pending cursor identity of the `C` list: the anchor,
+            // the row it stands for (`changed_anchor_row`) and the list it is an identity in
+            // (`entries`, `selected`, `changed_filter`) have one owner. At the return the tree is
+            // put back from the saved copy and rebuilt by the return's refresh, which finishes the
+            // saved anchor.
             tree: [
                 id, root, open_dir, entries, selected, mode, preview_path, load_id,
                 preview_viewport, preview_cols, preview_viewport_drawn, selection,
                 visual_anchor, tree_filter, filter_input, changed_filter, changed_anchor_pending,
+                changed_anchor_row,
             ],
             // Live: state the tab keeps moving while it is covered, owned by the tab and not by
             // what it showed. Never reverted to its value at the cover: the project detection

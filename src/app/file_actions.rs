@@ -717,6 +717,14 @@ impl App {
             self.tab.selected = i;
             return Ok(true);
         }
+        // Under `C` while a status scan is out, the list is the one kept from before the scan, which
+        // has no row yet for a file the scan may list (a new change). The target is left as the
+        // identity the deferred rebuild lands the cursor on, standing for the cursor's row (which
+        // did not move), the way `reveal_and_select` leaves its target. With no scan out the list
+        // is current: a file it has no row for is not changed, and nothing waits.
+        if self.tab.changed_filter && self.git_status_pending.is_some() {
+            self.publish_changed_anchor(Some(target.to_path_buf()));
+        }
         Ok(false)
     }
 

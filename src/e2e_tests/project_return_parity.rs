@@ -1833,6 +1833,52 @@ fn a_changed_list_cursor_waiting_for_a_scan_comes_back_on_its_file_after_another
     }
 }
 
+type StatusRx = std::sync::mpsc::Receiver<crate::app::StatusResult>;
+
+/// `C` on, the cursor on c3 (real keys), then a new change (aaa_new.txt) written and its watch
+/// event delivered. `held`: the status scan is held back on a real loader, so the `C` rebuild waits
+/// for it and the list it had is kept meanwhile; otherwise the statuses are read at once and the
+/// list is rebuilt with the new file.
+fn changed_list_on_c3_with_a_new_change(
+    name: &str,
+    held: bool,
+) -> (Sim, std::path::PathBuf, Option<StatusRx>) {
+    let root = changed_files_repo(name);
+    let mut s = road(&root, cfg_en(), false);
+    s.key('C');
+    settled(&mut s);
+    for _ in 0..3 {
+        if cursor_file(&s).as_deref() == Some("c3.txt") {
+            break;
+        }
+        s.key('j');
+    }
+    assert_eq!(cursor_file(&s).as_deref(), Some("c3.txt"));
+    let rx = held.then(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.app.attach_status_loader(tx);
+        rx
+    });
+    let newfile = root.join("aaa_new.txt");
+    std::fs::write(&newfile, "y\n").unwrap();
+    s.app.refresh_fs_watched(false, &[newfile]);
+    (s, root, rx)
+}
+
+/// Up to a jump: `C` on, the cursor on c3, a new change written. `away` = None: no scan out (the
+/// statuses are read at once); Some: the scan is held back and the tab comes back by that road,
+/// which asks for another scan.
+fn up_to_the_jump(name: &str, away: Option<Away>) -> (Sim, std::path::PathBuf, Option<StatusRx>) {
+    let (mut s, root, rx) = changed_list_on_c3_with_a_new_change(name, away.is_some());
+    if let (Some(away), Some(rx)) = (away, rx.as_ref()) {
+        go_away(&mut s, away);
+        land_scans(&mut s, rx);
+        come_back(&mut s, away);
+    }
+    settled(&mut s);
+    (s, root, rx)
+}
+
 /// A paste jump to the unchanged k.txt (no row in the `C` list) gives the same outcome whether or
 /// not a status scan is out. With no scan out (`C` on, statuses fresh) the jump reveals nothing
 /// (`reveal_path_deep` finds no row and leaves the cursor alone): the list is unchanged, the
@@ -1841,45 +1887,6 @@ fn a_changed_list_cursor_waiting_for_a_scan_comes_back_on_its_file_after_another
 /// outcome on the list kept while the scan is out, and again once the scan lands.
 #[test]
 fn a_paste_jump_outside_the_changed_list_is_the_same_with_or_without_a_scan_out() {
-    // Up to the jump: `C` on, the cursor on c3, a new change written. `away` = None: no scan
-    // out (the statuses are read at once); Some: the scan is held back and the tab comes back
-    // by that road, which asks for another scan.
-    fn up_to_the_jump(
-        name: &str,
-        away: Option<Away>,
-    ) -> (
-        Sim,
-        std::path::PathBuf,
-        Option<std::sync::mpsc::Receiver<crate::app::StatusResult>>,
-    ) {
-        let root = changed_files_repo(name);
-        let mut s = road(&root, cfg_en(), false);
-        s.key('C');
-        settled(&mut s);
-        for _ in 0..3 {
-            if cursor_file(&s).as_deref() == Some("c3.txt") {
-                break;
-            }
-            s.key('j');
-        }
-        assert_eq!(cursor_file(&s).as_deref(), Some("c3.txt"));
-        let rx = away.map(|_| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            s.app.attach_status_loader(tx);
-            rx
-        });
-        let newfile = root.join("aaa_new.txt");
-        std::fs::write(&newfile, "y\n").unwrap();
-        s.app.refresh_fs_watched(false, &[newfile]);
-        if let (Some(away), Some(rx)) = (away, rx.as_ref()) {
-            go_away(&mut s, away);
-            land_scans(&mut s, rx);
-            come_back(&mut s, away);
-        }
-        settled(&mut s);
-        (s, root, rx)
-    }
-
     #[track_caller]
     fn assert_jumped(s: &Sim, root: &std::path::Path, list: &[&str], what: &str) {
         assert_eq!(
@@ -1952,6 +1959,213 @@ fn a_paste_jump_outside_the_changed_list_is_the_same_with_or_without_a_scan_out(
             &["aaa_new.txt", "c1.txt", "c2.txt", "c3.txt"],
             &format!("{what}, after the scan landed"),
         );
+    }
+}
+
+const CHANGED_WITH_THE_NEW_FILE: [&str; 4] = ["aaa_new.txt", "c1.txt", "c2.txt", "c3.txt"];
+
+/// A paste jump to a file the list kept while a scan is out has no row for yet, but that the `C`
+/// list lists once the scan lands (the new change aaa_new.txt), lands on it once the scan lands,
+/// as it does at once with no scan out. The jump leaves its target as the identity the deferred
+/// rebuild lands the cursor on (published the way `reveal_and_select` publishes its target), and
+/// that identity stands for the cursor, which the jump did not move. Cases: no scan out (the
+/// reference), the scan of the watch event still out (nothing left), and the scan asked for by the
+/// return from a project screen or from another tab.
+#[test]
+fn a_paste_jump_to_a_new_change_lands_on_it_with_or_without_a_scan_out() {
+    #[track_caller]
+    fn assert_on_the_new_file(s: &Sim, root: &std::path::Path, what: &str) {
+        assert_eq!(
+            tree_names(s),
+            CHANGED_WITH_THE_NEW_FILE,
+            "{what}: not the changed list\n{}",
+            s.screen()
+        );
+        assert_eq!(
+            cursor_file(s).as_deref(),
+            Some("aaa_new.txt"),
+            "{what}: the cursor is not on the file jumped to\n{}",
+            s.screen()
+        );
+        assert_eq!(
+            s.app.tab.preview_path.as_deref(),
+            Some(root.join("aaa_new.txt").as_path()),
+            "{what}: the preview is not the file jumped to"
+        );
+    }
+
+    // The reference: no scan out, the list has the new file's row and the jump selects it.
+    let (mut s, root, _) = up_to_the_jump("prp_paste_new_ref", None);
+    assert!(!s.app.git_status_in_flight(), "premise: no scan out");
+    assert_eq!(tree_names(&s), CHANGED_WITH_THE_NEW_FILE, "premise");
+    s.app.paste_jump_to(&root.join("aaa_new.txt"), None);
+    settled(&mut s);
+    assert_on_the_new_file(&s, &root, "no scan out");
+
+    for away in [None, Some(Away::ProjectScreen), Some(Away::Tab)] {
+        let what = format!("{away:?}, a scan out");
+        let (mut s, root, rx) = match away {
+            None => {
+                let (mut s, root, rx) =
+                    changed_list_on_c3_with_a_new_change("prp_paste_new_wait", true);
+                settled(&mut s);
+                (s, root, rx)
+            }
+            Some(_) => up_to_the_jump("prp_paste_new_flight", away),
+        };
+        let rx = rx.unwrap();
+        assert!(
+            s.app.git_status_in_flight(),
+            "{what}: premise: a scan is out"
+        );
+        assert_eq!(
+            tree_names(&s),
+            ["c1.txt", "c2.txt", "c3.txt"],
+            "{what}: premise: the list it had is kept while the scan is out"
+        );
+        s.app.paste_jump_to(&root.join("aaa_new.txt"), None);
+        settled(&mut s);
+        assert_eq!(
+            cursor_file(&s).as_deref(),
+            Some("c3.txt"),
+            "{what}: premise: the kept list has no row for the new file yet"
+        );
+        let landed = land_scans(&mut s, &rx);
+        assert!(landed >= 1, "{what}: no scan landed");
+        assert_on_the_new_file(&s, &root, &format!("{what}, after the scan landed"));
+        s.key('q');
+        settled(&mut s);
+        assert_eq!(s.app.tab.mode, Mode::Tree, "{what}");
+        land_scans(&mut s, &rx);
+        assert_eq!(
+            cursor_file(&s).as_deref(),
+            Some("aaa_new.txt"),
+            "{what}, in the tree\n{}",
+            s.screen()
+        );
+    }
+}
+
+/// The identity a deferred `C` rebuild waits with belongs to the tree it is an identity in (the
+/// `tree` group of `classes!`), and here it is the only place the return can learn the cursor's
+/// file from. `C` on with the cursor on c3 and a scan out, a paste jump to the new change
+/// aaa_new.txt (no row in the kept list yet: the cursor stays on c3 and the identity waits for the
+/// scan), `p` covers the tab and the scan lands while covered, so the working copy consumes the
+/// identity behind the screen. `q` puts the saved tree back with the identity it waits with, and
+/// the scan the return asks for lands the list on aaa_new.txt. Taken from the working copy
+/// instead, the identity would be gone and the return would land on c3, the saved cursor's file.
+#[test]
+fn a_changed_list_jump_waiting_for_a_scan_lands_on_its_file_after_a_project_screen() {
+    let (mut s, root, rx) = changed_list_on_c3_with_a_new_change("prp_anchor_jump_cover", true);
+    let rx = rx.unwrap();
+    settled(&mut s);
+    let new = root.join("aaa_new.txt");
+    s.app.paste_jump_to(&new, None);
+    settled(&mut s);
+    assert!(
+        s.app.git_status_in_flight() && s.app.changed_anchor_left_to_status(),
+        "premise: the identity waits for the scan"
+    );
+    assert_eq!(
+        tree_names(&s),
+        ["c1.txt", "c2.txt", "c3.txt"],
+        "premise: the kept list has no row for the new file"
+    );
+    assert_eq!(cursor_file(&s).as_deref(), Some("c3.txt"), "premise");
+    open_project(&mut s);
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the deferred scan lands");
+    s.app.apply_statuses(res);
+    assert!(
+        !s.app.changed_anchor_left_to_status(),
+        "premise: the scan consumes the identity of the working copy behind the screen"
+    );
+    leave_project(&mut s);
+    assert_eq!(s.app.tab.mode, Mode::Preview, "{}", s.screen());
+    assert_eq!(s.app.tab.preview_path.as_deref(), Some(new.as_path()));
+    let landed = land_scans(&mut s, &rx);
+    assert!(landed >= 1, "the return asked for no scan");
+    assert_eq!(tree_names(&s), CHANGED_WITH_THE_NEW_FILE, "{}", s.screen());
+    assert_eq!(
+        cursor_file(&s).as_deref(),
+        Some("aaa_new.txt"),
+        "the return lost the identity the jump left for the scan\n{}",
+        s.screen()
+    );
+    s.key('q');
+    settled(&mut s);
+    assert_eq!(s.app.tab.mode, Mode::Tree);
+    land_scans(&mut s, &rx);
+    assert_eq!(
+        cursor_file(&s).as_deref(),
+        Some("aaa_new.txt"),
+        "in the tree\n{}",
+        s.screen()
+    );
+}
+
+/// The identity a deferred `C` rebuild waits with stands for the cursor only until the user moves
+/// it. `C` on with the cursor on c3, a new change makes the rebuild wait for a scan (the identity
+/// waits with it: c3, or with `jump` the new change aaa_new.txt a paste jump left, then `q` back to
+/// the tree), and `k` moves the cursor to c2 while the scan is out. When the scan lands the cursor
+/// stays on c2, the row the user chose (the position alone would be c1 in the new list): on a
+/// plain wait, and when the tab comes back from a project screen or from another tab it left with
+/// the scan out.
+#[test]
+fn a_cursor_moved_while_a_changed_list_scan_is_out_stays_on_its_row() {
+    for jump in [false, true] {
+        for away in [None, Some(Away::ProjectScreen), Some(Away::Tab)] {
+            let what = format!("jump {jump}, {away:?}");
+            let (mut s, root, rx) = changed_list_on_c3_with_a_new_change("prp_anchor_moved", true);
+            let rx = rx.unwrap();
+            settled(&mut s);
+            if jump {
+                s.app.paste_jump_to(&root.join("aaa_new.txt"), None);
+                settled(&mut s);
+                s.key('q');
+                settled(&mut s);
+                assert_eq!(s.app.tab.mode, Mode::Tree, "{what}");
+            }
+            assert!(
+                s.app.git_status_in_flight() && s.app.changed_anchor_left_to_status(),
+                "{what}: premise: the identity waits for the scan"
+            );
+            assert_eq!(
+                cursor_file(&s).as_deref(),
+                Some("c3.txt"),
+                "{what}: premise"
+            );
+            s.key('k');
+            settled(&mut s);
+            assert_eq!(
+                cursor_file(&s).as_deref(),
+                Some("c2.txt"),
+                "{what}: premise: `k` moved the cursor"
+            );
+            if let Some(away) = away {
+                go_away(&mut s, away);
+                let res = rx
+                    .recv_timeout(std::time::Duration::from_secs(60))
+                    .expect("the deferred scan lands");
+                s.app.apply_statuses(res);
+                come_back(&mut s, away);
+            }
+            let landed = land_scans(&mut s, &rx);
+            assert!(landed >= 1, "{what}: no scan landed");
+            assert_eq!(
+                tree_names(&s),
+                CHANGED_WITH_THE_NEW_FILE,
+                "{what}: not the changed list\n{}",
+                s.screen()
+            );
+            assert_eq!(
+                cursor_file(&s).as_deref(),
+                Some("c2.txt"),
+                "{what}: the scan moved the cursor off the row the user chose\n{}",
+                s.screen()
+            );
+        }
     }
 }
 
