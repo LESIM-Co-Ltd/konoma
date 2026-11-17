@@ -182,28 +182,39 @@ impl App {
             Some(PendingOp::BatchRenameInput { .. })
         )
     }
-    /// Receive a paste from the terminal (including drag-and-drop). While input is active (dialog input / filter /
-    /// search / branch filter), **insert text**; in Tree mode, if the dropped content is an existing path,
-    /// open a **copy/move dialog** (drop target = the cursor's base directory). Control characters are stripped.
+    /// Receive a paste from the terminal (including drag-and-drop). The paste goes where a key
+    /// would: to the frontmost layer only, decided by the same surface `handle_key` reads
+    /// ([`App::surface`]), before anything looks at what is under it. A text input in front
+    /// (dialog input / filter / search / a list's filter) gets the text, a plugin's canvas that
+    /// takes the typing gets it as one key, and the tree in front treats a pasted existing path as
+    /// a **drop** (a copy/move dialog, drop target = the cursor's base directory). Every other
+    /// layer has no form for a paste and nothing happens. Control characters are stripped from
+    /// inserted text.
     pub fn handle_paste(&mut self, text: String) {
-        // 0) A plugin's canvas that takes the typing gets the paste as one key.
-        if self.is_plugin_input() {
-            self.plugin_input_paste(text);
-            return;
+        use crate::keymap::Surface;
+        let sfc = self.surface();
+        match sfc {
+            Surface::PluginInput => return self.plugin_input_paste(text),
+            Surface::Tree => return self.paste_drop(&text),
+            _ => {}
         }
-        // 1) While text input is active: feed it straight into the input field (control
-        // characters are dropped).
-        if self.is_text_input_active() {
-            for ch in text.chars().filter(|c| !c.is_control()) {
-                self.input_push_char(ch);
+        for ch in text.chars().filter(|c| !c.is_control()) {
+            match sfc {
+                Surface::DialogInput => self.dialog_input_push(ch),
+                Surface::Filter => self.filter_input_push(ch),
+                Surface::Search => self.search_input_push(ch),
+                Surface::ListFilter => match self.filtering_list() {
+                    Some(l) => self.list_filter_push(l, ch),
+                    None => return,
+                },
+                _ => return,
             }
-            return;
         }
-        // 2) Only Tree mode treats this as a "drop" (ignored in Preview, etc.).
-        if !matches!(self.tab.mode, Mode::Tree) {
-            return;
-        }
-        let sources = parse_dropped_paths(&text);
+    }
+
+    /// A paste on the tree in front: an existing path opens the drop's copy/move dialog.
+    fn paste_drop(&mut self, text: &str) {
+        let sources = parse_dropped_paths(text);
         if sources.is_empty() {
             return; // do nothing if there's no drop target (an existing path)
         }
@@ -238,19 +249,6 @@ impl App {
             Some(DialogKind::Input { .. })
         )
     }
-    /// Feed one character to the active input field (priority: dialog input > filter > search > branch filter).
-    fn input_push_char(&mut self, ch: char) {
-        if self.dialog_is_text_input() {
-            self.dialog_input_push(ch);
-        } else if self.is_filtering() {
-            self.filter_input_push(ch);
-        } else if self.is_searching() {
-            self.search_input_push(ch);
-        } else if let Some(l) = self.filtering_list() {
-            self.list_filter_push(l, ch);
-        }
-    }
-
     /// Execute the drop confirmation's `c`=copy / `m`=move. Transfers each source to the drop target and flashes the result.
     /// Runs in the background (design principle #4) — see `start_file_op`. Stops at the first
     /// error (unlike paste/duplicate), matching the original synchronous implementation.

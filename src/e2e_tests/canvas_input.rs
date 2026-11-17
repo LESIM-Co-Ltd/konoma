@@ -2990,3 +2990,132 @@ fn e2e_canvas_the_users_own_refresh_reads_the_file_again_even_when_it_is_unchang
     o.s.app.refresh_fs_watched(false, &[]);
     assert_eq!(o.sh.opens.load(Ordering::SeqCst), 2);
 }
+
+// ---- a paste goes to the frontmost layer only ------------------------------------------------------
+
+/// The bookmark list's `/` filter in front of a canvas that came to take the typing behind it
+/// (its answer to the user's action landed after the list opened): the paste is the filter's, as
+/// a typed key would be, and never reaches the canvas under the list (e4 item 7, the route
+/// without a project screen).
+#[test]
+fn e2e_canvas_a_paste_goes_to_the_bookmark_filter_in_front_not_the_capture_behind() {
+    let mut o = open_with("ci_paste_front", "en", true, |sh| {
+        sh.want_input.store(false, Ordering::SeqCst);
+        sh.hold_acts.store(true, Ordering::SeqCst);
+    });
+    let cfg_base = crate::test_support::unique_tmp("ci_paste_front_cfg");
+    o.s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &o.dir);
+    // The user's action, held in the plugin; its answer will ask for the typing.
+    o.s.key('x');
+    o.s.key('\'');
+    o.s.key('/');
+    assert_eq!(
+        o.s.app.surface(),
+        Surface::ListFilter,
+        "the bookmark filter is in front"
+    );
+    o.sh.want_input.store(true, Ordering::SeqCst);
+    o.sh.act_gate.open();
+    settle(&mut o.s);
+    o.s.draw();
+    assert!(
+        o.s.app.is_plugin_input(),
+        "the fixture: the canvas behind the list takes the typing"
+    );
+    assert_eq!(
+        o.s.app.surface(),
+        Surface::ListFilter,
+        "the list is still in front"
+    );
+    // What the run loop does with `Event::Paste`: accept it by the surface, then hand it over.
+    assert!(crate::paste_accepted(o.s.app.surface()));
+    o.s.app.handle_paste("abc".to_string());
+    assert_eq!(
+        o.s.app
+            .list_filter_query(crate::app::list_filter::ListId::Bookmarks),
+        "abc",
+        "the paste is the filter's"
+    );
+    assert!(
+        o.sh.log().is_empty(),
+        "the paste reached the canvas behind the list"
+    );
+}
+
+/// The same with a project screen over the canvas: a paste into the bookmark filter in front of
+/// the project screen is the filter's, and nothing reaches the plugin the covered tab showed
+/// (covering left the tab, so the late answer of its action takes no typing) (e4 item 7, the route
+/// through a project screen).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_canvas_a_paste_over_a_project_screen_goes_to_the_bookmark_filter_in_front() {
+    let sh = Shared::new();
+    sh.want_input.store(false, Ordering::SeqCst);
+    sh.hold_acts.store(true, Ordering::SeqCst);
+    let repo = super::vcs_changes::git_repo("ci_paste_project", true);
+    std::fs::write(repo.join("a.typ"), b"x").unwrap();
+    let marker = register("ci_paste_project", &sh);
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.plugins
+        .entry("jj".into())
+        .or_default()
+        .insert("enabled".into(), toml::Value::Boolean(false));
+    let mut s = Sim::with_config_sized(&repo, cfg, 90, 26).with_async_plugins();
+    let cfg_base = crate::test_support::unique_tmp("ci_paste_project_cfg");
+    s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    s.app.tab.projects.wait_for_result();
+    s.app.poll_projects();
+    s.select("a.typ");
+    s.enter();
+    settle(&mut s);
+    s.draw();
+    assert!(
+        !s.app.is_plugin_input(),
+        "the fixture: no capture before the action"
+    );
+    s.key('x');
+    s.key('p');
+    assert!(s.app.project_active(), "p opened the project screen");
+    // The screen's first rows land before the keys (a key typed while it reads waits in line).
+    super::vcs_changes::drain(&mut s);
+    assert!(
+        !s.app.project_jobs_pending(),
+        "the project screen has its rows"
+    );
+    s.key('\'');
+    s.key('/');
+    assert_eq!(
+        s.app.surface(),
+        Surface::ListFilter,
+        "the bookmark filter is in front"
+    );
+    sh.want_input.store(true, Ordering::SeqCst);
+    sh.act_gate.open();
+    // The held action's answer is taken by the loop (whatever the host then does with it), and
+    // anything it asked for next is answered too.
+    s.drain_plugin();
+    settle(&mut s);
+    assert_eq!(
+        sh.acts.lock().unwrap().as_slice(),
+        ["refresh"],
+        "the action ran"
+    );
+    assert_eq!(
+        s.app.surface(),
+        Surface::ListFilter,
+        "the list is still in front"
+    );
+    assert!(crate::paste_accepted(s.app.surface()));
+    s.app.handle_paste("abc".to_string());
+    assert_eq!(
+        s.app
+            .list_filter_query(crate::app::list_filter::ListId::Bookmarks),
+        "abc",
+        "the paste is the filter's"
+    );
+    assert!(
+        sh.log().is_empty(),
+        "the paste reached the plugin of the covered tab"
+    );
+    assert!(s.app.project_active(), "the project screen is still there");
+}

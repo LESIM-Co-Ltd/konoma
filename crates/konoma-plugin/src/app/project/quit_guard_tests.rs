@@ -33,6 +33,9 @@ struct Shared {
     finished: AtomicUsize,
     /// While set, a view read waits on `hold` (a screen refresh in flight).
     block_views: AtomicBool,
+    /// Set before the plugin is prepared: the manifest also declares `commit` on `c`, an act that
+    /// asks for a message first (the commit input).
+    commit: AtomicBool,
 }
 
 struct QuitPlugin(Arc<Shared>);
@@ -46,7 +49,7 @@ impl Plugin for QuitPlugin {
                 .footer(1)
                 .project_context(ActContext::screen("changes", Vec::<String>::new()))
         };
-        Manifest::new("quit-project", "0")
+        let manifest = Manifest::new("quit-project", "0")
             .project(
                 ProjectDecl::new()
                     .marker(DetectionMarker::new("project.marker", MarkerKind::File))
@@ -65,7 +68,11 @@ impl Plugin for QuitPlugin {
                         "Sure?",
                         vec![ConfirmChoice::new('y', "yes", "Yes")],
                     )),
-            )
+            );
+        if !self.0.commit.load(Ordering::SeqCst) {
+            return manifest;
+        }
+        manifest.action(act("commit", "c").text_input(crate::TextInput::new("Message", "")))
     }
     fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
         Ok(Box::new(QuitSession(self.0.clone())))
@@ -105,7 +112,13 @@ fn config(lang: &str) -> String {
 }
 
 fn open_project(lang: &str) -> Held {
+    open_project_with(lang, false)
+}
+
+/// [`open_project`], with the commit act on `c` declared when `commit` is set.
+fn open_project_with(lang: &str, commit: bool) -> Held {
     let shared = Arc::new(Shared::default());
+    shared.commit.store(commit, Ordering::SeqCst);
     let (dir, mut p, _) = setup_plugin(
         Arc::new(QuitPlugin(shared.clone())),
         false,
@@ -118,6 +131,7 @@ fn open_project(lang: &str) -> Held {
         runtime.enabled.insert("write".into(), true);
         runtime.enabled.insert("read".into(), true);
         runtime.enabled.insert("ask".into(), true);
+        runtime.enabled.insert("commit".into(), true);
     }
     Held {
         _dir: dir,
@@ -600,4 +614,46 @@ fn an_ignored_key_during_a_load_leaves_the_waiting_key_alone() {
         depth - 1,
         "plain q during the read did not go back"
     );
+}
+
+/// An Alt chord while a `c` (the commit act, which asks for its message first) waits behind the
+/// screen's read: the waiting `c` is neither cancelled nor displaced, and once the rows land it
+/// opens the commit input, as it does without the Alt chord in between (e3 item 3, e4 item 3).
+#[test]
+fn an_alt_chord_behind_a_read_leaves_a_waiting_commit_to_open_its_input() {
+    let alt = |c: char| Key::char(c).with_mods(crate::KeyMods::ALT);
+    for between in [None, Some('j'), Some('h'), Some('q')] {
+        let mut h = open_project_with("en", true);
+        h.shared.block_views.store(true, Ordering::SeqCst);
+        drive_held(&mut h.p, &mut h.t, vec![Key::char('r')]);
+        settle(&mut h, "a refresh is running", |h| {
+            h.p.runtimes.values().any(|r| r.busy && !r.acting)
+        });
+        drive_held(&mut h.p, &mut h.t, vec![Key::char('c')]);
+        assert!(h.p.dialog.is_none(), "c did not wait for the read");
+        let waiting = h.p.screen.as_ref().unwrap().frame().unwrap().pending.len();
+        assert!(waiting >= 1, "c did not wait in line");
+        if let Some(c) = between {
+            let events = drive_held(&mut h.p, &mut h.t, vec![alt(c)]);
+            assert!(events.ended, "Alt-{c} ended the app");
+            assert_eq!(
+                h.p.screen.as_ref().unwrap().frame().unwrap().pending.len(),
+                waiting,
+                "Alt-{c} changed the waiting keys"
+            );
+        }
+        h.shared.block_views.store(false, Ordering::SeqCst);
+        h.shared.hold.open();
+        settle(&mut h, "the waiting c opened the commit input", |h| {
+            matches!(
+                &h.p.dialog,
+                Some(ProjectDialog::Act { prompts, .. }) if !prompts.is_empty()
+            )
+        });
+        assert_eq!(
+            h.shared.finished.load(Ordering::SeqCst),
+            0,
+            "{between:?}: the commit ran before its message was given"
+        );
+    }
 }

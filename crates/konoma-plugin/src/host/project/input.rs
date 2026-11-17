@@ -140,23 +140,24 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
         {
             return ProjectUpdate::handled();
         }
-        let interaction = self.pending_interaction(context, &facts.actions);
         // The press as the keymap sees it (code and Ctrl). An Alt chord is never one of these.
-        let pressed = project_key_press(&key);
-        // A key the project layer has no form for is ignored by it: it never reaches the queue
-        // below, neither to wait in line behind a read nor to cancel what waits (host and
-        // standalone program decide it here, from the one reading of a key).
-        let ignored = pressed.is_none();
-        let back_key = pressed.is_some_and(|k| facts.back_keys.contains(&k));
-        let filter_key = pressed.is_some_and(|k| facts.filter_keys.contains(&k));
-        let jump_key = pressed.is_some_and(|k| jump_target(&facts.jumps, k).is_some());
+        // A key the project layer has no form for is ignored by it, here at its entry: it never
+        // reaches the queue below (neither to wait in line behind a read nor to cancel what
+        // waits), nor the filter field, nor any fixed key (host and standalone program decide it
+        // here, from the one reading of a key).
+        let Some(pressed) = project_key_press(&key) else {
+            return ProjectUpdate::new(ProjectDispatch::Unhandled);
+        };
+        let interaction = self.pending_interaction(context, &facts.actions);
+        let back_key = facts.back_keys.contains(&pressed);
+        let filter_key = facts.filter_keys.contains(&pressed);
+        let jump_key = jump_target(&facts.jumps, pressed).is_some();
         let navigation = !interaction
             && !facts.leader
             && (matches!(key.code, KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab)
                 || back_key
                 || jump_key);
         let global = !interaction
-            && !ignored
             && (key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -174,7 +175,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                     | KeyCode::PageUp
                     | KeyCode::PageDown
             ) || filter_key);
-        if !ignored && !navigation && !global && !local_movement && self.must_queue(context) {
+        if !navigation && !global && !local_movement && self.must_queue(context) {
             if facts
                 .action
                 .as_ref()
@@ -250,7 +251,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
             }
             return update;
         }
-        if pressed == Some(KeyPress::ctrl_ch('t')) {
+        if pressed == KeyPress::ctrl_ch('t') {
             let mut update = ProjectUpdate::handled();
             update.commands.push(ProjectCommand::NewTab);
             return update;
@@ -317,7 +318,7 @@ impl<I: ProjectActionInvocation> ProjectHost<'_, I> {
                 if facts.action.is_some() {
                     return ProjectUpdate::new(ProjectDispatch::Unhandled);
                 }
-                if let Some(screen) = pressed.and_then(|k| jump_target(&facts.jumps, k)) {
+                if let Some(screen) = jump_target(&facts.jumps, pressed) {
                     if !nav.pushed(declaration) {
                         *nav.frame_mut().unwrap() =
                             ProjectFrame::new(ScreenKey::new(screen, context.id));

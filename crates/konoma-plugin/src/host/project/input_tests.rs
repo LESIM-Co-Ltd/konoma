@@ -468,6 +468,25 @@ fn the_direct_refresh_goes_through_the_gate_of_the_key_r() {
                 after == 0 && !notice,
                 "direct={direct} busy={busy} before={before}: ran"
             );
+            // What was queued waits behind the input that came earlier, in arrival order.
+            if after > before {
+                let queued: Vec<_> = frame.pending.iter().collect();
+                let (last, earlier) = queued.split_last().expect("a non-empty queue");
+                assert!(
+                    earlier
+                        .iter()
+                        .all(|i| matches!(i, ProjectInput::Key(k) if k == &key('x'))),
+                    "direct={direct} busy={busy} before={before}: the earlier input moved"
+                );
+                assert!(
+                    if direct {
+                        matches!(last, ProjectInput::Refresh)
+                    } else {
+                        matches!(last, ProjectInput::Key(k) if k == &key('r'))
+                    },
+                    "direct={direct} busy={busy} before={before}: the refresh is not last in line"
+                );
+            }
             outcomes.push((frame.pending.len(), busy_notice, ran));
         }
         assert_eq!(
@@ -475,4 +494,50 @@ fn the_direct_refresh_goes_through_the_gate_of_the_key_r() {
             "busy={busy} before={before}: r and refresh differ"
         );
     }
+}
+
+/// An Alt chord typed while the list's `/` filter takes the typing has no form in the project
+/// layer: it never reaches the filter field (Alt-Backspace does not delete, Alt-Enter does not
+/// confirm, Alt-Esc does not clear), and the cursor stays where it was (e4 item 6). Without the
+/// Alt the same keys still edit the filter, so the fixture is a live filter.
+#[test]
+fn an_alt_chord_in_the_list_filter_leaves_the_filter_alone() {
+    use super::actions::ProjectDispatch;
+    let alt_of = |code: KeyCode| KeyEvent::new(code, KeyModifiers::ALT);
+    for code in [
+        KeyCode::Backspace,
+        KeyCode::Enter,
+        KeyCode::Esc,
+        KeyCode::Char('x'),
+    ] {
+        let mut f = super::actions_tests::Fixture::new();
+        {
+            let frame = f.state.as_mut().unwrap().frame_mut().unwrap();
+            frame.filtering = true;
+            frame.query = "a".into();
+            frame.cursor = 0;
+        }
+        let (mut host, mut context) = f.parts();
+        let update = host.handle_key(&mut context, alt_of(code), &ProjectKeyFacts::of_no_key());
+        assert_eq!(update.dispatch, ProjectDispatch::Unhandled, "Alt-{code:?}");
+        let frame = context.active.as_ref().unwrap().frame().unwrap();
+        assert!(frame.filtering, "Alt-{code:?} ended the filter");
+        assert_eq!(frame.query, "a", "Alt-{code:?} edited the query");
+        assert_eq!(frame.cursor, 0, "Alt-{code:?} moved the cursor");
+        assert!(frame.pending.is_empty(), "Alt-{code:?} was queued");
+    }
+    // The plain key does edit the same filter (the fixture is live).
+    let mut f = super::actions_tests::Fixture::new();
+    {
+        let frame = f.state.as_mut().unwrap().frame_mut().unwrap();
+        frame.filtering = true;
+        frame.query = "a".into();
+    }
+    let (mut host, mut context) = f.parts();
+    host.handle_key(
+        &mut context,
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        &ProjectKeyFacts::default(),
+    );
+    assert_eq!(context.active.as_ref().unwrap().frame().unwrap().query, "");
 }

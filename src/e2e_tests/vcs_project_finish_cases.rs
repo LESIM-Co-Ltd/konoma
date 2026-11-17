@@ -2491,3 +2491,85 @@ fn vcs_port_an_ignored_key_during_a_load_leaves_the_waiting_key_alone() {
         drain(&mut sim);
     }
 }
+
+/// An Alt chord while `c` (commit, which asks for its message first) waits behind the changes
+/// screen's read: the waiting `c` is neither cancelled nor displaced, and once the rows land it
+/// opens the commit input, exactly as it does with no Alt chord in between (e3 item 3).
+#[test]
+fn vcs_port_an_alt_chord_behind_a_read_leaves_a_waiting_commit_to_open_its_input() {
+    use std::sync::atomic::Ordering;
+    if isolated("vcs_port_an_alt_chord_behind_a_read_leaves_a_waiting_commit_to_open_its_input") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_alt_waiting_commit", true);
+    for between in [None, Some('j'), Some('h'), Some('q'), Some('r')] {
+        let what = format!("Alt-{between:?}");
+        let (cfg, h) = wt_flaky_cfg("git", "git.changes");
+        let mut sim = open(&root, cfg, (180, 24));
+        screen(&mut sim, "changes");
+        h.hold.store(true, Ordering::SeqCst);
+        sim.press(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(sim.app.project_jobs_pending(), "{what}: r did not start a job");
+        let before = sim.app.project_frame().unwrap().pending.len();
+        sim.press(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(
+            sim.app.project_frame().unwrap().pending.len(),
+            before + 1,
+            "{what}: c did not wait in line"
+        );
+        if let Some(c) = between {
+            sim.press(KeyCode::Char(c), KeyModifiers::ALT);
+            assert!(sim.app.project_active(), "{what} left the project");
+            assert_eq!(
+                sim.app.project_frame().unwrap().pending.len(),
+                before + 1,
+                "{what} changed the waiting keys"
+            );
+        }
+        assert!(sim.app.project_dialog.is_none(), "{what}: c ran before the rows arrived");
+        h.latch.open();
+        drain(&mut sim);
+        assert!(
+            sim.app.project_frame().unwrap().pending.is_empty(),
+            "{what}: the waiting key is left over"
+        );
+        assert!(
+            matches!(
+                &sim.app.project_dialog,
+                Some(konoma_plugin::host::project::ProjectDialog::Act { prompts, .. })
+                    if prompts.iter().any(|p| matches!(p, konoma_plugin::host::project::ProjectPrompt::Text(_)))
+            ),
+            "{what}: the waiting c did not open the commit input"
+        );
+    }
+}
+
+/// An Alt chord while the changes list's `/` filter takes the typing does not reach the filter
+/// field: Alt-Backspace keeps the query, Alt-Enter does not confirm it, Alt-Esc does not clear it,
+/// and the cursor stays (e4 item 6, konoma's host). The plain Backspace still edits it.
+#[test]
+fn vcs_port_alt_chords_in_the_list_filter_leave_the_filter_alone() {
+    if isolated("vcs_port_alt_chords_in_the_list_filter_leave_the_filter_alone") {
+        return;
+    }
+    let root = super::vcs_changes::git_repo("vcs_finish_alt_filter", true);
+    let mut sim = open(&root, config("git", "en"), (180, 24));
+    screen(&mut sim, "changes");
+    keys(&mut sim, "/t");
+    let before = {
+        let frame = sim.app.project_frame().unwrap();
+        assert!(frame.filtering, "the filter is not open");
+        (frame.query.clone(), frame.cursor)
+    };
+    assert_eq!(before.0, "t");
+    for code in [KeyCode::Backspace, KeyCode::Enter, KeyCode::Esc] {
+        sim.press(code, KeyModifiers::ALT);
+        drain(&mut sim);
+        assert!(sim.app.project_active(), "Alt-{code:?} left the project");
+        let frame = sim.app.project_frame().unwrap();
+        assert!(frame.filtering, "Alt-{code:?} ended the filter");
+        assert_eq!((frame.query.clone(), frame.cursor), before, "Alt-{code:?} changed the filter");
+    }
+    press(&mut sim, KeyCode::Backspace);
+    assert_eq!(sim.app.project_frame().unwrap().query, "", "plain Backspace edits the filter");
+}

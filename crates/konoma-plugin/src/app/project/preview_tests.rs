@@ -1170,6 +1170,39 @@ fn alt_chords_are_keys_of_no_table_on_a_project_screen() {
     );
 }
 
+/// An Alt chord while the list's `/` filter takes the typing does not reach the filter field:
+/// Alt-Backspace keeps the query, Alt-Enter does not confirm it, Alt-Esc does not clear it, and the
+/// cursor stays (e4 item 6, the standalone app). The plain Backspace after them still edits it.
+#[test]
+fn alt_chords_in_the_list_filter_leave_the_filter_alone() {
+    let (_dir, mut p, mut term) = setup(false, false);
+    opening(&mut p, &mut term, "log");
+    p.screen.as_mut().unwrap().frame_mut().unwrap().filtering = true;
+    let before = {
+        let frame = p.screen.as_ref().unwrap().frame().unwrap();
+        (frame.query.clone(), frame.cursor)
+    };
+    let alt = |code: crate::KeyCode| Key::new(code).with_mods(crate::KeyMods::ALT);
+    for code in [
+        crate::KeyCode::Backspace,
+        crate::KeyCode::Enter,
+        crate::KeyCode::Esc,
+    ] {
+        let events = drive(&mut p, &mut term, vec![alt(code.clone())]);
+        assert!(events.ended, "Alt-{code:?} quit the app");
+        let frame = p.screen.as_ref().unwrap().frame().unwrap();
+        assert!(frame.filtering, "Alt-{code:?} ended the filter");
+        assert_eq!(
+            (frame.query.clone(), frame.cursor),
+            before,
+            "Alt-{code:?} changed the filter or the cursor"
+        );
+    }
+    drive(&mut p, &mut term, vec![Key::new(crate::KeyCode::Backspace)]);
+    let frame = p.screen.as_ref().unwrap().frame().unwrap();
+    assert_eq!(frame.query, "ro", "plain Backspace edits the filter");
+}
+
 #[test]
 fn preview_escape_and_preview_back_binding_restore_the_project() {
     for (config, back) in [
