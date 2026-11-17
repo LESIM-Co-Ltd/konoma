@@ -255,8 +255,10 @@ impl ProjectLoopState {
 
     /// The one place where the diff screen stops being in front: the first project screen
     /// covers it (`p` from the diff screen or from its Preview representation). Covering is
-    /// leaving, as in the host (`App::navigation_over_here`): the diff screen's Markdown block diff
-    /// and media diff go, and the return (`ProjectDispatch::LeaveProject`) asks them again.
+    /// leaving, as in the host (`App::navigation_over_here`): everything the diff screen's view
+    /// asked goes (`DiffScreenState::leave`), nothing asks it again while covered (a refresh is
+    /// held, `DiffScreenState::hold_refresh`), and the return (`ProjectDispatch::LeaveProject`)
+    /// asks it once.
     fn cover_diff_screen(&mut self, info: &ProjectContextInfo<StandaloneSurface>) {
         let project = self.diff_return.as_ref().unwrap().project.clone();
         let Some(first) = self.with_host(info, |host, _| host.first_screen(&project, info.id))
@@ -266,8 +268,7 @@ impl ProjectLoopState {
         self.screen = Some(ProjectHost::start_screen(project, first));
         self.preview_project = true;
         if let Some(diff) = self.diff.as_mut() {
-            diff.leave_markdown();
-            diff.leave_media();
+            diff.leave();
         }
         self.ensure(info);
     }
@@ -412,7 +413,8 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             redraw |= state
                 .launch
                 .poll(terminal, prepared, cx, pictures.as_mut())?;
-            if state.launch.take_refresh() {
+            let tool_returned = state.launch.take_refresh();
+            if tool_returned {
                 if let Some(project) = state
                     .screen
                     .as_ref()
@@ -423,7 +425,22 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         host.invalidate(&project, ProjectInvalidation::Detection)
                     });
                 }
-                if let Some(diff) = state.diff.as_mut().filter(|diff| !diff.closed) {
+            }
+            // The project screen in front is read again above; the diff screen (or its Preview)
+            // is read only while it is in front (see `cover_diff_screen`). Behind a project
+            // screen the read is held: the diff screen's return reads it anyway
+            // (`resume_project_diff`), the Preview's return takes it here.
+            if let Some(diff) = state.diff.as_mut().filter(|diff| !diff.closed) {
+                if tool_returned {
+                    diff.hold_refresh();
+                }
+            }
+            if let Some(diff) = state
+                .diff
+                .as_mut()
+                .filter(|diff| !diff.closed && !state.preview_project)
+            {
+                if diff.take_held_refresh() {
                     if let Err(error) = diff.reload() {
                         prepared
                             .notice

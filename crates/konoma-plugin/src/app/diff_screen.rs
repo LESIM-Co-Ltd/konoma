@@ -145,6 +145,9 @@ pub struct DiffScreenState {
     /// The first answer of the target resolution (the diff's first load) has not been taken yet:
     /// it reserves the scroll to the first change. Set again by the view key (a new choice).
     first_answer_awaited: bool,
+    /// The diff screen is to be read again (a tool came back) but was not in front: covering is
+    /// leaving, so the read waits until it is in front again. Any read (`reload`) is this one.
+    refresh_held: bool,
     markdown: MdDiffWorker,
     markdown_rx: mpsc::Receiver<MdDiffResult>,
     media: media::Media,
@@ -285,6 +288,7 @@ impl DiffScreenState {
             rendered: None,
             pending_first_change: None,
             first_answer_awaited: true,
+            refresh_held: false,
             markdown: markdown.0.with_read_context(read_context),
             markdown_rx: markdown.1,
             media: media::Media::new(&config.git.media_diff),
@@ -388,6 +392,7 @@ impl DiffScreenState {
     }
 
     pub(super) fn reload(&mut self) -> Result<(), Failure> {
+        self.refresh_held = false;
         self.resolve_preview();
         self.markdown.invalidate();
         self.media.worker.invalidate();
@@ -403,6 +408,30 @@ impl DiffScreenState {
                 .spawn_file_diff(self.request.clone())?,
         );
         Ok(())
+    }
+
+    /// The diff screen stops being in front (a project screen covers it). Covering is leaving,
+    /// as in the host (`App::leave_tab_view`): everything its view asked is dropped, so no
+    /// answer landing behind the project screen asks a worker again: the target-kind answer
+    /// (whose adoption chooses the representation and would start a Markdown block diff), the
+    /// raw diff, the Markdown block diff and the media diff. The scroll, the chosen
+    /// representation, the media page and the reservation to land on the first change stay;
+    /// the return reads it all once (`resume_project_diff`).
+    pub(in crate::app) fn leave(&mut self) {
+        self.preview_reply = None;
+        self.pending = None;
+        self.leave_markdown();
+        self.leave_media();
+    }
+
+    /// A tool came back: the diff screen is to be read again, when it is in front.
+    pub(in crate::app) fn hold_refresh(&mut self) {
+        self.refresh_held = true;
+    }
+
+    /// The read held by `hold_refresh`, taken by the loop while the diff screen is in front.
+    pub(in crate::app) fn take_held_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.refresh_held)
     }
 
     pub(in crate::app) fn resume_project_diff(
