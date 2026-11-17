@@ -1209,6 +1209,115 @@ fn the_diff_answer_choosing_preview_after_leaving_keeps_the_open_identity() {
     }
 }
 
+/// Takes the answer of the diff target resolution out of the mailbox without applying it (the
+/// other results that arrive first are applied, as the main loop applies them).
+fn take_diff_target_answer(s: &mut Sim) -> crate::app::MediaResult {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("the diff target was never answered");
+        let res = s
+            .media_rx
+            .as_ref()
+            .expect("with_media")
+            .recv_timeout(left)
+            .expect("the worker answers");
+        if res.is_diff_target_answer_for_test() {
+            return res;
+        }
+        s.app.apply_media(res);
+    }
+}
+
+fn small_diff_repo(name: &str) -> std::path::PathBuf {
+    let root = repo(name, &[("doc.md", "# Title\n\nORIGINAL paragraph.\n")]);
+    std::fs::write(root.join("doc.md"), "# Title\n\nCHANGED paragraph.\n").unwrap();
+    root
+}
+
+/// The answer of the diff target resolution that was asked before the screen was left reaches the
+/// main loop while something else is in front (a project screen covers the diff, or another tab
+/// is shown). Covering is leaving the tab, on both roads alike: the answer is not applied to the
+/// screen that was left (no representation is chosen and nothing is read for it behind the screen
+/// in front), and the return asks again.
+#[test]
+fn a_diff_target_answer_asked_before_leaving_does_not_land_behind_the_screen_in_front() {
+    for away in BOTH {
+        let root = small_diff_repo("prp_diff_answer_left");
+        let mut s = road(&root, cfg_en(), true);
+        s.select("doc.md");
+        s.key('d');
+        assert!(
+            !s.app.diff_target_resolved_for_test(),
+            "{away:?}: the target was answered before the screen was left"
+        );
+        let answer = take_diff_target_answer(&mut s);
+        go_away(&mut s, away);
+        let (applied, views) =
+            crate::test_support::count_apply_diff_view_calls(|| s.app.apply_media(answer));
+        assert!(
+            !applied && views == 0 && !s.app.diff_target_resolved_for_test(),
+            "{away:?}: the answer landed behind the screen in front (applied={applied}, \
+             apply_diff_view ran {views} times):\n{}",
+            s.screen()
+        );
+        come_back(&mut s, away);
+        wait_diff_target(&mut s, true);
+        settled(&mut s);
+        assert!(
+            s.find_text("CHANGED paragraph").is_some(),
+            "{away:?}: the diff is not shown after the return:\n{}",
+            s.screen()
+        );
+    }
+}
+
+/// A watch event while the diff's screen is left (a project screen covers it, or another tab is
+/// shown) asks no diff target resolution for that screen: nothing targets it until it is in front
+/// again, and the return reads the file as it is then. In front, the same event asks (the count
+/// is live).
+#[test]
+fn a_watch_event_while_the_diff_is_left_asks_no_resolution_for_it() {
+    for away in BOTH {
+        let root = small_diff_repo("prp_diff_watch_left");
+        let path = root.join("doc.md");
+        let mut s = road(&root, cfg_en(), true);
+        s.select("doc.md");
+        s.key('d');
+        wait_diff_target(&mut s, true);
+        settled(&mut s);
+        let ((), in_front) = crate::test_support::count_diff_resolution_asks(|| {
+            s.app.refresh_fs_watched(false, std::slice::from_ref(&path))
+        });
+        assert!(
+            in_front >= 1,
+            "{away:?}: a watch event in front asks again ({in_front})"
+        );
+        wait_diff_target(&mut s, true);
+        settled(&mut s);
+        go_away(&mut s, away);
+        std::fs::write(&path, "# Title\n\nEDITED WHILE LEFT paragraph.\n").unwrap();
+        let ((), left) = crate::test_support::count_diff_resolution_asks(|| {
+            s.app.refresh_fs_watched(false, std::slice::from_ref(&path))
+        });
+        assert_eq!(
+            left,
+            0,
+            "{away:?}: the watch event asked a resolution for the screen that was left:\n{}",
+            s.screen()
+        );
+        come_back(&mut s, away);
+        wait_diff_target(&mut s, true);
+        settled(&mut s);
+        assert!(
+            s.find_text("EDITED WHILE LEFT").is_some(),
+            "{away:?}: the return does not read the file as it is now:\n{}",
+            s.screen()
+        );
+    }
+}
+
 fn apple_rows(rows: &[u32]) -> String {
     let mut out = format!(r#"<row r="1">{}</row>"#, x_str("A1", "head"));
     for r in rows {

@@ -114,6 +114,30 @@ pub(crate) fn count_apply_diff_view_calls<T>(f: impl FnOnce() -> T) -> (T, usize
     )
 }
 
+thread_local! {
+    /// How many diff target resolutions `App::resolve_diff_on_worker` asked of its worker **on
+    /// this thread** (thread-local for the same reason as `STAT_CALLS`).
+    static DIFF_RESOLUTION_ASKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `App::resolve_diff_on_worker` when it starts a resolution.
+pub(crate) fn note_diff_resolution_ask() {
+    let _ = DIFF_RESOLUTION_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many diff target resolutions were asked while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_diff_resolution_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = DIFF_RESOLUTION_ASKS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        DIFF_RESOLUTION_ASKS
+            .with(|c| c.get())
+            .saturating_sub(before),
+    )
+}
+
 // The `diff_align` call counter lives in `konoma-widgets` (the function does); the host's tests
 // reach it through this path.
 #[allow(unused_imports)]

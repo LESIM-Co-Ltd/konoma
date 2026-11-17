@@ -1564,3 +1564,333 @@ fn vcs_project_covered_rebuild_waits_for_the_status() {
         sim.screen()
     );
 }
+
+// --- A screen covered by a project screen is a tab that was left (e4-review items 1-4): what the
+// App keeps fresh for every tab goes on while covered, and what was asked for the screen that was
+// left does not land behind the screen in front.
+
+/// The file the tree cursor is on, by name.
+fn overlay_cursor_file(sim: &Sim) -> Option<String> {
+    sim.app
+        .tab
+        .entries
+        .get(sim.app.tab.selected)
+        .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+}
+
+fn overlay_tree_names(sim: &Sim) -> Vec<String> {
+    sim.app
+        .tab
+        .entries
+        .iter()
+        .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Whether the drawn row of `name` is the reversed cursor row.
+fn overlay_drawn_reversed(sim: &Sim, name: &str) -> bool {
+    sim.style_of(name)
+        .is_some_and(|st| st.add_modifier.contains(ratatui::style::Modifier::REVERSED))
+}
+
+/// e4-review item 1: two repositories, each tab with its `C` list under a project screen. Tab 0
+/// (repo A) is switched back to from tab 1 (repo B): the switch to a repository of its own drops
+/// the other repository's statuses and asks for a scan, and `q` leaves the project before that
+/// scan lands. The `C` list stays on and, once the scan lands, it is drawn with the cursor on the
+/// file it was on when `p` covered it.
+#[test]
+fn vcs_project_two_repos_quit_before_the_status_keeps_the_changed_list_and_its_cursor() {
+    if isolated("vcs_project_two_repos_quit_before_the_status_keeps_the_changed_list_and_its_cursor")
+    {
+        return;
+    }
+    let parent = sandbox("vcs_project_two_repos_quit");
+    let make = |name: &str| {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A clean tracked file: the `C` list is told from the whole tree by its absence.
+        std::fs::write(dir.join("k-clean.txt"), "clean\n").unwrap();
+        super::vcs_changes::git_repo_at(&dir, true);
+        dir.canonicalize().unwrap()
+    };
+    let a = make("a-repo");
+    let _b = make("b-repo");
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_two_repos_quit_cfg");
+    let mut sim = Sim::with_config_sized(&a, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &a);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.key('C');
+    drain(&mut sim);
+    assert!(sim.app.changed_filter(), "C turns the changed-files list on");
+    assert!(
+        !overlay_tree_names(&sim).iter().any(|n| n == "k-clean.txt"),
+        "not the changed list: {:?}",
+        overlay_tree_names(&sim)
+    );
+    press(&mut sim, KeyCode::Char('j'));
+    press(&mut sim, KeyCode::Char('j'));
+    let on = overlay_cursor_file(&sim).expect("the cursor is on a file");
+    assert_ne!(sim.app.tab.selected, 0, "the cursor is off the first row");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers tab 0's list");
+    // Tab 1 on repository B, its `C` list covered the same way.
+    sim.app.tab_new().unwrap();
+    drain(&mut sim);
+    assert!(!sim.app.project_active(), "the new tab shows its own tree");
+    sim.key('h');
+    drain(&mut sim);
+    sim.select("b-repo");
+    sim.key('l');
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    assert!(sim.app.tab.root.ends_with("b-repo"), "{:?}", sim.app.tab.root);
+    sim.key('C');
+    drain(&mut sim);
+    assert!(sim.app.changed_filter(), "tab 1's C list");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers tab 1's list");
+    // The scans are asked of a loader from here on, so tab 0's scan can be held back.
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_status_loader(tx);
+    sim.app.tab_goto(0);
+    drain(&mut sim);
+    assert!(sim.app.tab.root.ends_with("a-repo"));
+    assert!(
+        sim.app.git_status_in_flight(),
+        "the switch to repository A asked for its scan"
+    );
+    sim.draw();
+    assert_project_screen_in_front(&sim, "tab 0 again", &[]);
+    // `q` before the scan lands.
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert!(sim.app.changed_filter(), "q dropped tab 0's C list");
+    let mut landed = 0;
+    while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        sim.app.apply_statuses(res);
+        landed += 1;
+    }
+    assert!(landed >= 1, "no scan landed");
+    sim.draw();
+    assert!(sim.app.changed_filter(), "the C list was turned off");
+    let names = overlay_tree_names(&sim);
+    assert!(
+        !names.iter().any(|n| n == "k-clean.txt"),
+        "after the scan the list is not the changed list: {names:?}\n{}",
+        sim.screen()
+    );
+    assert_eq!(
+        overlay_cursor_file(&sim).as_deref(),
+        Some(on.as_str()),
+        "the cursor left its file\n{}",
+        sim.screen()
+    );
+    assert!(
+        overlay_drawn_reversed(&sim, &on),
+        "the drawn cursor is not on {on}\n{}",
+        sim.screen()
+    );
+}
+
+/// e4-review item 2: a Markdown document's embedded picture is overwritten while a project screen
+/// covers the document, and the watcher reports it (`refresh_fs_watched`, the run loop's call).
+/// The picture cache is the App's and is kept for every screen, so the entry of the changed path
+/// goes while covered; leaving the project draws the new pixels.
+#[test]
+fn vcs_project_picture_rewritten_while_covered_is_drawn_new_after_leaving() {
+    if isolated("vcs_project_picture_rewritten_while_covered_is_drawn_new_after_leaving") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_picture_rewritten") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_picture_rewritten_cfg");
+    let png = repo.join("pic.png");
+    write_solid_png(&png, 40, 20, [10, 210, 10]);
+    std::fs::write(repo.join("pic.md"), "before\n\n![a](pic.png)\n\nafter\n").unwrap();
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30).with_media();
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.select("pic.md");
+    sim.enter();
+    sim.drain_md_images();
+    sim.drain_md_encodes();
+    assert!(drawn_has_green(&sim.term), "the first picture (green) is drawn");
+    let placement = sim.app.md_images();
+    assert_eq!(placement.len(), 1, "{placement:?}");
+    let (url, cols, rows) = (placement[0].url.clone(), placement[0].cols, placement[0].rows);
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers the document");
+    write_solid_png(&png, 40, 20, [210, 10, 10]);
+    sim.app.refresh_fs_watched(false, std::slice::from_ref(&png));
+    drain(&mut sim);
+    assert_project_screen_in_front(&sim, "after the watched change", &[]);
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert_eq!(sim.app.tab.mode, Mode::Preview);
+    sim.draw();
+    assert!(
+        sim.app.md_image_proto(&url, cols, rows, 0, rows).is_none(),
+        "the cache entry of the picture rewritten while covered was kept"
+    );
+    sim.drain_md_images();
+    sim.drain_md_encodes();
+    assert!(
+        drawn_has_red(&sim.term),
+        "the new pixels (red) are not drawn after leaving"
+    );
+    assert!(!drawn_has_green(&sim.term), "the old pixels (green) are drawn");
+}
+
+/// e4-review item 3: a clean tracked file is edited while a project screen covers the tree, the
+/// watcher reports it, and `F` is pressed over the project screen. The status is the App's: the
+/// watch event marked it stale while covered, so `F` reads it again and the edit made before `F`
+/// is in the follow baseline. After leaving, an edit made after `F` is followed: its diff shows
+/// that edit only, not the one made before `F`.
+#[test]
+fn vcs_project_edit_watched_while_covered_is_in_the_follow_baseline() {
+    if isolated("vcs_project_edit_watched_while_covered_is_in_the_follow_baseline") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_follow_watched") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_follow_watched_cfg");
+    let file = repo.join("tracked.txt");
+    std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
+    crate::test_support::run_git(&repo, &["add", "tracked.txt"]);
+    crate::test_support::run_git(&repo, &["commit", "-qm", "tracked", "--", "tracked.txt"]);
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    assert!(
+        sim.app.git_status_of(&file).is_none(),
+        "the status read before the cover has the file clean"
+    );
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    std::fs::write(&file, "line1\nPRE-FOLLOW\nline3\n").unwrap();
+    sim.app.refresh_fs_watched(false, std::slice::from_ref(&file));
+    drain(&mut sim);
+    assert_project_screen_in_front(&sim, "after the watched change", &[]);
+    press(&mut sim, KeyCode::Char('F'));
+    assert!(sim.app.follow_enabled(), "F over the project screen turns follow on");
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert!(sim.app.follow_enabled(), "leaving the project turned follow off");
+    // An edit after `F`, followed as the run loop follows it.
+    std::fs::write(&file, "line1\nPRE-FOLLOW\nPOST-FOLLOW\n").unwrap();
+    sim.app.refresh_fs_watched(false, std::slice::from_ref(&file));
+    sim.app.follow_jump(&file);
+    drain(&mut sim);
+    assert!(sim.app.is_git_diff_preview(), "the followed edit opens its diff");
+    let added: Vec<String> = sim
+        .app
+        .git_diff_lines()
+        .iter()
+        .filter(|l| l.kind == crate::git::DiffLineKind::Added)
+        .map(|l| l.text.clone())
+        .collect();
+    assert!(
+        added.iter().any(|t| t == "POST-FOLLOW"),
+        "the edit after F is not in the diff: {added:?}"
+    );
+    assert!(
+        !added.iter().any(|t| t == "PRE-FOLLOW"),
+        "the edit made before F (watched while covered) is not in the baseline: {added:?}"
+    );
+}
+
+/// e4-review item 4: a `/` filter whose pool scan is still on the worker when `p` covers the
+/// tree. The scan was asked for the screen that was left, so its result (applied as the run loop
+/// applies it) does not change that screen: right after leaving, the list and its cursor are the
+/// ones that were covered, as after a tab switch away and back. The scan the return asks for then
+/// fills the list in with the cursor on its file.
+#[test]
+fn vcs_project_filter_pool_scan_landing_while_covered_leaves_the_covered_list_alone() {
+    if isolated("vcs_project_filter_pool_scan_landing_while_covered_leaves_the_covered_list_alone")
+    {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_filter_pool_covered") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_filter_pool_covered_cfg");
+    std::fs::write(repo.join("deep_root1.txt"), "r\n").unwrap();
+    std::fs::write(repo.join("deep_root2.txt"), "r\n").unwrap();
+    for i in 0..6 {
+        let sub = repo.join(format!("pkg{i}"));
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(format!("deep{i}.csv")), "a,b\n").unwrap();
+    }
+    crate::app::set_filter_scan_budget(Some(Some(std::time::Duration::ZERO)));
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_filter_pool_loader(tx);
+    sim.key('/');
+    sim.keys("deep");
+    sim.enter();
+    drain(&mut sim);
+    assert!(sim.app.filter_query().is_some(), "the filter is on");
+    let covered = overlay_tree_names(&sim);
+    assert!(
+        !covered.iter().any(|n| n.ends_with(".csv")),
+        "the scan is not on the worker: {covered:?}"
+    );
+    sim.select("deep_root2.txt");
+    let covered_cursor = overlay_cursor_file(&sim);
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers the filtered list");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the scan asked before the cover lands");
+    let applied = sim.app.apply_filter_pool(res);
+    drain(&mut sim);
+    assert_project_screen_in_front(&sim, "after the scan landed", &[]);
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    sim.draw();
+    assert_eq!(
+        overlay_tree_names(&sim),
+        covered,
+        "the scan asked for the covered screen changed it (applied={applied})\n{}",
+        sim.screen()
+    );
+    assert_eq!(overlay_cursor_file(&sim), covered_cursor, "the cursor left its file");
+    assert!(
+        overlay_drawn_reversed(&sim, "deep_root2.txt"),
+        "the drawn cursor is not on deep_root2.txt\n{}",
+        sim.screen()
+    );
+    // The scan of the return fills the list in, the cursor on its file.
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the return asks for a scan of its own");
+    assert!(sim.app.apply_filter_pool(res), "the return's scan is applied");
+    sim.draw();
+    let names = overlay_tree_names(&sim);
+    for i in 0..6 {
+        assert!(
+            names.iter().any(|n| *n == format!("deep{i}.csv")),
+            "the return's scan did not fill the list in: {names:?}"
+        );
+    }
+    assert_eq!(overlay_cursor_file(&sim), covered_cursor, "the cursor left its file");
+    crate::app::set_filter_scan_budget(None);
+}

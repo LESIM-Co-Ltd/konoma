@@ -42,6 +42,18 @@ fn deliver(tx: &std::sync::mpsc::Sender<MediaResult>, kind: Reply) {
     });
 }
 
+#[cfg(test)]
+impl MediaResult {
+    /// Test-only: whether this is the answer of a diff target resolution
+    /// (`App::resolve_diff_on_worker`).
+    pub(crate) fn is_diff_target_answer_for_test(&self) -> bool {
+        matches!(
+            &self.payload,
+            Some(MediaPayload::FilePreview(reply)) if matches!(reply.kind, Reply::Diff { .. })
+        )
+    }
+}
+
 impl App {
     pub(crate) fn is_file_preview_resolving(&self) -> bool {
         self.preview_resolution_tx.is_some()
@@ -95,6 +107,8 @@ impl App {
         let Some(tx) = self.preview_resolution_tx.clone() else {
             return;
         };
+        #[cfg(test)]
+        crate::test_support::note_diff_resolution_ask();
         let serial = self.diff_resolution_serial;
         let rules = self.cfg.preview.rules.clone();
         let disabled = self.cfg.plugin_disabled();
