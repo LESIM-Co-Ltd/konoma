@@ -824,13 +824,26 @@ impl App {
 
     /// Publish `anchor` as the identity a deferred `C` rebuild lands the cursor on
     /// (`apply_statuses`). The one place it is published: by every rebuild under `C`
-    /// (`capture_view_anchors`, `rebuild_tree_under_changed_list`) and by a jump that cannot select
-    /// its target in the list kept while a scan is out (`reveal_path_deep`). The identity stands
-    /// for the cursor's row as it is now, so that row's file is recorded with it; called while
-    /// `entries` is still the `C` list.
+    /// (`capture_view_anchors`, `rebuild_tree_under_changed_list`) and by every jump while a scan is
+    /// out (`publish_jump_target`). The identity stands for the cursor's row as it is now, so that
+    /// row's file is recorded with it; called while `entries` is still the `C` list.
     pub(super) fn publish_changed_anchor(&mut self, anchor: Option<PathBuf>) {
         self.tab.changed_anchor_row = anchor.as_ref().and_then(|_| self.filter_anchor());
         self.tab.changed_anchor_pending = anchor;
+    }
+
+    /// A jump revealed `target` under `C` (`reveal_path_deep`, after it moved the cursor or found
+    /// no row to move it to). While a status scan is out the list is the one kept from before the
+    /// scan, and the target is the identity the deferred rebuild lands the cursor on, whether that
+    /// list has a row for it (the cursor is on it now) or not yet (a new change; the cursor did not
+    /// move). It replaces whatever an earlier jump or rebuild published: left in place, an earlier
+    /// jump's identity still stands for the cursor whenever this jump put the cursor on the row it
+    /// was published for, and the landing scan carries the cursor off the file jumped to last. With
+    /// no scan out the list is current and nothing waits.
+    pub(super) fn publish_jump_target(&mut self, target: &Path) {
+        if self.tab.changed_filter && self.git_status_pending.is_some() {
+            self.publish_changed_anchor(Some(target.to_path_buf()));
+        }
     }
 
     /// Retire the published identity: nothing waits for a scan any more (the list was rebuilt, or

@@ -705,12 +705,15 @@ fn a_tree_filter_pool_made_while_covered_is_not_reverted_by_the_return() {
     }
 }
 
-/// The pool is scanned on a worker when the loader is attached (the run loop does). A scan that
-/// lands while the screen covers the tab is the tab's pool; the return starts a scan of its own,
-/// and until that one lands (nothing applies it here) the pool the tab shows is the one that was
-/// delivered while covered, not the older one saved at the cover.
+/// The pool is scanned on a worker when the loader is attached (the run loop does). Covering is
+/// leaving the tab: the filter-pool scan is the work of the tab's view, so a scan that was out when
+/// the screen covered the tab lands stale and leaves the tab's pool alone, and a watch event while
+/// covered starts none (the view is read again from the files on the return). The return asks the
+/// tab's own scan, and that one brings the pool up to date with the file made while covered: the
+/// return does not leave the tab with the pool saved at the cover.
 #[test]
-fn a_filter_pool_delivered_while_covered_is_still_the_pool_right_after_the_return() {
+fn a_filter_pool_scan_is_dropped_while_covered_and_the_return_scans_the_pool_again() {
+    let names = |s: &Sim| s.app.filter_pool_names_for_test();
     for worker in [false, true] {
         let root = repo(
             "prp_filter_pool_async",
@@ -728,23 +731,53 @@ fn a_filter_pool_delivered_while_covered_is_still_the_pool_right_after_the_retur
         assert_eq!(s.app.tab.mode, Mode::Preview, "worker={worker}");
         let (tx, rx) = std::sync::mpsc::channel();
         s.app.attach_filter_pool_loader(tx);
+        // A scan asked for in front, still out (not applied) when the screen covers the tab.
+        s.app.refresh_fs(true).unwrap();
+        assert!(
+            s.app.filter_pool_scan_in_flight(),
+            "worker={worker}: premise: the scan of the tab in front is out"
+        );
         open_project(&mut s);
+        let before = names(&s);
+        assert!(
+            !before.iter().any(|n| n == "xnew.txt"),
+            "worker={worker}: premise: {before:?}"
+        );
+        let in_flight = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the scan asked for in front lands");
+        // A watch event while covered starts no scan of the tab's tree.
         std::fs::write(root.join("xnew.txt"), "n\n").unwrap();
         s.app.refresh_fs(true).unwrap();
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)).is_err(),
+            "worker={worker}: a scan of the covered tab's tree was started behind the screen"
+        );
+        // The scan that was out at the cover is rejected and does not change the tab's pool.
+        assert!(
+            !s.app.apply_filter_pool(in_flight),
+            "worker={worker}: the scan asked for before the cover was applied behind the screen"
+        );
+        assert_eq!(
+            names(&s),
+            before,
+            "worker={worker}: the pool changed behind the screen"
+        );
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)).is_err(),
+            "worker={worker}: the rejected scan started another one behind the screen"
+        );
+        // The return asks the tab's own scan; it lands and the pool has the file made while
+        // covered.
+        leave_project(&mut s);
         let res = rx
             .recv_timeout(std::time::Duration::from_secs(60))
-            .expect("the scan started while covered lands");
+            .expect("the return asks the tab's own scan");
         assert!(s.app.apply_filter_pool(res), "worker={worker}");
-        let live = s.app.filter_pool_names_for_test();
-        assert!(
-            live.iter().any(|n| n == "xnew.txt"),
-            "worker={worker}: the scan did not reach the pool: {live:?}"
-        );
-        leave_project(&mut s);
-        let pool = s.app.filter_pool_names_for_test();
+        let pool = names(&s);
         assert!(
             pool.iter().any(|n| n == "xnew.txt"),
-            "worker={worker}: the pool delivered while covered was reverted: {pool:?}"
+            "worker={worker}: the scan the return asked for did not bring the pool up to date: {pool:?}"
         );
     }
 }
@@ -2043,6 +2076,52 @@ fn a_paste_jump_to_a_new_change_lands_on_it_with_or_without_a_scan_out() {
             "{what}, in the tree\n{}",
             s.screen()
         );
+    }
+}
+
+/// Every jump replaces the identity an earlier jump left for the scan. `C` on with the cursor on
+/// c3 and a scan out: a paste jump to the new change aaa_new.txt (no row in the kept list: the
+/// identity waits for the scan, standing for the cursor's row c3), then a paste jump to c3 (a row
+/// of the kept list, selected at once). When the scan lands the cursor is on c3, the file jumped to
+/// last and the one previewed, as with no scan out.
+#[test]
+fn a_later_jump_to_a_listed_file_replaces_the_identity_an_earlier_jump_left_for_the_scan() {
+    for held in [false, true] {
+        let what = format!("scan out: {held}");
+        let (mut s, root, rx) =
+            changed_list_on_c3_with_a_new_change("prp_anchor_second_jump", held);
+        settled(&mut s);
+        assert_eq!(s.app.git_status_in_flight(), held, "{what}: premise");
+        s.app.paste_jump_to(&root.join("aaa_new.txt"), None);
+        settled(&mut s);
+        if held {
+            assert!(
+                s.app.changed_anchor_left_to_status(),
+                "{what}: premise: the identity of the first jump waits for the scan"
+            );
+        }
+        let c3 = root.join("c3.txt");
+        s.app.paste_jump_to(&c3, None);
+        settled(&mut s);
+        assert_eq!(cursor_file(&s).as_deref(), Some("c3.txt"), "{what}");
+        if let Some(rx) = rx.as_ref() {
+            let landed = land_scans(&mut s, rx);
+            assert!(landed >= 1, "{what}: no scan landed");
+        }
+        assert_eq!(
+            s.app.tab.preview_path.as_deref(),
+            Some(c3.as_path()),
+            "{what}: the preview is not the file jumped to last"
+        );
+        assert_cursor_on_c3(&s, &format!("{what}, after the scan landed"));
+        s.key('q');
+        settled(&mut s);
+        assert_eq!(s.app.tab.mode, Mode::Tree, "{what}");
+        if let Some(rx) = rx.as_ref() {
+            land_scans(&mut s, rx);
+        }
+        assert_cursor_on_c3(&s, &format!("{what}, in the tree"));
+        assert_c3_drawn_under_the_cursor(&s, &what);
     }
 }
 

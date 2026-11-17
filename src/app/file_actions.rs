@@ -723,19 +723,18 @@ impl App {
                 }
             }
         }
-        if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
+        let found = self.tab.entries.iter().position(|e| e.path == target);
+        if let Some(i) = found {
             self.tab.selected = i;
-            return Ok(true);
         }
         // Under `C` while a status scan is out, the list is the one kept from before the scan, which
-        // has no row yet for a file the scan may list (a new change). The target is left as the
-        // identity the deferred rebuild lands the cursor on, standing for the cursor's row (which
-        // did not move), the way `reveal_and_select` leaves its target. With no scan out the list
-        // is current: a file it has no row for is not changed, and nothing waits.
-        if self.tab.changed_filter && self.git_status_pending.is_some() {
-            self.publish_changed_anchor(Some(target.to_path_buf()));
-        }
-        Ok(false)
+        // has no row yet for a file the scan may list (a new change). Found or not, the target is
+        // the identity the deferred rebuild lands the cursor on, standing for the cursor's row as
+        // this jump left it, the way `reveal_and_select` leaves its target; it replaces an earlier
+        // jump's. With no scan out the list is current: a file it has no row for is not changed,
+        // and nothing waits.
+        self.publish_jump_target(target);
+        Ok(found.is_some())
     }
 
     /// After an operation, reveal and select `target`. If the parent is a collapsed dir, expand it
