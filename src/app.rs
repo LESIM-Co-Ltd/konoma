@@ -3780,6 +3780,14 @@ impl App {
 
     /// `enter_preview`, then `landing` once the kind is known (see `Landing`).
     pub(super) fn enter_preview_landing(&mut self, path: &Path, landing: Landing) {
+        self.enter_preview_in(path, landing, false);
+    }
+
+    /// `enter_preview_landing` for the same open going on (`same_open`): the automatic progress of
+    /// an open the user already made (the diff's target answer choosing the Preview
+    /// representation, `R`, a full-screen fence returning to its document) keeps the preview load
+    /// identity (`PerTab::load_id`); only a new open the user makes renews it.
+    pub(super) fn enter_preview_in(&mut self, path: &Path, landing: Landing, same_open: bool) {
         self.tab.diff_read_context = Default::default();
         // Is this re-entering the same file (returning via `q` from a full-screen fence)? If so,
         // keep the inline-image cache warm: discarding it would restart every fence from Loading
@@ -3798,7 +3806,9 @@ impl App {
         // than only from apply_payload's CommandText handler, is what covers "left a command
         // preview for something else entirely") is done for.
         self.clear_command_out();
-        self.begin_preview_load();
+        if !same_open {
+            self.begin_preview_load();
+        }
         self.tab.preview_path = Some(path.to_path_buf());
         // Resolve the preview kind via config. Unsupported kinds become CanNotPreview.
         //
@@ -4564,6 +4574,19 @@ impl App {
         )
     }
 
+    /// Test-only: the preview load identity (`PerTab::load_id`) of the working tab.
+    #[cfg(test)]
+    pub fn load_id_for_test(&self) -> u64 {
+        self.tab.load_id
+    }
+
+    /// Test-only: whether the tab's pending landing waits with the kind resolved (`Some(true)`:
+    /// only the document body is awaited), still unresolved (`Some(false)`), or there is none.
+    #[cfg(test)]
+    pub fn pending_kind_known_for_test(&self) -> Option<bool> {
+        self.tab.pending.as_ref().map(|p| p.kind_known)
+    }
+
     /// Test-only: whether the tab has any landing pending.
     #[cfg(test)]
     pub fn has_pending_landing_for_test(&self) -> bool {
@@ -4700,7 +4723,9 @@ impl App {
         if matches!(self.tab.preview_kind, Some(PreviewKind::MermaidFence(_))) {
             if let Some(md) = self.tab.preview_path.clone() {
                 let ret = self.tab.fence_return.take();
-                self.enter_preview(&md);
+                // The same open going on (the document the fence came from): the load identity
+                // is kept.
+                self.enter_preview_in(&md, Landing::None, true);
                 if let Some((scroll, focus)) = ret {
                     self.tab.preview_scroll = scroll;
                     self.tab.focused_item = focus;

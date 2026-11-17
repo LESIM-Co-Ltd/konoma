@@ -433,12 +433,16 @@ impl App {
     pub(super) fn enter_diff_preview_representation(&mut self, path: &Path) {
         let read_context = self.tab.diff_read_context;
         let diff_follow_scope = self.diff_follow_scope;
-        self.enter_preview_landing(
+        // Always the same open going on: a diff's target answer choosing this representation, `R`,
+        // or the open that just made its own identity (`open_git_diff_with`) — never a new open
+        // by itself, so the load identity (`PerTab::load_id`) is kept.
+        self.enter_preview_in(
             path,
             super::Landing::DiffPreview {
                 read_context,
                 follow_scope: diff_follow_scope,
             },
+            true,
         );
     }
 
@@ -469,6 +473,8 @@ impl App {
                 read_context: self.tab.diff_read_context,
                 follow_scope: self.diff_follow_scope,
                 view: Some(transition.choice),
+                // `R` is a representation change of the open the user made: same identity.
+                same_open: true,
                 ..Default::default()
             },
         );

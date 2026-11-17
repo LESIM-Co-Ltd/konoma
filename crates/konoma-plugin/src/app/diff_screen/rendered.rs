@@ -119,6 +119,11 @@ impl DiffScreenState {
         reps
     }
 
+    /// The target resolution of a file-preview source has not answered yet.
+    fn answer_pending(&self) -> bool {
+        self.file_previews.is_some() && self.resolved_preview.is_none()
+    }
+
     pub(super) fn choose_effective(&mut self) {
         let effective = round_diff_view(self.choice, &self.representations());
         if effective == DiffView::Preview {
@@ -130,8 +135,18 @@ impl DiffScreenState {
         }
         self.command = None;
         self.effective = effective;
-        self.pending_first_change = (self.effective == DiffView::Rendered && !self.media_active())
-            .then(|| self.request.path.clone());
+        // The scroll to the first change is the landing of the diff's first load: only the first
+        // answer of the target resolution reserves it (the host's rule, `diff_answer_awaited`).
+        // An answer to a read made for a return keeps the view it was left at.
+        let lands = self.effective == DiffView::Rendered && !self.media_active();
+        if self.first_answer_awaited {
+            self.pending_first_change = lands.then(|| self.request.path.clone());
+            if self.file_previews.is_none() || self.resolved_preview.is_some() {
+                self.first_answer_awaited = false;
+            }
+        } else if !lands && !self.answer_pending() {
+            self.pending_first_change = None;
+        }
         if self.effective == DiffView::Rendered
             && !self.media_active()
             && self
@@ -262,7 +277,9 @@ impl DiffScreenState {
                 });
                 self.scroll = update.scroll;
                 self.hscroll = update.hscroll;
-            } else {
+            } else if self.pending.is_none() && !self.markdown.pending_for(&self.request.path) {
+                // Nothing to lay out and nothing coming: a view of nothing starts at the top.
+                // While the read for a return is still on its way the reader's position waits.
                 self.scroll = 0;
                 self.hscroll = 0;
             }

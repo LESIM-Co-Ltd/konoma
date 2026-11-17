@@ -30,6 +30,9 @@ pub(super) struct DiffOpen {
     /// git for something already in hand. `None` (the default) leaves the cache empty
     /// (`invalidate_diff_caches` already clears it) for the render to populate lazily.
     pub seeded_diff: Option<DiffCache>,
+    /// The same open going on (`R` back from the Preview representation): the preview load
+    /// identity (`PerTab::load_id`) is kept. Every other call is a new open and renews it.
+    pub same_open: bool,
 }
 
 impl App {
@@ -230,7 +233,9 @@ impl App {
     /// `DiffOpen` up front and call this once.
     pub(super) fn open_git_diff_with(&mut self, path: &Path, open: DiffOpen) {
         self.tab.diff_read_context = open.read_context;
-        self.begin_preview_load();
+        if !open.same_open {
+            self.begin_preview_load();
+        }
         self.tab.preview_path = Some(path.to_path_buf());
         self.set_preview_kind(Some(PreviewKind::GitDiff(path.to_path_buf())));
         // The diff preview draws itself (it doesn't use window/image/md). Reset the related state.

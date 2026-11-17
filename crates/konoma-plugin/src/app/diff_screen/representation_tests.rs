@@ -237,8 +237,7 @@ fn preview_hints_exist_exactly_when_keys_act() {
 /// A formatted Markdown diff resumed after a project screen is read again, but the reservation to
 /// scroll to the first change belongs to the first load: a landing consumed before the cover is
 /// not made again, and the reader's scroll stays.
-#[test]
-fn resumed_rendered_diff_keeps_its_scroll_and_does_not_land_again() {
+fn resumed_rendered_diff(with_source: bool) {
     use crate::app::project::ProjectBackend;
     use crate::host::project::md_diff::{MdDiffOutcome, MdDiffWorker};
     struct MarkdownServices;
@@ -257,7 +256,7 @@ fn resumed_rendered_diff_keeps_its_scroll_and_does_not_land_again() {
             unreachable!()
         }
         fn base_contents(&self, _: &ProjectServiceInfo, _: &std::path::Path) -> Option<Vec<u8>> {
-            unreachable!()
+            Some(b"base".to_vec())
         }
         fn diff_target(&self, _: &std::path::Path, _: Option<&[u8]>) -> DiffTarget {
             DiffTarget::Markdown
@@ -281,7 +280,13 @@ fn resumed_rendered_diff_keeps_its_scroll_and_does_not_land_again() {
         .map(|i| format!("paragraph {i}\n\n"))
         .collect::<String>();
     let new = format!("{old}changed\n\n{}", "tail\n\n".repeat(20));
+    // The file as the worker reads it: changed while the diff is covered.
+    let current = Arc::new(std::sync::Mutex::new(new));
+    let read = current.clone();
+    let old_text = old.clone();
     let mut worker = MdDiffWorker::with_compute(Arc::new(move |_| {
+        let new = read.lock().unwrap().clone();
+        let old = old_text.clone();
         let (_, _, ops) = konoma_widgets::markdown::diff_align(&old, &new);
         MdDiffOutcome::Ready {
             old_pre: old.clone(),
@@ -304,7 +309,32 @@ fn resumed_rendered_diff_keeps_its_scroll_and_does_not_land_again() {
         }
     });
     let config = SharedConfig::parse("[ui]\nlang='en'").unwrap();
-    let mut state = DiffScreenState::open_with_markdown_worker(
+    let source = with_source.then(|| {
+        struct MarkdownDocument;
+        impl crate::Plugin for MarkdownDocument {
+            fn manifest(&self) -> crate::Manifest {
+                crate::Manifest::new("markdown-document", "0")
+                    .bind(crate::Bind::files(["*.md"]))
+                    .shows(crate::ViewKind::Document)
+            }
+            fn open(
+                &self,
+                _: crate::Input,
+                _: &crate::OpenCx,
+            ) -> Result<Box<dyn crate::Session>, Failure> {
+                unreachable!()
+            }
+        }
+        let mut registry = Registry::new();
+        registry
+            .register(
+                Arc::new(MarkdownDocument),
+                crate::registry::PluginOrigin::Standard,
+            )
+            .unwrap();
+        FilePreviewSource::new(Arc::new(registry), Vec::new(), false)
+    });
+    let mut state = DiffScreenState::open_with_workers(
         FileDiffRequest {
             root: dir.to_path_buf(),
             path: dir.join("doc.md"),
@@ -317,28 +347,77 @@ fn resumed_rendered_diff_keeps_its_scroll_and_does_not_land_again() {
         &config,
         DiffLayout::Unified,
         Some(DiffView::Rendered),
-        worker,
-        forward_rx,
+        (worker, forward_rx),
+        // With a source the target resolves asynchronously, as in a real file app.
+        (source, false),
     )
     .unwrap();
     let area = Rect::new(0, 1, 54, 12);
-    published_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    state.poll().unwrap();
-    state.prepare_frame(area, None);
-    assert!(
-        state.scroll > 20,
-        "the first load lands on the first change"
-    );
+    let drawn = |state: &mut DiffScreenState| {
+        let mut frame = Buffer::empty(area);
+        state.draw(&mut frame, area);
+        frame
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    // Polls and prepares frames until `done` holds (the replies come from workers).
+    let settle =
+        |state: &mut DiffScreenState, what: &str, done: &dyn Fn(&DiffScreenState) -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                state.poll().unwrap();
+                state.prepare_frame(area, None);
+                if done(state) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("never settled: {what}");
+        };
+    settle(&mut state, "the first landing", &|s| s.scroll > 20);
+    let _ = &published_rx;
     // The reader scrolls, then a project screen covers the diff and is left.
     state.scroll = 3;
     state.prepare_frame(area, None);
     assert_eq!(state.scroll, 3, "the landing was consumed");
+    // The file changes while covered (its first paragraphs, at the scroll the reader left).
+    let revised = current
+        .lock()
+        .unwrap()
+        .replace("paragraph 3\n", "paragraph 3 REVISED\n");
+    *current.lock().unwrap() = revised;
     state.resume_project_diff(&config).unwrap();
-    published_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    state.poll().unwrap();
-    state.prepare_frame(area, None);
+    settle(&mut state, "the read for the return", &|s| {
+        s.preview_reply.is_none() && s.rendered.is_some() && s.data.is_some()
+    });
+    // The answers (the target resolution, the block diff) are all in: give a mutation that lands
+    // on them every chance to show.
+    for _ in 0..20 {
+        state.poll().unwrap();
+        state.prepare_frame(area, None);
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(
         state.scroll, 3,
-        "the return did not land on the first change again"
+        "the return did not land on the first change again (source: {with_source})"
     );
+    let text = drawn(&mut state);
+    assert!(
+        text.contains("REVISED"),
+        "the current content is drawn (source: {with_source}): {text}"
+    );
+}
+
+#[test]
+fn resumed_rendered_diff_keeps_its_scroll_and_does_not_land_again() {
+    resumed_rendered_diff(false);
+}
+
+/// The same with a real file-preview source: the target resolves on a worker, and its answer
+/// after the return (not only `reload`) must keep the view.
+#[test]
+fn resumed_rendered_diff_keeps_its_scroll_when_the_target_answers_after_the_return() {
+    resumed_rendered_diff(true);
 }

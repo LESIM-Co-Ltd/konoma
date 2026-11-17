@@ -732,10 +732,12 @@ fn a_filter_pool_delivered_while_covered_is_still_the_pool_right_after_the_retur
 
 // --- One load of one preview: the state that belongs to the load follows the load.
 
-fn paragraph_doc() -> String {
-    let mut doc = String::from("# Title\n\n");
-    for i in 0..60 {
-        doc.push_str(&format!("Paragraph {i} with some **bold** words.\n\n"));
+/// A document whose line N (1-based) reads `Line N marker-N`, so what is drawn at a line is
+/// readable on the screen.
+fn numbered_doc() -> String {
+    let mut doc = String::from("# Title\n");
+    for i in 2..=90 {
+        doc.push_str(&format!("Line {i} marker-{i}\n"));
     }
     doc
 }
@@ -770,11 +772,23 @@ fn a_default_markdown_diff_keeps_its_scroll_after_the_return() {
                 s.app.preview_top_line(),
                 s.app.preview_caret_line(),
             );
+            assert_eq!(
+                before.0,
+                DiffView::Rendered,
+                "{away:?} worker={worker}: not the formatted diff"
+            );
             assert!(
                 before.1 > 0 || before.2 > 0 || before.3 > 0,
                 "{away:?} worker={worker}: the diff did not scroll: {before:?}"
             );
+            s.see("edited here");
             go_away(&mut s, away);
+            // The file changes while covered: the return reads it again.
+            std::fs::write(
+                root.join("doc.md"),
+                changed.replace("was edited", "was REVISED"),
+            )
+            .unwrap();
             come_back(&mut s, away);
             wait_diff_target(&mut s, worker);
             settled(&mut s);
@@ -785,7 +799,10 @@ fn a_default_markdown_diff_keeps_its_scroll_after_the_return() {
                 s.app.preview_caret_line(),
             );
             assert_eq!(after, before, "{away:?} worker={worker}:\n{}", s.screen());
-            s.see("edited here");
+            // The current content is drawn, at the scroll the reader left (not on the first
+            // change again).
+            s.see("REVISED here");
+            s.dont_see("edited here");
         }
     }
 }
@@ -798,7 +815,7 @@ fn a_line_landed_and_a_kind_resolved_while_covered_stay_resolved_after_the_retur
     for away in BOTH {
         let root = repo(
             "prp_kind_while_covered",
-            &[("doc.md", &paragraph_doc()), ("x.txt", "x\n")],
+            &[("doc.md", &numbered_doc()), ("x.txt", "x\n")],
         );
         let path = root.join("doc.md");
         let mut s = road(&root, cfg_en(), true);
@@ -827,8 +844,17 @@ fn a_line_landed_and_a_kind_resolved_while_covered_stay_resolved_after_the_retur
         assert!(!what.contains("can not preview"), "{what}");
         assert!(s.app.document_error().is_none(), "{what}");
         assert!(!s.app.has_pending_landing_for_test(), "{what}");
-        let top = s.app.preview_top_line();
-        assert!(top > 0, "not at the asked line: {what}");
+        // The landing on a line shows the document as it is (the Source representation) with the
+        // caret on the line: the same on both roads.
+        assert!(
+            s.app.is_raw_source(),
+            "not the Source representation: {what}"
+        );
+        assert_eq!(s.app.preview_caret_line(), 39, "caret: {what}");
+        assert!(
+            s.find_text("marker-40").is_some(),
+            "line 40 is not on the drawn screen: {what}"
+        );
         let pos = s.app.reading_position_for_test();
         s.draw();
         settled(&mut s);
@@ -867,10 +893,26 @@ fn a_diff_preview_landing_that_failed_while_covered_is_not_revived() {
         "the landing is not pending:\n{}",
         s.screen()
     );
+    // The state before the cover: the landing waits for the worker's plan of the file (the kind
+    // is not resolved yet). A document's text arrives synchronously once the kind is applied (a
+    // readable file lands at once), so "kind resolved, text awaited" has no stop of its own here;
+    // the failure then comes with the kind's reply, which is what arrives while covered.
+    assert_eq!(
+        s.app.pending_kind_known_for_test(),
+        Some(false),
+        "the landing is not waiting for the kind:\n{}",
+        s.screen()
+    );
+    assert!(s.app.document_error().is_none(), "{}", s.screen());
     s.key('p');
     settle_projects_leaving_media(&mut s);
     // The failure arrives while covered.
     settled(&mut s);
+    assert!(
+        s.app.document_error().is_some(),
+        "the body load did not fail while covered:\n{}",
+        s.screen()
+    );
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     leave_project(&mut s);
     settled(&mut s);
@@ -880,6 +922,67 @@ fn a_diff_preview_landing_that_failed_while_covered_is_not_revived() {
         "a DiffPreview landing was revived:\n{what}"
     );
     // A revived landing would have run on the return and moved to the change at the end.
+    assert_eq!(s.app.reading_position_for_test().0, 0, "scrolled: {what}");
+    assert!(s.find_text("CHANGED MARKER").is_none(), "landed: {what}");
+}
+
+/// (5) The identity names the user's open: the diff's own answer that moves it to the Preview
+/// representation is progress of the same open and keeps it. Covered before that answer, the
+/// answer and the failure of its body load happen while covered; the file is readable again on the
+/// return: the working tab still holds the load the copy was saved in (same identity), so nothing
+/// of the old preview is brought back and no landing is revived.
+#[test]
+fn the_diff_answer_choosing_preview_while_covered_keeps_the_open_identity() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo(
+        "prp_diff_preview_identity",
+        &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+    );
+    std::fs::write(
+        root.join("doc.md"),
+        long_doc("", "CHANGED MARKER paragraph."),
+    )
+    .unwrap();
+    let path = root.join("doc.md");
+    let mut cfg = cfg_en();
+    cfg.ui.diff_view = "preview".into();
+    let mut s = road(&root, cfg, true);
+    s.select("doc.md");
+    s.key('d');
+    assert!(
+        !s.app.diff_target_resolved_for_test(),
+        "the target was answered before the cover:\n{}",
+        s.screen()
+    );
+    let open_id = s.app.load_id_for_test();
+    assert_ne!(open_id, 0);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    s.key('p');
+    settle_projects_leaving_media(&mut s);
+    // The answer arrives while covered, moves the diff to the Preview representation, and the
+    // body of that preview cannot be read.
+    wait_diff_target(&mut s, true);
+    settled(&mut s);
+    assert_eq!(
+        s.app.load_id_for_test(),
+        open_id,
+        "the answer renewed the identity of the open:\n{}",
+        s.screen()
+    );
+    assert!(
+        s.app.document_error().is_some(),
+        "the body load did not fail while covered:\n{}",
+        s.screen()
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    leave_project(&mut s);
+    settled(&mut s);
+    let what = s.screen();
+    assert_eq!(s.app.load_id_for_test(), open_id, "identity: {what}");
+    assert!(
+        !s.app.diff_landing_state_for_test().0,
+        "a DiffPreview landing was revived:\n{what}"
+    );
     assert_eq!(s.app.reading_position_for_test().0, 0, "scrolled: {what}");
     assert!(s.find_text("CHANGED MARKER").is_none(), "landed: {what}");
 }
@@ -959,26 +1062,45 @@ fn a_search_waiting_for_a_table_survives_another_preview_while_covered() {
 }
 
 /// (4b) The request consumed while covered (the same load: the table arrived under the screen)
-/// is not made again by the return.
+/// moved the cursor to the first hit there: the return keeps that cursor and does not make the
+/// request again. The tab switch (the answer is dropped, the request is made after the return)
+/// gives the same cursor.
 #[test]
 fn a_search_request_consumed_while_covered_is_not_made_again() {
-    let (root, _) = sheet_repo("prp_search_consumed", &[5, 40]);
-    let mut s = search_on_loading_sheet(&root);
-    s.key('p');
-    settle_projects_leaving_media(&mut s);
-    // The table arrives under the project screen: the request is consumed there.
-    settled(&mut s);
-    assert!(!s.app.search_waits_for_table_for_test(), "{}", s.screen());
-    s.key('q');
-    settle_projects_leaving_media(&mut s);
-    let what = s.screen();
-    assert!(!s.app.project_active(), "{what}");
-    assert!(
-        !s.app.search_waits_for_table_for_test(),
-        "the request was made again: {what}"
-    );
-    settled(&mut s);
-    assert!(!s.app.search_waits_for_table_for_test(), "{}", s.screen());
+    for away in BOTH {
+        let (root, _) = sheet_repo("prp_search_consumed", &[5, 40]);
+        let mut s = search_on_loading_sheet(&root);
+        assert_eq!(s.app.table_cursor(), (0, 0), "{away:?}");
+        match away {
+            Away::ProjectScreen => {
+                s.key('p');
+                settle_projects_leaving_media(&mut s);
+                // The table arrives under the project screen: the request is consumed there and
+                // the cursor moved to the first hit.
+                settled(&mut s);
+                assert!(!s.app.search_waits_for_table_for_test(), "{}", s.screen());
+                assert_eq!(s.app.table_cursor(), (4, 0), "{}", s.screen());
+                s.key('q');
+                settle_projects_leaving_media(&mut s);
+            }
+            Away::Tab => {
+                s.key('t');
+                settled(&mut s);
+                s.key('[');
+                settle_projects_leaving_media(&mut s);
+            }
+        }
+        let what = format!("{away:?}\n{}", s.screen());
+        assert!(!s.app.project_active(), "{what}");
+        settled(&mut s);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert!(
+            !s.app.search_waits_for_table_for_test(),
+            "the request was made again: {what}"
+        );
+        assert_eq!(s.app.table_cursor(), (4, 0), "first hit: {what}");
+        assert_eq!(s.app.search_status(), Some((1, 2)), "{what}");
+    }
 }
 
 /// (5) The hit that was current is gone while covered; the restored caret is between a near

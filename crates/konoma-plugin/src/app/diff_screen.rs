@@ -142,6 +142,9 @@ pub struct DiffScreenState {
     rendered: Option<RenderedCache>,
     /// The first-change reservation belongs to one file, including while it computes.
     pub pending_first_change: Option<PathBuf>,
+    /// The first answer of the target resolution (the diff's first load) has not been taken yet:
+    /// it reserves the scroll to the first change. Set again by the view key (a new choice).
+    first_answer_awaited: bool,
     markdown: MdDiffWorker,
     markdown_rx: mpsc::Receiver<MdDiffResult>,
     media: media::Media,
@@ -281,6 +284,7 @@ impl DiffScreenState {
             viewport: 0,
             rendered: None,
             pending_first_change: None,
+            first_answer_awaited: true,
             markdown: markdown.0.with_read_context(read_context),
             markdown_rx: markdown.1,
             media: media::Media::new(&config.git.media_diff),
@@ -407,16 +411,10 @@ impl DiffScreenState {
     ) -> Result<(), Failure> {
         // The covered diff is put back as it was: the chosen representation, the media page and
         // the scroll stay; only the data is read again. The reservation to scroll to the first
-        // change is the landing of the first load: it stays as it was at the cover (armed when
-        // nothing had drawn it yet, consumed when it had), and the read for the return does not
-        // make it again.
+        // change is the landing of the first load (`first_answer_awaited`): the read for the
+        // return, and its asynchronous target answer, keep it as it was at the cover.
         let _ = config;
-        let landing = self.pending_first_change.clone();
-        self.reload()?;
-        if landing.is_none() {
-            self.pending_first_change = None;
-        }
-        Ok(())
+        self.reload()
     }
 
     pub fn handle_key(
@@ -542,6 +540,8 @@ impl DiffScreenState {
                         self.scroll = 0;
                         self.block = None;
                     }
+                    // A new choice of the reader: its landing is made again.
+                    self.first_answer_awaited = true;
                     self.choose_effective();
                 }
             }
@@ -576,6 +576,8 @@ impl DiffScreenState {
                             self.scroll = 0;
                             self.hscroll = 0;
                             self.block = None;
+                            // Another file is a new open: its first answer lands.
+                            self.first_answer_awaited = true;
                             self.reload()?;
                         }
                     } else {
@@ -663,6 +665,8 @@ impl DiffScreenState {
         self.hscroll = 0;
         self.media.page = 1;
         self.block = None;
+        // Back to the diff is a new open of it (the host's `open_git_diff_with`): it lands.
+        self.first_answer_awaited = true;
         // The gutter may own the previous raw receiver. Reopen on the worker, as the host does.
         self.reload()
     }
