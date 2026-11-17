@@ -1328,6 +1328,82 @@ fn vcs_project_external_return_leaves_the_covered_tree_alone_until_it_is_in_fron
     );
 }
 
+/// e3-review item 2: the real return of an external program that edited the covered file (the
+/// editor, a terminal launch, the git tool) is followed by the watch events the program caused,
+/// delivered through the main loop's call (`refresh_fs_watched`). Neither the return nor those
+/// events read the covered tree or preview again behind the project screen; `q` shows both read
+/// again from the files.
+#[test]
+fn vcs_project_watch_events_after_an_external_return_leave_the_covered_view_alone() {
+    if isolated("vcs_project_watch_events_after_an_external_return_leave_the_covered_view_alone") {
+        return;
+    }
+    let Some(repo) = overlay_repo("vcs_project_watch_after_external_return") else {
+        return;
+    };
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_watch_after_external_return_cfg");
+    for what in [crate::app::ExternalReturn::File, crate::app::ExternalReturn::Tree] {
+        std::fs::write(repo.join("lines.txt"), LINES_TXT).unwrap();
+        let made = repo.join("made-by-the-program.txt");
+        let _ = std::fs::remove_file(&made);
+        let mut sim = preview_session(&repo, config("git", "en"), "lines.txt", true, &cfg_base);
+        let _ = sim.app.project_frame().unwrap();
+        let paths = |sim: &Sim| -> Vec<std::path::PathBuf> {
+            sim.app.tab.entries.iter().map(|e| e.path.clone()).collect()
+        };
+        let entries_before = paths(&sim);
+        let selected_before = sim.app.tab.selected;
+        std::fs::write(repo.join("lines.txt"), "edited-one\nedited-two\n").unwrap();
+        std::fs::write(&made, "x\n").unwrap();
+        let ((), behind) = crate::test_support::count_tab_view_loads(|| {
+            sim.app.external_returned(what);
+            drain(&mut sim);
+            // The watch events the program caused, after its return.
+            sim.app
+                .refresh_fs_watched(false, &[repo.join("lines.txt"), made.clone()]);
+            drain(&mut sim);
+            sim.app.refresh_fs_watched(false, &[]);
+            drain(&mut sim);
+            sim.draw();
+        });
+        assert_eq!(
+            behind, 0,
+            "{what:?}: the covered view was read again behind the screen by the watch events"
+        );
+        assert!(sim.app.project_active(), "{what:?}: the events left the project");
+        assert_project_screen_in_front(&sim, &format!("{what:?}: after the events"), &[]);
+        assert_eq!(
+            paths(&sim),
+            entries_before,
+            "{what:?}: the covered tree was rebuilt behind the screen"
+        );
+        assert_eq!(
+            sim.app.tab.selected, selected_before,
+            "{what:?}: the covered cursor moved behind the screen"
+        );
+        assert!(
+            !sim.screen().contains("edited-one"),
+            "{what:?}: the preview is drawn over the project screen:\n{}",
+            sim.screen()
+        );
+        press(&mut sim, KeyCode::Char('q'));
+        drain(&mut sim);
+        assert!(!sim.app.project_active(), "{what:?}: q left the project screen");
+        let shown = preview_text(&mut sim);
+        assert!(shown.contains("edited-one"), "{what:?}: stale preview after leaving: {shown}");
+        assert!(
+            sim.app.tab.entries.iter().any(|e| e.path.ends_with("made-by-the-program.txt")),
+            "{what:?}: the tree does not have the new file after leaving"
+        );
+        sim.draw();
+        assert!(
+            sim.screen().contains("edited-one"),
+            "{what:?}: stale drawn preview after leaving:\n{}",
+            sim.screen()
+        );
+    }
+}
+
 /// `F` reads the status for its baseline. While a project screen covers the changed-files list,
 /// the screen in front is the project's (the list is not drawn) and the `C` filter stays the
 /// tab's; the list is correct once it is in front again.
@@ -1760,6 +1836,99 @@ fn vcs_project_two_repos_quit_before_the_status_keeps_the_changed_list_and_its_c
     }
     assert!(landed >= 1, "no scan landed after the round trip");
     assert_two_repos_changed_list_drawn(&mut sim, &on, "after the round trip's scan landed");
+}
+
+/// e3-review item 1, its exact sequence: tab 0 on repository B is saved with its `C` list under a
+/// project screen; tab 1 on repository A has its `C` list under a project screen too, and `F`
+/// takes its baseline there from a status marked out of date (a watched edit). Then tab 0 is
+/// switched to (the switch to another repository drops A's statuses and asks for B's scan) and
+/// `q` leaves its project screen before that scan lands. Nothing tab 1 did while covered is
+/// spent on tab 0: its `C` list stays on, drawn with the cursor on the file it was on, before and
+/// after the scan lands.
+#[test]
+fn vcs_project_follow_in_another_repo_tab_does_not_spend_the_changed_list_of_this_one() {
+    if isolated("vcs_project_follow_in_another_repo_tab_does_not_spend_the_changed_list_of_this_one")
+    {
+        return;
+    }
+    let parent = sandbox("vcs_project_follow_other_repo_tab");
+    let make = |name: &str| {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A clean tracked file: the `C` list is told from the whole tree by its absence.
+        std::fs::write(dir.join("k-clean.txt"), "clean\n").unwrap();
+        super::vcs_changes::git_repo_at(&dir, true);
+        dir.canonicalize().unwrap()
+    };
+    let _a = make("a-repo");
+    let b = make("b-repo");
+    let cfg_base = crate::test_support::unique_tmp("vcs_project_follow_other_repo_tab_cfg");
+    let mut sim = Sim::with_config_sized(&b, config("git", "en"), 140, 30);
+    sim.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &b);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    // Tab 0, repository B: the `C` list, the cursor off its first row, `p` over it.
+    sim.key('C');
+    drain(&mut sim);
+    assert!(sim.app.changed_filter(), "C turns the changed-files list on");
+    press(&mut sim, KeyCode::Char('j'));
+    press(&mut sim, KeyCode::Char('j'));
+    let on = overlay_cursor_file(&sim).expect("the cursor is on a file");
+    assert_ne!(sim.app.tab.selected, 0, "the cursor is off the first row");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers tab 0's list");
+    // Tab 1, repository A: the `C` list under `p`, then `F` from an out-of-date status.
+    sim.app.tab_new().unwrap();
+    drain(&mut sim);
+    sim.key('h');
+    drain(&mut sim);
+    sim.select("a-repo");
+    sim.key('l');
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    assert!(sim.app.tab.root.ends_with("a-repo"), "{:?}", sim.app.tab.root);
+    sim.key('C');
+    drain(&mut sim);
+    assert!(sim.app.changed_filter(), "tab 1's C list");
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active(), "p covers tab 1's list");
+    std::fs::write(sim.app.tab.root.join("dirty-late.txt"), "late\n").unwrap();
+    sim.app.mark_git_status_dirty();
+    sim.app.toggle_follow();
+    drain(&mut sim);
+    assert!(sim.app.follow_enabled(), "F took its baseline");
+    assert!(sim.app.project_active(), "F left tab 1's project screen");
+    assert!(sim.app.changed_filter(), "F turned tab 1's C list off");
+    // From here on the scans are asked of a loader, so tab 0's scan can be held back.
+    let (tx, rx) = std::sync::mpsc::channel();
+    sim.app.attach_status_loader(tx);
+    sim.app.tab_goto(0);
+    drain(&mut sim);
+    assert!(sim.app.tab.root.ends_with("b-repo"), "{:?}", sim.app.tab.root);
+    assert!(
+        sim.app.git_status_in_flight(),
+        "the switch to repository B asked for its scan"
+    );
+    assert!(sim.app.project_active(), "tab 0 comes back covered");
+    // `q` in the same batch as the switch: before B's scan lands.
+    press(&mut sim, KeyCode::Char('q'));
+    assert!(!sim.app.project_active(), "q left the project screen");
+    assert!(
+        sim.app.git_status_in_flight(),
+        "the scan landed before the check"
+    );
+    assert_two_repos_changed_list_drawn(&mut sim, &on, "after q, before B's scan lands");
+    let mut landed = 0;
+    while let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        sim.app.apply_statuses(res);
+        landed += 1;
+    }
+    assert!(landed >= 1, "no scan landed");
+    assert_two_repos_changed_list_drawn(&mut sim, &on, "after B's scan landed");
 }
 
 /// e4-review item 1 on a plain tab switch (no project screen): the same rule. Tab 0's `C` list on

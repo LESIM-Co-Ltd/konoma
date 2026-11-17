@@ -126,7 +126,7 @@ pub use preview_visual::PreviewSelection;
 pub use table_actions::TableCellView;
 
 /// What an external program that returned may have changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExternalReturn {
     /// The file it was given.
     File,

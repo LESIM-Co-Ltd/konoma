@@ -236,13 +236,14 @@ impl App {
         matches!(self.tab.mode, Mode::Preview) && self.is_canvas_preview()
     }
 
-    /// Whether an overlay or a dialog (help, a menu, a list, a confirm...) is in front of the
-    /// canvas: it is not fully visible, so the plugin is not asked to redraw it. The text input
-    /// layer is the canvas's own and does not cover it.
+    /// Whether an overlay, a dialog (help, a menu, a list, a confirm...) or a project screen is in
+    /// front of the canvas: it is not fully visible, so the plugin is not asked to redraw it. The
+    /// text input layer is the canvas's own and does not cover it. (A project screen leaves the
+    /// tab it covers, so the show is gone while it is in front; it is not an exception here.)
     fn canvas_is_covered(&self) -> bool {
         !matches!(
             self.frontmost_layer(|_| true),
-            UiLayer::Base(_) | UiLayer::Project | UiLayer::PluginInput
+            UiLayer::Base(_) | UiLayer::PluginInput
         )
     }
 

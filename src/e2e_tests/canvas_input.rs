@@ -3119,3 +3119,95 @@ fn e2e_canvas_a_paste_over_a_project_screen_goes_to_the_bookmark_filter_in_front
     );
     assert!(s.app.project_active(), "the project screen is still there");
 }
+
+/// A file canvas that asks to be drawn again after a while (`redraw_after`), covered by `p` until
+/// long past its deadline (e4 item 5). Covering left the tab: the show is gone with its deadline,
+/// so the run loop's timer (`animation_timers_due`) asks the plugin nothing behind the project
+/// screen and wakes nobody. `q` returns to the tab: the canvas is opened again from the file and
+/// its timer asks again.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_canvas_timer_asks_nothing_behind_a_project_screen_and_asks_again_after_leaving() {
+    let sh = Shared::new();
+    sh.want_input.store(false, Ordering::SeqCst);
+    *sh.after.lock().unwrap() = Some(AFTER);
+    let repo = super::vcs_changes::git_repo("ct_project_cover", true);
+    std::fs::write(repo.join("a.typ"), b"x").unwrap();
+    let marker = register("ct_project_cover", &sh);
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.plugins
+        .entry("jj".into())
+        .or_default()
+        .insert("enabled".into(), toml::Value::Boolean(false));
+    let mut s = Sim::with_config_sized(&repo, cfg, 90, 26).with_async_plugins();
+    let cfg_base = crate::test_support::unique_tmp("ct_project_cover_cfg");
+    s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(cfg_base.to_path_buf(), &repo);
+    s.app.tab.projects.wait_for_result();
+    s.app.poll_projects();
+    s.select("a.typ");
+    s.enter();
+    settle(&mut s);
+    s.draw();
+    settle(&mut s);
+    assert!(
+        s.app.is_canvas_preview(),
+        "premise: the canvas is on screen"
+    );
+    let at = s
+        .app
+        .canvas_redraw_deadline()
+        .expect("premise: the canvas armed its timer");
+    s.key('p');
+    assert!(s.app.project_active(), "p opened the project screen");
+    super::vcs_changes::drain(&mut s);
+    assert!(
+        !s.app.is_canvas_preview(),
+        "the covered tab still holds its canvas show"
+    );
+    assert_eq!(
+        s.app.canvas_redraw_deadline(),
+        None,
+        "the covered canvas still holds its redraw deadline"
+    );
+    let views = sh.views();
+    for step in 1..=3u32 {
+        let now = at + AFTER * (2 * step);
+        assert_eq!(
+            s.app.canvas_poll_timeout(now),
+            None,
+            "step {step}: the covered canvas wakes the run loop"
+        );
+        let _ = crate::animation_timers_due(&mut s.app, now);
+        settle(&mut s);
+        s.draw();
+        assert_eq!(
+            sh.views(),
+            views,
+            "step {step}: the timer asked the plugin for the canvas behind the project screen"
+        );
+    }
+    assert!(s.app.project_active(), "the project screen is still there");
+    s.key('q');
+    assert!(!s.app.project_active(), "q left the project screen");
+    settle(&mut s);
+    s.draw();
+    settle(&mut s);
+    assert!(
+        s.app.is_canvas_preview(),
+        "the canvas is not back after leaving"
+    );
+    let at = s
+        .app
+        .canvas_redraw_deadline()
+        .expect("the canvas armed no timer after leaving");
+    let views = sh.views();
+    assert!(
+        crate::animation_timers_due(&mut s.app, at),
+        "the timer is not due after leaving"
+    );
+    settle(&mut s);
+    assert!(
+        sh.views() > views,
+        "the plugin was not asked again after leaving"
+    );
+}
