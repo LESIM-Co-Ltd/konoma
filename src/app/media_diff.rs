@@ -315,6 +315,12 @@ impl App {
         }
     }
 
+    /// Drops the diff target resolution in flight and its answer (`leave_tab_view`).
+    pub(super) fn drop_diff_target_resolution(&mut self) {
+        self.diff_resolution_serial = self.diff_resolution_serial.wrapping_add(1);
+        self.diff_target_kind_cache = None;
+    }
+
     /// Refreshes `diff_target_kind_cache` for whatever the diff surface is currently targeting
     /// (`self.tab.preview_kind`'s `GitDiff` path, if any) — called from `App::invalidate_diff_caches`,
     /// which runs both on a genuine retarget and on an invalidation-only refresh, so one call site
@@ -325,6 +331,12 @@ impl App {
         if self.preview_resolution_tx.is_some() {
             self.diff_target_kind_cache = None;
             self.verb_plugin_memo.borrow_mut().take();
+            // The diff surface is the tab's view: while a project screen covers it, it was left as
+            // a tab is left (`leave_tab_view`), and nothing targets it until the return asks again
+            // (`put_tab_back`, then `refresh_fs_after_tab_switch`).
+            if self.project_screen_covers() {
+                return;
+            }
             if let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() {
                 self.resolve_diff_on_worker(path);
             }

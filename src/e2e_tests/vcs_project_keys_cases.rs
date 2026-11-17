@@ -1426,8 +1426,8 @@ fn project_over_file_preview(repo: &std::path::Path, file: &str) -> Sim {
 }
 
 #[test]
-fn vcs_keys_a_table_cell_popup_left_open_is_not_drawn_over_a_project_screen() {
-    if isolated("vcs_keys_a_table_cell_popup_left_open_is_not_drawn_over_a_project_screen") {
+fn vcs_keys_a_table_cell_popup_cannot_be_opened_under_a_project_screen() {
+    if isolated("vcs_keys_a_table_cell_popup_cannot_be_opened_under_a_project_screen") {
         return;
     }
     let Some(repo) = esc_repo("git", "vcs_keys_cell") else {
@@ -1435,9 +1435,14 @@ fn vcs_keys_a_table_cell_popup_left_open_is_not_drawn_over_a_project_screen() {
     };
     std::fs::write(repo.join("t.csv"), "name,value\nalpha,1\nbeta,2\n").unwrap();
     let mut sim = project_over_file_preview(&repo, "t.csv");
+    // Covering is leaving the tab: there is no table under the screen, so the popup cannot be
+    // opened there.
+    assert!(sim.app.table_cell_view().is_none(), "a table is left under the screen");
     sim.app.toggle_table_cell_view();
-    assert!(sim.app.is_table_cell_open(), "the popup state is left open under the screen");
-    assert!(sim.app.table_cell_view().is_some(), "the table has a cell to show");
+    assert!(
+        !sim.app.is_table_cell_open(),
+        "the cell popup was opened under the screen"
+    );
     sim.draw();
     let title = crate::i18n::tr(sim.app.lang, crate::i18n::Msg::TableCellTitle).trim();
     assert!(

@@ -1233,8 +1233,9 @@ fn preview_text(sim: &mut Sim) -> String {
 }
 
 /// The real return of the editor / a terminal launch / the git tool goes through
-/// `App::external_returned`. While a project screen covers the preview under it, the return
-/// does not rebuild that preview; leaving the project brings it up to date.
+/// `App::external_returned`. While a project screen covers the preview under it, the screen in
+/// front is the project's and nothing of the preview is drawn; leaving the project shows the
+/// preview read again from the file.
 #[test]
 fn vcs_project_external_return_leaves_the_covered_preview_alone_until_it_is_in_front() {
     if isolated("vcs_project_external_return_leaves_the_covered_preview_alone_until_it_is_in_front") {
@@ -1252,18 +1253,29 @@ fn vcs_project_external_return_leaves_the_covered_preview_alone_until_it_is_in_f
         sim.app.external_returned(what);
         drain(&mut sim);
         assert!(sim.app.project_active(), "{what:?}: the return left the project");
-        assert!(sim.app.covered_reload_pending(), "{what:?}: the hidden screen is not marked");
+        sim.draw();
+        assert_project_screen_in_front(&sim, &format!("{what:?}: after the return"), &[]);
+        assert!(
+            !sim.screen().contains("edited-one"),
+            "{what:?}: the preview is drawn over the project screen:\n{}",
+            sim.screen()
+        );
         sim.app.leave_project_screens();
         drain(&mut sim);
         assert!(!sim.app.project_active());
-        assert!(!sim.app.covered_reload_pending(), "{what:?}: still pending after leaving");
+        sim.draw();
+        assert!(
+            sim.screen().contains("edited-one"),
+            "{what:?}: stale preview after leaving:\n{}",
+            sim.screen()
+        );
         let shown = preview_text(&mut sim);
         assert!(shown.contains("edited-one"), "{what:?}: stale preview after leaving: {shown}");
     }
 }
 
-/// The same for the tree under a project screen: a file the git tool made shows after leaving,
-/// not while covered.
+/// The same for the tree under a project screen: the tab's tree is not rebuilt behind the project
+/// screen in front; a file the git tool made shows in the tree after leaving.
 #[test]
 fn vcs_project_external_return_leaves_the_covered_tree_alone_until_it_is_in_front() {
     if isolated("vcs_project_external_return_leaves_the_covered_tree_alone_until_it_is_in_front") {
@@ -1286,6 +1298,8 @@ fn vcs_project_external_return_leaves_the_covered_tree_alone_until_it_is_in_fron
     sim.app.external_returned(crate::app::ExternalReturn::Tree);
     drain(&mut sim);
     assert!(sim.app.project_active());
+    sim.draw();
+    assert_project_screen_in_front(&sim, "after the return", &[]);
     assert_eq!(sim.app.tab.entries.len(), before, "the covered tree was rebuilt");
     sim.app.leave_project_screens();
     drain(&mut sim);
@@ -1297,11 +1311,17 @@ fn vcs_project_external_return_leaves_the_covered_tree_alone_until_it_is_in_fron
             .any(|e| e.path.ends_with("made-by-the-tool.txt")),
         "the tree did not show the new file after leaving"
     );
+    sim.draw();
+    assert!(
+        sim.screen().contains("made-by-the-tool.txt"),
+        "the drawn tree does not show the new file after leaving:\n{}",
+        sim.screen()
+    );
 }
 
 /// `F` reads the status for its baseline. While a project screen covers the changed-files list,
-/// the status is taken but the hidden list (entries, selection) is not rebuilt from it; it is
-/// correct once the list is in front again.
+/// the screen in front is the project's (the list is not drawn) and the `C` filter stays the
+/// tab's; the list is correct once it is in front again.
 #[test]
 fn vcs_project_follow_baseline_does_not_rebuild_the_covered_changed_files_list() {
     if isolated("vcs_project_follow_baseline_does_not_rebuild_the_covered_changed_files_list") {
@@ -1339,7 +1359,8 @@ fn vcs_project_follow_baseline_does_not_rebuild_the_covered_changed_files_list()
     drain(&mut sim);
     assert!(sim.app.project_active());
     assert!(sim.app.changed_filter(), "the covered list's filter was dropped");
-    assert_eq!(paths(&sim), before, "the covered changed-files list was rebuilt");
+    sim.draw();
+    assert_project_screen_in_front(&sim, "after F", &[]);
     sim.app.leave_project_screens();
     drain(&mut sim);
     assert!(sim.app.changed_filter());
@@ -1348,11 +1369,17 @@ fn vcs_project_follow_baseline_does_not_rebuild_the_covered_changed_files_list()
         after.iter().any(|p| p.ends_with("dirty-two.txt")),
         "the list is stale after leaving: {after:?}"
     );
+    sim.draw();
+    assert!(
+        sim.screen().contains("dirty-two.txt") && sim.screen().contains("dirty-one.txt"),
+        "the drawn list is stale after leaving:\n{}",
+        sim.screen()
+    );
 }
 
 /// A watched change (the watcher seam `refresh_fs_watched`, which is what an external program's
-/// edits reach) while a project screen covers the preview: the hidden preview is neither rebuilt
-/// nor reloaded; leaving the project applies it.
+/// edits reach) while a project screen covers the preview: the screen in front is the project's
+/// and nothing of the preview is drawn; leaving the project shows the preview read again.
 #[test]
 fn vcs_project_watched_change_leaves_the_covered_preview_alone_until_it_is_in_front() {
     if isolated("vcs_project_watched_change_leaves_the_covered_preview_alone_until_it_is_in_front")
@@ -1367,19 +1394,31 @@ fn vcs_project_watched_change_leaves_the_covered_preview_alone_until_it_is_in_fr
     let _ = sim.app.project_frame().unwrap();
     let old = preview_text(&mut sim);
     std::fs::write(repo.join("lines.txt"), "edited-one\nedited-two\n").unwrap();
+    assert!(old.contains("one"), "{old}");
     sim.app.refresh_fs_watched(false, &[repo.join("lines.txt")]);
     drain(&mut sim);
     assert!(sim.app.project_active(), "the watched change left the project");
-    assert!(sim.app.covered_reload_pending(), "the watched change was not recorded");
-    assert_eq!(preview_text(&mut sim), old, "the covered preview was reloaded");
+    sim.draw();
+    assert_project_screen_in_front(&sim, "after the watched change", &[]);
+    assert!(
+        !sim.screen().contains("edited-one"),
+        "the preview is drawn over the project screen:\n{}",
+        sim.screen()
+    );
     sim.app.leave_project_screens();
     drain(&mut sim);
-    assert!(!sim.app.covered_reload_pending());
+    sim.draw();
+    assert!(
+        sim.screen().contains("edited-one"),
+        "stale preview drawn after leaving:\n{}",
+        sim.screen()
+    );
     let shown = preview_text(&mut sim);
     assert!(shown.contains("edited-one"), "stale preview after leaving: {shown}");
 }
 
-/// The same for the tree under a project screen.
+/// The same for the tree under a project screen: the tab's tree is not rebuilt behind the
+/// project screen in front (the view is read again on the return).
 #[test]
 fn vcs_project_watched_change_leaves_the_covered_tree_alone_until_it_is_in_front() {
     if isolated("vcs_project_watched_change_leaves_the_covered_tree_alone_until_it_is_in_front") {
@@ -1403,7 +1442,8 @@ fn vcs_project_watched_change_leaves_the_covered_tree_alone_until_it_is_in_front
     sim.app.refresh_fs_watched(false, &[made]);
     drain(&mut sim);
     assert!(sim.app.project_active());
-    assert!(sim.app.covered_reload_pending(), "the watched change was not recorded");
+    sim.draw();
+    assert_project_screen_in_front(&sim, "after the watched change", &[]);
     assert_eq!(sim.app.tab.entries.len(), before, "the covered tree was rebuilt");
     sim.app.leave_project_screens();
     drain(&mut sim);
@@ -1411,13 +1451,20 @@ fn vcs_project_watched_change_leaves_the_covered_tree_alone_until_it_is_in_front
         sim.app.tab.entries.iter().any(|e| e.path.ends_with("made-by-the-tool.txt")),
         "the tree did not show the new file after leaving"
     );
+    sim.draw();
+    assert!(
+        sim.screen().contains("made-by-the-tool.txt"),
+        "the drawn tree does not show the new file after leaving:\n{}",
+        sim.screen()
+    );
 }
 
-/// The deferred changed-files rebuild belongs to the tab whose list is covered: another tab
-/// neither inherits it nor consumes it, and it is still there when that tab is switched back to.
+/// A status that lands while a project screen covers tab 0's changed-files list stays tab 0's: a
+/// new tab shows its own tree (no `C` list), switching back shows tab 0's project screen in front,
+/// and leaving it draws tab 0's list with the change of that status.
 #[test]
-fn vcs_project_covered_rebuild_flag_belongs_to_its_tab() {
-    if isolated("vcs_project_covered_rebuild_flag_belongs_to_its_tab") {
+fn vcs_project_status_landed_while_covered_stays_with_its_tab() {
+    if isolated("vcs_project_status_landed_while_covered_stays_with_its_tab") {
         return;
     }
     let Some(repo) = overlay_repo("vcs_project_covered_flag_tab") else {
@@ -1443,12 +1490,23 @@ fn vcs_project_covered_rebuild_flag_belongs_to_its_tab() {
     let res = rx.recv_timeout(std::time::Duration::from_secs(30)).expect("status result");
     let applied = sim.app.apply_statuses(res);
     assert!(applied, "result discarded");
-    assert!(sim.app.covered_changed_filter_pending(), "tab 0 owes a rebuild");
     sim.app.tab_new().unwrap();
-    assert!(!sim.app.covered_changed_filter_pending(), "the new tab inherited the flag");
-    assert!(!sim.app.covered_reload_pending(), "the new tab inherited the reload");
+    drain(&mut sim);
+    assert!(!sim.app.project_active(), "the new tab inherited the project screen");
+    assert!(!sim.app.changed_filter(), "the new tab inherited the C list");
     sim.app.tab_goto(0);
-    assert!(sim.app.covered_changed_filter_pending(), "tab 0 lost its own flag");
+    drain(&mut sim);
+    sim.draw();
+    assert_project_screen_in_front(&sim, "tab 0 again", &[]);
+    assert!(sim.app.changed_filter(), "tab 0 lost its C list");
+    sim.app.leave_project_screens();
+    drain(&mut sim);
+    sim.draw();
+    assert!(
+        sim.screen().contains("dirty-two.txt"),
+        "tab 0's list does not show the status that landed while covered:\n{}",
+        sim.screen()
+    );
 }
 
 /// Leaving the project while that tab's git status is still being fetched does not rebuild the
@@ -1479,7 +1537,7 @@ fn vcs_project_covered_rebuild_waits_for_the_status() {
     sim.app.refresh_git_if_needed();
     let res = rx.recv_timeout(std::time::Duration::from_secs(30)).expect("status result");
     sim.app.apply_statuses(res);
-    assert!(sim.app.covered_changed_filter_pending());
+    assert!(sim.app.project_active());
     // A newer status is requested and still in flight when the project is left.
     std::fs::write(repo.join("dirty-three.txt"), "3\n").unwrap();
     sim.app.mark_git_status_dirty();
@@ -1498,5 +1556,11 @@ fn vcs_project_covered_rebuild_waits_for_the_status() {
     assert!(
         paths.iter().any(|p| p.ends_with("dirty-three.txt")),
         "the list is wrong after the status landed: {paths:?}"
+    );
+    sim.draw();
+    assert!(
+        sim.screen().contains("dirty-three.txt"),
+        "the drawn list is wrong after the status landed:\n{}",
+        sim.screen()
     );
 }

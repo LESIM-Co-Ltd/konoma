@@ -1388,12 +1388,7 @@ impl App {
         }
         // The "changed files only" filter's list is entries **already derived** from statuses, so a
         // re-render alone won't fix it. Rebuild it the moment the new status arrives (live follow-along for an agent's edits).
-        if self.tab.changed_filter && self.project_screen_covers() {
-            // The list belongs to the screen under a project screen: it is neither read nor changed
-            // while covered, and is rebuilt from the status when that screen is in front again
-            // (`settle_covered_reload`). The status itself (what a follow baseline reads) is applied above.
-            self.tab.covered_changed_filter = true;
-        } else if self.tab.changed_filter {
+        if self.tab.changed_filter {
             // Whoever rebuilt the tree out from under the list and left the rebuild to us also left
             // the cursor's identity (`changed_anchor_pending`) — `entries` is the whole tree by now,
             // so it cannot be recovered here. When nobody did, `entries` still *is* the list (this
@@ -1598,17 +1593,16 @@ impl App {
     /// so there is no `?` to ride and no `resolve_key_result` to reach — a swallowed error here
     /// leaves the tree silently stale.
     pub fn refresh_fs_watched(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
+        // One routing point: is a tab's view in front? A project screen that covers the tab's
+        // screen has left that screen as a tab switch leaves a tab (`leave_tab_view` dropped its
+        // live work), so the event is handled as for a tab in the background: the App-level
+        // freshness runs (git status, the follow reads, the diff caches, the picture cache by
+        // changed path), and the view itself is not refreshed: the return reads it again from the
+        // files as they are then (`put_tab_back`, then `refresh_fs_after_tab_switch`). Nothing is
+        // recorded for later; refreshing the view here would only restart, behind the screen, the
+        // work (plugin show, media loads) the cover dropped.
         if self.project_screen_covers() {
-            // The screen under a project screen is neither read nor changed while covered (what an
-            // external program wrote reaches here as watch events too). Recorded for that screen
-            // (`Tree` is the superset: the listing, git state and the shown preview), and applied
-            // when it is in front again (`settle_covered_reload`).
-            self.tab.covered_reload = self.tab.covered_reload.max(Some(ExternalReturn::Tree));
-            // The one thing still noticed now: the root itself is gone. The chip on the project
-            // canvas reports an outage; the listing under it is left as it is.
-            if !self.tab.root.is_dir() {
-                self.tree_stale = true;
-            }
+            self.refresh_while_covered(recompute_ignored, changed);
             return;
         }
         self.refresh_reporting_staleness(|app| app.refresh_fs_changed(recompute_ignored, changed));
@@ -1657,8 +1651,7 @@ impl App {
     /// `git_status` is empty (right after the kick discarded the other repo's leftovers), so
     /// rebuilding here would make the filter judge "zero changes" and **silently turn itself off,
     /// even showing a false "no changed files"**. Wait instead — `apply_statuses` rebuilds it once
-    /// the result arrives. Returns whether it rebuilt. The one condition both the ordinary rebuild
-    /// and `settle_covered_reload` go through.
+    /// the result arrives. Returns whether it rebuilt.
     pub(super) fn rebuild_changed_list_when_status_ready(
         &mut self,
         anchor: Option<PathBuf>,
@@ -1715,15 +1708,37 @@ impl App {
         self.refresh_reporting_staleness(|app| app.rebuild_tree_preserving_filtered_view(anchors));
     }
 
-    fn refresh_fs_inner(
+    /// A filesystem change (a watch event, an external program's return) while a project screen
+    /// covers the tab's screen: the `App`-level freshness, and the outage of the root the canvas
+    /// in front reads.
+    pub(super) fn refresh_while_covered(
         &mut self,
         recompute_ignored: bool,
         changed: &[std::path::PathBuf],
-        reload_preview: bool,
-    ) -> Result<()> {
+    ) {
+        self.refresh_app_freshness(recompute_ignored, changed);
+        // The canvas in front reads the same root: a root that is gone is an outage of the screen
+        // in front, shown by its `STALE` chip. This is the canvas's own state, not a record for
+        // the tab (the return's rebuild sets `tree_stale` again either way).
+        if !self.tab.root.is_dir() {
+            self.tree_stale = true;
+        }
+    }
+
+    /// What a filesystem change makes stale on `App`, whichever screen is in front: the follow
+    /// reads, the picture cache by changed path, the git status (and the ignore set when
+    /// `recompute_ignored`), the diff caches and the change gutter. Shared by the refresh of the
+    /// view in front (`refresh_fs_inner`) and by a watch event while a project screen covers the
+    /// tab's screen (`refresh_fs_watched`).
+    fn refresh_app_freshness(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
         #[cfg(feature = "git")]
         self.follow_worker.invalidate_reads();
-        let anchors = self.capture_view_anchors();
+        // An inline Markdown image is a *second* file a preview is drawn from, and its cache entry
+        // is keyed by path, so the entry outlives a rewrite of the bytes behind it and has to be
+        // dropped by hand. The cache is `App`'s (shared by every tab and kept while a screen is
+        // left), so the entry goes whatever the screen in front shows: a document shown again
+        // later (a tab switch back, the return from a project screen) reads the new bytes.
+        self.drop_changed_md_images(changed);
         if recompute_ignored {
             self.git_status_for = None; // recompute statuses+branch on the next render
             self.git_status_dirty = true; // an ignore-rule change can also change status output = invalidate the workdir cache
@@ -1734,10 +1749,22 @@ impl App {
         }
         self.invalidate_diff_caches(); // the working tree may have changed → drop the diff caches (keeps up with external edits)
         self.gutter_cache = None; // same as above: the git change gutter is also rebuilt on a working-tree change
-                                  // We do rebuild the tree, but its transient failure (e.g. a subdirectory being
-                                  // expanded briefly becomes unreadable while an agent bulk-rewrites files)
-                                  // must **not skip** the preview/view reload below. Those only depend on
-                                  // preview_path / git state, not the new tree, so the tree's Err is returned at the end.
+    }
+
+    fn refresh_fs_inner(
+        &mut self,
+        recompute_ignored: bool,
+        changed: &[std::path::PathBuf],
+        reload_preview: bool,
+    ) -> Result<()> {
+        // Before the status kick of `refresh_app_freshness`: the anchors publish the `C`-list
+        // anchor that a synchronous scan consumes (see `capture_view_anchors`).
+        let anchors = self.capture_view_anchors();
+        self.refresh_app_freshness(recompute_ignored, changed);
+        // We do rebuild the tree, but its transient failure (e.g. a subdirectory being expanded
+        // briefly becomes unreadable while an agent bulk-rewrites files) must **not skip** the
+        // preview/view reload below. Those only depend on preview_path / git state, not the new
+        // tree, so the tree's Err is returned at the end.
         let tree = self.rebuild_tree_preserving_filtered_view(anchors);
         // Drop paths that vanished from the selection set (retain keeps only ones that still exist; symlinks aren't followed).
         self.tab.selection.retain(|p| p.symlink_metadata().is_ok());
@@ -1745,10 +1772,8 @@ impl App {
             && matches!(self.tab.mode, Mode::Preview)
             && self.preview_affected_by(changed)
         {
-            // An inline Markdown image is a *second* file the preview is drawn from, and its cache
-            // entry is keyed by path — so the entry outlives a rewrite of the bytes behind it and
-            // has to be dropped by hand before the reload re-reads the document.
-            self.drop_changed_md_images(changed);
+            // (The pictures of `changed` were dropped from the cache above, before this reload
+            // re-reads the document.)
             // An event that names the shown file itself reopens a plugin's file without asking
             // the stamp when the stamp cannot be trusted (the file was modified within
             // `RACY_WINDOW` of when it was taken); the stamp decides for empty / `.git`-only /

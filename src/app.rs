@@ -2162,16 +2162,6 @@ pub(crate) struct PerTab {
     /// anchor rides along in its own snapshot across any number of switches until it is actually
     /// consumed (no loss *out*).
     changed_anchor_pending: Option<PathBuf>,
-    /// What an external program or a file-watch event that arrived while a project screen covered
-    /// this tab's screen may have changed in that hidden screen. The hidden screen is not rebuilt
-    /// while covered; it is brought up to date when it is in front again
-    /// ([`App::settle_covered_reload`]). Per tab: it belongs to the tab whose screen is covered,
-    /// travels with a tab switch and is dropped with the tab.
-    covered_reload: Option<ExternalReturn>,
-    /// A status result arrived while a project screen covered this tab's screen, so the
-    /// changed-files list under it was not rebuilt from it; it is rebuilt when that screen is in
-    /// front again. Per tab, like `covered_reload`.
-    covered_changed_filter: bool,
     preview_search: Option<String>,
     search_input: Option<String>,
     search_matches: Vec<(u64, usize, usize)>,
@@ -2261,8 +2251,6 @@ impl Default for PerTab {
             filter_pool: Vec::new(),
             changed_filter: false,
             changed_anchor_pending: None,
-            covered_reload: None,
-            covered_changed_filter: false,
             load_id: 0,
             diff_answer_awaited: false,
             preview_search: None,
@@ -3413,8 +3401,6 @@ impl App {
     /// `visual_anchor` is an entries index, so it goes stale under a different root. The filter and preview search are also
     /// for the old root, so they are cleared together (rebuild_tree also invalidates visual_anchor, but we do it explicitly).
     fn clear_for_root_change(&mut self) {
-        self.tab.covered_reload = None;
-        self.tab.covered_changed_filter = false;
         self.tab.project_navigation = None;
         self.tab.project_return = None;
         self.project_dialog = None;
@@ -4275,12 +4261,17 @@ impl App {
 
     /// An external program (the editor, a terminal launch chain, the git tool) returned. The
     /// screen in front is brought up to date: the shown file for `File`, the listing, git state
-    /// and views for `Tree`. While a project screen covers the screen under it, the front layer is
-    /// the project (it refreshes) and the hidden screen is left alone until it is in front again.
+    /// and views for `Tree`. While a project screen covers the tab's screen, that screen was left
+    /// as a tab is left: the project in front refreshes, the `App`-level freshness of `Tree` runs
+    /// (as for a watch event, `refresh_fs_watched`), and the tab's view is read again from the
+    /// files when it is in front again (`put_tab_back`, then `refresh_fs_after_tab_switch`).
     pub(crate) fn external_returned(&mut self, what: ExternalReturn) {
         if self.project_screen_covers() {
             self.project_refresh();
-            self.tab.covered_reload = self.tab.covered_reload.max(Some(what));
+            if what == ExternalReturn::Tree {
+                self.md_remote_failed.clear();
+                self.refresh_while_covered(true, &[]);
+            }
             return;
         }
         match what {
@@ -4297,13 +4288,6 @@ impl App {
         self.git_status_dirty = true;
     }
 
-    /// Whether an external program returned while a project screen covered the screen under it
-    /// and that screen has not been brought up to date yet.
-    #[cfg(all(test, feature = "git"))]
-    pub(crate) fn covered_reload_pending(&self) -> bool {
-        self.tab.covered_reload.is_some()
-    }
-
     /// Test accessors: a status scan is in flight / a changed-files rebuild is left to it.
     #[cfg(all(test, feature = "git"))]
     pub(crate) fn git_status_in_flight(&self) -> bool {
@@ -4313,37 +4297,6 @@ impl App {
     #[cfg(all(test, feature = "git"))]
     pub(crate) fn changed_anchor_left_to_status(&self) -> bool {
         self.tab.changed_anchor_pending.is_some()
-    }
-
-    /// Test accessor: the active tab has a changed-files rebuild owed to its covered list.
-    #[cfg(all(test, feature = "git"))]
-    pub(crate) fn covered_changed_filter_pending(&self) -> bool {
-        self.tab.covered_changed_filter
-    }
-
-    /// The screen under a project screen is in front again: reload what an external program that
-    /// returned meanwhile may have changed ([`App::external_returned`]).
-    pub(crate) fn settle_covered_reload(&mut self) {
-        if std::mem::take(&mut self.tab.covered_changed_filter) && self.tab.changed_filter {
-            let anchor = self
-                .tab
-                .changed_anchor_pending
-                .clone()
-                .or_else(|| self.filter_anchor());
-            // The same condition as the ordinary rebuild: not while this tab's status is still
-            // being fetched (its list would be judged from an empty status and turn itself off).
-            if !self.rebuild_changed_list_when_status_ready(anchor.clone()) {
-                // Left to `apply_statuses`, which reads the identity back from here.
-                self.tab.changed_anchor_pending = anchor;
-            }
-        }
-        match self.tab.covered_reload.take() {
-            Some(ExternalReturn::File) => self.reload_preview(),
-            Some(ExternalReturn::Tree) => {
-                let _ = self.refresh();
-            }
-            None => {}
-        }
     }
 
     /// Reopen the preview after the external editor exits (reflect the edited content). Caches are also discarded.
@@ -4905,17 +4858,24 @@ impl App {
 
     /// Release and reset the image display state (protocol, source image, zoom/pan).
     fn clear_image(&mut self) {
+        self.release_image();
+        self.tab.image_view.reset();
+        self.tab.page = 1;
+        self.tab.page_count = None;
+    }
+
+    /// The live part of [`App::clear_image`]: everything the shown media and the plugin show hold
+    /// on `App`, and the work still running for them. The tab's own view of them (zoom, page) is
+    /// left as it is: a tab that is left keeps it in its saved copy ([`App::leave_tab_view`]).
+    fn release_image(&mut self) {
         // Also discards any in-flight kitty build from the file we are leaving and clears the
         // wanted geometry so the next image triggers a fresh (synchronous first) build.
         self.image_viewer.clear();
         self.image_src = None;
-        self.tab.image_view.reset();
         self.vector_svg = None;
         self.vector_trust = None;
         self.image_logical = None;
         self.gif.clear();
-        self.tab.page = 1;
-        self.tab.page_count = None;
         // The plugin's show (its session and view) goes with the picture it made, and with a
         // table: whatever is opened next opens its own.
         self.drop_plugin();

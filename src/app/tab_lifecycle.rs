@@ -161,48 +161,16 @@ impl App {
             self.tab.preview_cols = t.preview_cols;
             self.tab.preview_viewport = t.preview_viewport;
         }
-        // The parsed Word document is App-level (too big to clone into every tab snapshot): drop
-        // the previous tab's and let the media block below re-read this tab's on the worker. (A
-        // spreadsheet's sheet is the plugin show's, dropped by `clear_image` below and opened
-        // again by `load_plugin`.)
-        self.set_document(None);
-        // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
-        // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
-        // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
-        // pure per-tab copies with no read anywhere below before `self.tab = t` restores the whole
-        // PerTab bundle at the end of this function — nothing in between reads them, so no individual
-        // line is needed here.
-        // The graph's branch-visibility picker (modal) is not carried across tabs: keep it closed
-        // on restore.
-        // (The git overlay itself and the graph decoration state are restored together later via
-        // `self.tab = t`.)
-        // The heading outline overlay is not carried across tabs either.
-        self.close_outline();
-        // Same for the table-cell full-text popup (the meaning of the shown cell changes per tab).
-        self.table_cell_open = false;
-        // The <details> open/closed state is also per-document = not carried across tabs.
-        self.details_open.clear();
-        // The decoration cache isn't carried over (decorated_lines regenerates it).
-        self.md_cache = None;
-        // A filter-pool scan started by the tab we are leaving must not land in this one:
-        // `filter_pool` is per-tab but the scan's bookkeeping is on `App`. The abandoned tab
-        // re-kicks its own scan when it becomes active again (the `refresh_fs_after_tab_switch`
-        // at the end of this function re-collects while a filter is active).
-        self.invalidate_filter_pool_scan();
-        // A restored diff preview doesn't carry over the follow-origin mark: `diff_follow_scope`
-        // lives on `App` (not `PerTab`), so switching tabs always shows a restored GitDiff view in
-        // the ordinary full-diff scope, even if it happens to be the same file a follow jump opened
-        // before the switch. This is independent of the follow session/baseline themselves (also
-        // App-level, not per-tab) — those persist across the switch and stay valid for the *new*
-        // active tab's root exactly as long as `follow_root` matches it (see its doc comment);
-        // `follow_note_change` recaptures them once it doesn't.
-        self.diff_follow_scope = false;
+        // The screen this tab replaces is left: its live work goes (the same drop a project screen
+        // that covers a tab's screen makes, `leave_tab_view`).
+        self.leave_tab_view();
         // Images don't carry over their heavy state (protocol/source image/GIF frames) — for an
-        // image-type preview, restore it by reloading instead.
-        // (clear_image also resets tab.image_view.center/tab.page/tab.page_count to their defaults,
-        // but `self.tab = t` at the end of this function overwrites them with the restored values,
-        // so this is harmless as long as nothing in between reads them.)
-        self.clear_image();
+        // image-type preview, restore it by reloading instead. The view fields `clear_image`
+        // resets (image_view.center/page/page_count) are overwritten by `self.tab = t` at the end
+        // of this function, so this is harmless as long as nothing in between reads them.
+        self.tab.image_view.reset();
+        self.tab.page = 1;
+        self.tab.page_count = None;
         if let (Some(kind), Some(path)) =
             (self.tab.preview_kind.clone(), self.tab.preview_path.clone())
         {
@@ -270,15 +238,13 @@ impl App {
         // clamped to range at that point (emptied here so nothing references the old document's
         // items in the meantime).
         // (focused_item/fence_zoom/fence_center/fence_return aren't read here, so leave them to
-        // `self.tab = t` at the end.)
-        self.md_items.clear();
+        // `self.tab = t` at the end.) `md_items` was emptied by `leave_tab_view` above.
         // For a large Code/Text (+ raw Markdown/Mermaid), re-arm the windowed-reading reader
         // (byte_top is restored at the end).
         self.setup_windowed();
         // The windowed preview's 2D caret is restored by `self.tab = t` at the end (the selection
-        // isn't carried over). The range is clamped on the next render/move.
-        self.preview_visual_anchor = None;
-        self.preview_visual_linewise = false;
+        // isn't carried over: `leave_tab_view` dropped it). The range is clamped on the next
+        // render/move.
         // For a plugin's file (CSV/TSV, an archive listing, a workbook), open it again, then
         // restore the saved cursor/scroll and clamp it (a worker's result clamps again when it
         // lands). A workbook is opened at the sheet this tab was showing: the tab's own page is
@@ -380,10 +346,63 @@ impl App {
         // re-verification, and let the next render's refresh_git_if_needed refetch it (the same
         // shape as back_to_tree; rapid h/l presses don't mark it dirty, so that optimization is preserved).
         self.git_status_dirty = true;
+        // A tab whose screen a project screen covers comes back covered: its screen is put back
+        // (so the return from the project finds it whole) but stays left, as the cover left it.
+        if self.project_screen_covers() {
+            self.leave_tab_view();
+        }
         // The preview itself has already been rebuilt from disk above, so **don't reload it again**
         // here (previously refresh_fs → reload_preview repeated the same work, running the
         // full-row CSV parse twice for a CSV tab).
         self.refresh_fs_after_tab_switch();
+    }
+
+    /// The live work of the screen a tab shows, dropped when that screen is left: by a tab switch
+    /// (`put_tab_back`, for the screen of the tab that was showing) and by a project screen that
+    /// covers it (`navigation_over_here`, `return_to_project`). What is dropped lives on `App` and
+    /// runs for the screen in front only: the plugin show and its queued work, the media and its
+    /// loads, the Word document, the filter-pool scan, the outline, the table cell popup, the
+    /// `<details>` state, the decoration cache and its items, the preview's visual selection and
+    /// the diff's follow scope. The tab's own fields are not touched (a tab that is left keeps them
+    /// in its saved copy); the return to the screen (`put_tab_back`) reads it again from the files.
+    pub(super) fn leave_tab_view(&mut self) {
+        // The parsed Word document is App-level (too big to clone into every tab snapshot): drop
+        // it and let the return re-read it on the worker. (A spreadsheet's sheet is the plugin
+        // show's, dropped by `release_image` below and opened again by `load_plugin`.)
+        self.set_document(None);
+        // The heading outline overlay is not carried across tabs.
+        self.close_outline();
+        // Same for the table-cell full-text popup (the meaning of the shown cell changes per tab).
+        self.table_cell_open = false;
+        // The <details> open/closed state is also per-document = not carried across tabs.
+        self.details_open.clear();
+        // The decoration cache isn't carried over (decorated_lines regenerates it), nor are the
+        // items built from it.
+        self.md_cache = None;
+        self.md_items.clear();
+        // A filter-pool scan started for the screen that is left must not land in another one:
+        // `filter_pool` is per-tab but the scan's bookkeeping is on `App`. The screen re-kicks its
+        // own scan when it is in front again (the `refresh_fs_after_tab_switch` at the end of
+        // `put_tab_back` re-collects while a filter is active).
+        self.invalidate_filter_pool_scan();
+        // A restored diff preview doesn't carry over the follow-origin mark: `diff_follow_scope`
+        // lives on `App` (not `PerTab`), so a restored GitDiff view is always shown in the
+        // ordinary full-diff scope, even if it happens to be the same file a follow jump opened.
+        // This is independent of the follow session/baseline themselves (also App-level, not
+        // per-tab) — those persist and stay valid for the active tab's root exactly as long as
+        // `follow_root` matches it (see its doc comment); `follow_note_change` recaptures them
+        // once it doesn't.
+        self.diff_follow_scope = false;
+        // The media and the plugin show (protocol/source image/GIF frames, the session and its
+        // queued work, the loads in flight by generation).
+        self.release_image();
+        // The preview's visual selection is not carried over.
+        self.preview_visual_anchor = None;
+        self.preview_visual_linewise = false;
+        // A diff target resolution asked for the screen that is left must not land in another
+        // one: a tab switch drops its answer because the next tab shows another kind, and a
+        // project screen over the same tab drops it here. The return resolves the target again.
+        self.drop_diff_target_resolution();
     }
 
     classes! {
@@ -429,10 +448,6 @@ impl App {
                 projects, project_navigation, project_return, project_enter_pending,
                 project_enter_op, project_effects, project_pending_acts, vcs_watch,
                 show_hidden, tree_viewport, filter_pool,
-                // What arrived while covered and is owed to the screen under it: set on the
-                // working tab by the watch events and the status results of the cover, settled
-                // after the return (`settle_covered_reload`).
-                covered_reload, covered_changed_filter,
             ],
             // Derived, set by the restore itself from the current files before this runs: the
             // reader's stamp, the generated output and the page count of what was read now.
@@ -541,10 +556,6 @@ impl App {
         self.tab.project_effects.clear();
         self.tab.project_enter_pending = false;
         self.tab.project_enter_op = None;
-        // The reload a covered screen of the tab we left is owed belongs to that tab (its snapshot
-        // holds it); this tab has no covered screen.
-        self.tab.covered_reload = None;
-        self.tab.covered_changed_filter = false;
         self.project_dialog = None;
         self.tab.open_dir = root.clone();
         self.tab.root = root;

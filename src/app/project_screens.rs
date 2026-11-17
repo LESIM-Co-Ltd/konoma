@@ -1166,17 +1166,24 @@ impl App {
                 origin_tab: nav.origin_tab.clone(),
             };
         }
+        // The first screen covers the tab's screen: that screen is left as a tab switch leaves it.
+        // Its state is saved (the snapshot below, put back by `leave_project_screens`) and its
+        // live work is dropped by the same function the tab switch uses (`leave_tab_view`). What
+        // then reads or changes the tab's view fields while covered changes a working copy that
+        // the return replaces.
         // The media this tab shows is about to be put back from the stash, as on a tab switch.
         self.stash_media_cache();
         let mut snapshot = self.snapshot_tab();
         snapshot.project_navigation = None;
-        ProjectNavigation {
+        let nav = ProjectNavigation {
             state,
             origin_mode: self.tab.mode,
             origin_path: self.tab.preview_path.clone(),
             origin_kind: self.tab.preview_kind.clone(),
             origin_tab: Some(Box::new(snapshot)),
-        }
+        };
+        self.leave_tab_view();
+        nav
     }
 
     /// Test-only: a project screen opened over what the tab shows, the way `show_project_screen`
@@ -1228,22 +1235,21 @@ impl App {
         let Some(nav) = self.tab.project_navigation.take() else {
             return;
         };
-        match (nav.origin_mode, nav.origin_path) {
-            (Mode::Preview, Some(path)) => {
-                if let Some(origin) = nav.origin_tab {
-                    // The preview comes back as a tab does: the whole saved state, brought up to
-                    // date with the files as they are now (`put_tab_back`), a diff included (it
-                    // is read from git again there, with the view, page and scroll it was left
-                    // at). What went on moving while it was covered is kept from the working
-                    // state (`PerTab::restored`).
-                    self.put_tab_back(*origin, true);
-                } else {
-                    self.enter_preview(&path);
-                }
+        if let Some(origin) = nav.origin_tab {
+            // The covered screen comes back as a tab does: the whole saved state, brought up to
+            // date with the files as they are now (`put_tab_back`), a diff included (it is read
+            // from git again there, with the view, page and scroll it was left at). What the
+            // project screens legitimately went on changing while they covered it is kept from
+            // the working state (`PerTab::restored`, its `live` group). A tree comes back the
+            // same way: the working copy's tree was changed while covered and is replaced.
+            self.put_tab_back(*origin, true);
+        } else {
+            // A navigation made without a saved tab (a test's fixture): the screen it names.
+            match (nav.origin_mode, nav.origin_path) {
+                (Mode::Preview, Some(path)) => self.enter_preview(&path),
+                _ => self.back_to_tree(),
             }
-            _ => self.back_to_tree(),
         }
-        self.settle_covered_reload();
     }
 
     /// A project that the latest detection answer no longer lists: its screens close as when
@@ -2247,6 +2253,10 @@ impl App {
         ) {
             return false;
         }
+        // The screen opened from the project (a diff) is left: the stack covers it again, and
+        // leaving the stack puts back what its first screen covered (the saved tab of the
+        // navigation), not this one. Its live work goes as on a tab switch.
+        self.leave_tab_view();
         self.ensure_project_view();
         true
     }

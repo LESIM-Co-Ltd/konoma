@@ -885,81 +885,90 @@ fn a_line_landed_and_a_kind_resolved_while_covered_stay_resolved_after_the_retur
     }
 }
 
-/// (3) A diff Preview waiting for its body is covered, the load fails while covered, the file is
-/// readable again: no DiffPreview landing is revived on the return.
+/// (3) A diff Preview waiting for its body is left (a project screen covers it, or another tab is
+/// shown), the file cannot be read meanwhile and is readable again on the return. Covering is
+/// leaving the tab: the load goes with the screen, so its failure never reaches the tab, and the
+/// return reads the file again. The landing the tab still holds then runs on the readable file,
+/// on both roads alike: on the first change, as in (i).
 #[test]
-fn a_diff_preview_landing_that_failed_while_covered_is_not_revived() {
+fn a_diff_preview_landing_left_while_its_file_cannot_be_read_lands_on_the_return() {
     use std::os::unix::fs::PermissionsExt;
-    let root = repo(
-        "prp_diff_failed_covered",
-        &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
-    );
-    std::fs::write(
-        root.join("doc.md"),
-        long_doc("", "CHANGED MARKER paragraph."),
-    )
-    .unwrap();
-    let path = root.join("doc.md");
-    let mut s = road(&root, cfg_en(), true);
-    s.select("doc.md");
-    s.key('d');
-    wait_diff_target(&mut s, true);
-    settled(&mut s);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-    s.key('R');
-    assert!(
-        s.app.diff_landing_state_for_test().0,
-        "the landing is not pending:\n{}",
-        s.screen()
-    );
-    // The state before the cover: the landing waits for the worker's plan of the file (the kind
-    // is not resolved yet). A document's text arrives synchronously once the kind is applied (a
-    // readable file lands at once), so "kind resolved, text awaited" has no stop of its own here;
-    // the failure then comes with the kind's reply, which is what arrives while covered.
-    assert_eq!(
-        s.app.pending_kind_known_for_test(),
-        Some(false),
-        "the landing is not waiting for the kind:\n{}",
-        s.screen()
-    );
-    assert!(s.app.document_error().is_none(), "{}", s.screen());
-    s.key('p');
-    settle_projects_leaving_media(&mut s);
-    // The failure arrives while covered.
-    settled(&mut s);
-    assert!(
-        s.app.document_error().is_some(),
-        "the body load did not fail while covered:\n{}",
-        s.screen()
-    );
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    leave_project(&mut s);
-    settled(&mut s);
-    let what = s.screen();
-    assert!(
-        !s.app.diff_landing_state_for_test().0,
-        "a DiffPreview landing was revived:\n{what}"
-    );
-    // A revived landing would have run on the return and moved to the change at the end.
-    assert_eq!(s.app.reading_position_for_test().0, 0, "scrolled: {what}");
-    assert!(s.find_text("CHANGED MARKER").is_none(), "landed: {what}");
+    for away in BOTH {
+        let root = repo(
+            "prp_diff_failed_covered",
+            &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+        );
+        std::fs::write(
+            root.join("doc.md"),
+            long_doc("", "CHANGED MARKER paragraph."),
+        )
+        .unwrap();
+        let path = root.join("doc.md");
+        let mut s = road(&root, cfg_en(), true);
+        s.select("doc.md");
+        s.key('d');
+        wait_diff_target(&mut s, true);
+        settled(&mut s);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        s.key('R');
+        assert!(
+            s.app.diff_landing_state_for_test().0,
+            "{away:?}: the landing is not pending:\n{}",
+            s.screen()
+        );
+        // The state before leaving: the landing waits for the worker's plan of the file (the kind
+        // is not resolved yet).
+        assert_eq!(
+            s.app.pending_kind_known_for_test(),
+            Some(false),
+            "{away:?}: the landing is not waiting for the kind:\n{}",
+            s.screen()
+        );
+        assert!(s.app.document_error().is_none(), "{away:?}: {}", s.screen());
+        match away {
+            Away::ProjectScreen => {
+                s.key('p');
+                settle_projects_leaving_media(&mut s);
+            }
+            Away::Tab => s.key('t'),
+        }
+        // Whatever the worker answers meanwhile is not the tab's any more.
+        settled(&mut s);
+        assert!(
+            s.app.document_error().is_none(),
+            "{away:?}: the load of the screen that was left failed in front:\n{}",
+            s.screen()
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        match away {
+            Away::ProjectScreen => leave_project(&mut s),
+            Away::Tab => s.key('['),
+        }
+        settled(&mut s);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert!(s.app.document_error().is_none(), "still failed: {what}");
+        assert!(
+            !s.app.has_pending_landing_for_test(),
+            "a landing is pending: {what}"
+        );
+        assert!(
+            s.find_text("CHANGED MARKER").is_some(),
+            "not on the first change: {what}"
+        );
+    }
 }
 
-/// (3b) The other waiting state of the same landing: the kind is resolved and only the document's
-/// body is awaited (the plugin's `open` is held by the gate). Covered there by a project screen,
-/// the read fails while covered (in the working tab, which holds the open), the file is readable
-/// again: the failure ended the landing, so the return does not land on the first change.
-///
-/// Project path only: on a tab switch the held open is the tab's no longer (the switch moves the
-/// generation, so its answer is dropped as stale) and the tab never sees the failure; the return
-/// opens the file again and the landing it still holds runs on a readable file.
+/// (3c) The same waiting state with the screen in front all along: the read of the body fails
+/// while the landing waits for it. The failure ends the landing (`document_failed`), so when the
+/// file is readable again a later read shows it where the reader was and does not land a
+/// position asked of the failed document.
 #[test]
-fn a_diff_preview_landing_whose_body_failed_while_covered_is_not_revived() {
+fn a_diff_preview_landing_whose_body_failed_in_front_is_not_revived() {
     use crate::app::HoldOpens;
     use crate::plugins::test_plugins::Latch;
     use std::os::unix::fs::PermissionsExt;
     let root = repo(
-        "prp_diff_body_failed_covered",
+        "prp_diff_body_failed_front",
         &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
     );
     std::fs::write(
@@ -973,16 +982,10 @@ fn a_diff_preview_landing_whose_body_failed_while_covered_is_not_revived() {
     s.key('d');
     wait_diff_target(&mut s, true);
     settled(&mut s);
-    // From here every plugin `open` waits for the gate: the body cannot arrive.
     let gate = std::sync::Arc::new(Latch::default());
-    let _hold = HoldOpens::until(&gate);
+    let hold = HoldOpens::until(&gate);
     s.key('R');
-    assert!(
-        s.app.diff_landing_state_for_test().0,
-        "the landing is not pending:\n{}",
-        s.screen()
-    );
-    // The worker's plan of the file resolves the kind; the document's open is then held.
+    assert!(s.app.diff_landing_state_for_test().0, "{}", s.screen());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while s.app.pending_kind_known_for_test() == Some(false) {
         let left = deadline
@@ -999,30 +1002,15 @@ fn a_diff_preview_landing_whose_body_failed_while_covered_is_not_revived() {
     assert_eq!(
         s.app.pending_kind_known_for_test(),
         Some(true),
-        "the landing is not waiting for the body with the kind resolved:\n{}",
+        "{}",
         s.screen()
     );
-    assert!(
-        s.app.diff_landing_state_for_test().0,
-        "not a DiffPreview landing:\n{}",
-        s.screen()
-    );
-    assert!(
-        s.app.document_text_missing() && s.app.document_error().is_none(),
-        "the body must still be on its way:\n{}",
-        s.screen()
-    );
-    // The file cannot be read when the held open goes on.
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-    s.key('p');
-    settle_projects_leaving_media(&mut s);
-    assert!(s.app.project_active(), "{}", s.screen());
     gate.open();
     settled(&mut s);
-    // The failure arrives while covered, in the tab that holds the open, and ends the landing.
     assert!(
         s.app.document_error().is_some(),
-        "the body load did not fail while covered:\n{}",
+        "the body load did not fail:\n{}",
         s.screen()
     );
     assert!(
@@ -1031,87 +1019,194 @@ fn a_diff_preview_landing_whose_body_failed_while_covered_is_not_revived() {
         s.screen()
     );
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    leave_project(&mut s);
+    drop(hold);
+    s.app.reload_preview();
     settled(&mut s);
-    let what = s.screen();
+    assert!(s.app.document_error().is_none(), "{}", s.screen());
     assert!(
-        !s.app.diff_landing_state_for_test().0,
-        "a DiffPreview landing was revived:\n{what}"
+        s.find_text("Title").is_some(),
+        "not where the reader was:\n{}",
+        s.screen()
     );
     assert!(
-        !s.app.has_pending_landing_for_test(),
-        "a landing is pending:\n{what}"
-    );
-    // A revived landing would have run on the return and moved to the change at the end; the
-    // document is read again from the top.
-    assert_eq!(s.app.reading_position_for_test().0, 0, "scrolled:\n{what}");
-    assert!(s.app.document_error().is_none(), "still failed:\n{what}");
-    assert!(s.find_text("CHANGED MARKER").is_none(), "landed:\n{what}");
-    assert!(
-        s.find_text("Filler paragraph number 0 ").is_some(),
-        "not the top of the document:\n{what}"
+        s.find_text("CHANGED MARKER").is_none(),
+        "the landing of the failed document was revived:\n{}",
+        s.screen()
     );
 }
 
-/// (5) The identity names the user's open: the diff's own answer that moves it to the Preview
-/// representation is progress of the same open and keeps it. Covered before that answer, the
-/// answer and the failure of its body load happen while covered; the file is readable again on the
-/// return: the working tab still holds the load the copy was saved in (same identity), so nothing
-/// of the old preview is brought back and no landing is revived.
+/// (3b) The other waiting state of the same landing: the kind is resolved and only the document's
+/// body is awaited (the plugin's `open` is held by the gate). The screen is left there (a project
+/// screen covers it, or another tab is shown), the read fails meanwhile, the file is readable
+/// again. Covering is leaving the tab, on both roads alike: the held open is the tab's no longer
+/// (leaving moves the generation, so its answer is dropped as stale) and the tab never sees the
+/// failure; the return opens the file again and the landing it still holds runs on a readable
+/// file.
 #[test]
-fn the_diff_answer_choosing_preview_while_covered_keeps_the_open_identity() {
+fn a_diff_preview_landing_whose_body_failed_after_leaving_lands_on_the_return() {
+    use crate::app::HoldOpens;
+    use crate::plugins::test_plugins::Latch;
     use std::os::unix::fs::PermissionsExt;
-    let root = repo(
-        "prp_diff_preview_identity",
-        &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
-    );
-    std::fs::write(
-        root.join("doc.md"),
-        long_doc("", "CHANGED MARKER paragraph."),
-    )
-    .unwrap();
-    let path = root.join("doc.md");
-    let mut cfg = cfg_en();
-    cfg.ui.diff_view = "preview".into();
-    let mut s = road(&root, cfg, true);
-    s.select("doc.md");
-    s.key('d');
-    assert!(
-        !s.app.diff_target_resolved_for_test(),
-        "the target was answered before the cover:\n{}",
-        s.screen()
-    );
-    let open_id = s.app.load_id_for_test();
-    assert_ne!(open_id, 0);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-    s.key('p');
-    settle_projects_leaving_media(&mut s);
-    // The answer arrives while covered, moves the diff to the Preview representation, and the
-    // body of that preview cannot be read.
-    wait_diff_target(&mut s, true);
-    settled(&mut s);
-    assert_eq!(
-        s.app.load_id_for_test(),
-        open_id,
-        "the answer renewed the identity of the open:\n{}",
-        s.screen()
-    );
-    assert!(
-        s.app.document_error().is_some(),
-        "the body load did not fail while covered:\n{}",
-        s.screen()
-    );
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    leave_project(&mut s);
-    settled(&mut s);
-    let what = s.screen();
-    assert_eq!(s.app.load_id_for_test(), open_id, "identity: {what}");
-    assert!(
-        !s.app.diff_landing_state_for_test().0,
-        "a DiffPreview landing was revived:\n{what}"
-    );
-    assert_eq!(s.app.reading_position_for_test().0, 0, "scrolled: {what}");
-    assert!(s.find_text("CHANGED MARKER").is_none(), "landed: {what}");
+    for away in BOTH {
+        let root = repo(
+            "prp_diff_body_failed_covered",
+            &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+        );
+        std::fs::write(
+            root.join("doc.md"),
+            long_doc("", "CHANGED MARKER paragraph."),
+        )
+        .unwrap();
+        let path = root.join("doc.md");
+        let mut s = road(&root, cfg_en(), true);
+        s.select("doc.md");
+        s.key('d');
+        wait_diff_target(&mut s, true);
+        settled(&mut s);
+        // From here every plugin `open` waits for the gate: the body cannot arrive.
+        let gate = std::sync::Arc::new(Latch::default());
+        let hold = HoldOpens::until(&gate);
+        s.key('R');
+        assert!(
+            s.app.diff_landing_state_for_test().0,
+            "{away:?}: the landing is not pending:\n{}",
+            s.screen()
+        );
+        // The worker's plan of the file resolves the kind; the document's open is then held.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while s.app.pending_kind_known_for_test() == Some(false) {
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("the kind was never resolved");
+            let res = s
+                .media_rx
+                .as_ref()
+                .expect("with_media")
+                .recv_timeout(left)
+                .expect("the worker answers");
+            s.app.apply_media(res);
+        }
+        assert_eq!(
+            s.app.pending_kind_known_for_test(),
+            Some(true),
+            "{away:?}: the landing is not waiting for the body with the kind resolved:\n{}",
+            s.screen()
+        );
+        assert!(
+            s.app.diff_landing_state_for_test().0,
+            "{away:?}: not a DiffPreview landing:\n{}",
+            s.screen()
+        );
+        assert!(
+            s.app.document_text_missing() && s.app.document_error().is_none(),
+            "{away:?}: the body must still be on its way:\n{}",
+            s.screen()
+        );
+        // The file cannot be read when the held open goes on.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        match away {
+            Away::ProjectScreen => {
+                s.key('p');
+                settle_projects_leaving_media(&mut s);
+                assert!(s.app.project_active(), "{}", s.screen());
+            }
+            Away::Tab => s.key('t'),
+        }
+        gate.open();
+        settled(&mut s);
+        // The failure of the open that was left does not reach the screen in front.
+        assert!(
+            s.app.document_error().is_none(),
+            "{away:?}: the failure of the left open reached the screen in front:\n{}",
+            s.screen()
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        match away {
+            Away::ProjectScreen => leave_project(&mut s),
+            Away::Tab => s.key('['),
+        }
+        settled(&mut s);
+        drop(hold);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert!(
+            !s.app.has_pending_landing_for_test(),
+            "a landing is pending: {what}"
+        );
+        assert!(s.app.document_error().is_none(), "still failed: {what}");
+        // The landing the tab held ran on the readable file: on the first change.
+        assert!(
+            s.find_text("CHANGED MARKER").is_some(),
+            "not landed: {what}"
+        );
+    }
+}
+
+/// (5) The identity names the user's open: the diff's own answer that moves it to the Preview
+/// representation is progress of the same open and keeps it. The screen is left before that
+/// answer (a project screen covers it, or another tab is shown) while the file cannot be read.
+/// Covering is leaving the tab, on both roads alike: the answer asked for the screen that was left
+/// is not the tab's any more, so nothing of it (a Preview representation, a failed body) happens
+/// behind the screen in front. The return asks again on the readable file: the same open
+/// (identity) gets its first answer there and lands on the first change.
+#[test]
+fn the_diff_answer_choosing_preview_after_leaving_keeps_the_open_identity() {
+    use std::os::unix::fs::PermissionsExt;
+    for away in BOTH {
+        let root = repo(
+            "prp_diff_preview_identity",
+            &[("doc.md", &long_doc("", "ORIGINAL MARKER paragraph."))],
+        );
+        std::fs::write(
+            root.join("doc.md"),
+            long_doc("", "CHANGED MARKER paragraph."),
+        )
+        .unwrap();
+        let path = root.join("doc.md");
+        let mut cfg = cfg_en();
+        cfg.ui.diff_view = "preview".into();
+        let mut s = road(&root, cfg, true);
+        s.select("doc.md");
+        s.key('d');
+        assert!(
+            !s.app.diff_target_resolved_for_test(),
+            "{away:?}: the target was answered before the cover:\n{}",
+            s.screen()
+        );
+        let open_id = s.app.load_id_for_test();
+        assert_ne!(open_id, 0);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        match away {
+            Away::ProjectScreen => {
+                s.key('p');
+                settle_projects_leaving_media(&mut s);
+            }
+            Away::Tab => s.key('t'),
+        }
+        settled(&mut s);
+        assert!(
+            !s.app.diff_target_resolved_for_test() && s.app.document_error().is_none(),
+            "{away:?}: the answer of the screen that was left landed in front:\n{}",
+            s.screen()
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        match away {
+            Away::ProjectScreen => leave_project(&mut s),
+            Away::Tab => s.key('['),
+        }
+        wait_diff_target(&mut s, true);
+        settled(&mut s);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert_eq!(s.app.load_id_for_test(), open_id, "identity: {what}");
+        assert!(s.app.document_error().is_none(), "failed: {what}");
+        assert!(
+            !s.app.has_pending_landing_for_test(),
+            "a landing is pending: {what}"
+        );
+        assert!(
+            s.find_text("CHANGED MARKER").is_some(),
+            "not on the first change: {what}"
+        );
+    }
 }
 
 fn apple_rows(rows: &[u32]) -> String {
@@ -1208,12 +1303,13 @@ fn a_search_waiting_for_a_table_survives_another_preview_while_covered() {
     }
 }
 
-/// (4b) The request consumed while covered (the same load: the table arrived under the screen)
-/// moved the cursor to the first hit there: the return keeps that cursor and does not make the
-/// request again. The tab switch (the answer is dropped, the request is made after the return)
-/// gives the same cursor.
+/// (4b) A search confirmed while the table loads, then the screen is left before the table
+/// arrives (a project screen covers it, or another tab is shown). Covering is leaving the tab: the
+/// load goes with the screen and the table never arrives behind it, on both roads alike. The
+/// return loads the table again and the request is consumed there once: the cursor is on the
+/// first hit and nothing waits any more.
 #[test]
-fn a_search_request_consumed_while_covered_is_not_made_again() {
+fn a_search_request_left_with_its_loading_table_is_consumed_once_on_the_return() {
     for away in BOTH {
         let (root, _) = sheet_repo("prp_search_consumed", &[5, 40]);
         let mut s = search_on_loading_sheet(&root);
@@ -1222,17 +1318,22 @@ fn a_search_request_consumed_while_covered_is_not_made_again() {
             Away::ProjectScreen => {
                 s.key('p');
                 settle_projects_leaving_media(&mut s);
-                // The table arrives under the project screen: the request is consumed there and
-                // the cursor moved to the first hit.
-                settled(&mut s);
-                assert!(!s.app.search_waits_for_table_for_test(), "{}", s.screen());
-                assert_eq!(s.app.table_cursor(), (4, 0), "{}", s.screen());
+            }
+            Away::Tab => s.key('t'),
+        }
+        // Nothing of the table is loaded behind the screen in front.
+        settled(&mut s);
+        assert!(
+            s.find_text("apple 5").is_none() && !s.app.is_sheet_loading(),
+            "{away:?}: the table was loaded behind the screen in front:\n{}",
+            s.screen()
+        );
+        match away {
+            Away::ProjectScreen => {
                 s.key('q');
                 settle_projects_leaving_media(&mut s);
             }
             Away::Tab => {
-                s.key('t');
-                settled(&mut s);
                 s.key('[');
                 settle_projects_leaving_media(&mut s);
             }
@@ -1243,10 +1344,22 @@ fn a_search_request_consumed_while_covered_is_not_made_again() {
         let what = format!("{away:?}\n{}", s.screen());
         assert!(
             !s.app.search_waits_for_table_for_test(),
-            "the request was made again: {what}"
+            "the request still waits after the table arrived: {what}"
         );
         assert_eq!(s.app.table_cursor(), (4, 0), "first hit: {what}");
         assert_eq!(s.app.search_status(), Some((1, 2)), "{what}");
+        assert!(s.find_text("apple 5").is_some(), "{what}");
+        // A later refresh of the same table does not make the request again.
+        s.key('j');
+        s.app.reload_preview();
+        settled(&mut s);
+        let what = format!("{away:?}\n{}", s.screen());
+        assert!(!s.app.search_waits_for_table_for_test(), "{what}");
+        assert_eq!(
+            s.app.table_cursor(),
+            (5, 0),
+            "the request was made again: {what}"
+        );
     }
 }
 
@@ -1475,17 +1588,17 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
     assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
     let shown = s.app.tab.preview_path.clone();
     go_away(&mut s, away);
-    // Over a project screen the OpenFile case lands the scan while the preview opened from it is
-    // in front: the tree under a project screen is frozen while the screen covers it, and only
-    // then does the working tab consume the anchor, which is what tells the anchor's group apart.
-    let scan_under_the_opened_preview =
-        matches!(away, Away::ProjectScreen) && matches!(meanwhile, Meanwhile::OpenFile);
-    if !scan_under_the_opened_preview {
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(60))
-            .expect("the deferred scan lands");
-        s.app.apply_statuses(res);
-    }
+    // The scan lands while the tab is away, on both roads alike. Over a project screen the working
+    // tab consumes the anchor there (its list is rebuilt behind the screen and thrown away on the
+    // return), which is what tells the anchor's group apart: the return puts the saved one back.
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the deferred scan lands");
+    s.app.apply_statuses(res);
+    assert!(
+        !s.app.changed_anchor_left_to_status(),
+        "{what}: the scan did not consume the anchor of the screen in front"
+    );
     match meanwhile {
         Meanwhile::Nothing => {}
         Meanwhile::OpenFile => {
@@ -1494,16 +1607,6 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
             settled(&mut s);
             assert_eq!(s.app.tab.mode, Mode::Preview, "{what}\n{}", s.screen());
             assert_ne!(s.app.tab.preview_path, shown, "{what}: not another file");
-            if scan_under_the_opened_preview {
-                let res = rx
-                    .recv_timeout(std::time::Duration::from_secs(60))
-                    .expect("the deferred scan lands");
-                s.app.apply_statuses(res);
-                assert!(
-                    !s.app.changed_anchor_left_to_status(),
-                    "{what}: the scan did not consume the working tab's anchor"
-                );
-            }
             s.key('q');
             settle_projects(&mut s);
             assert_eq!(
@@ -1514,12 +1617,6 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
             );
         }
         Meanwhile::PasteJump => {
-            if matches!(away, Away::ProjectScreen) {
-                assert!(
-                    s.app.covered_changed_filter_pending(),
-                    "{what}: the scan that landed while covered is not owed to the list"
-                );
-            }
             s.app.paste_jump_to(&root.join("k.txt"), None);
             settled(&mut s);
             assert_eq!(
@@ -1555,9 +1652,8 @@ fn changed_anchor_road(name: &str, away: Away, meanwhile: Meanwhile) {
 /// screen, so it is not an open under the cover and there is no screen left to come back from.
 /// Leaving puts the saved tree back (`put_tab_back`): the whole tree, as it was saved while its
 /// `C` rebuild waited for a scan, with the identity (c3) still waiting with it. The scan that
-/// landed while covered was owed to that list (`covered_changed_filter`), and
-/// `settle_covered_reload` leaves the rebuild to the scan the return's refresh asked for (one is
-/// in flight). The jump then reveals k.txt in that whole tree, which moves `selected` only, not
+/// landed while covered rebuilt only the working copy's list, which the saved tree replaces, and
+/// the return's refresh leaves the rebuild to the scan it asked for (one is in flight). The jump then reveals k.txt in that whole tree, which moves `selected` only, not
 /// the waiting identity. So when the scan lands, `apply_statuses` rebuilds the `C` list on the
 /// identity it waits with: the changed files with the cursor on c3 (k.txt, unchanged, is not in
 /// the list), while the preview stays k.txt's. Back in the tree it is the same.
@@ -1605,10 +1701,6 @@ fn pasted_jump_leaves_the_project_screens(
     assert_c3_drawn_under_the_cursor(s, what);
 }
 
-/// This road cannot catch the group of `changed_anchor_pending` (`tree`, not `live`): the tree
-/// under a project screen is frozen while covered (the scan is only recorded as
-/// `covered_changed_filter`), so the working tab still holds the anchor saved at the cover. The
-/// OpenFile case of the next test is the one that guards the group.
 #[test]
 fn a_changed_list_cursor_waiting_for_a_scan_comes_back_on_its_file() {
     for away in BOTH {
