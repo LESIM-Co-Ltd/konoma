@@ -1471,3 +1471,122 @@ fn vcs_keys_opening_a_diff_from_a_screen_flashes_no_operation_name() {
         }
     }
 }
+
+/// A preview opened from a project screen's file diff (it has `project_return`) goes through the
+/// host's diff line path: `e` opens the editor at the change block the diff is on, and `n` moves
+/// that block.
+#[test]
+fn vcs_keys_e_on_a_project_file_diff_opens_the_editor_at_the_diff_line() {
+    if isolated("vcs_keys_e_on_a_project_file_diff_opens_the_editor_at_the_diff_line") {
+        return;
+    }
+    use crate::test_support::{init_git_repo, run_git};
+    let dir = super::sandbox("vcs_keys_e_project_diff");
+    init_git_repo(&dir);
+    let body = |changed: &[usize]| -> String {
+        (1..=120)
+            .map(|n| {
+                if changed.contains(&n) {
+                    format!("changed line {n}\n")
+                } else {
+                    format!("line {n}\n")
+                }
+            })
+            .collect()
+    };
+    std::fs::write(dir.join("many.rs"), body(&[])).unwrap();
+    run_git(&dir, &["add", "."]);
+    run_git(&dir, &["commit", "-qm", "seed"]);
+    std::fs::write(dir.join("many.rs"), body(&[10, 50, 90])).unwrap();
+    let repo = dir.into_canonical().unwrap();
+    let mut sim = open(&repo, config("git", "en"), (140, 30));
+    screen(&mut sim, "changes");
+    press(&mut sim, KeyCode::Enter);
+    assert!(sim.app.is_git_diff_preview() && !sim.app.project_active());
+    assert!(sim.app.tab.project_return.is_some(), "the diff came from the project screen");
+    sim.key('e');
+    assert_eq!(
+        sim.app.take_pending_edit(),
+        Some((repo.join("many.rs"), Some(10))),
+        "e names the first change block of the diff"
+    );
+    // The first `n` scrolls to the block the diff is on (as in a diff opened from the tree), the
+    // next ones step on.
+    for want in [10usize, 50, 90] {
+        press(&mut sim, KeyCode::Char('n'));
+        sim.key('e');
+        assert_eq!(
+            sim.app.take_pending_edit(),
+            Some((repo.join("many.rs"), Some(want))),
+            "e names the block n landed on"
+        );
+    }
+}
+
+/// `J` / `K` page a PDF preview. Over a project screen they act iff the gate says so; the footer
+/// and the help list them iff they act.
+#[test]
+fn vcs_keys_j_k_page_a_pdf_preview_over_a_project_screen_iff_the_gate_is_on() {
+    if isolated("vcs_keys_j_k_page_a_pdf_preview_over_a_project_screen_iff_the_gate_is_on") {
+        return;
+    }
+    let Some(pdf) = super::sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let Some(repo) = esc_repo("git", "vcs_keys_pdf_pages") else {
+        return;
+    };
+    std::fs::copy(&pdf, repo.join("doc.pdf")).unwrap();
+    let mut sim = Sim::with_config_sized(&repo, config("git", "en"), 140, 30).with_media();
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
+    drain(&mut sim);
+    sim.select("doc.pdf");
+    sim.enter();
+    sim.drain_media();
+    assert_eq!(sim.app.page_indicator(), Some((1, 3)));
+    let hint = crate::i18n::tr(sim.app.lang, crate::i18n::Msg::HintPage);
+    let listed = |sim: &Sim| {
+        let footer = crate::ops::footer::tokens(&sim.app, Context::Canvas).join(" ");
+        let help = crate::ops::help::sections(&sim.app)
+            .into_iter()
+            .flat_map(|s| s.rows.into_iter().map(|(_, desc)| desc))
+            .any(|d| d == hint);
+        (footer.contains(hint), help)
+    };
+    // The preview itself: J / K page it, and the gate, footer and help say so.
+    for action in [crate::keymap::Action::PageNext, crate::keymap::Action::PagePrev] {
+        assert!(crate::ops::action_enabled(&sim.app, Context::Image, action), "{action:?}");
+    }
+    sim.key('J');
+    sim.drain_media();
+    assert_eq!(sim.app.page_indicator(), Some((2, 3)), "J pages the preview");
+    sim.key('K');
+    sim.drain_media();
+    assert_eq!(sim.app.page_indicator(), Some((1, 3)), "K returns to the start page");
+
+    sim.key('p');
+    drain(&mut sim);
+    assert!(sim.app.project_active());
+    let next_on = crate::ops::action_enabled(&sim.app, Context::Canvas, crate::keymap::Action::PageNext);
+    let prev_on = crate::ops::action_enabled(&sim.app, Context::Canvas, crate::keymap::Action::PagePrev);
+    assert_eq!(next_on, prev_on, "J and K are gated alike");
+    let (in_footer, in_help) = listed(&sim);
+    assert_eq!(in_footer, next_on, "the footer lists the page keys iff they act");
+    assert_eq!(in_help, next_on, "the help lists the page keys iff they act");
+    let page_after = |sim: &mut Sim, key: char| {
+        sim.key(key);
+        drain(sim);
+        // A key that acts starts a page load whose answer the production loop applies; one the
+        // gate refuses starts none, so there is nothing to wait for.
+        if sim.app.is_media_loading() {
+            sim.await_media("J/K over a project screen");
+        }
+        sim.app.page_indicator()
+    };
+    let after_j = page_after(&mut sim, 'J');
+    assert_eq!(after_j, Some(if next_on { (2, 3) } else { (1, 3) }), "J over the project screen");
+    let after_k = page_after(&mut sim, 'K');
+    assert_eq!(after_k, Some((1, 3)), "K leaves the start page");
+    assert_project_screen_in_front(&sim, "after J and K", &[]);
+}
