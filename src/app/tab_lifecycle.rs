@@ -429,6 +429,10 @@ impl App {
                 projects, project_navigation, project_return, project_enter_pending,
                 project_enter_op, project_effects, project_pending_acts, vcs_watch,
                 show_hidden, tree_viewport, filter_pool,
+                // What arrived while covered and is owed to the screen under it: set on the
+                // working tab by the watch events and the status results of the cover, settled
+                // after the return (`settle_covered_reload`).
+                covered_reload, covered_changed_filter,
             ],
             // Derived, set by the restore itself from the current files before this runs: the
             // reader's stamp, the generated output and the page count of what was read now.
