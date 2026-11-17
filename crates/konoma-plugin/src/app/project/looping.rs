@@ -719,6 +719,11 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     redraw = true;
                 }
             }
+            if state.preview_project {
+                if let Some(diff) = state.diff.as_mut().filter(|d| !d.closed) {
+                    diff.drain_media_covered();
+                }
+            }
             let retained: Vec<_> = state.runtimes.keys().cloned().collect();
             let update = state.with_host(&info, |host, context| {
                 host.poll(

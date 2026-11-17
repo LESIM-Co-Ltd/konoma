@@ -258,6 +258,14 @@ fn covering_the_diff_screen_drops_its_media_diff_and_the_return_asks_it_again() 
         !held(&prepared).0,
         "a result published behind the project screen is not applied there"
     );
+    // The host takes the answer in while covered (it is refused by generation) and its worker
+    // is free again; the covered diff screen does the same, so nothing stays pending (and wakes
+    // the loop) behind the project screen.
+    assert_eq!(
+        held(&prepared),
+        (false, false, None),
+        "the answer of the ask made before the cover left the worker pending behind the project screen"
+    );
     assert_eq!(worker.calls.load(Ordering::SeqCst), 2);
 
     // 4. `q` returns: the answer of the ask made before the cover is refused (another

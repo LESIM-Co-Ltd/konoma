@@ -246,6 +246,15 @@ impl DiffScreenState {
             })
     }
 
+    /// Reads the media worker's answers while a project screen covers this screen: nothing is
+    /// drawn and no ask is dispatched. Covering invalidated the generation, so every answer is
+    /// refused here, which frees the worker (it stays busy until its answer is applied).
+    pub fn drain_media_covered(&mut self) {
+        while let Ok(result) = self.media.rx.try_recv() {
+            self.adopt_media(result, &mut None);
+        }
+    }
+
     pub(super) fn poll_media(&mut self, mut pics: Option<&mut DocPics>) -> bool {
         let mut changed = false;
         while let Ok(result) = self.media.rx.try_recv() {
