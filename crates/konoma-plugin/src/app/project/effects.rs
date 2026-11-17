@@ -143,7 +143,6 @@ impl ProjectLoopState {
                     self.preview_project = false;
                     self.screen = None;
                     if let Some(preview) = self.file_preview.as_mut() {
-                        preview.runner.resume_project_preview();
                         preview.gutter.retain_position();
                         // The Preview reads its file again, as a konoma tab that comes back does:
                         // the held read of the diff screen opens it again (one road with the

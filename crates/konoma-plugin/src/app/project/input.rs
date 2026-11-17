@@ -229,7 +229,7 @@ impl ProjectLoopState {
                     );
                     self.launch.copy(prepared, text);
                 }
-                Ok((DiffScreenAction::Project, _)) => self.cover_diff_screen(info),
+                Ok((DiffScreenAction::Project, _)) => self.cover_diff_screen(info, None),
                 Err(error) => prepared.notice = Some(error.message.get(prepared.lang).into()),
             }
             return false;

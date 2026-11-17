@@ -82,9 +82,20 @@ impl PreviewReturnHint {
 
 pub(super) struct FilePreviewState {
     pub(super) opened: Opened,
-    pub(super) runner: FileLoopState,
+    /// The live view: the file loop with the session it converted to. `None` once the Preview is
+    /// left (a project screen covers it): then only `left` is kept, and nothing of it runs until
+    /// the return's open lands.
+    pub(super) runner: Option<FileLoopState>,
+    /// What a left Preview keeps for its return: the user's view position, as plain data.
+    pub(super) left: Option<LeftView>,
     pub(super) source: DiffScreenReturn,
     pub(super) gutter: PreviewGutter,
+}
+
+/// The user's view of a left Preview: where the file loop stood and the pose of its picture.
+pub(super) struct LeftView {
+    position: crate::app::looping::ViewPosition,
+    pose: Option<konoma_widgets::image_view::ImageViewState>,
 }
 
 /// One Preview owns its replies, deadline, layout input and path-scoped reservation.
@@ -472,7 +483,8 @@ impl PendingPreview {
         gutter.raw = raw;
         gutter.lines = lines.map(|lines| line_gutter_marks(&lines));
         FilePreviewState {
-            runner: FileLoopState::new(&context, &prepared.keys),
+            runner: Some(FileLoopState::new(&context, &prepared.keys)),
+            left: None,
             opened,
             source: self.source,
             gutter,
@@ -483,18 +495,41 @@ impl PendingPreview {
 impl FilePreviewState {
     /// The Preview is left (a project screen covers it); see `ProjectLoopState::leave_diff_view`.
     /// Every field is named, so a new one is decided here.
-    pub(super) fn leave(&mut self) {
+    /// `pose` is the pose of the picture the Preview shows, taken before the pictures are left.
+    pub(super) fn leave(&mut self, pose: Option<konoma_widgets::image_view::ImageViewState>) {
         let Self {
             // The file opened and the diff to go back to: the return opens the file again from
             // them (`PendingPreview::start`) and the new session replaces this one.
             opened: _,
             source: _,
-            // The caret, the scroll and the search: kept for the return
-            // (`resume_project_preview`). It is not run while covered, so it asks nothing.
-            runner: _,
+            // The live view goes (the session it converted to with it); only the user's view
+            // position is kept, as plain data, and the return puts the new loop there.
+            runner,
+            left,
             gutter,
         } = self;
+        if let Some(runner) = runner.take() {
+            *left = Some(LeftView {
+                position: runner.position(),
+                pose,
+            });
+        }
         gutter.leave();
+    }
+
+    /// What the Preview opened again is put back to: the live loop's position (a Refresh, a
+    /// tool's return), or what the left one kept (the return from a cover).
+    pub(super) fn into_position(
+        self,
+    ) -> Option<(
+        crate::app::looping::ViewPosition,
+        Option<konoma_widgets::image_view::ImageViewState>,
+    )> {
+        match (self.runner, self.left) {
+            (Some(runner), _) => Some((runner.position(), None)),
+            (None, Some(left)) => Some((left.position, left.pose)),
+            (None, None) => None,
+        }
     }
 
     pub(super) fn context(&self, prepared: &PreparedProjects, cx: &ProjectLoopCx) -> AppCx {

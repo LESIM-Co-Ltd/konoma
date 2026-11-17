@@ -1230,20 +1230,22 @@ impl Plugin for PictureFiles {
 struct PreviewFile(PathBuf, String);
 impl Session for PreviewFile {
     fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
-        Ok(if self.0.extension().is_some_and(|e| e == "gif") {
-            View::Image(crate::view::ImageView::new(crate::view::ImageData::File(
-                self.0.clone(),
-            )))
-        } else {
-            View::Document(crate::view::DocumentView {
-                markdown: self.1.clone(),
-                origin: crate::input::Origin::File(self.0.clone()),
-                resources: Default::default(),
-                options: Default::default(),
-                title: None,
-                truncated: false,
-            })
-        })
+        Ok(
+            if self.0.extension().is_some_and(|e| e == "gif" || e == "png") {
+                View::Image(crate::view::ImageView::new(crate::view::ImageData::File(
+                    self.0.clone(),
+                )))
+            } else {
+                View::Document(crate::view::DocumentView {
+                    markdown: self.1.clone(),
+                    origin: crate::input::Origin::File(self.0.clone()),
+                    resources: Default::default(),
+                    options: Default::default(),
+                    title: None,
+                    truncated: false,
+                })
+            },
+        )
     }
 }
 
@@ -1313,6 +1315,22 @@ fn preview_fixture(
     PreparedProjects,
     Terminal<TestBackend>,
 ) {
+    preview_fixture_with(name, file, body, services, Vec::new())
+}
+
+/// [`preview_fixture`] with `more` file plugins beside the two it always has.
+fn preview_fixture_with(
+    name: &str,
+    file: &str,
+    body: &[u8],
+    services: Arc<dyn crate::app::project::ProjectServices>,
+    more: Vec<Arc<dyn Plugin>>,
+) -> (
+    konoma_test_support::TmpDir,
+    PathBuf,
+    PreparedProjects,
+    Terminal<TestBackend>,
+) {
     let dir = konoma_test_support::unique_tmp(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("project.marker"), "").unwrap();
@@ -1320,7 +1338,14 @@ fn preview_fixture(
     std::fs::write(&path, body).unwrap();
     let mut prepared = crate::app::project::prepare::prepare_projects_with_previews(
         vec![Arc::new(Project)],
-        vec![Arc::new(PreviewFiles), Arc::new(PictureFiles)],
+        [
+            vec![
+                Arc::new(PreviewFiles) as Arc<dyn Plugin>,
+                Arc::new(PictureFiles),
+            ],
+            more,
+        ]
+        .concat(),
         &dir,
         TermCaps::new(),
         (
@@ -1547,4 +1572,520 @@ fn the_return_to_a_covered_preview_shows_the_file_as_it_is_then() {
     )
     .unwrap();
     assert!(!prepared.preview_project, "the Preview is in front again");
+}
+
+/// A file plugin for `*.png` whose open waits while its gate is held: the test decides when an
+/// open of the Preview lands.
+struct GatedPictures(Arc<OpenGate>);
+#[derive(Default)]
+struct OpenGate {
+    held: Mutex<bool>,
+    let_go: std::sync::Condvar,
+    /// The open fails (the file can no longer be shown).
+    fails: std::sync::atomic::AtomicBool,
+}
+impl OpenGate {
+    fn hold(&self, held: bool) {
+        *self.held.lock().unwrap() = held;
+        self.let_go.notify_all();
+    }
+}
+impl Plugin for GatedPictures {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("cover-gated-pictures", "0")
+            .bind(Bind::files(["*.png"]))
+            .shows(ViewKind::Image)
+    }
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::File { path, .. } = input else {
+            unreachable!()
+        };
+        let held = self.0.held.lock().unwrap();
+        let (held, _) = self
+            .0
+            .let_go
+            .wait_timeout_while(held, DEADLINE, |held| *held)
+            .unwrap();
+        assert!(!*held, "the test lets the held open go");
+        if self.0.fails.load(Ordering::SeqCst) {
+            return Err(Failure::unsupported(
+                crate::t!(en: "the open fails", ja: "開けません"),
+            ));
+        }
+        Ok(Box::new(PreviewFile(path, String::new())))
+    }
+}
+
+/// A file plugin for `*.conv` that converts the file to Markdown (`View::Reopen`, as the Word
+/// plugin does), read at each open; [`MarkdownContent`] shows the Markdown.
+struct Converts;
+impl Plugin for Converts {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("cover-converts", "0")
+            .bind(Bind::files(["*.conv"]))
+            .shows(ViewKind::Document)
+    }
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::File { path, .. } = input else {
+            unreachable!()
+        };
+        let text = std::fs::read_to_string(&path)?;
+        Ok(Box::new(Converted(path, text)))
+    }
+}
+struct Converted(PathBuf, String);
+impl Session for Converted {
+    fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        Ok(View::Reopen(crate::view::Reopen {
+            content_type: "markdown".into(),
+            text: self.1.clone(),
+            resources: Default::default(),
+            origin: crate::input::Origin::Converted {
+                from: self.0.clone(),
+            },
+            truncated: false,
+        }))
+    }
+}
+struct MarkdownContent;
+impl Plugin for MarkdownContent {
+    fn manifest(&self) -> Manifest {
+        Manifest::new("cover-markdown-content", "0")
+            .bind(Bind::content("markdown"))
+            .shows(ViewKind::Document)
+    }
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::Content { text, origin, .. } = input else {
+            unreachable!()
+        };
+        Ok(Box::new(ContentDocument(text, origin)))
+    }
+}
+struct ContentDocument(String, crate::input::Origin);
+impl Session for ContentDocument {
+    fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        Ok(View::Document(crate::view::DocumentView {
+            markdown: self.0.clone(),
+            origin: self.1.clone(),
+            resources: Default::default(),
+            options: Default::default(),
+            title: None,
+            truncated: false,
+        }))
+    }
+}
+
+/// A PNG of `w`×`h` whose pixel at (x, y) is `rgb(x, y)`.
+fn png(w: u32, h: u32, rgb: impl Fn(u32, u32) -> [u8; 3]) -> Vec<u8> {
+    let image = image::RgbImage::from_fn(w, h, |x, y| image::Rgb(rgb(x, y)));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// A converted file (Word to Markdown) is opened again by the return too: the session the left
+/// Preview had converted to goes with it, and the file is shown as it is then.
+#[test]
+fn the_return_to_a_covered_converted_preview_shows_the_file_as_it_is_then() {
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture_with(
+        "project_preview_cover_converted",
+        "notes.conv",
+        b"# Notes\n\nThe old body.\n",
+        Arc::new(ChromeServices),
+        vec![Arc::new(Converts), Arc::new(MarkdownContent)],
+    );
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(vec![
+            Turn::Until(
+                "the Preview shows the converted file",
+                Box::new(|| frame_text().contains("The old body.")),
+            ),
+            Turn::Key('p'),
+            Turn::Settle,
+            Turn::Do(Box::new(move || {
+                std::fs::write(&path, "# Notes\n\nThe new body.\n").unwrap()
+            })),
+            Turn::Key('q'),
+            Turn::Until(
+                "the return shows the converted file as it is now",
+                Box::new(|| frame_text().contains("The new body.")),
+            ),
+        ]),
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!prepared.preview_project, "the Preview is in front again");
+}
+
+/// The user's view of a picture is kept over a cover, as a konoma tab keeps its `image_view`:
+/// the return draws the picture zoomed and panned as it was left.
+#[test]
+fn the_return_to_a_covered_image_preview_keeps_its_zoom_and_pan() {
+    const QUARTERS: [[u8; 3]; 4] = [[220, 20, 20], [20, 220, 20], [20, 20, 220], [220, 220, 20]];
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture_with(
+        "project_preview_cover_pose",
+        "picture.png",
+        &png(32, 32, |x, y| {
+            QUARTERS[usize::from(x >= 16) + 2 * usize::from(y >= 16)]
+        }),
+        Arc::new(ChromeServices),
+        vec![Arc::new(GatedPictures(Arc::default()))],
+    );
+    let pictures = crate::app::Pictures::new(
+        ratatui_image::picker::Picker::halfblocks(),
+        "cover-gated-pictures",
+        &path,
+        128,
+    )
+    .with_out(Box::new(Vec::<u8>::new()));
+    let counts = || QUARTERS.map(cells_in);
+    let fit = std::rc::Rc::new(std::cell::Cell::new([0; 4]));
+    let posed = std::rc::Rc::new(std::cell::Cell::new([0; 4]));
+    let (fit_set, fit_seen) = (fit.clone(), fit.clone());
+    let (posed_set, posed_seen) = (posed.clone(), posed.clone());
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(vec![
+            Turn::Until(
+                "the picture is drawn at fit",
+                Box::new(move || counts().iter().all(|&c| c > 0)),
+            ),
+            Turn::Settle,
+            Turn::Do(Box::new(move || fit_set.set(counts()))),
+            Turn::Key('+'),
+            Turn::Key('+'),
+            Turn::Key('l'),
+            Turn::Key('l'),
+            Turn::Settle,
+            Turn::Until(
+                "the zoomed and panned picture is drawn",
+                Box::new(move || counts() != fit_seen.get() && counts().iter().any(|&c| c > 0)),
+            ),
+            Turn::Settle,
+            Turn::Do(Box::new(move || posed_set.set(counts()))),
+            Turn::Key('p'),
+            Turn::Settle,
+            Turn::Key('q'),
+            Turn::Until(
+                "the return draws the picture zoomed and panned as it was left",
+                Box::new(move || counts() == posed_seen.get()),
+            ),
+            Turn::Settle,
+        ]),
+        &ProjectLoopCx::default(),
+        Some(pictures),
+    )
+    .unwrap();
+    assert!(!prepared.preview_project, "the Preview is in front again");
+    assert_eq!(counts(), posed.get(), "the pose is the one left");
+    assert_ne!(posed.get(), fit.get(), "the left pose is not the fit");
+}
+
+/// A picture inside the covered Markdown is the left view's too: the return decodes what it
+/// draws, so a picture changed behind the cover (the same path, the same size) is drawn as it is
+/// then, as a konoma tab drops its changed pictures (`drop_changed_md_images`).
+#[test]
+fn the_return_to_a_covered_markdown_preview_draws_its_picture_as_it_is_then() {
+    const OLD: [u8; 3] = [200, 30, 30];
+    const NEW: [u8; 3] = [30, 30, 200];
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture(
+        "project_preview_cover_md_picture",
+        "notes.md",
+        b"# Notes\n\n![picture](picture.png)\n",
+        Arc::new(ChromeServices),
+    );
+    let picture = path.with_file_name("picture.png");
+    std::fs::write(&picture, png(16, 16, |_, _| OLD)).unwrap();
+    let pictures = crate::app::Pictures::new(
+        ratatui_image::picker::Picker::halfblocks(),
+        "cover-preview-files",
+        &path,
+        128,
+    )
+    .with_out(Box::new(Vec::<u8>::new()));
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(vec![
+            Turn::Until(
+                "the picture in the Markdown is drawn",
+                Box::new(|| cells_in(OLD) > 0),
+            ),
+            Turn::Key('p'),
+            Turn::Settle,
+            Turn::Do(Box::new(move || {
+                std::fs::write(&picture, png(16, 16, |_, _| NEW)).unwrap()
+            })),
+            Turn::Key('q'),
+            Turn::Until(
+                "the return draws the picture as it is now",
+                Box::new(|| cells_in(NEW) > 0),
+            ),
+            Turn::Settle,
+        ]),
+        &ProjectLoopCx::default(),
+        Some(pictures),
+    )
+    .unwrap();
+    assert!(!prepared.preview_project, "the Preview is in front again");
+    assert_eq!(cells_in(OLD), 0, "nothing of the old picture is drawn");
+}
+
+/// The return reads the file once, after it is fresh: while that open is out, the left Preview
+/// does not run, so its session starts no decode the open would throw away. One decode per
+/// return.
+#[test]
+fn the_return_to_a_covered_image_preview_decodes_once_after_its_open() {
+    const RGB: [u8; 3] = [210, 40, 40];
+    let gate = Arc::new(OpenGate::default());
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture_with(
+        "project_preview_cover_decode_once",
+        "picture.png",
+        &png(16, 16, |_, _| RGB),
+        Arc::new(ChromeServices),
+        vec![Arc::new(GatedPictures(gate.clone()))],
+    );
+    let pictures = crate::app::Pictures::new(
+        ratatui_image::picker::Picker::halfblocks(),
+        "cover-gated-pictures",
+        &path,
+        128,
+    )
+    .with_out(Box::new(Vec::<u8>::new()));
+    let decodes = crate::app::still::decodes_for_test;
+    let covered_at = std::rc::Rc::new(std::cell::Cell::new(0));
+    let (mark, held, landed) = (covered_at.clone(), covered_at.clone(), covered_at.clone());
+    let (hold, let_go) = (gate.clone(), gate.clone());
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(vec![
+            Turn::Until("the picture is drawn", Box::new(|| cells_in(RGB) > 0)),
+            Turn::Key('p'),
+            Turn::Settle,
+            Turn::Do(Box::new(move || {
+                hold.hold(true);
+                mark.set(decodes());
+            })),
+            Turn::Key('q'),
+            Turn::Hold(
+                Duration::from_millis(300),
+                "the left Preview started a decode while the return's open was out",
+                Box::new(move |_| decodes() == held.get()),
+            ),
+            Turn::Do(Box::new(move || let_go.hold(false))),
+            Turn::Until(
+                "the return draws the picture from the new open",
+                Box::new(move || cells_in(RGB) > 0 && decodes() > landed.get()),
+            ),
+            Turn::Settle,
+        ]),
+        &ProjectLoopCx::default(),
+        Some(pictures),
+    )
+    .unwrap();
+    gate.hold(false);
+    assert!(!prepared.preview_project, "the Preview is in front again");
+    assert_eq!(
+        decodes(),
+        covered_at.get() + 1,
+        "the return decodes the picture once"
+    );
+}
+
+/// The return's open of a left Preview is the only thing it waits on: when that open goes (a key
+/// on the diff screen in front meanwhile drops it, or it fails), the left Preview goes too, as
+/// `ReturnToSource` leaves it, and nothing is left waiting for an open that will not come.
+fn left_preview_whose_open_goes(name: &str, gone: Vec<Turn>, fails: bool) -> PreparedProjects {
+    const RGB: [u8; 3] = [40, 160, 40];
+    let gate = Arc::new(OpenGate::default());
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture_with(
+        name,
+        "picture.png",
+        &png(16, 16, |_, _| RGB),
+        Arc::new(ChromeServices),
+        vec![Arc::new(GatedPictures(gate.clone()))],
+    );
+    let pictures = crate::app::Pictures::new(
+        ratatui_image::picker::Picker::halfblocks(),
+        "cover-gated-pictures",
+        &path,
+        128,
+    )
+    .with_out(Box::new(Vec::<u8>::new()));
+    let (hold, let_go) = (gate.clone(), gate.clone());
+    let mut turns = vec![
+        Turn::Until("the picture is drawn", Box::new(|| cells_in(RGB) > 0)),
+        Turn::Key('p'),
+        Turn::Settle,
+        Turn::Do(Box::new(move || {
+            hold.fails.store(fails, Ordering::SeqCst);
+            hold.hold(true);
+        })),
+        Turn::Key('q'),
+    ];
+    turns.extend(gone);
+    turns.push(Turn::Do(Box::new(move || let_go.hold(false))));
+    turns.push(Turn::Settle);
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(turns),
+        &ProjectLoopCx::default(),
+        Some(pictures),
+    )
+    .unwrap();
+    gate.hold(false);
+    prepared
+}
+
+#[test]
+fn a_key_that_drops_the_return_open_leaves_the_left_preview_too() {
+    let prepared = left_preview_whose_open_goes(
+        "project_preview_cover_open_dropped",
+        vec![Turn::Key('q'), Turn::Settle],
+        false,
+    );
+    assert!(prepared.preview_open.is_none(), "the key dropped the open");
+    assert!(
+        prepared.file_preview.is_none(),
+        "a left Preview whose open was dropped is left too"
+    );
+}
+
+#[test]
+fn a_failed_return_open_leaves_the_left_preview_for_its_source() {
+    let prepared =
+        left_preview_whose_open_goes("project_preview_cover_open_fails", Vec::new(), true);
+    assert!(prepared.preview_open.is_none(), "the open was answered");
+    assert!(
+        prepared.file_preview.is_none(),
+        "a left Preview whose open failed is left for its source"
+    );
+    assert!(!prepared.preview_project, "the diff screen is in front");
+}
+
+/// A Markdown file of `n` numbered rows, the last one written as `last`.
+fn rows(n: usize, last: &str) -> String {
+    let mut body: String = (1..n).map(|i| format!("row {i:02}\n\n")).collect();
+    body.push_str(last);
+    body.push('\n');
+    body
+}
+
+/// Runs the Preview of a 60-row file put at its end (`G`), then `between` (what opens it again,
+/// given the file's path), and checks the view the open landed on.
+fn view_after_open_again_with(
+    name: &str,
+    between: impl FnOnce(PathBuf) -> Vec<Turn>,
+    landed: &'static str,
+) {
+    let (_dir, path, mut prepared, mut terminal) = preview_fixture(
+        name,
+        "rows.md",
+        rows(60, "row 60").as_bytes(),
+        Arc::new(ChromeServices),
+    );
+    let mut turns = vec![
+        Turn::Until(
+            "the Preview shows the file",
+            Box::new(|| frame_text().contains("row 01")),
+        ),
+        Turn::Key('G'),
+        Turn::Until(
+            "the view is at the end",
+            Box::new(|| frame_text().contains("row 60") && !frame_text().contains("row 01")),
+        ),
+    ];
+    turns.extend(between(path.clone()));
+    turns.push(Turn::Until(
+        "the file opened again is shown where the view was",
+        Box::new(move || frame_text().contains(landed)),
+    ));
+    turns.push(Turn::Settle);
+    turns.push(Turn::Do(Box::new(move || {
+        let text = frame_text();
+        assert!(text.contains(landed), "the view stays where it was: {text}");
+        assert!(
+            !text.contains("row 01"),
+            "the view is not at the top: {text}"
+        );
+    })));
+    run_project_with(
+        &mut terminal,
+        &mut prepared,
+        &mut Turns::new(turns),
+        &ProjectLoopCx::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!prepared.preview_project, "the Preview is in front");
+    assert!(
+        prepared
+            .file_preview
+            .as_ref()
+            .is_some_and(|p| p.runner.is_some()),
+        "the Preview runs"
+    );
+}
+
+/// The return to a covered Preview puts the new view where the user left it (the scroll and the
+/// caret), once, when its open lands.
+#[test]
+fn the_return_to_a_covered_preview_puts_the_view_where_it_was() {
+    view_after_open_again_with(
+        "project_preview_cover_position",
+        |path| {
+            vec![
+                Turn::Key('p'),
+                Turn::Settle,
+                Turn::Do(Box::new(move || {
+                    std::fs::write(&path, rows(60, "ROW 60")).unwrap()
+                })),
+                Turn::Key('q'),
+            ]
+        },
+        "ROW 60",
+    );
+}
+
+/// A Refresh opens the file again and puts the new view where it was.
+#[test]
+fn a_refresh_of_the_preview_puts_the_view_where_it_was() {
+    view_after_open_again_with(
+        "project_preview_refresh_position",
+        |path| {
+            vec![
+                Turn::Do(Box::new(move || {
+                    std::fs::write(&path, rows(60, "ROW 60")).unwrap()
+                })),
+                Turn::Key('r'),
+            ]
+        },
+        "ROW 60",
+    );
+}
+
+/// The file shrank behind the cover: the position kept is past its end, and the return shows
+/// the end of the file as it is now (the view keeps to the text), without failing.
+#[test]
+fn the_return_to_a_covered_preview_of_a_file_that_shrank_shows_its_end() {
+    view_after_open_again_with(
+        "project_preview_cover_shrank",
+        |path| {
+            vec![
+                Turn::Key('p'),
+                Turn::Settle,
+                Turn::Do(Box::new(move || {
+                    std::fs::write(&path, rows(20, "END 20")).unwrap()
+                })),
+                Turn::Key('q'),
+            ]
+        },
+        "END 20",
+    );
 }

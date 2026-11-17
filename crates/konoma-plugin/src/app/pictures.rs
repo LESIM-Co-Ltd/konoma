@@ -411,6 +411,22 @@ impl Pictures {
         }
     }
 
+    /// The pose of the still picture held, if one is: the user's view a left Preview keeps for
+    /// its return (a konoma tab keeps its `image_view`).
+    pub(in crate::app) fn still_pose(&self) -> Option<konoma_widgets::image_view::ImageViewState> {
+        self.still.as_ref().and_then(Still::pose_held)
+    }
+
+    /// The still picture the session shows next is put in `pose` (a left Preview opened again).
+    pub(in crate::app) fn restore_still_pose(
+        &mut self,
+        pose: konoma_widgets::image_view::ImageViewState,
+    ) {
+        if let Some(s) = self.still.as_mut() {
+            s.pose_back(pose);
+        }
+    }
+
     /// The session's view is not a picture (any more): drop the still and cancel its decode.
     pub fn forget_still(&mut self) {
         if let Some(s) = self.still.as_mut() {

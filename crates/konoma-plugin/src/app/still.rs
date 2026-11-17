@@ -137,6 +137,9 @@ pub struct Still {
     spinner: usize,
     /// A resize came back as a failure: the protocol is gone for good, so none is waited for.
     resize_failed: bool,
+    /// The pose a view opened again is put back to: taken by the next new picture, in place of
+    /// the fit (`Pictures::restore_still_pose`).
+    pose_back: Option<ImageViewState>,
 }
 
 #[cfg(test)]
@@ -144,6 +147,14 @@ thread_local! {
     /// How many times an animation of a still picture stepped to its next frame on this thread
     /// (the project loop's thread in a test).
     static GIF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many decodes of a still picture were started on this thread.
+    static DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The decodes of still pictures started on this thread so far.
+#[cfg(test)]
+pub(in crate::app) fn decodes_for_test() -> usize {
+    DECODES.with(std::cell::Cell::get)
 }
 
 /// The frame steps of still-picture animations made on this thread so far.
@@ -194,6 +205,7 @@ impl Still {
             gif: GifPlayer::new(),
             spinner: 0,
             resize_failed: false,
+            pose_back: None,
         }
     }
 
@@ -213,7 +225,10 @@ impl Still {
             // to fit, [`Still::turn_page`], and the keys move it from there as on the host).
             self.held = true;
         } else {
-            self.pose.reset();
+            match self.pose_back.take() {
+                Some(pose) => self.pose = pose,
+                None => self.pose.reset(),
+            }
             self.held = false;
             self.state = State::Loading;
             self.gif.clear();
@@ -229,6 +244,8 @@ impl Still {
         let (iv, path, raster_px) = (iv.clone(), self.path.clone(), self.raster_px);
         let svg = Arc::clone(&self.svg);
         let tx = self.done_tx.clone();
+        #[cfg(test)]
+        DECODES.with(|decodes| decodes.set(decodes.get() + 1));
         std::thread::spawn(move || {
             let cancelled = || cancel.load(Ordering::Relaxed);
             let view = konoma_base::panic::catch_silent(move || {
@@ -249,8 +266,19 @@ impl Still {
         self.state = State::Loading;
         self.gif.clear();
         self.pose.reset();
+        self.pose_back = None;
         self.viewer.clear();
         self.resize_failed = false;
+    }
+
+    /// The pose of the picture held, if one is: what a left view keeps for its return.
+    pub(super) fn pose_held(&self) -> Option<ImageViewState> {
+        self.key.as_ref().map(|_| self.pose)
+    }
+
+    /// The next new picture is shown in `pose` (a left view opened again), not at fit.
+    pub(super) fn pose_back(&mut self, pose: ImageViewState) {
+        self.pose_back = Some(pose);
     }
 
     /// The view that shows the picture is left (a project screen covers it): the picture, its
@@ -291,6 +319,7 @@ impl Still {
             viewer: _,
             gif: _,
             resize_failed: _,
+            pose_back: _,
         } = self;
         self.forget();
     }

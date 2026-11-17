@@ -267,7 +267,11 @@ impl ProjectLoopState {
     /// (`DiffScreenState::leave`), nothing asks it again while covered (a refresh is held,
     /// `DiffScreenState::hold_refresh`), and the return (`ProjectDispatch::LeaveProject`) asks it
     /// once. Its pictures are left by the run loop, which owns them (`diff_view_in_front`).
-    fn cover_diff_screen(&mut self, info: &ProjectContextInfo<StandaloneSurface>) {
+    fn cover_diff_screen(
+        &mut self,
+        info: &ProjectContextInfo<StandaloneSurface>,
+        pictures: Option<&mut Pictures>,
+    ) {
         let project = self.diff_return.as_ref().unwrap().project.clone();
         let Some(first) = self.with_host(info, |host, _| host.first_screen(&project, info.id))
         else {
@@ -275,7 +279,7 @@ impl ProjectLoopState {
         };
         self.screen = Some(ProjectHost::start_screen(project, first));
         self.preview_project = true;
-        self.leave_diff_view(None);
+        self.leave_diff_view(pictures);
         self.ensure(info);
     }
 
@@ -319,7 +323,8 @@ impl ProjectLoopState {
             diff.leave();
         }
         if let Some(preview) = file_preview {
-            preview.leave();
+            // The pose is the user's view: taken before the pictures are left.
+            preview.leave(pictures.as_deref().and_then(Pictures::still_pose));
         }
         if let Some(pictures) = pictures {
             pictures.leave_view();
@@ -632,14 +637,54 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                         }
                         let mut refreshed =
                             pending.finish(opened, prepared, cx, state.diff.as_mut().unwrap());
+                        // The file opened again (a Refresh, a tool's return, the return to a
+                        // covered Preview): the new loop is put where the user was, once, and
+                        // the pictures of the old document go, so the new one decodes what it
+                        // draws (a konoma tab drops its changed pictures). Nothing of the old
+                        // loop (the session it converted to) is kept.
                         if let Some(old) = state.file_preview.take() {
-                            refreshed.runner = old.runner;
-                            refreshed.runner.invalidate();
+                            let back = old.into_position();
+                            if let Some(p) = pictures.as_mut() {
+                                p.reset_document();
+                            }
+                            if let Some((position, pose)) = back {
+                                if let Some(runner) = refreshed.runner.as_mut() {
+                                    runner.restore(position);
+                                }
+                                if let (Some(p), Some(pose)) = (pictures.as_mut(), pose) {
+                                    p.restore_still_pose(pose);
+                                }
+                            }
                             refreshed.gutter.retain_position();
                         }
                         state.file_preview = Some(refreshed);
                     }
                     Err(error) => prepared.notice = Some(error.to_string()),
+                }
+                redraw = true;
+            }
+            // A left Preview runs only once its open lands. When that open is gone (it failed, a
+            // key on the diff screen dropped it, or none could start) the Preview is left for its
+            // source, as `ReturnToSource` leaves it, so nothing waits on an open that will not come.
+            if !state.preview_project
+                && state.preview_open.is_none()
+                && state
+                    .file_preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.runner.is_none())
+            {
+                state.file_preview = None;
+                if let Some(p) = pictures.as_mut() {
+                    p.forget();
+                    p.forget_still();
+                }
+                if let Some(diff) = state.diff.as_mut().filter(|diff| {
+                    !diff.closed
+                        && diff.return_info().choice == konoma_host_core::project::DiffView::Preview
+                }) {
+                    if let Err(error) = diff.return_from_preview() {
+                        prepared.notice = Some(error.message.get(prepared.lang).into());
+                    }
                 }
                 redraw = true;
             }
@@ -652,10 +697,12 @@ pub fn run_project_with<B: Backend, E: EventSource>(
             {
                 state.publish_state_for_test(prepared, &info, pictures.as_ref());
             }
+            // The Preview in front runs; a left one (`runner` is `None`) waits for its open, and the
+            // diff screen is in front meanwhile, as before the first open lands.
             if let Some(preview) = state
                 .file_preview
                 .as_mut()
-                .filter(|_| !state.preview_project)
+                .filter(|preview| !state.preview_project && preview.runner.is_some())
             {
                 #[cfg(any(test, feature = "test-hooks"))]
                 if events.project_fenced() || prepared.test_probe.is_some() {
@@ -671,12 +718,13 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                     || prepared.detection.pending())
                 .then_some(Duration::from_millis(16));
                 let context = preview.context(prepared, cx);
+                let runner = preview.runner.as_mut().expect("a live Preview");
                 let exit = crate::app::looping::run_file_with_preview(
                     terminal,
                     &mut *preview.opened.session,
                     events,
                     &context,
-                    &mut preview.runner,
+                    runner,
                     pictures.as_mut(),
                     Some(&mut preview.gutter),
                 )?;
@@ -686,14 +734,16 @@ pub fn run_project_with<B: Backend, E: EventSource>(
                 }
                 if preview.gutter.project_owned && exit != crate::app::looping::FileLoopExit::Yield
                 {
-                    let display = preview.runner.display().clone();
+                    let display = runner.display().clone();
                     prepared.adopt_display(display.clone());
                     if let Some(diff) = state.diff.as_mut() {
                         diff.adopt_display(display);
                     }
                 }
                 match exit {
-                    crate::app::looping::FileLoopExit::Project => state.cover_diff_screen(&info),
+                    crate::app::looping::FileLoopExit::Project => {
+                        state.cover_diff_screen(&info, pictures.as_mut())
+                    }
                     crate::app::looping::FileLoopExit::Tool => {
                         let service = state.diff.as_ref().unwrap().request.info.clone();
                         state.launch.tool(prepared, &service);
