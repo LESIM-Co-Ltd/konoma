@@ -1809,63 +1809,197 @@ fn the_return_to_a_covered_image_preview_keeps_its_zoom_and_pan() {
     assert_ne!(posed.get(), fit.get(), "the left pose is not the fit");
 }
 
-/// The pose a reopen of an image Preview keeps: the picture is zoomed and panned, `between`
-/// opens the file again (a Refresh, a tool's return) with the Preview in front, and the new open
-/// draws the picture in that pose, not at fit, as a konoma tab keeps its `image_view` over a
-/// reload.
-fn image_pose_kept_over(
-    name: &str,
-    project: Arc<dyn Plugin>,
-    config: &str,
-    cx: &ProjectLoopCx,
-    between: Vec<Turn>,
-) {
-    image_pose_kept_over_with(
-        name,
-        project,
-        config,
-        cx,
-        Arc::new(GatedPictures(Arc::default())),
-        between,
-    );
+/// A picture format whose pose the reopen tests hold, served as the standard picture plugins
+/// serve it: a PNG file read by the host, an SVG handed over as untrusted bytes with sharp zoom
+/// (as the `svg` plugin does), a PDF page drawn to raw pixels by `hayro` with no external program
+/// (as the `pdf` plugin does). Each is drawn in four quarters of four colours.
+#[derive(Clone, Copy, Debug)]
+enum Posed {
+    Png,
+    Svg,
+    Pdf,
 }
 
-/// [`image_pose_kept_over`] with the picture shown by `pictures` (a plugin named
-/// `cover-gated-pictures` for `*.png`).
-fn image_pose_kept_over_with(
+/// Colours that are exact both as 8-bit values and as PDF and SVG fractions (0.8 and 0.2).
+const EXACT_QUARTERS: [[u8; 3]; 4] = [[204, 51, 51], [51, 204, 51], [51, 51, 204], [204, 204, 51]];
+
+impl Posed {
+    fn file(self) -> &'static str {
+        match self {
+            Posed::Png => "picture.png",
+            Posed::Svg => "picture.svg",
+            Posed::Pdf => "picture.pdf",
+        }
+    }
+
+    /// The colours of the top-left, top-right, bottom-left and bottom-right quarters.
+    fn quarters(self) -> [[u8; 3]; 4] {
+        match self {
+            Posed::Png => [[220, 20, 20], [20, 220, 20], [20, 20, 220], [220, 220, 20]],
+            Posed::Svg | Posed::Pdf => EXACT_QUARTERS,
+        }
+    }
+
+    fn body(self) -> Vec<u8> {
+        let q = self.quarters();
+        match self {
+            Posed::Png => png(32, 32, |x, y| {
+                q[usize::from(x >= 16) + 2 * usize::from(y >= 16)]
+            }),
+            Posed::Svg => {
+                let rect = |x: u32, y: u32, [r, g, b]: [u8; 3]| {
+                    format!(
+                        "<rect x='{x}' y='{y}' width='16' height='16' fill='rgb({r},{g},{b})'/>"
+                    )
+                };
+                format!(
+                    "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' \
+                     viewBox='0 0 32 32' shape-rendering='crispEdges'>{}{}{}{}</svg>",
+                    rect(0, 0, q[0]),
+                    rect(16, 0, q[1]),
+                    rect(0, 16, q[2]),
+                    rect(16, 16, q[3]),
+                )
+                .into_bytes()
+            }
+            Posed::Pdf => {
+                // PDF space starts at the bottom left: the top quarters are at y = 16.
+                let fill = |x: u32, y: u32, rgb: [u8; 3]| {
+                    let [r, g, b] = rgb.map(|c| if c == 204 { "0.8" } else { "0.2" });
+                    format!("{r} {g} {b} rg {x} {y} 16 16 re f\n")
+                };
+                let content = [
+                    fill(0, 16, q[0]),
+                    fill(16, 16, q[1]),
+                    fill(0, 0, q[2]),
+                    fill(16, 0, q[3]),
+                ]
+                .concat();
+                konoma_test_support::build_minimal_one_page_pdf(32, 32, content.as_bytes())
+            }
+        }
+    }
+
+    /// The plugin that shows the file (its id is [`Posed::plugin_id`]).
+    fn plugin(self) -> Arc<dyn Plugin> {
+        match self {
+            Posed::Png => Arc::new(GatedPictures(Arc::default())),
+            Posed::Svg | Posed::Pdf => Arc::new(PosedPictures(self)),
+        }
+    }
+
+    fn plugin_id(self) -> &'static str {
+        match self {
+            Posed::Png => "cover-gated-pictures",
+            Posed::Svg => "cover-posed-svg",
+            Posed::Pdf => "cover-posed-pdf",
+        }
+    }
+}
+
+/// The file plugin of an SVG or a PDF [`Posed`]: it reads the file at each view, as the standard
+/// `svg` and `pdf` plugins do.
+struct PosedPictures(Posed);
+impl Plugin for PosedPictures {
+    fn manifest(&self) -> Manifest {
+        let glob = match self.0 {
+            Posed::Svg => "*.svg",
+            Posed::Pdf => "*.pdf",
+            Posed::Png => unreachable!("a PNG is shown by GatedPictures"),
+        };
+        Manifest::new(self.0.plugin_id(), "0")
+            .bind(Bind::files([glob]))
+            .shows(ViewKind::Image)
+    }
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let Input::File { path, .. } = input else {
+            unreachable!()
+        };
+        Ok(Box::new(PosedPicture(self.0, path)))
+    }
+}
+struct PosedPicture(Posed, PathBuf);
+impl Session for PosedPicture {
+    fn layout(&self) -> crate::view::Layout {
+        match self.0 {
+            // One page, as the `pdf` plugin lays a one-page PDF out.
+            Posed::Pdf => crate::view::Layout {
+                pages: Some(crate::view::PageLayout::Separate {
+                    count: Some(1),
+                    titles: Vec::new(),
+                }),
+                ..crate::view::Layout::single()
+            },
+            _ => crate::view::Layout::single(),
+        }
+    }
+    fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        let iv = match self.0 {
+            Posed::Svg => crate::view::ImageView {
+                data: crate::view::ImageData::Svg {
+                    data: Arc::from(std::fs::read(&self.1)?),
+                    base_dir: self.1.parent().map(Path::to_path_buf),
+                    trusted: false,
+                },
+                sharp_zoom: true,
+                raster_max_px: None,
+            },
+            Posed::Pdf => {
+                let img = konoma_media_core::pdf::render_page(&self.1, 1, false)
+                    .expect("hayro draws the fixture's page")
+                    .into_rgba8();
+                let (width, height) = img.dimensions();
+                crate::view::ImageView::new(crate::view::ImageData::Rgba {
+                    width,
+                    height,
+                    pixels: Arc::new(img.into_raw()),
+                })
+            }
+            Posed::Png => unreachable!("a PNG is shown by GatedPictures"),
+        };
+        Ok(View::Image(iv))
+    }
+}
+
+/// The pose a reopen of an image Preview keeps: the picture is zoomed and panned, `between`
+/// opens the file again (the return to a covered Preview, a Refresh, a tool's return) and the
+/// new open draws the picture in that pose, not at fit, as a konoma tab keeps its `image_view`
+/// over a reload. The picture is the `posed` file, shown by `plugin` (one with the id
+/// [`Posed::plugin_id`]).
+#[allow(clippy::too_many_arguments)]
+fn pose_kept_over(
+    posed: Posed,
     name: &str,
     project: Arc<dyn Plugin>,
     config: &str,
     cx: &ProjectLoopCx,
-    pictures: Arc<dyn Plugin>,
+    plugin: Arc<dyn Plugin>,
     between: Vec<Turn>,
 ) {
-    const QUARTERS: [[u8; 3]; 4] = [[220, 20, 20], [20, 220, 20], [20, 20, 220], [220, 220, 20]];
+    let quarters = posed.quarters();
     let (_dir, path, mut prepared, mut terminal) = preview_fixture_in(
         name,
-        "picture.png",
-        &png(32, 32, |x, y| {
-            QUARTERS[usize::from(x >= 16) + 2 * usize::from(y >= 16)]
-        }),
+        posed.file(),
+        &posed.body(),
         Arc::new(ChromeServices),
-        vec![pictures],
+        vec![plugin],
         project,
         config,
     );
     let pictures = crate::app::Pictures::new(
         ratatui_image::picker::Picker::halfblocks(),
-        "cover-gated-pictures",
+        posed.plugin_id(),
         &path,
         128,
     )
     .with_out(Box::new(Vec::<u8>::new()));
-    let counts = || QUARTERS.map(cells_in);
+    let counts = move || quarters.map(cells_in);
     let decodes = crate::app::still::decodes_for_test;
     let fit = std::rc::Rc::new(std::cell::Cell::new([0; 4]));
-    let posed = std::rc::Rc::new(std::cell::Cell::new([0; 4]));
+    let posed_counts = std::rc::Rc::new(std::cell::Cell::new([0; 4]));
     let posed_at = std::rc::Rc::new(std::cell::Cell::new(0));
     let (fit_set, fit_seen) = (fit.clone(), fit.clone());
-    let (posed_set, posed_seen) = (posed.clone(), posed.clone());
+    let (posed_set, posed_seen) = (posed_counts.clone(), posed_counts.clone());
     let (mark, reopened) = (posed_at.clone(), posed_at.clone());
     let mut turns = vec![
         Turn::Until(
@@ -1910,60 +2044,109 @@ fn image_pose_kept_over_with(
         decodes() > posed_at.get(),
         "the picture was decoded again from the new open"
     );
-    assert_eq!(counts(), posed.get(), "the pose is the one the user had");
-    assert_ne!(posed.get(), fit.get(), "the pose is not the fit");
+    assert_eq!(
+        counts(),
+        posed_counts.get(),
+        "the pose is the one the user had"
+    );
+    assert_ne!(posed_counts.get(), fit.get(), "the pose is not the fit");
 }
 
-/// A Refresh (`r`) of an image Preview keeps its zoom and pan (the host keeps them over a reload).
-#[test]
-fn a_refresh_of_an_image_preview_keeps_its_zoom_and_pan() {
-    image_pose_kept_over(
-        "project_preview_refresh_pose",
+/// The configuration of the pose tests that hand nothing to a tool.
+const POSE_CONFIG: &str = "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n";
+
+/// `p` covers the Preview and `q` returns to it: the return keeps its zoom and pan.
+fn cover_pose_kept(posed: Posed, name: &str) {
+    pose_kept_over(
+        posed,
+        name,
         Arc::new(Project),
-        "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n",
+        POSE_CONFIG,
         &ProjectLoopCx::default(),
+        posed.plugin(),
+        vec![Turn::Key('p'), Turn::Settle, Turn::Key('q')],
+    );
+}
+
+/// A Refresh (`r`) keeps the zoom and pan (the host keeps them over a reload).
+fn refresh_pose_kept(posed: Posed, name: &str) {
+    pose_kept_over(
+        posed,
+        name,
+        Arc::new(Project),
+        POSE_CONFIG,
+        &ProjectLoopCx::default(),
+        posed.plugin(),
         vec![Turn::Key('r')],
     );
 }
 
-/// The return from a tool handed over from an image Preview (`!`) keeps its zoom and pan.
-#[test]
-fn the_tool_return_to_an_image_preview_keeps_its_zoom_and_pan() {
-    let launches = Arc::new(AtomicUsize::new(0));
-    let counted = launches.clone();
+/// The return from a tool handed over from the Preview (`!`) keeps its zoom and pan.
+fn tool_pose_kept(posed: Posed, name: &str) {
     let config =
         "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n[git]\ntool='fixture-git-tool'\n";
-    let editor = SharedConfig::parse(config).unwrap();
-    let cx = ProjectLoopCx {
-        home: None,
-        launch: Some(
-            crate::app::LaunchCx::new(editor.editor.clone(), &editor.external, vec![])
-                .with_hand_off(Arc::new(move |_, _, redraw| {
-                    counted.fetch_add(1, Ordering::SeqCst);
-                    redraw()?;
-                    Ok(Some(0))
-                })),
-        ),
-    };
-    let handed = launches.clone();
-    image_pose_kept_over(
-        "project_preview_tool_pose",
+    let launches = Arc::new(AtomicUsize::new(0));
+    pose_kept_over(
+        posed,
+        name,
         Arc::new(VcsProject),
         config,
-        &cx,
-        vec![
-            Turn::Key('!'),
-            Turn::Until(
-                "the tool was handed over",
-                Box::new(move || handed.load(Ordering::SeqCst) == 1),
-            ),
-        ],
+        &counted_hand_off(config, launches.clone(), true),
+        posed.plugin(),
+        hand_over_with('!', &launches),
     );
     assert_eq!(
         launches.load(Ordering::SeqCst),
         1,
         "one tool was handed over"
     );
+}
+
+/// The editor started from the Preview (`e`) had the terminal: its return (`starts`, with the
+/// reload that follows) or its failure to start (no reload) keeps the zoom and pan.
+fn editor_pose_kept(posed: Posed, name: &str, starts: bool) {
+    let launches = Arc::new(AtomicUsize::new(0));
+    pose_kept_over(
+        posed,
+        name,
+        Arc::new(Project),
+        POSE_CONFIG,
+        &counted_hand_off(POSE_CONFIG, launches.clone(), starts),
+        posed.plugin(),
+        hand_over_with('e', &launches),
+    );
+    assert_eq!(
+        launches.load(Ordering::SeqCst),
+        1,
+        "one editor was started or tried"
+    );
+}
+
+/// The return from a terminal viewer opened from the Preview (`o`) keeps its zoom and pan.
+fn terminal_viewer_pose_kept(posed: Posed, name: &str) {
+    let launches = Arc::new(AtomicUsize::new(0));
+    pose_kept_over(
+        posed,
+        name,
+        Arc::new(Project),
+        POSE_CONFIG,
+        &counted_hand_off(POSE_CONFIG, launches.clone(), true),
+        Arc::new(TerminalOpenPictures(posed.plugin())),
+        hand_over_with('o', &launches),
+    );
+    assert_eq!(launches.load(Ordering::SeqCst), 1, "one viewer was started");
+}
+
+/// A Refresh (`r`) of an image Preview keeps its zoom and pan (the host keeps them over a reload).
+#[test]
+fn a_refresh_of_an_image_preview_keeps_its_zoom_and_pan() {
+    refresh_pose_kept(Posed::Png, "project_preview_refresh_pose");
+}
+
+/// The return from a tool handed over from an image Preview (`!`) keeps its zoom and pan.
+#[test]
+fn the_tool_return_to_an_image_preview_keeps_its_zoom_and_pan() {
+    tool_pose_kept(Posed::Png, "project_preview_tool_pose");
 }
 
 /// A launch context for the configuration `config` whose terminal hand-off counts itself in
@@ -2002,36 +2185,18 @@ fn hand_over_with(key: char, launches: &Arc<AtomicUsize>) -> Vec<Turn> {
 /// the reload that follows, as a konoma tab keeps its `image_view`.
 #[test]
 fn the_editor_return_to_an_image_preview_keeps_its_zoom_and_pan() {
-    let config = "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n";
-    let launches = Arc::new(AtomicUsize::new(0));
-    image_pose_kept_over(
-        "project_preview_edit_pose",
-        Arc::new(Project),
-        config,
-        &counted_hand_off(config, launches.clone(), true),
-        hand_over_with('e', &launches),
-    );
-    assert_eq!(launches.load(Ordering::SeqCst), 1, "one editor was started");
+    editor_pose_kept(Posed::Png, "project_preview_edit_pose", true);
 }
 
 /// An editor that does not start from an image Preview (`e`) had the terminal all the same: the
 /// picture is drawn again (no reload follows) in the zoom and pan it had.
 #[test]
 fn an_editor_that_does_not_start_from_an_image_preview_keeps_its_zoom_and_pan() {
-    let config = "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n";
-    let launches = Arc::new(AtomicUsize::new(0));
-    image_pose_kept_over(
-        "project_preview_edit_fails_pose",
-        Arc::new(Project),
-        config,
-        &counted_hand_off(config, launches.clone(), false),
-        hand_over_with('e', &launches),
-    );
-    assert_eq!(launches.load(Ordering::SeqCst), 1, "one editor was tried");
+    editor_pose_kept(Posed::Png, "project_preview_edit_fails_pose", false);
 }
 
-/// [`GatedPictures`] whose `o` hands the terminal to a viewer (a chain in terminal mode).
-struct TerminalOpenPictures(GatedPictures);
+/// A picture plugin whose `o` hands the terminal to a viewer (a chain in terminal mode).
+struct TerminalOpenPictures(Arc<dyn Plugin>);
 impl Plugin for TerminalOpenPictures {
     fn manifest(&self) -> Manifest {
         self.0.manifest().verb(
@@ -2050,17 +2215,62 @@ impl Plugin for TerminalOpenPictures {
 /// The return from a terminal viewer opened from an image Preview (`o`) keeps its zoom and pan.
 #[test]
 fn the_terminal_viewer_return_to_an_image_preview_keeps_its_zoom_and_pan() {
-    let config = "[ui]\nlang='en'\ndiff_view='preview'\nwrap=false\n";
-    let launches = Arc::new(AtomicUsize::new(0));
-    image_pose_kept_over_with(
-        "project_preview_terminal_open_pose",
-        Arc::new(Project),
-        config,
-        &counted_hand_off(config, launches.clone(), true),
-        Arc::new(TerminalOpenPictures(GatedPictures(Arc::default()))),
-        hand_over_with('o', &launches),
-    );
-    assert_eq!(launches.load(Ordering::SeqCst), 1, "one viewer was started");
+    terminal_viewer_pose_kept(Posed::Png, "project_preview_terminal_open_pose");
+}
+
+/// SVG and PDF pictures go the PNG's way through the still picture (`Still::submit`): each keeps
+/// its zoom and pan over every reopen a PNG keeps it over.
+mod svg_and_pdf_pose {
+    use super::*;
+
+    #[test]
+    fn the_return_to_a_covered_svg_preview_keeps_its_zoom_and_pan() {
+        cover_pose_kept(Posed::Svg, "project_preview_cover_pose_svg");
+    }
+    #[test]
+    fn the_return_to_a_covered_pdf_preview_keeps_its_zoom_and_pan() {
+        cover_pose_kept(Posed::Pdf, "project_preview_cover_pose_pdf");
+    }
+    #[test]
+    fn a_refresh_of_an_svg_preview_keeps_its_zoom_and_pan() {
+        refresh_pose_kept(Posed::Svg, "project_preview_refresh_pose_svg");
+    }
+    #[test]
+    fn a_refresh_of_a_pdf_preview_keeps_its_zoom_and_pan() {
+        refresh_pose_kept(Posed::Pdf, "project_preview_refresh_pose_pdf");
+    }
+    #[test]
+    fn the_tool_return_to_an_svg_preview_keeps_its_zoom_and_pan() {
+        tool_pose_kept(Posed::Svg, "project_preview_tool_pose_svg");
+    }
+    #[test]
+    fn the_tool_return_to_a_pdf_preview_keeps_its_zoom_and_pan() {
+        tool_pose_kept(Posed::Pdf, "project_preview_tool_pose_pdf");
+    }
+    #[test]
+    fn the_editor_return_to_an_svg_preview_keeps_its_zoom_and_pan() {
+        editor_pose_kept(Posed::Svg, "project_preview_edit_pose_svg", true);
+    }
+    #[test]
+    fn the_editor_return_to_a_pdf_preview_keeps_its_zoom_and_pan() {
+        editor_pose_kept(Posed::Pdf, "project_preview_edit_pose_pdf", true);
+    }
+    #[test]
+    fn an_editor_that_does_not_start_from_an_svg_preview_keeps_its_zoom_and_pan() {
+        editor_pose_kept(Posed::Svg, "project_preview_edit_fails_pose_svg", false);
+    }
+    #[test]
+    fn an_editor_that_does_not_start_from_a_pdf_preview_keeps_its_zoom_and_pan() {
+        editor_pose_kept(Posed::Pdf, "project_preview_edit_fails_pose_pdf", false);
+    }
+    #[test]
+    fn the_terminal_viewer_return_to_an_svg_preview_keeps_its_zoom_and_pan() {
+        terminal_viewer_pose_kept(Posed::Svg, "project_preview_terminal_open_pose_svg");
+    }
+    #[test]
+    fn the_terminal_viewer_return_to_a_pdf_preview_keeps_its_zoom_and_pan() {
+        terminal_viewer_pose_kept(Posed::Pdf, "project_preview_terminal_open_pose_pdf");
+    }
 }
 
 /// A picture inside the covered Markdown is the left view's too: the return decodes what it
