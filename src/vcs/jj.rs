@@ -122,8 +122,8 @@ pub struct Meta {
     pub change: String,
     /// First line of the description, empty when none was written yet (the common state in jj).
     pub summary: String,
-    /// When the working copy was last snapshotted, in epoch seconds. Files newer than this are the
-    /// ones jj has not seen yet.
+    /// When the working copy was last snapshotted, in epoch seconds. Files whose inode changed
+    /// (ctime or mtime) at or after this are the ones jj has not seen yet.
     pub snapshot_epoch: i64,
     /// The working copy's **first** parent, as a full commit id.
     ///
@@ -419,13 +419,14 @@ fn known_changes(ws: &Path) -> HashMap<String, FileStatus> {
 /// root commit has no parent) means there is nothing to compare against, so nothing counts as
 /// already tracked: every file on disk correctly reads as a fresh addition, the same as a
 /// repository's very first commit.
-fn tracked(ws: &Path, parent: Option<&str>) -> HashSet<String> {
+///
+/// `None` means jj could not answer (the listing failed): that is not the same as an empty tree,
+/// and the caller must not treat it as one. `Some(empty)` is a real answer only for no parent.
+fn tracked(ws: &Path, parent: Option<&str>) -> Option<HashSet<String>> {
     let Some(parent) = parent else {
-        return HashSet::new();
+        return Some(HashSet::new());
     };
-    run(ws, &["file", "list", "-r", parent])
-        .map(|o| parse_file_list(&o))
-        .unwrap_or_default()
+    run(ws, &["file", "list", "-r", parent]).map(|o| parse_file_list(&o))
 }
 
 /// Parses `jj file list`'s output: one repo-relative path per line, symlinks included — jj tracks
@@ -452,16 +453,32 @@ fn differs_from_parent(ws: &Path, rel: &str, disk: &Path, parent: Option<&str>) 
 /// list are derived from it, so they cannot drift apart.
 ///
 /// Freshness comes from the walk, not from jj: `jj diff` answers from the last snapshot, so a file
-/// written since then would be invisible to it. Every file newer than that snapshot is therefore a
-/// candidate and gets checked against the parent's content — normally a handful, since any jj
-/// command the user runs refreshes the snapshot.
+/// written since then would be invisible to it. Every file whose inode changed since that snapshot
+/// (see [`newer_than`]: ctime as well as mtime, so a file moved in with an old mtime counts) is
+/// therefore a candidate and gets checked against the parent's content — normally a handful, since
+/// any jj command the user runs refreshes the snapshot.
+///
+/// Known limits of that check (see [`newer_than`]): replacing a whole directory so that tracked
+/// paths hold files with old ctime and mtime goes unnoticed until jj snapshots again, and a
+/// metadata-only change (`chmod -R`, xattr, chown) makes tracked files candidates — past
+/// `CONFIRM_CAP` they read as Modified until the next jj command.
 fn scan(ws: &Path) -> Vec<(PathBuf, FileStatus)> {
-    let mut out = Vec::new();
     let Some(m) = meta(ws) else {
-        return out; // jj could not answer: stay quiet rather than guess
+        return Vec::new(); // jj could not answer: stay quiet rather than guess
     };
+    scan_from(ws, &m)
+}
+
+/// [`scan`] with the working-copy metadata already read (the seam the tests use to hand it a
+/// parent id jj cannot resolve).
+fn scan_from(ws: &Path, m: &Meta) -> Vec<(PathBuf, FileStatus)> {
+    let mut out = Vec::new();
     let known = known_changes(ws);
-    let tracked = tracked(ws, m.parent.as_deref());
+    let Some(tracked) = tracked(ws, m.parent.as_deref()) else {
+        // jj could not list the parent's files. An empty set would read every file on disk as
+        // "not in the parent's tree" and so Added, so stay quiet rather than guess.
+        return out;
+    };
     let mut seen: HashSet<String> = HashSet::new();
     let mut confirmed = 0usize;
 
@@ -480,15 +497,28 @@ fn scan(ws: &Path) -> Vec<(PathBuf, FileStatus)> {
         seen.insert(rel.clone());
         let st = if let Some(&st) = known.get(&rel) {
             st
-        } else if !newer_than(entry.path(), m.snapshot_epoch) {
-            continue; // jj has seen this file and reported nothing about it
         } else if !tracked.contains(&rel) {
-            // Untracked as of the parent commit, and jj has not reported anything about it yet
-            // either (it is not in `known`) — this must be a fresh addition, symlink or not. This
-            // check has to come before the `is_symlink` branch below: that branch's fallback
-            // reasoning only holds for a symlink jj already tracks, so checking it first would
-            // read every never-tracked symlink as Modified instead of Added.
+            // On disk, absent from the parent's tree and absent from `known`. Normally jj cannot
+            // have snapshotted it (a snapshot adds every new, non-ignored file, and that would
+            // have put it in `known`), so it arrived after the snapshot — a fresh addition,
+            // symlink or not, whatever its times say. Two cases reach here without that story, and
+            // Added is still right for both: in a merge working copy `tracked` is the first parent
+            // only while `known` is the diff against the merged parents' tree, so a file present
+            // only in a later parent, untouched on disk, lands here — `scan`'s contract is
+            // "differs from the working copy's first parent". And files jj refuses to track
+            // (`snapshot.auto-track`, `snapshot.max-new-file-size`) are never snapshotted, so they
+            // read Added whatever their times. This must not wait for the time check below: a directory
+            // moved with `mv dirA dirB` changes only the directory's own inode, so every file
+            // inside keeps its old mtime *and* ctime and would otherwise read as "already seen".
+            // It also has to come before the `is_symlink` branch: that branch's reasoning only
+            // holds for a symlink jj already tracks, so checking it first would read every
+            // never-tracked symlink as Modified instead of Added.
             FileStatus::Added
+        } else if !newer_than(entry.path(), m.snapshot_epoch) {
+            // A tracked path jj has not reported anything about and whose inode has not changed
+            // since the snapshot: unchanged. This is the cheap skip that keeps the content
+            // comparison below to a handful of files.
+            continue;
         } else if is_symlink {
             // A tracked symlink that changed since the last snapshot, but jj has not reported
             // anything about it yet (it is not in `known`). It cannot be confirmed the way a
@@ -707,8 +737,35 @@ fn walk(ws: &Path) -> impl Iterator<Item = ignore::DirEntry> {
         .filter_map(Result::ok)
 }
 
-/// Whether the file was written after the given snapshot.
+/// Whether the path's inode was touched at or after the given snapshot. Only meaningful for a path
+/// the parent already tracks (`scan` decides every other path by `tracked`, not by time).
+///
+/// For such a path the question is "did it change since jj last looked", and the inode change time
+/// (`ctime`) answers it: the kernel sets it on a write, a rename (`mv`), a chmod and a link or
+/// unlink, and no system call can set it to an earlier value (`utimes`, `utimensat` and
+/// `File::set_modified` set only atime and mtime; only changing the system clock could move ctime
+/// back). The modification time (`mtime`) alone cannot answer it, because the writer controls it:
+/// `cp -p`, `tar x`, `rsync -t` and `mv other-file tracked` put content in place with the old
+/// mtime it had elsewhere. The later of the two is used, so a clock-skewed or future-dated mtime
+/// still counts as a change as before.
+///
+/// POSIX leaves the rename case to the implementation (it only says the moved file's ctime is
+/// "marked for update"); macOS (APFS) and Linux (checked on ext4 and tmpfs; btrfs and xfs were not
+/// checked) do update it, and the tests in this module pin it on the running machine. A file
+/// system that did not would only fall back to the old mtime-based behaviour for a moved file.
+/// On network file systems (e.g. NFS) ctime comes from the server's clock, so a skew against the
+/// local snapshot epoch can hide an overwrite of a tracked path until the next snapshot.
+///
+/// Known limits:
+/// - Swapping a whole directory (`mv dirA tmp; mv dirB dirA`) so that tracked paths are replaced by
+///   files whose ctime and mtime are both old is not detected until jj snapshots again: renaming a
+///   directory changes only the directory's own inode, not the ctime of the files inside it.
+/// - ctime also moves on a metadata-only change (`chmod -R`, xattr, chown), which makes every
+///   affected tracked file a candidate. Up to `CONFIRM_CAP` of them are compared with the parent
+///   and dropped when equal; beyond that cap they read as Modified until the next jj command
+///   refreshes the snapshot.
 fn newer_than(path: &Path, epoch: i64) -> bool {
+    use std::os::unix::fs::MetadataExt;
     // `symlink_metadata`, not `metadata`: for a symlink the thing that can have changed is the
     // link itself, and following it would read the target's timestamp instead — so retargeting a
     // link would go unnoticed while an untouched link pointing at a busy file would keep looking
@@ -716,13 +773,7 @@ fn newer_than(path: &Path, epoch: i64) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return true;
     };
-    let Ok(mtime) = meta.modified() else {
-        return true;
-    };
-    match mtime.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs() as i64 >= epoch,
-        Err(_) => true,
-    }
+    meta.ctime().max(meta.mtime()) >= epoch
 }
 
 // --- The hub: history, bookmarks and commit detail -----------------------------------------------
@@ -1510,8 +1561,8 @@ mod tests {
     /// content-compare fallback a regular file gets (see that branch's comment for why) — so for
     /// a symlink, unlike a regular file, whether it lands on the "already confirmed unchanged"
     /// path or the "assume changed" path is not merely an optimization, it decides the marker
-    /// outright. The pause pushes every pre-seed fixture's mtime at least one full second behind
-    /// the seed commit's own timestamp, so `newer_than` reads deterministically false for all of
+    /// outright. The pause pushes every pre-seed fixture's mtime and ctime at least one full second
+    /// behind the seed commit's own timestamp, so `newer_than` reads deterministically false for all of
     /// them regardless of how fast the surrounding test machinery happens to run — otherwise
     /// `symlink_that_is_only_in_the_snapshot_reports_no_marker` below would be flaky.
     fn scratch_repo(name: &str) -> Option<PathBuf> {
@@ -1987,6 +2038,307 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An mtime far before any snapshot the fixtures take (2001-09-09), the way `mv`, `cp -p`,
+    /// `tar x` and `rsync -t` leave a file that arrives after the snapshot.
+    fn long_ago() -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000)
+    }
+
+    fn set_mtime(path: &Path, t: std::time::SystemTime) {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_modified(t))
+            .expect("set the file's mtime back");
+    }
+
+    fn assert_status(dir: &Path, rel: &str, want: Option<FileStatus>) {
+        let abs = dir.join(rel);
+        let st = statuses(dir);
+        assert_eq!(st.get(&abs).copied(), want, "statuses for {rel}: {st:?}");
+        let files = changed_files(dir);
+        assert_eq!(
+            files.iter().find(|f| f.path == abs).map(|f| f.status),
+            want,
+            "changed_files for {rel}: {files:?}"
+        );
+    }
+
+    /// `mv a b` keeps `a`'s mtime. The fixture's tracked files were all written more than a second
+    /// before the snapshot, so the moved file's mtime is older than the snapshot — yet it arrived
+    /// after it. Both sides of the move must show: the new path Added, the old one Deleted.
+    #[test]
+    fn renamed_tracked_file_with_an_old_mtime_is_added_and_the_old_path_deleted() {
+        let Some(dir) = scratch_repo("moved_rename") else {
+            return;
+        };
+        std::fs::rename(dir.join("-dash-kept.txt"), dir.join("moved.txt")).expect("rename");
+        set_mtime(&dir.join("moved.txt"), long_ago());
+
+        assert_status(&dir, "moved.txt", Some(FileStatus::Added));
+        assert_status(&dir, "-dash-kept.txt", Some(FileStatus::Deleted));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same move without touching the mtime at all (a plain `mv`): the file keeps the mtime it
+    /// was written with, before the snapshot.
+    #[test]
+    fn plain_rename_keeps_its_pre_snapshot_mtime_and_still_shows() {
+        let Some(dir) = scratch_repo("moved_plain") else {
+            return;
+        };
+        std::fs::rename(dir.join("kept.txt"), dir.join("moved-plain.txt")).expect("rename");
+
+        assert_status(&dir, "moved-plain.txt", Some(FileStatus::Added));
+        assert_status(&dir, "kept.txt", Some(FileStatus::Deleted));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A new file copied in with its old mtime preserved (`cp -p`, `tar x`, `rsync -t`).
+    #[test]
+    fn untracked_file_arriving_with_an_old_mtime_is_added() {
+        let Some(dir) = scratch_repo("moved_new") else {
+            return;
+        };
+        let f = dir.join("restored.txt");
+        std::fs::write(&f, b"from a backup\n").expect("write");
+        set_mtime(&f, long_ago());
+
+        assert_status(&dir, "restored.txt", Some(FileStatus::Added));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tracked file replaced by another file with different content and an old mtime, by
+    /// rewriting it in place and by renaming a file over it.
+    #[test]
+    fn tracked_file_overwritten_with_an_old_mtime_is_modified() {
+        let Some(dir) = scratch_repo("moved_over") else {
+            return;
+        };
+        let in_place = dir.join("kept.txt");
+        std::fs::write(&in_place, b"different content\n").expect("write");
+        set_mtime(&in_place, long_ago());
+
+        let staged = dir.join("staged.tmp");
+        std::fs::write(&staged, b"another content\n").expect("write");
+        set_mtime(&staged, long_ago());
+        std::fs::rename(&staged, dir.join("-dash-kept.txt")).expect("rename over");
+
+        assert_status(&dir, "kept.txt", Some(FileStatus::Modified));
+        assert_status(&dir, "-dash-kept.txt", Some(FileStatus::Modified));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shortcut must keep working: a file jj has already seen and nobody touched is not
+    /// reported, and neither is one whose mtime was only set back with the same content (its
+    /// ctime is new, so it is checked against the parent, and found equal).
+    #[test]
+    fn untouched_old_file_stays_unreported() {
+        let Some(dir) = scratch_repo("moved_untouched") else {
+            return;
+        };
+        assert_status(&dir, "kept.txt", None);
+        assert_status(&dir, "-dash-kept.txt", None);
+        assert_status(&dir, "link.txt", None);
+
+        set_mtime(&dir.join("kept.txt"), long_ago());
+        assert_status(&dir, "kept.txt", None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Adds tracked files under directories to a `scratch_repo` and commits them, a full second
+    /// before the commit so their mtime and ctime are strictly older than the new snapshot. The
+    /// working copy is clean afterwards as far as these paths go. Returns false when jj fails.
+    fn commit_tree(dir: &Path) -> bool {
+        let w = |rel: &str, body: &[u8]| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).expect("mkdir");
+            std::fs::write(p, body).expect("write");
+        };
+        w("dirA/x.txt", b"x\n");
+        w("dirA/y.txt", b"y\n");
+        w("deep/one/two/z.txt", b"z\n");
+        w("deep/one/w.txt", b"w\n");
+        w("lnk/target.txt", b"t\n");
+        std::os::unix::fs::symlink("target.txt", dir.join("lnk/inner-link")).expect("symlink");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::process::Command::new("jj")
+            .current_dir(dir)
+            .env("HOME", dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(["commit", "-m", "dirs"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// `mv dirA dirB`: only the directory's own inode changes, so every file inside keeps its old
+    /// mtime and ctime. Each must still show under the new path (Added) and the old (Deleted).
+    #[test]
+    fn renamed_directory_shows_its_files_added_and_the_old_ones_deleted() {
+        let Some(dir) = scratch_repo("moved_dir") else {
+            return;
+        };
+        assert!(commit_tree(&dir), "jj commit");
+        assert_status(&dir, "dirA/x.txt", None);
+        std::fs::rename(dir.join("dirA"), dir.join("dirB")).expect("rename dir");
+
+        for f in ["x.txt", "y.txt"] {
+            assert_status(&dir, &format!("dirB/{f}"), Some(FileStatus::Added));
+            assert_status(&dir, &format!("dirA/{f}"), Some(FileStatus::Deleted));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory two levels down moved: the files at several depths below it all keep old times.
+    #[test]
+    fn renamed_nested_directory_shows_every_file_below_it() {
+        let Some(dir) = scratch_repo("moved_nested") else {
+            return;
+        };
+        assert!(commit_tree(&dir), "jj commit");
+        std::fs::create_dir_all(dir.join("elsewhere")).expect("mkdir");
+        std::fs::rename(dir.join("deep/one"), dir.join("elsewhere/moved")).expect("rename dir");
+
+        assert_status(&dir, "elsewhere/moved/two/z.txt", Some(FileStatus::Added));
+        assert_status(&dir, "elsewhere/moved/w.txt", Some(FileStatus::Added));
+        assert_status(&dir, "deep/one/two/z.txt", Some(FileStatus::Deleted));
+        assert_status(&dir, "deep/one/w.txt", Some(FileStatus::Deleted));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A moved directory that holds a symlink: the link is Added at its new path, not Modified and
+    /// not skipped.
+    #[test]
+    fn renamed_directory_with_a_symlink_shows_the_link_added() {
+        let Some(dir) = scratch_repo("moved_dir_link") else {
+            return;
+        };
+        assert!(commit_tree(&dir), "jj commit");
+        assert_status(&dir, "lnk/inner-link", None);
+        std::fs::rename(dir.join("lnk"), dir.join("lnk2")).expect("rename dir");
+
+        assert_status(&dir, "lnk2/inner-link", Some(FileStatus::Added));
+        assert_status(&dir, "lnk2/target.txt", Some(FileStatus::Added));
+        assert_status(&dir, "lnk/inner-link", Some(FileStatus::Deleted));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A symlink moved with `mv` keeps the link's own (old) mtime: the symlink variant of the
+    /// rename case. The new path is not in the parent's tree, so `scan`'s "untracked -> Added"
+    /// branch decides it by its absence from the parent, whatever the link's times say (`newer_than`
+    /// is not reached); the old path is Deleted because the walk no longer sees it. The
+    /// ctime-through-`symlink_metadata` path is pinned by
+    /// `tracked_symlink_replaced_by_mv_with_old_times_is_modified`.
+    #[test]
+    fn renamed_symlink_with_an_old_mtime_is_added_and_the_old_path_deleted() {
+        let Some(dir) = scratch_repo("moved_symlink") else {
+            return;
+        };
+        std::fs::rename(dir.join("link.txt"), dir.join("moved-link.txt")).expect("rename");
+
+        assert_status(&dir, "moved-link.txt", Some(FileStatus::Added));
+        assert_status(&dir, "link.txt", Some(FileStatus::Deleted));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sets a symlink's own atime and mtime (not its target's) to `t`.
+    fn set_link_mtime(link: &Path, t: std::time::SystemTime) {
+        use std::os::unix::ffi::OsStrExt;
+        let d = t.duration_since(std::time::UNIX_EPOCH).expect("after 1970");
+        let ts = libc::timespec {
+            tv_sec: d.as_secs() as libc::time_t,
+            tv_nsec: 0,
+        };
+        let c = std::ffi::CString::new(link.as_os_str().as_bytes()).expect("no NUL");
+        // SAFETY: `c` is a valid NUL-terminated path and `times` points at two timespecs.
+        let rc = unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                c.as_ptr(),
+                [ts, ts].as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        assert_eq!(rc, 0, "set the link's own times");
+    }
+
+    /// A *tracked* symlink replaced with `mv` by another symlink (different target) whose own times
+    /// are old. The path is in the parent's tree, so `scan` reaches `newer_than`, which must read
+    /// the link's own ctime (`symlink_metadata`): the rename gave it a fresh ctime while its mtime
+    /// is from long ago. The link's target (`kept.txt`) is untouched and the new target
+    /// (`-dash-kept.txt`) was written before the snapshot too, so following the link would read an
+    /// old timestamp and skip it.
+    #[test]
+    fn tracked_symlink_replaced_by_mv_with_old_times_is_modified() {
+        let Some(dir) = scratch_repo("moved_symlink_over") else {
+            return;
+        };
+        assert_status(&dir, "link.txt", None);
+        let staged = dir.join("staged-link.tmp");
+        std::os::unix::fs::symlink("-dash-kept.txt", &staged).expect("symlink");
+        set_link_mtime(&staged, long_ago());
+        std::fs::rename(&staged, dir.join("link.txt")).expect("rename over the tracked link");
+
+        assert_status(&dir, "link.txt", Some(FileStatus::Modified));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// If jj cannot list the parent's files the scan must report nothing. An unresolvable parent id
+    /// makes `jj file list -r <id>` fail while `meta` succeeds; the failed listing used to fold into
+    /// an empty tracked set, which reads every file on disk as absent from the parent: all Added.
+    #[test]
+    fn a_failed_parent_listing_reports_nothing_instead_of_everything_added() {
+        let Some(dir) = scratch_repo("tracked_fails") else {
+            return;
+        };
+        let mut m = meta(&dir).expect("meta");
+        assert!(
+            !scan_from(&dir, &m).is_empty(),
+            "sanity: the fixture has edits"
+        );
+        // Not all zeros: that is jj's root commit and resolves fine.
+        m.parent = Some("d".repeat(40));
+        assert!(
+            tracked(&dir, m.parent.as_deref()).is_none(),
+            "the failed listing must be distinguishable from an empty tree"
+        );
+        let out = scan_from(&dir, &m);
+        assert!(out.is_empty(), "jj could not answer: stay quiet: {out:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `newer_than` on its own: the later of mtime and ctime decides, and a path that cannot be
+    /// read counts as newer.
+    #[test]
+    fn newer_than_reads_the_later_of_ctime_and_mtime() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = crate::test_support::unique_tmp("jj_newer_than");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let f = dir.join("f.txt");
+        std::fs::write(&f, b"x").expect("write");
+        let now = std::fs::symlink_metadata(&f).expect("stat").ctime();
+
+        // Written just now: both stamps are at `now`.
+        assert!(newer_than(&f, now));
+        assert!(!newer_than(&f, now + 100));
+        // mtime set back to 2001: ctime still says it was touched just now.
+        set_mtime(&f, long_ago());
+        assert!(newer_than(&f, now), "ctime must win over a set-back mtime");
+        assert!(!newer_than(&f, now + 100));
+        // The other side: mtime far in the future (a clock-skewed or future-dated file) while ctime
+        // stays at `now`. An epoch between the two is reached by mtime alone.
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(10_000_000);
+        set_mtime(&f, future);
+        assert!(
+            newer_than(&f, now + 1_000_000),
+            "a later mtime must count even when ctime is older than the epoch"
+        );
+        // Unreadable path: reported rather than hidden.
+        assert!(newer_than(&dir.join("missing"), i64::MAX));
+    }
+
     /// The verdict on whether this jj speaks the diff template is remembered per workspace, not
     /// once for the whole process. `run` cannot tell a jj too old for the template apart from a
     /// repository it simply could not read, so a single unreadable repository latched process-wide
@@ -2329,6 +2681,72 @@ mod tests {
             "every line carrying no old-side number is the bug's symptom: with the parent lookup \
              silently failing on the ambiguous `@-`, this file rendered as though entirely new: \
              {lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// In a merge working copy `tracked` is the first parent only, so a file that exists only on
+    /// the second parent, untouched on disk, is not in the first parent's tree and reads Added:
+    /// `scan`'s contract is "differs from the working copy's first parent". No timing involved —
+    /// the file is never written after the merge is checked out.
+    #[test]
+    fn merge_working_copy_file_only_in_second_parent_reads_added() {
+        if !available() {
+            return;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("konoma_jj_merge_b_only_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_jj = |args: &[&str]| -> Option<String> {
+            let out = std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        const CHANGE_ID: &[&str] = &[
+            "log",
+            "-r",
+            "@-",
+            "--no-graph",
+            "--ignore-working-copy",
+            "-T",
+            "change_id.shortest(12)",
+        ];
+        run_jj(&["git", "init", "--no-colocate", "."]).expect("jj git init");
+        std::fs::write(dir.join("base.txt"), b"base\n").unwrap();
+        run_jj(&["commit", "-m", "base"]).expect("commit base");
+        let base = run_jj(CHANGE_ID).expect("base id");
+        std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
+        run_jj(&["commit", "-m", "sideA"]).expect("commit sideA");
+        let side_a = run_jj(CHANGE_ID).expect("sideA id");
+        run_jj(&["new", &base]).expect("new base");
+        std::fs::write(dir.join("only_b.txt"), b"b\n").unwrap();
+        run_jj(&["commit", "-m", "sideB"]).expect("commit sideB");
+        let side_b = run_jj(CHANGE_ID).expect("sideB id");
+        run_jj(&["new", &side_a, &side_b]).expect("merge");
+        assert!(
+            dir.join("only_b.txt").exists(),
+            "the merge must materialise B's file"
+        );
+
+        let st = statuses(&dir);
+        assert_eq!(
+            st.get(&dir.join("only_b.txt")),
+            Some(&FileStatus::Added),
+            "a file only in the second parent is absent from the first parent: {st:?}"
+        );
+        assert_eq!(
+            st.get(&dir.join("a.txt")),
+            None,
+            "a file in the first parent and untouched must not be reported: {st:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -5915,7 +5915,7 @@ fn e2e_jj_diff_view_rendered_marks_and_r_cycle_no_discard_hint() {
 /// than one changed file to cycle between.
 ///
 /// mtime note (flagged by the 2026-08 audit that added this section): unlike `jj_seed_repo`, this
-/// sleeps for over a second **before** the seed commit. `newer_than`'s check (`mtime_secs >=
+/// sleeps for over a second **before** the seed commit. `newer_than`'s check (the later of ctime and mtime `>=
 /// snapshot_epoch`, both second-granularity) is inclusive, so a file created in the very same
 /// wall-clock second as the commit could alias into looking "changed" too, purely by timing luck —
 /// without the sleep, `c.txt` (meant to stay a clean control) could not be trusted to read as
