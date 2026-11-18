@@ -3992,7 +3992,7 @@ mod tests {
                 Test("e2e_canvas_timer_asks_nothing_behind_a_project_screen_and_asks_again_after_leaving"),
             ),
             // Process-wide (idle plugin children), run by every `animation_timers_due` call.
-            ("plugins::external::reap_if_due", Test("vcs_kind_gif_timer_delivered_while_away")),
+            ("plugins::external::reap_if_due", Test("vcs_kind_reaper_stops_an_idle_plugin_child_while_away")),
         ];
         let src = include_str!("lib.rs");
         let production = &src[..src.find("\nmod tests {").expect("tests module")];

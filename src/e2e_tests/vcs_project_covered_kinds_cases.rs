@@ -962,6 +962,57 @@ fn vcs_kind_gif_timer_delivered_while_away() {
 }
 
 #[test]
+fn vcs_kind_reaper_stops_an_idle_plugin_child_while_away() {
+    // The reaper is App-level: a pass of the run loop's timers under a project screen still
+    // reaches an idle plugin child and stops it (not only asks the reaper).
+    if isolated("vcs_kind_reaper_stops_an_idle_plugin_child_while_away") {
+        return;
+    }
+    use crate::plugins::external;
+    use crate::plugins::external_testkit::{table, Lab, Rig, PATIENCE};
+    use std::time::{Duration, Instant};
+    let repo = super::vcs_changes::git_repo("vcs_kind_reaper_cov", true);
+    std::fs::write(repo.join("a.xd"), "plain").unwrap();
+    let lab = Lab::new("kind_reaper");
+    let rig = Rig::new("ext-kindreaper");
+    lab.program("kindreaper-prog", "v1");
+    let tables: crate::plugins::PluginTables =
+        [("ext-kindreaper".to_string(), table("kindreaper-prog", &[]))].into_iter().collect();
+    let mut env = lab.env(&rig);
+    // Idle at once: only the reaper's own interval decides when it looks.
+    env.limits.idle_after = Duration::ZERO;
+    let token = external::install(&env, &tables, &[]).expect("the program is installed");
+    let mut cfg = config("git", "en");
+    cfg.plugins.extend(tables);
+    cfg.external_plugins = Some(token.clone());
+    let mut sim = kind_sim(&repo, Sim::with_config_sized(&repo, cfg, 120, 30).with_media());
+    sim.select("a.xd");
+    sim.enter();
+    sim.see("child says hello");
+    sim.esc();
+    // The session is dropped on the reaper thread: wait for that before judging idleness.
+    crate::app::flush_discards();
+    let plugin = external::plugins_of(&token).remove(0);
+    assert!(plugin.is_running(), "premise: the child is still running before the cover");
+    kind_away(&mut sim, KindRoad::Cover, "reaper");
+    assert!(sim.app.project_active(), "premise: the project screen covers the tab");
+    assert_eq!(rig.kills(), 0, "premise: nothing stopped the child before the timers' pass");
+    assert!(plugin.is_running(), "premise: the child is still running under the cover");
+    // Past the reaper's interval of any earlier look, so the pass is not throttled.
+    let later = Instant::now() + external::REAP_INTERVAL + Duration::from_secs(1);
+    let redraw = crate::animation_timers_due(&mut sim.app, later);
+    assert!(!redraw, "no timer of the tab that is away fired");
+    // The pass starts the reaper on a thread of its own and does not hand it back: wait for it.
+    let deadline = Instant::now() + PATIENCE;
+    while (rig.kills() == 0 || plugin.is_running()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(rig.kills(), 1, "the idle child was not stopped by the timers' pass under the cover");
+    assert!(!plugin.is_running(), "the stopped child is still running");
+    assert!(sim.app.project_active(), "the project screen is still in front");
+}
+
+#[test]
 fn vcs_kind_md_gif_timer_delivered_while_away() {
     if isolated("vcs_kind_md_gif_timer_delivered_while_away") {
         return;
