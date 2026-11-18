@@ -121,13 +121,15 @@ fn bin() -> PathBuf {
             PathBuf::from(p)
         } else {
             let exe = std::env::current_exe().unwrap();
-            let p = exe.parent().unwrap().parent().unwrap().join("konoma");
+            // The test executable sits in `<profile>/deps/` or, with Cargo's newer build-dir layout,
+            // in `<profile>/build/<pkg>/<hash>/out/`: look for the binary in every ancestor.
+            let found = exe.ancestors().skip(1).map(|a| a.join("konoma")).find(|p| p.is_file());
             assert!(
-                p.is_file(),
-                "{} is missing: run `cargo build` (or `cargo test`, which builds it for tests/)",
-                p.display()
+                found.is_some(),
+                "no `konoma` binary above {}: run `cargo build` (or `cargo test`, which builds it for tests/)",
+                exe.display()
             );
-            p
+            found.unwrap()
         };
         warm_up(&p, &[super::svg_proc::CHILD_FLAG, "1073741824"]);
         handshake(&p);
