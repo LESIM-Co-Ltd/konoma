@@ -27,10 +27,26 @@ use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 use super::display::Display;
 use super::doc_pictures::DocPics;
 use crate::document_render::{
-    postprocess, render_document, wrap_row_prefix, PictureSlots, RenderSettings, TRUNCATED_NOTE,
+    postprocess, render_document, visible_line_range, wrap_row_prefix, PictureSlots,
+    RenderSettings, TRUNCATED_NOTE,
+};
+use crate::host::project::preview_gutter::{
+    with_line_gutter, with_preview_gutter, FilePreviewGutter, GutterMark,
 };
 use crate::input::Origin;
 use crate::view::{DocOptions, DocumentView};
+
+/// Final text/code pass, after the caret and any line numbers have been drawn.
+pub(in crate::app) fn lay_out_lines(
+    lines: Vec<RLine<'static>>,
+    first_line: usize,
+    marks: Option<&HashMap<u32, GutterMark>>,
+) -> Vec<RLine<'static>> {
+    match marks {
+        Some(marks) => with_line_gutter(lines, first_line, marks),
+        None => lines,
+    }
+}
 
 /// A document laid out at one width.
 pub struct Laid {
@@ -80,10 +96,44 @@ pub fn lay_out(
     pics: Option<&mut DocPics>,
     display: &Display,
 ) -> Laid {
+    lay_out_with_gutter(dv, width, rows, lang, pics, display, None)
+}
+
+/// Only an ordinary Markdown file accepts the worker's landed file alignment.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn lay_out_with_gutter(
+    dv: &DocumentView,
+    width: u16,
+    rows: u16,
+    lang: Lang,
+    pics: Option<&mut DocPics>,
+    display: &Display,
+    gutter: Option<FilePreviewGutter<'_>>,
+) -> Laid {
+    lay_out_preview(dv, width, rows, lang, pics, display, gutter).0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lay_out_preview(
+    dv: &DocumentView,
+    width: u16,
+    rows: u16,
+    lang: Lang,
+    pics: Option<&mut DocPics>,
+    display: &Display,
+    gutter: Option<FilePreviewGutter<'_>>,
+) -> (Laid, Vec<usize>) {
+    let gutter = file_gutter(dv, gutter);
+    let active = gutter.is_some_and(FilePreviewGutter::has_changes);
+    let render_width = if active {
+        width.saturating_sub(1)
+    } else {
+        width
+    };
     let code = display.code_style();
     let details_open = HashMap::new();
     let settings = RenderSettings {
-        width,
+        width: render_width,
         code,
         code_theme: &display.theme.code_theme,
         icons: display.icons,
@@ -101,7 +151,7 @@ pub fn lay_out(
         &dv.markdown
     };
     let mut r = match pics {
-        Some(p) => p.render(dv, md, width, rows, lang, &settings),
+        Some(p) => p.render(dv, md, render_width, rows, lang, &settings),
         None => {
             let image = |_: &str, _: Option<u16>| ImageSlot::Unavailable;
             let mermaid = |_: &str| MermaidSlot::Text;
@@ -122,18 +172,113 @@ pub fn lay_out(
         }
     };
     let (lines, _targets) = postprocess(r.lines, &mut r.images, &dv.options, true);
-    let row_prefix = if display.wrap && width > 0 {
-        wrap_row_prefix(&lines, width)
+    let row_prefix = if display.wrap && render_width > 0 {
+        wrap_row_prefix(&lines, render_width)
     } else {
         Vec::new()
     };
-    let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
-    Laid {
-        lines,
-        row_prefix,
-        images: std::mem::take(&mut r.images),
-        max_line_cols,
+    let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0) + usize::from(active);
+    let marks = gutter.map_or_else(Vec::new, |g| g.project(&r.extras.block_rows));
+    let change_rows = crate::host::project::diff_blocks::block_starts(
+        marks.iter().map(|(range, _)| range.clone()).collect(),
+    )
+    .into_iter()
+    .map(|line| row_prefix.get(line).copied().unwrap_or(line))
+    .collect();
+    let lines = with_preview_gutter(lines, 0, &marks);
+    if active {
+        for image in &mut r.images {
+            image.col += 1;
+        }
     }
+    (
+        Laid {
+            lines,
+            row_prefix,
+            images: std::mem::take(&mut r.images),
+            max_line_cols,
+        },
+        change_rows,
+    )
+}
+
+fn file_gutter<'a>(
+    dv: &DocumentView,
+    gutter: Option<FilePreviewGutter<'a>>,
+) -> Option<FilePreviewGutter<'a>> {
+    match &dv.origin {
+        Origin::File(path)
+            if !path.extension().is_some_and(|e| {
+                e.eq_ignore_ascii_case("mmd") || e.eq_ignore_ascii_case("mermaid")
+            }) =>
+        {
+            gutter
+        }
+        _ => None,
+    }
+}
+
+/// Draw through the document cache and the same visible-line slicing as the file app.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn draw_preview_document_for_test(
+    dv: &DocumentView,
+    outcome: Option<&crate::host::project::md_diff::MdDiffOutcome>,
+    display: &Display,
+    scroll: usize,
+    buf: &mut Buffer,
+    area: Rect,
+    name: &str,
+) {
+    let inner = DocFrame::inner(area);
+    let laid = DocCache::get_with_gutter(
+        &mut None,
+        dv,
+        inner.width,
+        inner.height,
+        Lang::En,
+        None,
+        display,
+        FilePreviewGutter::from_outcome(outcome),
+    );
+    let frame = DocFrame {
+        name: name.to_string(),
+        laid,
+        scroll,
+        wrap: display.wrap,
+        hscroll: 0,
+        lang: Lang::En,
+        truncated: false,
+    };
+    frame.draw(buf, area);
+}
+
+/// Draw a prepared text/code window, including its line-number spans when enabled.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn draw_preview_lines_for_test(
+    lines: Vec<RLine<'static>>,
+    first_line: usize,
+    marks: &HashMap<u32, GutterMark>,
+    display: &Display,
+    buf: &mut Buffer,
+    area: Rect,
+    file: (&str, &[u64]),
+) {
+    super::draw::TextFrame {
+        lines: lay_out_lines(lines, first_line, Some(marks)),
+        wrap: display.wrap,
+        hscroll: 0,
+        vscroll: 0,
+        border: Some(super::draw::TextBorder {
+            name: file.0.to_string(),
+            lang: Lang::En,
+            extent: Some(super::window::extent_of_lines(
+                file.1,
+                first_line,
+                usize::from(area.height.saturating_sub(2)),
+            )),
+        }),
+    }
+    .draw(buf, area);
 }
 
 /// What the loop keeps so a key does not lay the page out again: the page is rebuilt only when
@@ -150,9 +295,23 @@ pub struct DocCache {
     /// it stale.
     epoch: u64,
     laid: Arc<Laid>,
+    gutter_ops: Option<Vec<konoma_widgets::markdown::BlockOp>>,
+    change_rows: Vec<usize>,
 }
 
 impl DocCache {
+    pub(in crate::app) fn first_change(&self) -> Option<usize> {
+        self.change_rows.first().copied()
+    }
+    pub(in crate::app) fn change_blocks(
+        &self,
+        viewport: usize,
+    ) -> crate::host::project::diff_blocks::DiffBlocks {
+        crate::host::project::diff_blocks::DiffBlocks {
+            rows: self.change_rows.clone(),
+            max_v: self.laid.rows().saturating_sub(viewport),
+        }
+    }
     /// The layout of `dv` at `width`, from the cache when nothing changed.
     pub fn get(
         slot: &mut Option<DocCache>,
@@ -163,6 +322,22 @@ impl DocCache {
         pics: Option<&mut DocPics>,
         display: &Display,
     ) -> Arc<Laid> {
+        Self::get_with_gutter(slot, dv, width, rows, lang, pics, display, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::app) fn get_with_gutter(
+        slot: &mut Option<DocCache>,
+        dv: &DocumentView,
+        width: u16,
+        rows: u16,
+        lang: Lang,
+        pics: Option<&mut DocPics>,
+        display: &Display,
+        gutter: Option<FilePreviewGutter<'_>>,
+    ) -> Arc<Laid> {
+        let gutter = file_gutter(dv, gutter);
+        let gutter_ops = gutter.map(FilePreviewGutter::ops);
         let epoch = pics.as_deref().map_or(0, |p| p.epoch());
         if let Some(c) = slot.as_ref() {
             if c.width == width
@@ -173,11 +348,16 @@ impl DocCache {
                 && c.options == dv.options
                 && c.truncated == dv.truncated
                 && c.markdown == dv.markdown
+                && c.gutter_ops.as_deref() == gutter_ops
             {
                 return Arc::clone(&c.laid);
             }
         }
-        let laid = Arc::new(lay_out(dv, width, rows, lang, pics, display));
+        let (laid, change_rows) = match gutter {
+            Some(gutter) => lay_out_preview(dv, width, rows, lang, pics, display, Some(gutter)),
+            None => (lay_out(dv, width, rows, lang, pics, display), Vec::new()),
+        };
+        let laid = Arc::new(laid);
         *slot = Some(DocCache {
             markdown: dv.markdown.clone(),
             options: dv.options.clone(),
@@ -188,6 +368,8 @@ impl DocCache {
             display: display.clone(),
             epoch,
             laid: Arc::clone(&laid),
+            gutter_ops: gutter_ops.map(<[_]>::to_vec),
+            change_rows,
         });
         laid
     }
@@ -259,20 +441,12 @@ impl DocFrame {
     /// the first one that are scrolled off (the host's `md_slice`).
     fn slice(&self, height: u16) -> (Vec<RLine<'static>>, u16) {
         let s = self.scroll;
-        let h = usize::from(height.max(1));
         let (lines, pre) = (&self.laid.lines, &self.laid.row_prefix);
-        let (lo, hi, local) = if pre.len() == lines.len() + 1 {
-            let lo = pre.partition_point(|&p| p <= s).saturating_sub(1);
-            let hi = pre.partition_point(|&p| p < s + h).min(lines.len());
-            (
-                lo,
-                hi.max(lo),
-                u16::try_from(s - pre[lo]).unwrap_or(u16::MAX),
-            )
-        } else {
-            (s.min(lines.len()), (s + h).min(lines.len()), 0)
-        };
-        (lines[lo..hi].to_vec(), local)
+        let (range, local) = visible_line_range(lines.len(), pre, s, height);
+        (
+            lines[range].to_vec(),
+            u16::try_from(local).unwrap_or(u16::MAX),
+        )
     }
 
     /// The cells inside the frame's border.

@@ -82,7 +82,7 @@ details = []           # 例: ["type", "size", "modified"]
 # ブランチが多いとレーン/色/凡例が溢れるため、起動時は 基準/優先＋HEAD＋最近コミット順で
 # 上限まで自動選択する。グラフ内 `b` のパネルで表示/非表示の切替＋優先順の並び替えができる
 # (x:切替 / J/K:並替 / a:全部 / c:現在のみ / Enter:適用、HEAD は常に表示)。0 で無制限。
-graph_max_branches = 12
+graph_max_branches = 12   # [plugins.git] / [plugins.jj] の graph_max_branches でも設定でき、そちらが勝つ。
 
 # コミットグラフの「基準/優先ブランチ」(順序つき・既定 [])。例: ["main", "develop"]
 # ① ここに挙げたブランチを優先的に表示(上限の先頭に置く)。
@@ -99,7 +99,7 @@ graph_base_branches = []
 #                      (SourceTree / VS Code Git Graph 流)。狭い時は subject を末尾省略し、
 #                      さらに狭ければメタ自体を省く(非本質列を落とす)。
 #   "inline"        … subject の直後に続けて出す(従来表示。subject のすぐ隣にメタが並ぶ)。
-commit_meta_align = "right"
+commit_meta_align = "right"   # [plugins.git] / [plugins.jj] の commit_meta_align でも設定でき、そちらが勝つ。
 
 # 終了確認。q(最上位ツリー)/ Q(どこからでも) でアプリ全体を終了するとき、確認ダイアログを出すか。
 #   true  (既定) … 「終了しますか?」を確認(q / y / Enter = 終了, n / Esc = 取消。qq で素早く抜ける)
@@ -111,7 +111,7 @@ confirm_quit = true
 #   true  (既定) … 上書き前に確認(y / Enter = 上書き, n / Esc = 取消)
 #   false        … 確認なしで即上書き
 confirm_bookmark_overwrite = true
-confirm_jj_sync            = true   # jj の変更一覧で `s` を押して jj に作業コピーを取り込ませる前に確認する。
+confirm_jj_sync            = true   # ([plugins.jj] confirm_sync でも設定でき、そちらが勝つ。) jj の変更一覧で `s` を押して jj に作業コピーを取り込ませる前に確認する。
                                     # konoma が jj リポジトリに書き込むのはここだけで、しかも指示されたときのみ。
                                     # konoma 自身では気づけない「更新時刻が変わらないまま中身が変わった」
                                     # ファイルのための逃げ道。
@@ -476,7 +476,7 @@ code_theme = "TwoDark"
 #   enabled = false    そのプラグインを止める — 担当のファイルは次の段(テキストとして読めればテキスト、
 #                      そうでなければ [can not preview])へ進む。未知の id は起動時に知らせる。
 #   read_only = true   そのプラグインの書き込む操作を止める(プラグインが「書き込む」と宣言した操作。そのキーは理由を
-#                      表示して何もしない)。標準プラグインはまだ操作を宣言していないので、標準には今は効かない。
+#                      表示して何もしない)。標準の git・jj プラグインは書き込む操作を宣言していて、[plugins.git] read_only = true で git の画面が、[plugins.jj] read_only = true で jj の画面が読み取り専用になる(別々の設定)。ほかの標準プラグインは操作を宣言していないので効かない。
 #   read_dirs = ["~/Pictures"]
 #                      自分で追加したプラグインのために konoma がファイルを読んでよいフォルダ(プラグインが
 #                      指す画像やテキスト)。既定は、そのタブの root フォルダと、プレビュー中のファイルのフォルダ。
@@ -492,12 +492,22 @@ code_theme = "TwoDark"
 #   svg          max_px           ([ui] svg_max_px だったもの)
 #   mermaid      mode theme curve routing rows   ([ui] mermaid mermaid_theme mermaid_curve mermaid_routing mermaid_rows だったもの)
 #   math         mode color       ([ui] math math_color だったもの)
+#   git, jj      commit_meta_align graph_max_branches graph_base_branches   (旧 [ui] の同名のキー)
+#                path_style は書き換えではなく案内も出ない(プロジェクトの画面だけ [ui] path_style を上書きする。ここで指定するまでは [ui] に従う)
+#                git は worktree_dir(旧 [git] worktree_dir)、jj は confirm_sync(旧 [ui] confirm_jj_sync)
 #   markdown     task_states autolink alerts emoji frontmatter footnotes inline_html details table_align image_align
 #                                 ([ui] md_task_states md_autolink md_alerts md_emoji md_frontmatter md_footnotes
 #                                  md_inline_html md_details md_table_align md_image_align だったもの)
 # 値の意味は上の [ui] の各キーと同じ。Word 文書も markdown のオプションで描かれる。
 # プラグイン自身の操作のキーは [keys.<プラグイン id>] で付け替えられる(W = "width" で操作 `width` のキーを W に、
 # w = "noop" でキーを外す)。ホストが使うキーは断られて起動時のメッセージで知らせる(操作は `Space` のメニューに残る)。
+# プロジェクト画面へ移るキーは goto_<画面 id> という操作: [keys.git] の B = "goto_branches" でブランチ画面へ移るキーを b から B に、
+# b = "noop" で外す(Tab では引き続きその画面へ行ける)。
+# 固定されていない画面にはすべて goto_<画面 id> があり、既定のキーが無い画面にもある: L = "goto_log" でログ画面にキーを付けられる。
+# 古い画面別テーブル([keys."git.changes"]・[keys."jj.log"]・[keys.git_changes])は古い名前として読む: そこの x = "git_stage" は
+# プラグイン用の [keys.git] の x = "stage" へ移して起動時に 1 回案内し、対応する操作が無い古い操作は「no effect」と案内する。
+# プラグイン用の [keys.git] と [keys.jj] は、同じキー・同じ操作の古いエントリより優先される。
+# そこに書いたホストの操作(git_close・git_launch_tool・refresh など)はそのテーブルに残り、その画面だけで効く。
 # それ自身がプログラムであるプラグイン(言語は問わない。stdin/stdout で konoma のプラグインプロトコルを話す):
 #   command = "my-viewer"   プログラム。`/` の無い名前は PATH から探し、パスはそのまま使う。シェルは通さない。
 #                           id は表の名前で、プログラムが宣言する id と同じでなければならない。
@@ -567,6 +577,8 @@ code_theme = "TwoDark"
 #                   ここでは何も起きない)。スクロール・検索・選択と、矢印・Home/End・PageUp/PageDown・
 #                   Enter・Tab・Shift-Tab はプラグインのもの
 #   git.changes   : Git 変更一覧(p)        git.log / git.graph / git.branches / git.detail
+#                   (これらのテーブルに書いたホストの操作はその画面だけで効く。プラグインの操作は
+#                   [keys.git] / [keys.jj] へ移り、書き換えの案内が出る)
 #   git.graph_picker : グラフのブランチ表示パネル(b)
 #   git.worktrees : リンクワークツリー一覧(w・バージョン管理の画面内)
 #   jj.changes ... : 同じ画面を jj リポジトリで開いたとき(jj.log jj.graph jj.graph_picker
@@ -651,40 +663,34 @@ code_theme = "TwoDark"
 #                    幅の広いセルを "…" で切り詰めるが、これは切り詰め無しの値を折返し表示し、
 #                    j/k/g/G/PageUp/PageDown でスクロールできる。q/Esc/Enter で閉じる。ポップアップ自身の
 #                    キーは [keys.table_cell] で変更可)
-#   Git          : "open_git_view"(p: プロジェクトの画面。ツリー・プレビュー・diff から)
-#                  "git_launch_tool"(!: ツリー・プレビュー・diff・変更一覧から)
-#                  "git_screen_next" "git_screen_prev"(Tab / Shift-Tab: 変更・ログ・グラフ・ブランチ・
-#                    ワークツリーの画面を巡回) "list_filter_start"(変更一覧・ログ・グラフの /)
-#                  "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard" "git_commit"(c)
-#                  "git_worktree_diff" "git_open_selected_diff"(l / Enter) "git_open_branches"(b)
-#                  "git_open_log" "git_open_graph"(既定キー無し: Tab で届く)
-#                  "cycle_diff_layout"(s) "cycle_diff_view"(R) "git_diff_discard"
-#                  "git_open_detail"(ログとグラフの l / Enter) "git_close"(q / h) "git_diff_discard"(diff の x)
-#                  "git_copy_short_hash" "git_copy_full_hash" "git_copy_subject" "git_copy_message" "git_copy_author"
-#                  "git_copy_date"(コミットの y メニュー) "copy_branch_name"(ブランチ一覧の y メニュー)
-#                  "branch_checkout"(l / Enter) "branch_create"(c) "branch_delete"(d) "branch_filter_start"(/)
-#                  "jj_sync"(s= jj の変更一覧で jj に作業コピーを取り込ませる。konoma が jj リポジトリに
-#                    書き込む唯一の操作で、確認ダイアログが先に出る。git リポジトリでは何もしない)
-#   Git グラフ   : "git_graph_set_base"(s) "git_graph_clear_base"(x) "git_graph_open_picker"(b)
-#                  "git_graph_toggle_all"(a= バックエンドの既定範囲でなく全リビジョンを表示。
-#                    狭い既定を持つのは jj だけ)
-#                  "git_graph_picker_toggle"(x) "git_graph_picker_all"(a) "git_graph_picker_current_only"(c)
-#                  "git_graph_picker_move_up"(K) "git_graph_picker_move_down"(J) "git_graph_picker_apply"(l / Enter)
-#   Git ワークツリー: "git_open_worktrees"(w・バージョン管理の画面内: リンクワークツリー一覧を開く。
-#                    「ワークツリー」は本設定の他の箇所で使う「未コミットの作業ツリー」とは別概念＝
-#                    git worktree add で作る「リンクワークツリー」のこと)
-#                  "worktree_filter_start"(/: ブランチ名/パスで絞り込み)
-#                  "worktree_goto"(Enter / l: このタブの root(と open_dir)を選択ワークツリーへ切替。
-#                    Enter は固定キーだが(branch_checkout と同様)、config で別キーにも割当可)
-#                  "worktree_goto_new_tab"(Ctrl-t: 選択ワークツリーを別タブで開く。現在のタブは不変)
-#                  "worktree_close"(q / h)
-#                  "worktree_show_changes"(d: 選択ワークツリーの base ブランチからの diff を表示
-#                    ＝コミット済み＋未コミットの両方(ワークツリーが既にコミット済みでも何かは表示される)。
-#                    base は下の graph_base_branches・無ければメインワークツリーのブランチにフォールバック。
-#                    base が無い/積み上げが無い時はさらに未コミットのみの diff にフォールバック)
-#                  "worktree_create"(c: ブランチ名の入力ダイアログを開く。新規/既存は自動判別なので
-#                    そのための質問は出ない → [git] worktree_dir の位置にメインワークツリーの隣として
-#                    `git worktree add` し、このタブをそこへ切り替える)
+#   Git          : "open_git_view"(p: プロジェクトの画面を開く。ツリー・プレビュー・diff から)
+#                  "git_launch_tool"(!: ツリー・プレビュー・diff・プロジェクトの変更画面から)
+#                  "list_filter_start"(プロジェクトの一覧の /) "git_close"(プロジェクトの最上位の画面の q / h: p を押した場所へ戻る)
+#                  "cycle_diff_layout"(s) "cycle_diff_view"(R。プロジェクトの画面では何も起きない) "git_diff_discard"(diff の x)
+#   プロジェクトの画面(git・jj プラグイン。[keys.git] / [keys.jj] で変える。画面はタブで、Tab / Shift-Tab で巡回する)
+#                  移動: "goto_changes"(p) "goto_log" "goto_graph"(既定のキー無し) "goto_branches"(b) "goto_worktrees"(w・git のみ)
+#                  git: "stage"(s) "stage_all"(S) "unstage"(u) "unstage_all"(U) "discard"(x) "commit"(c) "diff"(Enter)
+#                  "diff_all"(d) "detail"(ログの Enter) "checkout"(Enter) "create_branch"(c) "delete_branch"(d)
+#                  "branch_copy_name"(ブランチ画面の y メニューの n)。コミットの y メニュー: s 短いハッシュ・h 完全なハッシュ・
+#                  t 件名・m メッセージ・a 作者・d 日付
+#                  jj: "sync"(s: jj に作業コピーを取り込ませる。konoma が jj リポジトリに書き込むのはここだけで、既定では確認の後。
+#                  [plugins.jj] confirm_sync = false なら確認なしで取り込む)。jj のブックマーク画面にあるのはコピーだけで、w は何も起きない。
+#                  書き込みの実行中は、ほかの操作のキーは隠れて何も起きず、終了しようとすると先に確認が出る。
+#   Git グラフ   : "graph_set_base"(s) "graph_clear_base"(x・git のみ) "graph_picker"(b) "graph_detail"(Enter)
+#                  "graph_all"(a: バックエンドが現在とみなす範囲でなく全リビジョンを表示する。jj のみ。
+#                    git にはこの切り替えがなく、グラフは選択中のブランチの履歴を新しい順に最大 400 コミットまで表示する)
+#                  ブランチパネル: "picker_toggle" "picker_all" "picker_current" "picker_up" "picker_down" "picker_apply"
+#   Git ワークツリー: "goto_worktrees"(w・プロジェクトの画面から: リンクワークツリー一覧を開く。
+#                    `git worktree add` の *リンクした* 作業ツリーで、このファイルの他所の「ワークツリー」
+#                    (コミット前の作業ツリー)とは別の概念)
+#                  "worktree_switch"(Enter: このタブのルート(と open_dir)を選択したワークツリーへ切り替える)
+#                  "worktree_changes"(d: 選択したワークツリーの、基準ブランチからの diff を表示する。
+#                    コミット済みと未コミットを合わせるので、作業をコミット済みでも何か見える。
+#                    基準は下の graph_base_branches、無ければメインワークツリーのブランチ。基準が無い・
+#                    まだ何も積まれていないときは未コミットだけの diff に落ちる)
+#                  "worktree_create"(c: ブランチ名の入力ダイアログを開き — 新規か既存かは自動判定 —
+#                    メインワークツリーの隣の worktree_dir([plugins.git] / [git])へ `git worktree add` して、
+#                    このタブをそこへ切り替える)
 #   タブ / アプリ: "tab_new_after"(t) "tab_new"(既定キー無し) "toggle_tab_list"(T) "tab_list_close"(一覧内の d)
 #                  "tab_list_activate"(一覧内の Enter) "tab_prev" "tab_next"([ ]) "toggle_help"(?) "cancel"(Esc)
 #   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
@@ -704,7 +710,7 @@ code_theme = "TwoDark"
 # "I" = "tab_new_after"        # 旧「現在のタブの右隣に新規タブ」のキー(今は t)
 # "t" = "tab_new"              # 旧「末尾に新規タブ」のキー
 # [keys.tree]
-# o = "open_git_view"          # 旧 Git ハブのキー(今は p。o はファイルを他のアプリで開く)
+# o = "open_git_view"          # 旧 Git 画面のキー(今は p。o はファイルを他のアプリで開く)
 # s = "open_sort_menu"         # 旧ソートメニューのキー(`,` メニューを開く)
 #
 # 例(コメントを外して使う):
@@ -717,8 +723,9 @@ code_theme = "TwoDark"
 # [keys.text]
 # "ctrl-f" = "navigate:page_down"
 #
-# [keys."git.changes"]
-# g = "git_open_graph"
+# 画面へ移るキーとプラグインの操作は、画面ごとの表ではなくプラグインの表に書く:
+# [keys.git]
+# L = "goto_graph"             # グラフ画面へ移るキーを付ける(既定ではキーが無い)
 #
 # (後方互換) 旧 [keys] の copy_name/copy_full/copy_relative/copy_parent (suffix) は当面読み込み、
 # パスコピーの y リーダーへ反映する。**copy_prefix は無視** (新スキームでプレフィクスは y 固定)。
@@ -745,21 +752,30 @@ command = ""          # 既定エディタ。空なら $VISUAL→$EDITOR→vim �
 # txt = "nano"
 
 # ── Git 連携 ───────────────────────────────────────────────────────────────
-# `p` で内蔵 Git ビュー(変更一覧。Tab で各画面を巡回)を開く。外部 git ツールは `!` から起動する。
+# `p` で Git のプロジェクトの画面(標準の git プラグインが提供。画面はタブで、Tab で巡回し、最上位の画面の q / h で p を押した場所へ戻る)を開く。外部 git ツールは `!` から起動する。
 [git]
-tool        = "lazygit"   # ツリー・プレビュー・diff・変更一覧の `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
+tool        = "lazygit"   # ツリー・プレビュー・diff・プロジェクトの変更画面の `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
 diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "split"(横並び) | "auto"(幅で自動)。差分中 `s` で縦→横→Auto を巡回
 media_diff  = "auto"      # 画像/PDF/SVG の並べて表示「diff」の初期レイアウト: "auto"(絵が大きく映る方=左右/上下) |
                         # "side"(左右) | "stack"(上下)。上の `diff` とは別の設定(意味が違うため)。その表示中 `s` で
                         # auto→side→stack→auto を巡回。
 # main_branch: 【未実装/予約】基準ブランチ固定グラフ用。
 #              現状はどこからも参照されない=設定しても無効。実装時に有効化する。
-worktree_dir = "../"   # ワークツリー一覧(`c`・[keys."git.worktrees"])で新規リンクワークツリーを置く場所: **メイン**
+worktree_dir = "../"   # ([plugins.git] worktree_dir でも設定でき、そちらが勝つ。) ワークツリー画面(`c`)で新規リンクワークツリーを置く場所: **メイン**
                         # ワークツリー自身のパス(今いる root ではない)を基準に、ブランチ名(`/` は `-` に置換=そのまま
                         # だと git が入れ子ディレクトリを作る)を足す。既定=メインの隣(例: ~/work/proj + feat →
                         # ~/work/feat)。絶対パスはそのまま使う。**repo 内(例 ".worktrees/")は避ける**こと=そこに作った
                         # ワークツリーは `.git/info/exclude` に自分で追加しない限りメイン側の git status に未追跡として
                         # 出る(konoma はそのファイルを書き足さない)。
+
+# Project VCS selection. The old [external] vcs is accepted with a rename notice.
+[project]
+vcs = "auto" # "auto" | "git" | "jj". An explicit [project] value wins over [external] vcs.
+# auto: Git wherever it can answer; otherwise Jj when .jj and the jj binary are present.
+# git: always Git. jj: prefer Jj wherever .jj exists; fall back to Git if jj is unavailable.
+# With [external] git = false, a colocated repo uses Jj under auto or jj; git stays disabled.
+# The tree title identifies the active backend: a branch marker for Git, @ for Jj.
+# Jj reads never snapshot (--ignore-working-copy). Only an explicit sync writes (after a confirmation unless [plugins.jj] confirm_sync = false).
 
 # ── 外部プロセスのスイッチ ───────────────────────────────────────────────────
 # konoma が起動する外部プロセスを1個ずつ on/off できる。既定は全て `true`(挙動は変わらない)。
@@ -773,19 +789,6 @@ git              = true   # git 連携(status 色/ガター/Git ビュー/stage�
                            # この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになる
                            # (初回使用時に一度だけ判定)。`p` はその旨を知らせる。
 git_tool         = true   # `!` で起動する外部 git ツール(上の [git] tool)。
-vcs              = "auto" # どのバージョン管理システムが答えるか: "auto" | "git" | "jj"。
-                          # ** jj 対応はプレビュー版。** ツリー・diff・ハブは一通り揃っているが、
-                          # `jj workspace` の一覧は未対応で、jj 自体が 1.0 前・月次で破壊的変更がある。
-                          #   "auto"(既定) — git が答えられる場所は git のまま。つまり今まで動いていた
-                          #     リポジトリの見え方は変わらない。jj が答えるのは git のリポジトリが
-                          #     無い場所だけ(`jj git init --no-colocate` で作ったもの・`jj workspace`)。
-                          #   "git"  — .jj が .git と並んでいても常に git。
-                          #   "jj"   — .jj があれば colocated でも jj。実際に jj で作業しているならこれ。
-                          # konoma は jj リポジトリを「読む」だけ。全呼び出しに --ignore-working-copy が
-                          # 付くのでスナップショットを取らず、書き込み系のキーも提示しない。唯一の例外は
-                          # jj の変更一覧の `s`(確認あり・[ui] confirm_jj_sync)。
-                          # jj バイナリが無い環境では git に落ちる。
-
 pdf              = true   # 外部フォールバック(macOS 同梱の qlmanage/sips)。第一候補のレンダラ
                            # (hayro・純Rust・このフラグに関係なく常に動く)がその PDF の1ページ目で失敗した時
                            # (暗号化/破損/非対応)だけ使う。false でもこれらの外部ツールを起動しないだけで、
@@ -808,5 +811,5 @@ preview_commands = true   # `[[preview.rules]] command = "..."` への委譲。f
                            # `[can not preview]` へ落ちる(builtin レンダラには影響しない)。
 
 [jj]
-tool = "lazyjj"   # ハブで `!` を押したときに起動する外部 jj ツール([git] tool の jj 版)。
+tool = "lazyjj"   # プロジェクトの変更画面で `!` を押したときに起動する外部 jj ツール([git] tool の jj 版)。
                   # 未導入なら lazygit が無いときと同じく、起動できなかった旨を flash する。

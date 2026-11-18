@@ -71,6 +71,8 @@ pub mod proto;
 mod server;
 pub mod wire;
 
+#[cfg(feature = "app")]
+pub use server::cli_main_projects;
 pub use server::{cli_main, cli_main_bundled, cli_main_many, serve, serve_io, ServeOptions};
 
 /// Emit `main` for a plugin program: `--serve` serves the host on stdin and stdout, `--manifest`

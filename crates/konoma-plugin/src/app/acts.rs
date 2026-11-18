@@ -12,7 +12,7 @@ use konoma_host_core::help::{help_key, write_keys, CoreSection};
 use konoma_host_core::keymap::KeyPress;
 
 use crate::host::acts::{self, ActBinding};
-use crate::host::bind::{bind_actions, KeyNote};
+use crate::host::bind::{bind_actions, bind_jumps, JumpBinding, KeyNote};
 use crate::manifest::Manifest;
 use crate::text::Tr;
 
@@ -21,6 +21,9 @@ use crate::text::Tr;
 pub struct AppActs {
     /// In declaration order, with the keys the user's `[keys.<id>]` left them.
     pub bindings: Vec<ActBinding<String>>,
+    /// The screen-jump operations of its project, with the keys the user's `[keys.<id>]` left
+    /// them ([`bind_jumps`]).
+    pub jumps: Vec<JumpBinding>,
     /// The plugin's display name: the title of its section in the help.
     pub plugin_name: Option<Tr>,
     /// `[plugins.<id>] read_only = true`: the writing actions are refused.
@@ -48,9 +51,12 @@ impl AppActs {
         user: Option<&HashMap<String, String>>,
         read_only: bool,
     ) -> (AppActs, Vec<KeyNote>) {
-        let (bindings, notes) = bind_actions(id, manifest, user, |a| a.to_string());
+        let (bindings, mut notes) = bind_actions(id, manifest, user, |a| a.to_string());
+        let (jumps, jump_notes) = bind_jumps(id, manifest, user);
+        notes.extend(jump_notes);
         let acts = AppActs {
             bindings,
+            jumps,
             plugin_name: Some(manifest.name.clone()),
             read_only,
             notes: notes.clone(),
@@ -226,14 +232,16 @@ mod tests {
                 ("x".into(), "outside help".into()),
             ]
         );
-        for (enabled, key) in [("stage", "s"), ("stage-all", "S")] {
+        // A row shows the group's joined words only while every member shows a key; with one
+        // member left the words are that member's own (here its label: it declares no help).
+        for (enabled, key, words) in [("stage", "s", "stage"), ("stage-all", "S", "stage all")] {
             assert_eq!(
                 actions
                     .help_section("canvas", "en", |id| id == enabled || id == "outside")
                     .unwrap()
                     .rows,
                 [
-                    (key.into(), "stage / stage all".into()),
+                    (key.into(), words.into()),
                     ("x".into(), "outside help".into())
                 ]
             );

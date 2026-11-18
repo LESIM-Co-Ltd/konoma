@@ -711,35 +711,10 @@ fn visit_slides(s: &mut Sim, n: usize) {
     }
 }
 
-/// How long the pipeline may go without delivering anything before `settle` gives up: the wait
-/// is for lack of progress, not for a fixed total, so a loaded machine that is slowly working
-/// through many pictures is not failed for being slow.
-const SETTLE_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
-
 /// Applies pending decodes / encodes until the pipeline is quiet.
 #[track_caller]
 fn settle(s: &mut Sim) {
-    let mut deadline = std::time::Instant::now() + SETTLE_IDLE_LIMIT;
-    loop {
-        let imgs: Vec<_> = s.md_img_rx.as_ref().unwrap().try_iter().collect();
-        let encs: Vec<_> = s.md_enc_rx.as_ref().unwrap().try_iter().collect();
-        let any = !imgs.is_empty() || !encs.is_empty();
-        for r in imgs {
-            s.app.apply_md_image(r);
-        }
-        for r in encs {
-            s.app.apply_md_encode(r);
-        }
-        s.draw();
-        if !any && !s.app.md_pixels_pending() {
-            return;
-        }
-        if any {
-            deadline = std::time::Instant::now() + SETTLE_IDLE_LIMIT;
-        }
-        assert!(std::time::Instant::now() < deadline, "never settled");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    s.settle_inline_images("deck inline pictures", std::time::Duration::from_secs(120));
 }
 
 #[test]

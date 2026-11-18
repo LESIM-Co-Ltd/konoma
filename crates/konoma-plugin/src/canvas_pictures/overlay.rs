@@ -11,29 +11,7 @@ use ratatui::layout::Rect;
 /// terminal store) hundreds of screens of pixels.
 pub const MAX_PICTURE_AREA_FACTOR: u64 = 4;
 
-/// The signature of what the canvas overlay drew in one frame: the area, and for each picture its
-/// id and where it was drawn. The run loop clears the screen once when it changes (debris of a
-/// picture that moved or left), so it follows **what is where**, never the content of a picture.
-pub struct OverlaySig(std::collections::hash_map::DefaultHasher);
-
-impl OverlaySig {
-    pub fn new(inner: Rect) -> OverlaySig {
-        use std::hash::Hash;
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        (inner.x, inner.y, inner.width, inner.height).hash(&mut h);
-        OverlaySig(h)
-    }
-
-    pub fn add(&mut self, id: u64, at: Rect) {
-        use std::hash::Hash;
-        (id, at.x, at.y, at.width, at.height).hash(&mut self.0);
-    }
-
-    pub fn finish(&self) -> u64 {
-        use std::hash::Hasher;
-        self.0.finish()
-    }
-}
+pub use konoma_widgets::picture_overlay::OverlaySig;
 
 /// Where the picture `r` (in canvas cells) lands inside `inner`, or `None` when none of it is
 /// shown: it starts outside, or reaches past the right edge.

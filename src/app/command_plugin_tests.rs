@@ -304,9 +304,17 @@ fn a_command_result_for_a_preview_left_behind_is_dropped() {
     let (tx, rx) = channel();
     app.attach_media_loader(tx);
     app.enter_preview(&file);
+    let cancelled = app.media_gen;
     app.enter_preview(&other); // moves on before the command has been applied
-    while let Ok(res) = rx.recv_timeout(Duration::from_millis(500)) {
+    loop {
+        let res = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("cancelled command: its final worker answer must arrive");
+        let done = res.gen == cancelled && !res.is_layout_only();
         app.apply_media(res);
+        if done {
+            break;
+        }
     }
     assert!(
         app.tab.command_out.is_none(),

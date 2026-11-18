@@ -37,19 +37,10 @@ fn all_lists_are_listed_once() {
 #[test]
 fn the_list_of_lists_names_every_list() {
     all_lists_are_listed_once();
-    for l in [
-        ListId::Changes,
-        ListId::Log,
-        ListId::Graph,
-        ListId::Branches,
-        ListId::Worktrees,
-        ListId::Bookmarks,
-        ListId::Tabs,
-        ListId::Outline,
-    ] {
+    for l in [ListId::Bookmarks, ListId::Tabs, ListId::Outline] {
         assert!(ListId::ALL.contains(&l), "{l:?}");
     }
-    assert_eq!(ListId::ALL.len(), 8);
+    assert_eq!(ListId::ALL.len(), 3);
 }
 
 // ---- moving along the shown rows --------------------------------------------------------------
@@ -130,35 +121,9 @@ fn a_tab_row_is_numbered_from_one_and_names_the_tab_and_its_root() {
 }
 
 #[cfg(feature = "git")]
-#[test]
-fn a_changes_row_shows_the_staged_mark_and_the_status_and_the_path() {
-    use crate::git::{ChangeEntry, FileStatus};
-    let (app, d) = app();
-    let staged = ChangeEntry {
-        path: d.join("s.txt"),
-        status: FileStatus::Added,
-        staged: true,
-    };
-    let loose = ChangeEntry {
-        path: d.join("u.txt"),
-        status: FileStatus::Modified,
-        staged: false,
-    };
-    let s = app.changes_row_text(&staged);
-    let u = app.changes_row_text(&loose);
-    assert!(s.starts_with("● "), "{s:?}");
-    assert!(u.starts_with("  "), "{u:?}");
-    assert!(s.contains("s.txt") && u.contains("u.txt"));
-    assert!(
-        s.chars().nth(2) == Some(FileStatus::Added.marker()),
-        "{s:?}"
-    );
-}
-
 // ---- starting, typing and clearing a query ----------------------------------------------------
-
 #[test]
-fn starting_a_query_empties_it_and_turns_typing_on_and_resets_a_filtered_copys_cursor() {
+fn starting_a_query_empties_it_and_turns_typing_on() {
     let (mut app, _d) = app();
     for l in ListId::ALL {
         app.list_filter_parts(l).0.push_str("old");
@@ -171,13 +136,6 @@ fn starting_a_query_empties_it_and_turns_typing_on_and_resets_a_filtered_copys_c
             assert!(app.list_filtering(l), "{l:?}");
         }
     }
-    app.tab.git_branch_sel = 4;
-    app.tab.git_worktree_sel = 5;
-    app.list_filter_start(ListId::Branches);
-    assert_eq!(app.tab.git_branch_sel, 0);
-    assert_eq!(app.tab.git_worktree_sel, 5, "the other list is not touched");
-    app.list_filter_start(ListId::Worktrees);
-    assert_eq!(app.tab.git_worktree_sel, 0);
 }
 
 fn type_str(app: &mut App, l: ListId, text: &str) {
@@ -248,78 +206,6 @@ fn clearing_a_query_runs_the_cursor_fix_for_the_overlay_lists_too() {
     assert!(!app.list_filtering(ListId::Bookmarks) && !app.list_filtering(ListId::Outline));
 }
 
-#[cfg(feature = "git")]
-#[test]
-fn a_query_moves_the_cursor_of_the_changes_the_log_and_the_graph_onto_a_shown_row() {
-    use crate::git::{ChangeEntry, CommitInfo, FileStatus, GraphRow};
-    let (mut app, d) = app();
-    app.tab.git_view_entries = ["a.rs", "b.rs", "c.txt"]
-        .iter()
-        .map(|n| ChangeEntry {
-            path: d.join(n),
-            status: FileStatus::Modified,
-            staged: false,
-        })
-        .collect();
-    app.tab.git_log = Some(
-        ["alpha", "beta", "gamma"]
-            .iter()
-            .map(|s| CommitInfo {
-                id: format!("id{s}"),
-                short: format!("s{s}"),
-                summary: (*s).to_string(),
-                author: "me".into(),
-                time_epoch: 0,
-            })
-            .collect(),
-    );
-    let row = |subject: &str, commit: bool| GraphRow {
-        graph: Vec::new(),
-        node: None,
-        node_col: None,
-        commit: commit.then(|| format!("c-{subject}")),
-        short: String::new(),
-        subject: subject.to_string(),
-        author: String::new(),
-        date: String::new(),
-        refs: String::new(),
-        worktree: false,
-    };
-    app.tab.git_graph = Some(vec![row("one", true), row("two", true), row("tree", true)]);
-    // Each list: a cursor on the first row, a query that shows only the third.
-    app.tab.git_view_sel = 0;
-    app.tab.git_log_sel = 0;
-    app.tab.git_graph_sel = 0;
-    app.list_filter_push(ListId::Changes, 'c');
-    app.list_filter_push(ListId::Changes, '.');
-    app.list_filter_push(ListId::Changes, 't');
-    assert_eq!(app.tab.git_view_sel, 2, "changes");
-    app.list_filter_push(ListId::Log, 'g');
-    assert_eq!(app.tab.git_log_sel, 2, "log");
-    app.list_filter_push(ListId::Graph, 'r');
-    app.list_filter_push(ListId::Graph, 'e');
-    assert_eq!(app.tab.git_graph_sel, 2, "graph");
-    // Esc and Backspace re-place them too (the cursor is on a row the shorter query shows).
-    app.list_filter_backspace(ListId::Graph);
-    assert_eq!(app.tab.git_graph_sel, 2);
-    // A connector row has no text, so any query hides it.
-    app.tab.git_graph = Some(vec![row("x", false), row("tx", true)]);
-    app.tab.git_graph_filter = "t".into();
-    assert_eq!(app.list_visible(ListId::Graph), Some(vec![1]));
-}
-
-// ---- which list is in front, and what is typing -----------------------------------------------
-
-#[cfg(feature = "git")]
-#[test]
-fn the_graph_picker_in_front_of_the_graph_has_no_filter() {
-    let (mut app, _d) = app();
-    app.tab.git_graph = Some(Vec::new());
-    assert_eq!(app.front_list(), Some(ListId::Graph));
-    app.git_graph_picker = true;
-    assert_eq!(app.front_list(), None, "the picker takes `/` for nothing");
-}
-
 #[test]
 fn an_overlay_that_closed_under_the_typing_takes_the_typing_with_it() {
     let (mut app, _d) = app();
@@ -350,38 +236,4 @@ fn only_a_shown_row_is_acted_on() {
     assert!(!app.list_row_shown(ListId::Tabs, 1));
     app.tab_list_filter = "zzz".into();
     assert!(!app.list_row_shown(ListId::Tabs, 0));
-}
-
-/// A filtered copy (the branch list) keeps its cursor inside the copy when the query changes by
-/// typing, by Backspace and by Esc.
-#[cfg(feature = "git")]
-#[test]
-fn every_edit_of_a_query_clamps_the_cursor_of_a_filtered_copy() {
-    use crate::git::BranchInfo;
-    let (mut app, _d) = app();
-    app.tab.git_branches = Some(
-        ["main", "dev", "fix"]
-            .iter()
-            .map(|n| BranchInfo {
-                name: (*n).to_string(),
-                is_current: false,
-            })
-            .collect(),
-    );
-    // Typing: only `main` has an `m`.
-    app.tab.git_branch_sel = 2;
-    app.list_filter_push(ListId::Branches, 'm');
-    assert_eq!(app.tab.git_branch_sel, 0);
-    // Backspace: the cursor is put back inside the copy (it was left out of range).
-    app.tab.git_branch_sel = 9;
-    app.list_filter_backspace(ListId::Branches);
-    assert_eq!(
-        app.tab.git_branch_sel, 2,
-        "all three are shown again, the cursor is the last"
-    );
-    // Esc: the same.
-    app.tab.git_branch_filter = "m".into();
-    app.tab.git_branch_sel = 9;
-    app.list_filter_clear(ListId::Branches);
-    assert_eq!(app.tab.git_branch_sel, 2);
 }

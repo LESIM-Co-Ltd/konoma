@@ -53,6 +53,7 @@ pub(super) fn view(commits: Vec<CommitInfo>, cx: &ViewCx) -> View {
     if commits.is_empty() {
         return View::List(ListView {
             title: None,
+            heading: None,
             bottom: None,
             rows: vec![ListRow::new(
                 "empty",
@@ -67,6 +68,7 @@ pub(super) fn view(commits: Vec<CommitInfo>, cx: &ViewCx) -> View {
     let inline = cx.settings.str("commit_meta_align", "right") == "inline";
     View::List(ListView {
         title: None,
+        heading: None,
         bottom: None,
         rows: commits
             .into_iter()

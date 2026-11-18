@@ -1,0 +1,48 @@
+{
+  "root_help": {
+    "en": {
+      "graph": {"key": "h / Esc  ·  q", "host": "back to changes", "app": "quit"},
+      "branches": {"key": "h / Esc  ·  q", "host": "back to changes", "app": "quit"}
+    },
+    "ja": {
+      "graph": {"key": "h / Esc  ·  q", "host": "変更ハブへ戻る", "app": "終了"},
+      "branches": {"key": "h / Esc  ·  q", "host": "変更ハブへ戻る", "app": "終了"}
+    }
+  },
+  "en": {
+    "graph_worktree": {
+      "host": "D/k/j:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "D/k/j:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
+    },
+    "graph_commit": {
+      "host": "D/k/j:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "D/k/j:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
+    },
+    "jj_graph_commit": {
+      "host": "D/k/j:nav  l/Enter:detail  a:all revisions  b:bookmarks  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "D/k/j:nav  l/Enter:detail  a:all revisions  b:bookmarks  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
+    },
+    "jj_branches": {
+      "host": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
+    }
+  },
+  "ja": {
+    "graph_worktree": {
+      "host": "D/k/j:移動  l/Enter:詳細  s:基準  x:基準解除  b:ブランチ  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+      "app": "D/k/j:移動  l/Enter:詳細  s:基準  x:基準解除  b:ブランチ  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
+    },
+    "graph_commit": {
+      "host": "D/k/j:移動  l/Enter:詳細  s:基準  x:基準解除  b:ブランチ  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+      "app": "D/k/j:移動  l/Enter:詳細  s:基準  x:基準解除  b:ブランチ  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
+    },
+    "jj_graph_commit": {
+      "host": "D/k/j:移動  l/Enter:詳細  a:全リビジョン  b:ブックマーク  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+      "app": "D/k/j:移動  l/Enter:詳細  a:全リビジョン  b:ブックマーク  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
+    },
+    "jj_branches": {
+      "host": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+      "app": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
+    }
+  }
+}

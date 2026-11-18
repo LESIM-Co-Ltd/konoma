@@ -26,18 +26,21 @@ widgets = ["dep:konoma-widgets"]
 # picture a plugin places looks the same in either. Off by default: a plugin does not need it.
 pictures = ["ratatui", "widgets", "dep:konoma-base", "dep:konoma-svg", "dep:image", "dep:libc", "dep:ratatui-image", "dep:ureq"]
 # The seams of `canvas_pictures` that a test in another crate calls (a `cfg(test)` is only true
-# while this crate's own tests build). Enabled by the root package's `[dev-dependencies]` only.
-test-hooks = ["konoma-base?/test-hooks"]
+# while this crate's own tests build). Enabled by this crate's and the host's dev-dependencies.
+test-hooks = ["konoma-base?/test-hooks", "konoma-widgets?/test-hooks"]
 # What a host decides about a plugin's declared actions and the typing it takes for a canvas
 # (`host`): the one rule konoma and the standalone app share. Needs the shared key type
 # (`config`) and the terminal's key event (crossterm).
 host = ["config", "dep:crossterm"]
+# Project discovery, watching and session ownership (`host::project`), shared by konoma and the
+# standalone app. The owner prepares content with the shared widgets and VCS data types.
+project-host = ["host", "dep:notify", "dep:konoma-base", "widgets", "ratatui", "dep:konoma-vcs-core", "dep:konoma-svg", "dep:konoma-media-core", "dep:image"]
 # The standalone app: a plugin program given a file shows it in a terminal of its own (a minimal
 # host: raw mode, an alternate screen, the display types drawn with `ratatui_draw` and the canvas
 # pictures, so it includes `pictures`). Off by
 # default, and the host (konoma) does not turn it on, so it pulls in no terminal library
 # (crossterm).
-app = ["proc", "ratatui", "pictures", "config", "host", "dep:crossterm", "dep:konoma-host-core", "konoma-host-core/clipboard"]
+app = ["proc", "ratatui", "pictures", "config", "host", "project-host", "dep:crossterm", "dep:konoma-host-core", "konoma-host-core/clipboard"]
 
 [dependencies]
 # File-name globs of the display bindings (case-insensitive, brace alternatives).
@@ -72,13 +75,22 @@ ureq = { workspace = true, optional = true }
 ratatui-image = { workspace = true, optional = true }
 
 # Drawing (`ratatui` feature) and the terminal of the standalone app (`app` feature).
-ratatui = { workspace = true, optional = true }
+# `scrolling-regions`: only `Terminal::insert_before` with an inline viewport changes (konoma has none);
+# `ratatui_backend` implements the two scroll methods the feature adds to `Backend`.
+ratatui = { workspace = true, optional = true, features = ["scrolling-regions"] }
 crossterm = { workspace = true, optional = true }
 # The key layers 0-3 the app shares with the host (`app` feature): one declaration, so a key means
 # the same in konoma and in a plugin program.
 konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional = true }
+# Native file notifications of the project watcher (`project-host` feature).
+notify = { workspace = true, optional = true }
+# Shared diff data used by the project owner (`project-host` feature).
+konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0", optional = true }
+konoma-media-core = { path = "../konoma-media-core", version = "0.1.0", optional = true }
 
 [dev-dependencies]
+# Integration tests compile the library without cfg(test), like the root host's tests do.
+konoma-plugin = { path = ".", features = ["test-hooks"] }
 konoma-test-support = { path = "../konoma-test-support" }
 # The test seams of the discard thread (the landing tests ask what was handed to it).
 konoma-base = { path = "../konoma-base", features = ["test-hooks"] }

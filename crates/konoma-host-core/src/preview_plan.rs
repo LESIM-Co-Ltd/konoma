@@ -224,6 +224,15 @@ pub fn footer_plan(ctx: CoreContext, st: &PreviewState) -> Vec<PvFoot> {
             PvFoot::Group(PvGroup::Tabs, CoreMsg::HintTab),
             PvFoot::Core(CoreFoot::Options),
         ],
+        CoreContext::Diff => vec![
+            PvFoot::Core(CoreFoot::Scroll),
+            PvFoot::Core(CoreFoot::HScroll),
+            PvFoot::Core(CoreFoot::DiffLayout),
+            PvFoot::Core(CoreFoot::BackWithEsc),
+            PvFoot::Core(CoreFoot::Options),
+            PvFoot::Core(CoreFoot::Edit),
+            PvFoot::Core(CoreFoot::Open),
+        ],
         CoreContext::Canvas => vec![
             PvFoot::Core(CoreFoot::Back),
             PvFoot::Core(CoreFoot::PageTurn),
@@ -478,6 +487,20 @@ pub fn help_order(ctx: CoreContext, st: &PreviewState) -> Vec<PreviewOp> {
             v.push(core(CoreAction::CyclePathStyle));
             v.extend_from_slice(BACK);
         }
+        CoreContext::Diff => {
+            v.extend_from_slice(PvGroup::Scroll.ops());
+            v.extend_from_slice(PvGroup::Ends.ops());
+            v.extend_from_slice(HSCROLL);
+            v.extend_from_slice(LINE_ENDS);
+            v.push(core(CoreAction::CycleDiffLayout));
+            v.extend_from_slice(PAGE_TURN);
+            v.extend_from_slice(&launch);
+            v.push(host(HostOp::Refresh));
+            v.extend_from_slice(PAGE_KEYS);
+            v.extend_from_slice(HALF_KEYS);
+            v.push(core(CoreAction::CyclePathStyle));
+            v.extend_from_slice(BACK);
+        }
         CoreContext::Canvas => {
             v.extend_from_slice(PAGE_TURN);
             v.push(core(CoreAction::ToggleOutline));
@@ -628,7 +651,7 @@ pub fn fixed_keys(ctx: CoreContext) -> Vec<PvFixed> {
         }
         // The grid opens the full-cell popup and the popup closes itself (the same toggle).
         CoreContext::Table => v.push(own(KeyCode::Enter, PreviewOp::ToggleTableCell)),
-        CoreContext::Image | CoreContext::Canvas => {}
+        CoreContext::Image | CoreContext::Canvas | CoreContext::Diff => {}
     }
     v
 }
@@ -641,7 +664,9 @@ pub fn unkeyed(ctx: CoreContext) -> Vec<PreviewOp> {
     match ctx {
         CoreContext::Text => vec![path, wrap],
         CoreContext::Document => vec![path, wrap, host(HostOp::ToggleFocusedItem)],
-        CoreContext::Image | CoreContext::Table | CoreContext::Canvas => vec![path],
+        CoreContext::Image | CoreContext::Table | CoreContext::Canvas | CoreContext::Diff => {
+            vec![path]
+        }
     }
 }
 

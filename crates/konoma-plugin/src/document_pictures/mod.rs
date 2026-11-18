@@ -5,6 +5,8 @@
 //! The host owns the cache the pixels go into, the threads, the picker and the drawing.
 
 pub mod files;
+#[cfg(feature = "project-host")]
+mod media_diff;
 pub mod remote;
 pub mod requests;
 pub mod resources;

@@ -96,11 +96,97 @@ pub fn count_file_diff_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
 /// already exist. Distinct from `app::follow::tests::init_git_repo`, a shell (`git init` +
 /// `git config`) variant that fixture also needs — kept separate rather than folded in here (see
 /// that module for why).
+///
+/// The initial branch is `master` explicitly: `git2::Repository::init` would take it from the
+/// machine's `init.defaultBranch`, and frozen frames name the branch.
 #[cfg(feature = "git")]
 pub fn init_git_repo(dir: &std::path::Path) {
-    let repo = git2::Repository::init(dir).unwrap();
+    let mut options = git2::RepositoryInitOptions::new();
+    options.initial_head("master");
+    let repo = git2::Repository::init_opts(dir, &options).unwrap();
     let mut cfg = repo.config().unwrap();
     cfg.set_str("user.name", "Test").unwrap();
     cfg.set_str("user.email", "test@example.com").unwrap();
     cfg.set_str("commit.gpgsign", "false").ok();
+}
+
+#[cfg(all(test, feature = "git"))]
+mod tests {
+    const CHILD: &str = "KONOMA_INIT_BRANCH_CHILD";
+
+    /// libgit2 reads `init.defaultBranch` from the XDG and `$HOME` configs, so the machine's own
+    /// setting would leak into a repository made with `Repository::init`. The scenario runs in a
+    /// child process whose HOME and XDG_CONFIG_HOME both set it to `main`: libgit2 resolves its
+    /// config search paths once per process, so only a fresh process can be controlled.
+    #[test]
+    fn init_git_repo_names_master_even_when_the_machine_default_is_main() {
+        let name =
+            "testing::tests::init_git_repo_names_master_even_when_the_machine_default_is_main";
+        if std::env::var_os(CHILD).is_some() {
+            let dir = konoma_test_support::unique_tmp("init_branch_child");
+            std::fs::create_dir_all(&*dir).unwrap();
+            super::init_git_repo(&dir);
+            let repo = git2::Repository::open(&*dir).unwrap();
+            let head = repo.find_reference("HEAD").unwrap();
+            assert_eq!(head.symbolic_target().unwrap(), Some("refs/heads/master"));
+            return;
+        }
+        let home = konoma_test_support::unique_tmp("init_branch_home");
+        let xdg_git = home.join("xdg").join("git");
+        std::fs::create_dir_all(&xdg_git).unwrap();
+        let main = "[init]\n\tdefaultBranch = main\n";
+        std::fs::write(xdg_git.join("config"), main).unwrap();
+        std::fs::write(home.join(".gitconfig"), main).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .env("HOME", &*home)
+            .env("XDG_CONFIG_HOME", home.join("xdg"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_GLOBAL")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.lines().any(|s| s == "running 1 test"), "{stdout}");
+    }
+
+    /// Guards the guard: with `Repository::init` and that same environment the branch is `main`,
+    /// so the test above can only pass because `init_git_repo` names the branch itself.
+    #[test]
+    fn the_scratch_environment_really_defaults_to_main() {
+        let name = "testing::tests::the_scratch_environment_really_defaults_to_main";
+        if std::env::var_os(CHILD).is_some() {
+            let dir = konoma_test_support::unique_tmp("init_branch_plain");
+            std::fs::create_dir_all(&*dir).unwrap();
+            let repo = git2::Repository::init(&*dir).unwrap();
+            let head = repo.find_reference("HEAD").unwrap();
+            assert_eq!(head.symbolic_target().unwrap(), Some("refs/heads/main"));
+            return;
+        }
+        let home = konoma_test_support::unique_tmp("init_branch_home_plain");
+        let xdg_git = home.join("xdg").join("git");
+        std::fs::create_dir_all(&xdg_git).unwrap();
+        std::fs::write(xdg_git.join("config"), "[init]\n\tdefaultBranch = main\n").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .env("HOME", &*home)
+            .env("XDG_CONFIG_HOME", home.join("xdg"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_CONFIG_GLOBAL")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.lines().any(|s| s == "running 1 test"), "{stdout}");
+    }
 }

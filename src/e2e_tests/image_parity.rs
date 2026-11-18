@@ -168,6 +168,29 @@ pub(super) fn open_nested(s: &mut Sim, rel: &str) {
     }
 }
 
+/// Receive every owed media answer, including a layout sent ahead and jobs started by an
+/// answer. The loading state records outstanding work; it is never polled against the clock.
+/// A key that starts no work never reads the channel (its answer may have landed inline).
+pub(super) fn await_media(s: &mut Sim, file: &str, key: &str) {
+    let deadline = std::time::Instant::now() + DRAIN_WAIT;
+    while s.app.is_media_loading() {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or_else(|| panic!("{file} [{key}]: media loader did not finish"));
+        let res = s
+            .media_rx
+            .as_ref()
+            .expect("with_media")
+            .recv_timeout(left)
+            .unwrap_or_else(|e| panic!("{file} [{key}]: no answer from the media loader: {e:?}"));
+        assert!(
+            s.app.apply_media(res),
+            "{file} [{key}]: the answer is current"
+        );
+        s.draw();
+    }
+}
+
 /// The host after [`host_shot_at`]'s presses, not yet read: for a test that reads more than the
 /// screen (the clipboard, the notice).
 pub(super) fn host_sim_at(
@@ -185,15 +208,9 @@ pub(super) fn host_sim_at(
         s.app.attach_image_backend(Picker::halfblocks(), req_tx);
     }
     open_nested(&mut s, file);
-    // The decode runs on the loader's thread and its answer is awaited; then every resize the
-    // draw asks for is answered on this thread until a draw asks for no more.
-    if picker {
-        let rx = s.media_rx.as_ref().expect("with_media");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(20))
-            .unwrap_or_else(|e| panic!("{file}: no answer from the media loader: {e:?}"));
-        assert!(s.app.apply_media(res), "{file}: the answer is current");
-    }
+    // A layout can arrive before the decode; wait for the whole load, then answer every resize
+    // on this thread until a draw asks for no more. Repeat after each key, before the next key.
+    await_media(&mut s, file, "<open>");
     let settle = |s: &mut Sim, req_rx: &mut tokio::sync::mpsc::UnboundedReceiver<_>| {
         s.draw();
         while let Ok(req) = req_rx.try_recv() {
@@ -210,6 +227,7 @@ pub(super) fn host_sim_at(
     for (code, mods) in presses(spec) {
         s.press(code, mods);
         assert!(!s.quit, "the host ended before the keys ran out: {spec}");
+        await_media(&mut s, file, &format!("{code:?} {mods:?}"));
         settle(&mut s, &mut req_rx);
     }
     s
@@ -221,6 +239,75 @@ pub(super) fn host_zoom(rows: &[String]) -> Option<String> {
         .split_whitespace()
         .find(|w| w.starts_with('x') && w[1..].parse::<f64>().is_ok())
         .map(str::to_string)
+}
+
+#[test]
+fn host_picture_keys_wait_for_media_answers_and_leave_no_op_keys_alone() {
+    struct Pages(Arc<std::sync::Mutex<Vec<usize>>>);
+    impl Plugin for Pages {
+        fn manifest(&self) -> Manifest {
+            PngPlugin.manifest()
+        }
+
+        fn open(&self, _input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Ok(Box::new(Pages(self.0.clone())))
+        }
+    }
+    impl Session for Pages {
+        fn layout(&self) -> Layout {
+            Layout {
+                pages: Some(konoma_plugin::view::PageLayout::Separate {
+                    count: Some(2),
+                    titles: Vec::new(),
+                }),
+                ..Layout::default()
+            }
+        }
+
+        fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+            let page = req.page.unwrap_or(0);
+            self.0.lock().unwrap().push(page);
+            let color = if page == 0 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 255, 255]
+            };
+            Ok(View::Image(ImageView::new(ImageData::Rgba {
+                width: 1,
+                height: 1,
+                pixels: color.to_vec().into(),
+            })))
+        }
+    }
+
+    let dir = fixtures();
+    let root = canon(&dir);
+    for (spec, expected) in [
+        ("+ + + k", vec![0]),
+        ("+ + + k J", vec![0, 1]),
+        ("J J j K K k", vec![0, 1, 0]),
+    ] {
+        let views = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let _plugin =
+            super::plugin_act_parity::MediaPluginGuard::set(Arc::new(Pages(views.clone())));
+        let s = host_sim_at(&root, "pic.png", HOST_H, spec, true, None);
+        assert!(
+            !s.app.is_media_loading(),
+            "pic.png [{spec}]: the shot must wait for the last key's media answer"
+        );
+        assert_eq!(*views.lock().unwrap(), expected, "pic.png [{spec}]");
+        let color = if expected.last() == Some(&0) {
+            [255, 0, 0, 255]
+        } else {
+            [0, 0, 255, 255]
+        };
+        assert_eq!(
+            s.app.shown_picture_rgba().unwrap().2,
+            color,
+            "pic.png [{spec}]"
+        );
+        assert!(!s.app.image_viewer.resize_pending(), "pic.png [{spec}]");
+    }
 }
 
 /// The zoom the app's footer shows.

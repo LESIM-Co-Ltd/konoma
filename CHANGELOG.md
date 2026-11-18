@@ -6,27 +6,13 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
-- Internal: move the graph's branch panel into a pushed `konoma-vcs` screen alongside the legacy hub. Graph `b` takes precedence over the shared branches-tab key; changes/log retain that tab shortcut. The panel preserves legacy rows, tentative visibility, HEAD protection, priority reordering (including order retained on cancel), apply/base derivation, navigation, and localized footer/help. It has no filter and closes on tab changes. SDK screens can disable filtering and declare a transient lifetime; `PopScreen` returns to the underlying cursor. Project-screen actions may use Enter and J/K. The host still supplies title/tabs/frame; graph preferences retain the plugin settings described below.
-
-- Internal: full-screen project views now refetch on a second tab because their cache keys include the tab; movement on every project list now skips non-selectable rows and uses the keymap. Graph Left returns like `h` (legacy Left was a no-op); non-graph lists retain the prior fallback and detail keeps horizontal panning. Closing an active or inactive tab evicts its cached project views and notifies shared sessions to release only that tab's state; late view replies cannot recreate those entries. Protocol-2 children opt into `TabClosed` notices, and list-strip wire data has explicit chip and width limits.
-
-- Internal: move the Git/jj commit graph into `konoma-vcs` alongside the legacy hub, with styled lanes, a fixed legend, per-tab base/branch/range state and shared detail/copy actions. The SDK carries list titles/strips and tab/icon contexts. The project host supplies the tabs, frame, title and footer; `g` keeps its reserved top-of-list meaning, git omits the no-op `a`, empty repositories show a non-selectable message, worktree-row copy is silent, and `q` follows project-screen navigation. Graph preferences live under `[plugins.git]` / `[plugins.jj]`; legacy `[ui]` aliases follow in PR 5.
-
-- Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
+- Internal: full-screen project views now refetch on a second tab because their cache keys include the tab; movement on every project list now skips non-selectable rows and uses the keymap. Graph Left returns like `h`; non-graph lists retain the prior fallback and detail keeps horizontal panning. Closing an active or inactive tab evicts its cached project views and notifies shared sessions to release only that tab's state; late view replies cannot recreate those entries. Protocol-2 children opt into `TabClosed` notices, and list-strip wire data has explicit chip and width limits.
 
 - Project confirmations keep cancellation visible when fitting narrow/CJK status lines, safely cancel malformed prompt stages, and color choices by an explicit `ConfirmChoice::destructive()` declaration instead of their key. Child-process fallback rows are always non-selectable and all appear when filtering has no matches; VCS builds without the `git` feature omit write actions on every screen.
 
-- Internal: move the Git branch and read-only jj bookmark lists into a `konoma-vcs` tab alongside the legacy hub, with name copying and guarded Git checkout/create/safe-or-force delete. Checkout and create stay on the tab; empty lists can open. The shared project navigation/filter/back controls remain before plugin acts (checkout, new, delete), and the copy menu keeps its generic title. On jj, write keys that cannot act are hidden. All project confirmation dialogs now use `key = label` instead of `key: label`, show explicitly destructive choices (including branch force-delete on `!`) in red, and give destructive dialogs a red border. Confirmation choices can declare concise status labels.
-
 - Worktree changes compute once per `d` and reuse that snapshot for the first diff view; empty refreshes show a message. Worktree filters match branch and path separately, and vanished switch targets keep the project screen. Project help keeps open-key aliases not covered by plugin help. Project list filters ignore control/Alt chords and control characters while preserving Shift text; the legacy hub already ignores Ctrl chords and is unchanged.
 
-- Project list help now lists `/` on log and changes screens, where it filters rows, and hides `V` on both because they do not enable marks. Markable project lists still show `V` and toggle row marks; the legacy hub help is unchanged.
-
-- Internal: move Git's worktree list into `konoma-vcs` alongside the unchanged legacy hub, with switch, new-tab, create and pushed changes. Accepted differences: project title/tabs/frame and navigation hints; empty lists show a message; Enter on the current worktree stays on the list; Ctrl-t is silent and unlisted for current/bare/unavailable rows; jj has no worktrees screen or w key; `/` is first in the footer. Settings live under `[plugins.git]` (legacy-name reading follows later). Project changes loses its duplicate Enter footer hint; log already had one. SDK rows gain initial selection and filter fallback, SwitchRoot gains an optional success message, and optional screen filter labels retain legacy wording without reordering shared project controls.
-- Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
-- Internal: move Git and jj commit detail into a pushed `konoma-vcs` screen alongside the legacy hub in tests; project diff views gain styled headers, file paths and cached unified/split drawing, with shared text scrolling and host-owned list opening through `l` / Right.
-
-- Internal: add Git and jj log screens alongside the legacy hub in tests, with no user-visible change; plugin list rows gain optional styled `ListRow::right` suffixes and `ListRow::filter_text` matching text, preserved by the child-process protocol.
+- Project list help now lists `/` on log and changes screens, where it filters rows, and hides `V` on both because they do not enable marks. Markable project lists still show `V` and toggle row marks.
 
 - Project confirmations now cancel with `n` / `N` / `Esc` and the host's localized cancellation flash, accept uppercase fallback keys, and ignore `Enter`; `n` and `N` are reserved for cancelling.
 
@@ -36,10 +22,15 @@ All notable changes to konoma are documented in this file. The format is based o
 
 - Project confirmations can include the invoked row's short `ListRow::name` through `{row}`, and non-destructive confirmations can use `Confirmation::setting` to respect a boolean plugin preference.
 
-- Internal: begin moving Git and jj changes screens into `konoma-vcs`, exercised alongside the legacy hub in tests; there is no user-visible change.
+- Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
+- `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
 
 ### Added
 
+- **Git and jj project screens.** `p` now opens version-control screens supplied by the standard `git` and `jj` plugins (crate `konoma-vcs`) instead of the built-in hub, with the same frame, titles, footers and help. The screens are tabs drawn on the right of the top edge; `Tab` / `Shift-Tab` walk them, and each has a jump key (`p` changes, `b` branches, `w` worktrees; the log and the graph have none by default) that you rebind in `[keys.git]` / `[keys.jj]` as `goto_changes`, `goto_log`, `goto_graph`, `goto_branches`, `goto_worktrees`. `q` / `h` on a top-level screen return to where `p` was pressed (on a pushed screen such as a commit's detail, `q` returns to the screen below it, and on the Git detail `h` scrolls sideways), and `Esc` on a preview opened from a project returns to the project.
+- The log and the branches screens show an empty row (`(no commits)`, `(no branches)`) instead of refusing to open; checkout and create on the branches screen stay there; a discard from a diff opened in the tree goes to the changes screen.
+- While a write runs, the other action keys are hidden and do nothing, and quitting konoma asks first.
+- The standalone program `konoma-vcs [directory]` opens the version-control project of a directory (the current one if omitted); it exits with 2 when the directory does not exist, is not a directory or holds no project (or the arguments are wrong), and with 1 when reading the directory fails, the project cannot be opened, or the terminal is unusable.
 - Project input received during a view fetch is retained for the current screen and dispatched
   after its reply, including dialogs and navigation. Refreshes preserve row identities, queued
   actions recheck their guards, and screen-jump collisions only suppress keys in project screens.
@@ -190,6 +181,9 @@ All notable changes to konoma are documented in this file. The format is based o
 - **A demo plugin that is a program of its own.** `crates/konoma-demo-clock` (not published) shows `*.konoma-demo` files as a canvas drawn with ratatui widgets (a clock with a gauge, a picture and a line editor): `cargo build -p konoma-demo-clock`, then `konoma --plugin target/debug/konoma-demo-clock samples/demo.konoma-demo`. It replaces the temporary `demo-canvas` build feature and its `KONOMA_CANVAS_TRACE` log, which are gone.
 
 ### Changed
+- The old per-screen key tables (`[keys."git.changes"]`, `[keys."jj.log"]`, `[keys.git_log]`, ...) are still read: the plugin operations written there (`git_stage`, `git_open_branches`, ...) move to `[keys.git]` / `[keys.jj]` with a rename notice, while host actions written there (`git_close`, `git_launch_tool`, `refresh`, `noop` on a key several screens share) stay in the table and act on that screen only. A few old hub names are also routed when bound in another table such as `[keys.tree]` (no rename notice): `git_open_log`, `git_open_graph`, `git_open_branches`, `git_open_worktrees`, `git_worktree_diff`, `git_commit`, `git_stage_all`, `git_unstage_all`, `jj_sync`, `git_graph_toggle_all`, `branch_create` and `worktree_create` open the project like `p` and run the operation when the repository's plugin has it (on a project screen they run the open project's operation), and `worktree_close` opens the project like `p`. The other old names, which needed a row or a list of the old screens (`git_stage`, `git_open_detail`, `branch_checkout`, ...), do nothing outside a project screen.
+- The Git and jj settings moved into the plugin tables: `[plugins.jj] confirm_sync` (was `[ui] confirm_jj_sync`), `commit_meta_align`, `graph_max_branches` and `graph_base_branches` (were in `[ui]`) in `[plugins.git]` / `[plugins.jj]`, and `[plugins.git] worktree_dir` (was `[git] worktree_dir`). The old names are still read and the new name wins; a notice names the rename. `[plugins.git] read_only = true` makes the git screens read-only and `[plugins.jj] read_only = true` the jj screens. `[plugins.git]` / `[plugins.jj] path_style` is not a rename: it overrides `[ui] path_style` for the project screens (falling back to it), and no notice is shown for it.
+- jj bookmarks are read-only (only copying a name); jj `w` and git `R` do nothing on these screens; `y` with nothing to copy does nothing.
 - Internal: the git/jj reading core (`konoma-vcs-core`) no longer depends on ratatui; it describes graph colors with its own small types and the host converts them when drawing. No user-visible change.
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
   name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
@@ -266,6 +260,29 @@ All notable changes to konoma are documented in this file. The format is based o
   `konoma-widgets` (display parts for ratatui: the Markdown document renderer, windowed file reading, kitty graphics
   transmit, image layout, diff rows and icon glyphs) and `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
   from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
+
+### Removed
+
+- The built-in Git/jj hub (its screens, controllers and state) is gone; the plugin screens above replace it. The old per-screen key tables and the old action names are still read (see Changed).
+
+### Plugin SDK
+
+Source breaks (a plugin that builds or matches these must change; none of the types is `#[non_exhaustive]`):
+- Struct literals and exhaustive field patterns. No feature: `ListView.heading` (`Option<ListHeading>`), `DiffView.title` (`Option<Line>`). `proc`: `WDiffView.title`, and `WView::ListDecorated.heading` (`Option<WListHeading>`). `app`: `app::Display.combined_status`, `app::AppActs.jumps`. `app` + `test-hooks`: `app::LaunchCx.gui_published`. Add the new fields (or `..Default::default()` where the type has one).
+- `app`: `app::AppError` gained the variants `NoDirectory`, `NotADirectory`, `NoProject`, `ProjectDetection` and `ProjectOpen`; an exhaustive `match` on it needs arms for them.
+- `app`: `Pictures::draw_document` takes two more arguments, `gutter: u16` and `focus: Option<DocPictureFocus>`.
+
+Source-compatible additions (new fields on `#[non_exhaustive]` types, default trait methods, re-exports): `ListRow.counted`, `ProjectScreen.jump_hint` / `new_tab_hint`, `HintGroup.members`; with `proc`, the wire fields `WProjectScreen.jump_footer` / `jump_label` / `new_tab_footer` and `WListRow.counted`. `EventSource` gained the default methods `project_fenced` / `project_idle` (`app` + `test-hooks`). `canvas_pictures::overlay::OverlaySig` is now a re-export of the `konoma-widgets` type and `add` takes `impl Hash` (`pictures`).
+
+New API, by gate:
+- No feature: `ListHeading` (and `ListRow::counted`, `DiffView::title`, `ProjectScreen::jump_hint` / `new_tab_hint`).
+- `proc`: `WListHeading`. `app` + `proc`: `cli_main_projects`.
+- `config`: `MovedProjectSetting`, `MOVED_PROJECT_SETTINGS`, `OldNameReading`, and the readers `confirm_jj_sync`, `commit_meta_align`, `graph_base_branches`, `graph_max_branches`, `worktree_dir`.
+- `host`: `FixedMenuLabel` / `fixed_menu_items`, `WriteVerdict` / `write_policy`, `JumpBinding` / `jump_op_id` / `jump_target` / `jump_key_of` / `bind_jumps`.
+- `widgets` + `ratatui`: `PictureRequests`, `RenderedDocument::requests`, `visible_line_range`. `pictures` + `project-host`: `DocumentPictures::place_media_diff_picture` / `rebuild_media_svg`.
+- `app`: the modules `app::project` (`prepare_projects`, `run_projects`, `run_project_with`, `ProjectServices`, `PreparedProjects`, `ProjectLaunchTarget`, `ProjectLoopCx`, `ProjectSettings`, `StandaloneSurface`, ...) and `app::diff_screen` (`DiffScreenState`, `FileDiffRequest`, `FileDiffData`, `DiffScreenAction`, ...); newly exported `DocPics`, `Laid` and the new `DocPictureFocus`.
+- `project-host`: `host::project` (project detection, the project screens' actions, input, drawing, presentation, runtime and the diff / Markdown-diff / media-diff workers, in submodules; main types `ProjectHost`, `ProjectDetection`, `ProjectPresentation`, `ProjectDrawValues`, `ProjectRuntime`, `MdDiffWorker`, `MediaDiffWorker`) and `host::file_preview` (`FilePreviewSource`, `FilePreviewPlan`, `resolve_file_preview`).
+- `test-hooks` adds test-only probes (`*_for_test` functions, `test_hooks` / `media_test_hooks` / `test_facts` modules, `TestCanvas`); they are not part of the supported API.
 
 ### Fixed
 - A dialog or popup (the input and confirm dialogs, the batch rename preview, the tab list, the bookmark list, the outline, the file info, the table cell popup and the `?` help) drawn over a wide character (CJK) that its left edge cut in two showed half of that character where its left border should be, in a real terminal. The character is now blanked before the overlay is drawn.

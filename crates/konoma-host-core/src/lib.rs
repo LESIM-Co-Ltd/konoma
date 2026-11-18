@@ -14,6 +14,7 @@ pub mod lang;
 pub mod menu;
 pub mod paths;
 pub mod preview_plan;
+pub mod project;
 pub mod shared;
 pub mod sniff;
 pub mod term;

@@ -411,57 +411,6 @@ fn e2e_o_on_an_image_preview_opens_the_picture() {
 // `p` and `!`
 // ---------------------------------------------------------------------------------------------
 
-/// `p` opens the project's screen from the tree and from every kind of preview, `q` comes back to
-/// the preview; `!` queues the project's tool from the same places.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_p_and_bang_work_from_the_tree_and_every_preview() {
-    let dir = sandbox("nk_p_bang");
-    seed_repo(&dir);
-    std::fs::write(dir.join("notes.md"), "# T\n\ntext\n").unwrap();
-    std::fs::write(dir.join("data.csv"), "a,b\n1,2\n").unwrap();
-    write_solid_png(&dir.join("pic.png"), 8, 8, [1, 2, 3]);
-    let root = canon(&dir);
-    for (name, ctx) in [
-        ("", Context::Tree),
-        ("a.rs", Context::Text),
-        ("notes.md", Context::Document),
-        ("data.csv", Context::Table),
-        ("pic.png", Context::Image),
-        ("a.rs:diff", Context::Diff),
-    ] {
-        let mut s = Sim::with_config(&root, cfg_en()).with_picker();
-        s.app.ensure_git_status_now();
-        s.draw();
-        match name {
-            "" => {}
-            "a.rs:diff" => {
-                s.select("a.rs");
-                s.key('d');
-            }
-            f => {
-                s.select(f);
-                s.enter();
-            }
-        }
-        assert_eq!(s.app.key_context(), Some(ctx), "{name}");
-        assert!(action_enabled(&s.app, ctx, Action::OpenGitView), "{name}");
-        assert!(action_enabled(&s.app, ctx, Action::GitLaunchTool), "{name}");
-        let mode = s.app.tab.mode;
-        s.key('p');
-        assert!(s.app.is_git_view(), "{name}: p opens the project's screen");
-        s.key('q');
-        assert!(!s.app.is_git_view(), "{name}");
-        assert_eq!(
-            s.app.tab.mode, mode,
-            "{name}: q comes back to where p was pressed"
-        );
-        assert_eq!(s.app.key_context(), Some(ctx), "{name}");
-        s.key('!');
-        assert!(s.app.take_launch_git_tool(), "{name}: ! queues the tool");
-    }
-}
-
 /// Outside a repository neither is offered and both say why; `[external] git_tool = false`
 /// stops the tool alone.
 #[test]
@@ -488,7 +437,7 @@ fn e2e_p_and_bang_are_not_offered_outside_a_repository() {
             "{name}"
         );
         s.key('p');
-        assert!(!s.app.is_git_view(), "{name}");
+        assert!(!s.app.project_active(), "{name}: p opens no project screen");
         assert!(flash_is(&s, crate::i18n::Msg::NotAGitRepo), "{name}");
         s.key('!');
         assert!(!s.app.take_launch_git_tool(), "{name}");
@@ -526,268 +475,9 @@ fn e2e_bang_follows_the_git_tool_switch() {
 // Tab walks the screens
 // ---------------------------------------------------------------------------------------------
 
-#[cfg(feature = "git")]
-fn shows(s: &Sim) -> &'static str {
-    if s.app.is_git_worktrees() {
-        "worktrees"
-    } else if s.app.is_git_branches() {
-        "branches"
-    } else if s.app.is_git_graph() {
-        "graph"
-    } else if s.app.is_git_log() {
-        "log"
-    } else if s.app.is_git_view() {
-        "changes"
-    } else {
-        "none"
-    }
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_tab_walks_the_git_screens_both_ways() {
-    let dir = sandbox("nk_tab_cycle");
-    seed_repo_history(&dir);
-    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 140, 50);
-    s.key('p');
-    assert_eq!(shows(&s), "changes");
-    assert!(has_token(
-        &s,
-        s.app.key_context().unwrap(),
-        "Tab/⇧Tab:screens"
-    ));
-    let forward = ["log", "graph", "branches", "worktrees", "changes", "log"];
-    for want in forward {
-        s.tab();
-        assert_eq!(shows(&s), want);
-    }
-    let back = [
-        "changes",
-        "worktrees",
-        "branches",
-        "graph",
-        "log",
-        "changes",
-    ];
-    for want in back {
-        s.press(KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(shows(&s), want);
-    }
-    // The direct keys still go where they went.
-    s.key('b');
-    assert_eq!(shows(&s), "branches");
-    s.key('q');
-    s.key('w');
-    assert_eq!(shows(&s), "worktrees");
-    // Tab on a screen is listed in the help, worded for the screens that are in the cycle.
-    let ctx = s.app.key_context().unwrap();
-    let rows = crate::ops::help::rows_for(&s.app, ctx);
-    let row = rows
-        .iter()
-        .find(|r| r.actions.contains(&Action::GitScreenNext))
-        .expect("a help row for Tab");
-    assert_eq!(row.keys_text, "Tab / ⇧Tab");
-    assert_eq!(row.desc, "cycle changes/log/graph/branches/worktrees");
-}
-
-/// jj lists no worktrees, so its cycle goes changes, log, graph, bookmarks and round.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_tab_skips_the_worktrees_in_a_jj_repository() {
-    let Some(dir) = jj_seed_repo("nk_tab_jj") else {
-        return;
-    };
-    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 140, 50);
-    s.key('p');
-    assert_eq!(shows(&s), "changes");
-    let mut seen = Vec::new();
-    for _ in 0..4 {
-        s.tab();
-        seen.push(shows(&s));
-    }
-    assert!(!seen.contains(&"worktrees"), "{seen:?}");
-    assert_eq!(*seen.last().unwrap(), "changes", "{seen:?}");
-    let rows = crate::ops::help::rows_for(
-        &s.app,
-        Context::Screen(crate::keymap::Backend::Jj, crate::keymap::Screen::Changes),
-    );
-    let row = rows
-        .iter()
-        .find(|r| r.actions.contains(&Action::GitScreenNext))
-        .expect("a help row for Tab");
-    assert_eq!(row.desc, "cycle changes/log/graph/bookmarks");
-}
-
 // ---------------------------------------------------------------------------------------------
 // `/` on the changes list, the log and the graph
 // ---------------------------------------------------------------------------------------------
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row() {
-    let dir = sandbox("nk_filter_changes");
-    seed_repo(&dir);
-    let mut s = Sim::with_config(&canon(&dir), cfg_en());
-    s.key('p');
-    s.see("a.rs");
-    s.see("new.txt");
-    s.key('/');
-    assert!(s.app.is_git_view() && s.app.filtering_list().is_some());
-    assert_eq!(s.app.surface(), crate::keymap::Surface::ListFilter);
-    s.keys("new");
-    // The footer is the input line, the title carries the query and the count.
-    s.see("/new");
-    s.see("(1)");
-    s.dont_see("a.rs");
-    assert_eq!(
-        s.app
-            .git_view_selected()
-            .map(|p| p.file_name().unwrap().to_owned()),
-        Some("new.txt".into())
-    );
-    // Enter keeps the query and gives the keys back: `s` stages the row that is shown.
-    s.enter();
-    assert!(s.app.filtering_list().is_none());
-    assert_eq!(
-        s.app
-            .list_filter_query(crate::app::list_filter::ListId::Changes),
-        "new"
-    );
-    s.key('s');
-    assert_eq!(staged_of(&s.app, "new.txt"), Some(true));
-    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
-    // Esc drops the query (everything is back); the next Esc leaves the screen.
-    s.esc();
-    s.see("a.rs");
-    assert!(s.app.is_git_view());
-    s.esc();
-    assert!(!s.app.is_git_view());
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_slash_filter_moves_over_the_shown_rows_only() {
-    let dir = sandbox("nk_filter_move");
-    seed_repo(&dir);
-    std::fs::write(dir.join("c.rs"), "fn c() {}\n").unwrap();
-    let mut s = Sim::with_config(&canon(&dir), cfg_en());
-    s.key('p');
-    s.key('/');
-    s.keys(".rs");
-    s.enter();
-    // a.rs and c.rs match, new.txt does not.
-    let name = |s: &Sim| {
-        s.app
-            .git_view_selected()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-    };
-    assert_eq!(name(&s), Some("a.rs".into()));
-    s.key('j');
-    assert_eq!(name(&s), Some("c.rs".into()));
-    s.key('j');
-    assert_eq!(
-        name(&s),
-        Some("c.rs".into()),
-        "j stops at the last shown row"
-    );
-    s.key('G');
-    assert_eq!(name(&s), Some("c.rs".into()));
-    s.key('g');
-    assert_eq!(name(&s), Some("a.rs".into()));
-    // A query that matches nothing shows nothing and the cursor stays put.
-    s.key('/');
-    s.keys("zzz");
-    s.see("(0)");
-    s.esc();
-    s.see("new.txt");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_slash_filters_the_log_by_the_text_shown() {
-    let dir = sandbox("nk_filter_log");
-    seed_repo_history(&dir);
-    let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
-    s.key('l');
-    assert!(s.app.is_git_log());
-    s.see("alphacommit");
-    s.see("betacommit");
-    s.key('/');
-    assert_eq!(s.app.surface(), crate::keymap::Surface::ListFilter);
-    s.keys("beta");
-    s.see("/beta");
-    s.dont_see("alphacommit");
-    s.dont_see("gammacommit");
-    let want = s
-        .app
-        .git_log_entries()
-        .iter()
-        .find(|c| c.summary == "betacommit")
-        .map(|c| c.id.clone())
-        .expect("the beta commit");
-    assert_eq!(s.app.git_log_selected_id(), Some(want.clone()));
-    s.enter();
-    // The row that is shown is the one that opens.
-    s.enter();
-    assert!(s.app.is_git_detail());
-    s.see("betacommit");
-    s.key('q');
-    assert_eq!(s.app.git_log_selected_id(), Some(want));
-    // Esc: the query first, the screen second.
-    s.esc();
-    s.see("alphacommit");
-    assert!(s.app.is_git_log());
-    s.esc();
-    assert!(!s.app.is_git_log());
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_slash_filters_the_graph_and_hides_the_connectors() {
-    let dir = sandbox("nk_filter_graph");
-    seed_repo_history(&dir);
-    let mut s = Sim::with_hub_screen_keys(&canon(&dir));
-    s.key('p');
-    s.key('g');
-    assert!(s.app.is_git_graph());
-    s.key('/');
-    s.keys("gamma");
-    s.dont_see("alphacommit");
-    s.dont_see("betacommit");
-    s.see("gammacommit");
-    let row = s.app.git_graph_selected_row().cloned().expect("a row");
-    assert!(row.subject.contains("gamma"), "{}", row.subject);
-    s.enter();
-    s.esc(); // the query goes first
-    s.see("alphacommit");
-    assert!(s.app.is_git_graph());
-}
-
-/// The branch and worktree lists keep their filter, now through the same component: a paste
-/// reaches the worktree list's query too.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_branch_and_worktree_filters_are_the_same_component() {
-    let dir = sandbox("nk_filter_branch");
-    seed_repo_history(&dir);
-    let mut s = Sim::with_config(&canon(&dir), cfg_en());
-    s.key('p');
-    s.key('b');
-    s.key('/');
-    s.keys("feat");
-    assert_eq!(s.app.git_branch_query(), "feat");
-    assert_eq!(s.app.git_branch_view().len(), 1);
-    s.esc();
-    assert_eq!(s.app.git_branch_query(), "");
-    s.esc();
-    s.key('w');
-    s.key('/');
-    s.keys("zz");
-    assert_eq!(s.app.git_worktree_query(), "zz");
-    s.esc();
-    assert!(s.app.is_git_worktrees());
-}
 
 // ---------------------------------------------------------------------------------------------
 // `n` / `N`
@@ -961,7 +651,7 @@ fn e2e_n_steps_through_the_changed_blocks_of_a_document() {
 #[cfg(feature = "git")]
 fn diff_starts(s: &mut Sim) -> Vec<usize> {
     let lines = s.app.git_diff_lines();
-    crate::preview::gitdiff::change_block_starts(&lines)
+    konoma_widgets::gitdiff::change_block_starts(&lines)
 }
 
 #[cfg(feature = "git")]
@@ -1029,10 +719,10 @@ fn e2e_n_in_a_split_diff_lands_on_the_block_rows() {
     s.key('s'); // unified -> split
     assert!(s.app.diff_is_split(88));
     let diff = s.app.git_diff_lines();
-    let starts = crate::preview::gitdiff::change_block_starts(&diff);
+    let starts = konoma_widgets::gitdiff::change_block_starts(&diff);
     s.key('n');
     s.key('n');
-    let want = crate::preview::gitdiff::scroll_row_of_line(&diff, starts[1], true);
+    let want = konoma_widgets::gitdiff::scroll_row_of_line(&diff, starts[1], true);
     assert_eq!(s.app.tab.preview_scroll as usize, want);
 }
 
@@ -1068,106 +758,9 @@ fn e2e_r_reads_a_diff_again() {
     s.see("QUOKKA");
 }
 
-#[cfg(feature = "git")]
-#[test]
-fn e2e_r_reads_the_lists_again() {
-    let dir = sandbox("nk_r_lists");
-    seed_repo_history(&dir);
-    let root = canon(&dir);
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(&root)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    };
-    let mut s = Sim::with_hub_screen_keys(&root);
-    s.key('p');
-    s.key('l');
-    assert_eq!(s.app.git_log_entries()[0].summary, "gammacommit");
-    git(&["commit", "-q", "--allow-empty", "-m", "deltacommit"]);
-    s.key('r');
-    assert_eq!(s.app.git_log_entries()[0].summary, "deltacommit");
-    s.key('q');
-    s.key('b');
-    assert!(!s
-        .app
-        .git_branch_view()
-        .iter()
-        .any(|b| b.name == "fresh-branch"));
-    git(&["branch", "fresh-branch"]);
-    s.key('r');
-    assert!(s
-        .app
-        .git_branch_view()
-        .iter()
-        .any(|b| b.name == "fresh-branch"));
-}
-
 // ---------------------------------------------------------------------------------------------
 // `e` and `Ctrl-t` on the changes list
 // ---------------------------------------------------------------------------------------------
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list() {
-    let dir = sandbox("nk_list_row");
-    seed_repo(&dir);
-    let root = canon(&dir);
-    let mut s = Sim::with_config(&root, cfg_en());
-    let log = record(&mut s);
-    s.key('p');
-    let sel = s.app.git_view_selected().unwrap();
-    assert!(action_enabled(
-        &s.app,
-        s.app.key_context().unwrap(),
-        Action::RequestEdit
-    ));
-    s.key('e');
-    assert_eq!(s.app.take_pending_edit(), Some((sel.clone(), None)));
-    s.key('o');
-    assert_eq!(log.lock().unwrap().len(), 1);
-    assert_eq!(
-        log.lock().unwrap()[0].args,
-        vec![sel.to_string_lossy().into_owned()]
-    );
-    // Ctrl-t opens the row in a new tab and leaves the list in this one.
-    assert_eq!(s.app.tab_count(), 1);
-    s.ctrl('t');
-    assert_eq!(s.app.tab_count(), 2);
-    assert_eq!(s.app.tab.mode, Mode::Preview);
-    assert_eq!(s.app.tab.preview_path.as_deref(), Some(sel.as_path()));
-    s.key('[');
-    assert!(s.app.is_git_view(), "the first tab still shows the list");
-}
-
-/// A deleted file has nothing to edit or open: neither key is offered on its row.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_a_deleted_row_offers_neither_e_nor_o() {
-    let dir = sandbox("nk_list_deleted");
-    seed_repo(&dir);
-    std::fs::remove_file(dir.join("b.rs")).unwrap();
-    let mut s = Sim::with_config(&canon(&dir), cfg_en());
-    let log = record(&mut s);
-    s.key('p');
-    while s
-        .app
-        .git_view_selected()
-        .is_none_or(|p| !p.ends_with("b.rs"))
-    {
-        s.key('j');
-    }
-    let ctx = s.app.key_context().unwrap();
-    assert!(!action_enabled(&s.app, ctx, Action::RequestEdit));
-    assert!(!action_enabled(&s.app, ctx, Action::OpenExternal));
-    assert!(!action_enabled(&s.app, ctx, Action::OpenInNewTab));
-    s.key('e');
-    assert!(s.app.take_pending_edit().is_none());
-    s.key('o');
-    assert!(log.lock().unwrap().is_empty());
-}
 
 // ---------------------------------------------------------------------------------------------
 // The help

@@ -1,0 +1,55 @@
+# frozen vcs frames: e2e_vcs_changes_title_without_a_branch_matches_hub
+case icons=false title
+region x=0..23 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master  (1) ─|
+row 1 S|a23|
+case icons=false corner
+region x=59..60 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=false
+region x=0..58 y=2..8
+style a	Reset	Reset	REVERSED
+style b	LightGreen	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  U repo/new.txt                                          |
+row 2 S|a2b2a12c42|
+row 3 T|                                                          |
+row 3 S|c58|
+row 4 T|                                                          |
+row 4 S|c58|
+row 5 T|                                                          |
+row 5 S|c58|
+row 6 T|                                                          |
+row 6 S|c58|
+row 7 T|                                                          |
+row 7 S|c58|
+case icons=true title
+region x=0..21 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master  (1) ─|
+row 1 S|a21|
+case icons=true corner
+region x=59..60 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=true
+region x=0..58 y=2..8
+style a	Reset	Reset	REVERSED
+style b	LightGreen	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  U repo/new.txt                                          |
+row 2 S|a2b2a12c42|
+row 3 T|                                                          |
+row 3 S|c58|
+row 4 T|                                                          |
+row 4 S|c58|
+row 5 T|                                                          |
+row 5 S|c58|
+row 6 T|                                                          |
+row 6 S|c58|
+row 7 T|                                                          |
+row 7 S|c58|

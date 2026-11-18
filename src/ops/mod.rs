@@ -33,17 +33,3 @@ mod tests;
 mod write_guard_tests;
 
 pub use gate::{action_enabled, gate, Gate};
-
-/// Which backend's screens are open (git or jj): the half of a `git.changes` context name. jj when
-/// the background scan has settled on jj (`App::git_vcs`) or when the root itself is a jj
-/// workspace: the first frames of a screen opened before the scan lands must name jj's keys too.
-#[cfg(feature = "git")]
-pub fn backend(app: &crate::app::App) -> crate::keymap::Backend {
-    if app.git_vcs == crate::vcs::VcsKind::Jj
-        || crate::vcs::detect(&app.tab.root) == crate::vcs::VcsKind::Jj
-    {
-        crate::keymap::Backend::Jj
-    } else {
-        crate::keymap::Backend::Git
-    }
-}

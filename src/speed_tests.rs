@@ -801,21 +801,23 @@ fn diff_body(n: usize, marker: &str) -> String {
 }
 
 // GUARDS: (1) `file_diff` + diff-line colorization (stacked/side-by-side) stay roughly linear in the
-// diff size, and (2) opening + rendering every git view (hub / log / graph / branches / a large
-// diff) stays within a generous, deterministic ceiling. Covers git.rs (statuses / file_diff / log /
-// graph / branches) + preview/gitdiff.rs + ui/git.rs + the diff render in ui/preview.rs. Converted
+// diff size, and (2) opening + rendering every git view (the project's changes / log / graph / branches screens /
+// a large diff) stays within a generous, deterministic ceiling. Covers git.rs (statuses / file_diff / log /
+// graph / branches) + konoma-widgets' gitdiff + the diff render in ui/preview.rs. Converted
 // from wall-clock bounds to **deterministic allocation** checks — (1) an allocation-scaling ratio
 // (same technique as the markdown/highlight guards above: doubling the changed lines should roughly
 // double the allocation, not quadruple it), (2) a generous absolute allocation ceiling (bytes
 // allocated are CPU/load-independent, unlike `Instant`, so this doesn't need CI-noise headroom).
 // The fixture shrank (8 commits/3000 lines → 3 commits/2000 lines) since the guard no longer needs a
 // slow operation to be *measurable* — only correctness-of-scaling matters, not absolute size.
+/// Part (1) of the old `git_views_and_large_diff_render_is_bounded` (the old-hub views of part 2
+/// are ported to `vcs_hub_e2e_project_views_and_large_diff_render_is_bounded`): `file_diff` plus
+/// the stacked and side-by-side colorization allocate roughly linearly in the diff size. The
+/// baseline of `big.txt` is tiny on purpose, so doubling `n` doubles the whole diff.
 #[cfg(feature = "git")]
 #[test]
-fn git_views_and_large_diff_render_is_bounded() {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-    let dir = crate::test_support::unique_tmp("konoma_speed_git_views");
+fn git_file_diff_and_colorization_scale_linearly_with_the_diff_size() {
+    let dir = crate::test_support::unique_tmp("konoma_speed_git_diff_scaling");
     std::fs::create_dir_all(&dir).unwrap();
     let git = |a: &[&str]| {
         std::process::Command::new("git")
@@ -828,75 +830,34 @@ fn git_views_and_large_diff_render_is_bounded() {
     git(&["config", "user.email", "t@t"]);
     git(&["config", "user.name", "t"]);
     git(&["config", "commit.gpgsign", "false"]);
-    // A little history (log/graph exercise the DAG walk).
     for c in 0..3 {
         std::fs::write(dir.join(format!("f{c}.txt")), format!("v{c}\n")).unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", &format!("commit {c}")]);
     }
-    // Commit a **tiny** baseline for big.txt: `diff_alloc_for` below replaces its whole content, and
-    // if the committed baseline were itself large, the diff's removed-line count would stay ~fixed
-    // (dominated by the baseline) while only the added-line count grew with `n` — diluting the
-    // small-vs-large ratio below regardless of any real regression (confirmed while calibrating: with
-    // a 2000-line baseline, `n=500` vs `n=1000` produced diffs of 2500 vs 3000 total lines — only a
-    // 1.2x change, not 2x, because ~2000 of each diff was the constant removed baseline).
     std::fs::write(dir.join("big.txt"), diff_body(5, "line")).unwrap();
     git(&["add", "big.txt"]);
     git(&["commit", "-qm", "add big"]);
-
     let root = dir.canonicalize().unwrap();
 
-    // (1) file_diff + diff_lines + diff_lines_side_by_side scale near-linearly with the diff size.
     let diff_alloc_for = |n: usize| -> u64 {
         std::fs::write(dir.join("big.txt"), diff_body(n, "LINE changed")).unwrap();
         crate::mem_tests::allocated_by(|| {
             let dl = crate::git::file_diff(&root, &root.join("big.txt"));
-            assert!(!dl.is_empty(), "差分が取れる");
-            let lines = crate::preview::gitdiff::diff_lines(&dl, "txt", "TwoDark", 90);
-            assert!(!lines.is_empty(), "縦 diff 行を生成");
-            let _maxh = crate::preview::gitdiff::side_by_side_max_hscroll(&dl, 90);
+            assert!(!dl.is_empty(), "the diff is read");
+            let lines = konoma_widgets::gitdiff::diff_lines(&dl, "txt", "TwoDark", 90);
+            assert!(!lines.is_empty(), "stacked diff lines are produced");
+            let _maxh = konoma_widgets::gitdiff::side_by_side_max_hscroll(&dl, 90);
             let sbs =
-                crate::preview::gitdiff::diff_lines_side_by_side(&dl, "txt", "TwoDark", 90, 40);
-            assert!(!sbs.is_empty(), "横並び diff 行を生成");
+                konoma_widgets::gitdiff::diff_lines_side_by_side(&dl, "txt", "TwoDark", 90, 40);
+            assert!(!sbs.is_empty(), "side-by-side diff lines are produced");
         })
     };
     let small_alloc = diff_alloc_for(500);
     let large_alloc = diff_alloc_for(1000); // 2x changed lines
     assert!(
         large_alloc < small_alloc.saturating_mul(5) / 2, // 2.5x margin (measured ratio ~1.9x)
-        "2倍の差分行数で確保バイト数が2.5倍を超えた(回帰: O(n^2)?): small={small_alloc} large={large_alloc}"
-    );
-
-    // (2) Open and render each git view (hub / log / graph / branches / the large diff left by the
-    // last diff_alloc_for(1000) call above) within a generous absolute allocation ceiling. Each
-    // sub-view is **closed** (mirroring the real `q`/Esc navigation back to the hub) before the next
-    // is opened: the render dispatcher (ui/mod.rs) picks the view to draw by priority
-    // (detail > graph_picker > **graph** > log > branches > worktrees > hub > preview/tree) purely
-    // from which `tab.git_*` fields are `Some` — `open_git_branches`/`open_git_diff` don't clear
-    // `tab.git_graph`, so without closing first, `is_git_graph()` stays true and every subsequent
-    // render keeps drawing the graph instead of what was actually just opened (confirmed while
-    // calibrating: without the `close_git_*` calls, `git_diff_lines` — and so the diff render this
-    // guard is meant to exercise — was never even called).
-    let mut app = crate::app::App::new(root.clone(), Config::default()).unwrap();
-    let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
-    let views_alloc = crate::mem_tests::allocated_by(|| {
-        app.open_git_view();
-        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-        app.open_git_log();
-        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-        app.close_git_log();
-        app.open_git_graph();
-        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-        app.close_git_graph();
-        app.open_git_branches();
-        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-        app.close_git_branches();
-        app.open_git_diff(&root.join("big.txt"));
-        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    });
-    assert!(
-        views_alloc < 60_000_000, // measured ~23MB (5 real git-view opens/closes + a 1005-line diff); ~2.6x headroom
-        "git ビュー群+大きな diff の描画の確保バイト数が上限を超えた(回帰?): {views_alloc}"
+        "twice the diff lines allocated more than 2.5x (O(n^2) regression?): small={small_alloc} large={large_alloc}"
     );
 }
 

@@ -1,0 +1,169 @@
+# frozen vcs frames: e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub
+case tree=repo style=relative
+region x=0..198 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                                                                                                                                 |
+row 2 S|a2b2a17c177|
+row 3 T|  M repo/b-unstaged.txt                                                                                                                                                                               |
+row 3 S|c2d2c194|
+row 4 T|  D repo/c-deleted.txt                                                                                                                                                                                |
+row 4 S|c2e2c194|
+row 5 T|● R repo/d-renamed.txt                                                                                                                                                                                |
+row 5 S|c2f2c194|
+row 6 T|  U repo/e-untracked.txt                                                                                                                                                                              |
+row 6 S|c2g2c194|
+row 7 T|● A repo/f-added.txt                                                                                                                                                                                  |
+row 7 S|c2h2c194|
+row 8 T|  M repo/日 本 語 .txt                                                                                                                                                                                   |
+row 8 S|c2d2c194|
+row 9 T|                                                                                                                                                                                                      |
+row 9 S|c198|
+row 10 T|                                                                                                                                                                                                      |
+row 10 S|c198|
+row 11 T|                                                                                                                                                                                                      |
+row 11 S|c198|
+row 12 T|                                                                                                                                                                                                      |
+row 12 S|c198|
+row 13 T|                                                                                                                                                                                                      |
+row 13 S|c198|
+row 14 T|                                                                                                                                                                                                      |
+row 14 S|c198|
+row 15 T|                                                                                                                                                                                                      |
+row 15 S|c198|
+row 16 T|                                                                                                                                                                                                      |
+row 16 S|c198|
+row 17 T|                                                                                                                                                                                                      |
+row 17 S|c198|
+case tree=repo style=home
+region x=0..198 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M ~/repo/a-staged.txt                                                                                                                                                                               |
+row 2 S|a2b2a19c175|
+row 3 T|  M ~/repo/b-unstaged.txt                                                                                                                                                                             |
+row 3 S|c2d2c194|
+row 4 T|  D ~/repo/c-deleted.txt                                                                                                                                                                              |
+row 4 S|c2e2c194|
+row 5 T|● R ~/repo/d-renamed.txt                                                                                                                                                                              |
+row 5 S|c2f2c194|
+row 6 T|  U ~/repo/e-untracked.txt                                                                                                                                                                            |
+row 6 S|c2g2c194|
+row 7 T|● A ~/repo/f-added.txt                                                                                                                                                                                |
+row 7 S|c2h2c194|
+row 8 T|  M ~/repo/日 本 語 .txt                                                                                                                                                                                 |
+row 8 S|c2d2c194|
+row 9 T|                                                                                                                                                                                                      |
+row 9 S|c198|
+row 10 T|                                                                                                                                                                                                      |
+row 10 S|c198|
+row 11 T|                                                                                                                                                                                                      |
+row 11 S|c198|
+row 12 T|                                                                                                                                                                                                      |
+row 12 S|c198|
+row 13 T|                                                                                                                                                                                                      |
+row 13 S|c198|
+row 14 T|                                                                                                                                                                                                      |
+row 14 S|c198|
+row 15 T|                                                                                                                                                                                                      |
+row 15 S|c198|
+row 16 T|                                                                                                                                                                                                      |
+row 16 S|c198|
+row 17 T|                                                                                                                                                                                                      |
+row 17 S|c198|
+case tree=nested style=relative
+region x=0..198 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M ../../a-staged.txt                                                                                                                                                                                |
+row 2 S|a2b2a18c176|
+row 3 T|  M ../../b-unstaged.txt                                                                                                                                                                              |
+row 3 S|c2d2c194|
+row 4 T|  D ../../c-deleted.txt                                                                                                                                                                               |
+row 4 S|c2e2c194|
+row 5 T|● R ../../d-renamed.txt                                                                                                                                                                               |
+row 5 S|c2f2c194|
+row 6 T|  U ../../e-untracked.txt                                                                                                                                                                             |
+row 6 S|c2g2c194|
+row 7 T|● A ../../f-added.txt                                                                                                                                                                                 |
+row 7 S|c2h2c194|
+row 8 T|  M ../../日 本 語 .txt                                                                                                                                                                                  |
+row 8 S|c2d2c194|
+row 9 T|                                                                                                                                                                                                      |
+row 9 S|c198|
+row 10 T|                                                                                                                                                                                                      |
+row 10 S|c198|
+row 11 T|                                                                                                                                                                                                      |
+row 11 S|c198|
+row 12 T|                                                                                                                                                                                                      |
+row 12 S|c198|
+row 13 T|                                                                                                                                                                                                      |
+row 13 S|c198|
+row 14 T|                                                                                                                                                                                                      |
+row 14 S|c198|
+row 15 T|                                                                                                                                                                                                      |
+row 15 S|c198|
+row 16 T|                                                                                                                                                                                                      |
+row 16 S|c198|
+row 17 T|                                                                                                                                                                                                      |
+row 17 S|c198|
+case tree=nested style=home
+region x=0..198 y=2..18
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M ~/repo/a-staged.txt                                                                                                                                                                               |
+row 2 S|a2b2a19c175|
+row 3 T|  M ~/repo/b-unstaged.txt                                                                                                                                                                             |
+row 3 S|c2d2c194|
+row 4 T|  D ~/repo/c-deleted.txt                                                                                                                                                                              |
+row 4 S|c2e2c194|
+row 5 T|● R ~/repo/d-renamed.txt                                                                                                                                                                              |
+row 5 S|c2f2c194|
+row 6 T|  U ~/repo/e-untracked.txt                                                                                                                                                                            |
+row 6 S|c2g2c194|
+row 7 T|● A ~/repo/f-added.txt                                                                                                                                                                                |
+row 7 S|c2h2c194|
+row 8 T|  M ~/repo/日 本 語 .txt                                                                                                                                                                                 |
+row 8 S|c2d2c194|
+row 9 T|                                                                                                                                                                                                      |
+row 9 S|c198|
+row 10 T|                                                                                                                                                                                                      |
+row 10 S|c198|
+row 11 T|                                                                                                                                                                                                      |
+row 11 S|c198|
+row 12 T|                                                                                                                                                                                                      |
+row 12 S|c198|
+row 13 T|                                                                                                                                                                                                      |
+row 13 S|c198|
+row 14 T|                                                                                                                                                                                                      |
+row 14 S|c198|
+row 15 T|                                                                                                                                                                                                      |
+row 15 S|c198|
+row 16 T|                                                                                                                                                                                                      |
+row 16 S|c198|
+row 17 T|                                                                                                                                                                                                      |
+row 17 S|c198|

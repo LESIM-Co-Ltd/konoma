@@ -106,10 +106,16 @@ impl App {
         acts::act_enabled(&facts)
     }
 
-    /// The key of `p` in `ctx`, if it has one.
+    /// The key of `p` in `ctx`, if it has one. A canvas's screen keys win over the plugin's
+    /// layer: a key the screen's effective keys give to another operation (or unbind) is not the
+    /// action's key there, as the entry replaced the default in the released hub's screen table.
+    /// The key handling (`plugin_action_for_key`) and every hint read this one answer.
     pub fn plugin_key_of(&self, ctx: Context, p: PluginAct) -> Option<KeyPress> {
         let key = self.plugin_binding_in(ctx, p)?.key?;
-        self.project_action_key(ctx, p, key)
+        let key = self.project_action_key(ctx, p, key)?;
+        self.keymaps
+            .fixed_key_acts_on(self.screen_keys_for(ctx), key, &[Action::Plugin(p)])
+            .then_some(key)
     }
 
     pub(crate) fn plugin_context_bindings(&self, ctx: Context) -> Vec<ActBinding> {

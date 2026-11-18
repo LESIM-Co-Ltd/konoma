@@ -1,483 +1,495 @@
 //! Project navigation, action contexts and the shared prompts. Session ownership is on workers.
 
+#[cfg(test)]
+#[path = "project_draw_tests.rs"]
+mod draw_tests;
+
+#[cfg(all(test, feature = "git"))]
+#[path = "diff_presentation_tests.rs"]
+mod diff_host_tests;
+
+use konoma_plugin::host::project::diff_presentation::{
+    DiffBinding, DiffCapabilities, DiffHelpSection, DiffPresentation, DiffPresentationState,
+    DiffPresentationValues, DiffPresentationWords, DiffRepresentation, DiffSurface, DiffTextId,
+    DiffUiOp, DiffWord,
+};
+
+impl App {
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn project_returns_to_preview_for_test(&self) -> bool {
+        self.tab
+            .project_navigation
+            .as_ref()
+            .is_some_and(|nav| nav.origin_mode == Mode::Preview && nav.origin_path.is_some())
+    }
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn project_preview_first_mark_for_test(&self) -> Option<usize> {
+        let cache = self.gutter_cache.as_ref()?;
+        if self.tab.preview_path.as_ref() != Some(&cache.path) {
+            return None;
+        }
+        cache
+            .marks
+            .keys()
+            .min()
+            .map(|n| n.saturating_sub(1) as usize)
+    }
+    pub(crate) fn diff_presentation_capabilities(&self) -> DiffCapabilities {
+        DiffCapabilities {
+            global: true,
+            tabs: true,
+            follow: cfg!(feature = "git"),
+            discard: cfg!(feature = "git"),
+            tool: cfg!(feature = "git"),
+            project: true,
+            view: cfg!(feature = "git"),
+            blocks: cfg!(feature = "git"),
+        }
+    }
+    pub(crate) fn diff_presentation_state(&self) -> DiffPresentationState {
+        #[cfg(feature = "git")]
+        let jj = self.diff_vcs() == crate::vcs::VcsKind::Jj;
+        #[cfg(not(feature = "git"))]
+        let jj = false;
+        let next_representation = self.diff_view_cycle_hint().map(|message| match message {
+            Msg::DiffViewSource => DiffRepresentation::Source,
+            Msg::DiffViewRendered => DiffRepresentation::Rendered,
+            _ => DiffRepresentation::Preview,
+        });
+        DiffPresentationState {
+            drawn_surface: Some(if self.diff_media_active() {
+                DiffSurface::Media
+            } else if self.diff_rendered_active() {
+                DiffSurface::Rendered
+            } else if self.diff_footer_is_media_or_summary()
+                && self
+                    .diff_cache
+                    .as_ref()
+                    .is_none_or(|cache| cache.lines.is_empty())
+            {
+                DiffSurface::Summary
+            } else {
+                DiffSurface::Source
+            }),
+            surface: if self.diff_media_active() {
+                DiffSurface::Media
+            } else if self.diff_footer_is_media_or_summary() {
+                DiffSurface::Summary
+            } else if self.diff_rendered_active() {
+                DiffSurface::Rendered
+            } else {
+                DiffSurface::Source
+            },
+            wrap: self.cfg.ui.wrap,
+            media_pictures: self.media_diff_showing_pictures(),
+            can_page: self.media_diff_can_page(),
+            next_representation,
+            representation_count: match self.diff_view_help_hint() {
+                None => 1,
+                Some(Msg::DiffViewCycleHelpPair) => 2,
+                _ => 3,
+            },
+            next_media_layout: match self.media_diff_layout_next_msg() {
+                Msg::MediaLayoutSide => MediaDiffLayout::Side,
+                Msg::MediaLayoutStack => MediaDiffLayout::Stack,
+                _ => MediaDiffLayout::Auto,
+            },
+            change_blocks: self.diff_has_change_blocks(),
+            change_files: true,
+            follow_scope: self.follow_diff_scope_msg().is_some(),
+            jj,
+            read_only: self
+                .cfg
+                .plugins
+                .get("git")
+                .and_then(|table| table.get("read_only"))
+                .and_then(toml::Value::as_bool)
+                == Some(true),
+        }
+    }
+    pub(crate) fn diff_presentation_values(&self) -> DiffPresentationValues {
+        use crate::keymap::{Action as A, LeaderId, Motion as M};
+        use crate::ops::{action_enabled, decl, keys};
+        let state = self.diff_presentation_state();
+        let mut actions = vec![
+            A::CycleDiffLayout,
+            A::PageNext,
+            A::PagePrev,
+            A::JumpNextChange,
+            A::JumpPrevChange,
+            A::RequestEdit,
+            A::OpenExternal,
+            A::OpenGitView,
+            A::Refresh,
+            A::PreviewBack,
+            A::Cancel,
+            A::CyclePathStyle,
+            A::TabNew,
+            A::TabNewAfter,
+            A::TabPrev,
+            A::TabNext,
+            A::ToggleTabList,
+            A::PasteJump,
+            A::ToggleHelp,
+            A::Quit,
+            A::ToggleFollow,
+        ];
+        actions.extend(
+            [
+                M::Down,
+                M::Up,
+                M::Top,
+                M::Bottom,
+                M::Left,
+                M::Right,
+                M::LineHome,
+                M::LineEnd,
+                M::PageDown,
+                M::PageUp,
+                M::HalfDown,
+                M::HalfUp,
+            ]
+            .map(A::Navigate),
+        );
+        #[cfg(feature = "git")]
+        actions.extend([
+            A::CycleDiffView,
+            A::DiffNextChange,
+            A::DiffPrevChange,
+            A::ToggleFollowDiffScope,
+            A::GitLaunchTool,
+            A::GitDiffDiscard,
+        ]);
+        let mut bindings: Vec<_> = actions
+            .into_iter()
+            .filter_map(|action| Some((decl::diff_op(action)?, action)))
+            .collect();
+        if let Some(menu) = self.keymaps.menu(Context::Diff, LeaderId::Options) {
+            for (index, item) in menu.items.iter().enumerate() {
+                let op = decl::diff_op(item.action).unwrap_or(DiffUiOp::Host(index));
+                if !bindings.iter().any(|(previous, _)| *previous == op) {
+                    bindings.push((op, item.action));
+                }
+            }
+        }
+        let mut bindings: Vec<_> = bindings
+            .into_iter()
+            .map(|(op, action)| {
+                let text = decl::text(self, Context::Diff, action);
+                let keys = keys::keys_of(self, Context::Diff, action);
+                let layers = keys
+                    .iter()
+                    .map(|key| {
+                        (
+                            *key,
+                            match self.keymaps.layer_of_key_on(
+                                Context::Diff,
+                                self.screen_keys_for(Context::Diff),
+                                *key,
+                            ) {
+                                Some(konoma_host_core::help::KeyLayer::Basic) => {
+                                    DiffHelpSection::Move
+                                }
+                                Some(konoma_host_core::help::KeyLayer::Global) => {
+                                    DiffHelpSection::Global
+                                }
+                                _ => DiffHelpSection::View,
+                            },
+                        )
+                    })
+                    .collect();
+                DiffBinding {
+                    op,
+                    keys,
+                    enabled: action_enabled(self, Context::Diff, action),
+                    label: text.label.map(|m| tr(self.lang, m).into()),
+                    help: text.help.map(|m| tr(self.lang, m).into()),
+                    launch: decl::decl(action).launch,
+                    layers,
+                }
+            })
+            .collect();
+        bindings.push(DiffBinding {
+            op: DiffUiOp::Options,
+            keys: self
+                .keymaps
+                .leader_keys_of(Context::Diff)
+                .into_iter()
+                .filter(|(_, id)| *id == LeaderId::Options)
+                .map(|(key, _)| key)
+                .collect(),
+            enabled: true,
+            label: None,
+            help: None,
+            launch: false,
+            layers: vec![],
+        });
+        let words = DiffPresentationWords {
+            view: tr(self.lang, Msg::PreviewGitDiff).into(),
+            movement: tr(self.lang, Msg::HelpMove).into(),
+            launch: tr(self.lang, Msg::HelpLaunch).into(),
+            tabs: tr(self.lang, Msg::HelpTabs).into(),
+            global: tr(self.lang, Msg::HelpGlobal).into(),
+            words: [
+                DiffWord::Scroll,
+                DiffWord::Files,
+                DiffWord::Change,
+                DiffWord::Hscroll,
+                DiffWord::Back,
+                DiffWord::Options,
+                DiffWord::HorizontalEnds,
+                DiffWord::BackHelp,
+                DiffWord::ToolHelp,
+            ]
+            .into_iter()
+            .map(|id| (id, tr(self.lang, decl::diff_word_msg(id)).into()))
+            .collect(),
+            dynamic: [
+                DiffTextId::MediaLayout(MediaDiffLayout::Auto),
+                DiffTextId::MediaLayout(MediaDiffLayout::Side),
+                DiffTextId::MediaLayout(MediaDiffLayout::Stack),
+                DiffTextId::MediaLayoutHelp,
+                DiffTextId::Representation(DiffRepresentation::Source),
+                DiffTextId::Representation(DiffRepresentation::Rendered),
+                DiffTextId::Representation(DiffRepresentation::Preview),
+                DiffTextId::CyclePair,
+                DiffTextId::CycleAll,
+                DiffTextId::Files,
+            ]
+            .into_iter()
+            .map(|id| (id, tr(self.lang, decl::diff_text_msg(id)).into()))
+            .collect(),
+        };
+        DiffPresentationValues {
+            state,
+            capabilities: self.diff_presentation_capabilities(),
+            bindings,
+            words,
+        }
+    }
+    pub(crate) fn diff_presentation(&self) -> DiffPresentation {
+        self.diff_presentation_values().build()
+    }
+}
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use konoma_plugin::project::{
-    ActContext, ChoiceInput, Confirmation, ProjectAct, ProjectRow, RefreshTarget, TextInput,
-};
-use konoma_plugin::{Act, Outcome};
+use konoma_plugin::project::{Confirmation, ProjectAct, ProjectRow};
 use ratatui::text::Line;
 
-use super::project_worker::ProjectJob;
 use super::*;
 use crate::i18n::Msg;
-use crate::keymap::{Context, KeyPress};
+use crate::keymap::{Context, KeyPress, ProjectMenuControl};
 use crate::plugins::{ActBinding, PluginAct};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ProjectKey {
-    pub plugin: String,
-    pub root: PathBuf,
-    pub marker: String,
-}
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::project::prompt::ProjectPrompt;
+use konoma_plugin::host::project::prompt::{
+    self, ProjectActionId, ProjectOrigin, ProjectPromptBlockers, ProjectPromptUpdate,
+    PromptInvocation,
+};
+pub(crate) use konoma_plugin::host::project::ProjectKey;
+type SharedInvocation = prompt::ProjectInvocation<ProjectSurface>;
+pub(crate) type ProjectDialog = prompt::ProjectDialog<ProjectInvocation>;
+use konoma_plugin::host::project::actions::{
+    self, ProjectActFacts, ProjectAction, ProjectActionScope, ProjectCommand, ProjectDispatch,
+    ProjectNotice, ProjectUpdate, ProjectWritePolicy,
+};
+use konoma_plugin::host::project::effects;
+use konoma_plugin::host::project::input::{self, ProjectKeyFacts};
+use konoma_plugin::host::project::{
+    ProjectActionInvocation, ProjectContextMut, ProjectEvent, ProjectHost,
+};
+use konoma_plugin::host::project::{ProjectMotionResult, ProjectScreenState, ProjectViewport};
+pub(crate) type ProjectFrame = konoma_plugin::host::project::ProjectFrame<ProjectInvocation>;
+type ProjectInput = konoma_plugin::host::project::ProjectInput<ProjectInvocation>;
 
-impl From<&crate::plugins::projects::MatchedProject> for ProjectKey {
-    fn from(p: &crate::plugins::projects::MatchedProject) -> Self {
-        Self {
-            plugin: p.plugin.clone(),
-            root: p.root.clone(),
-            marker: p.marker.clone(),
-        }
-    }
-}
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::project::ProjectDiff;
+pub(crate) use konoma_plugin::host::project::{ProjectContent, ScreenKey};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ScreenKey {
-    pub tab: u64,
-    pub screen: String,
-    pub selection: Option<String>,
-}
-
-impl ScreenKey {
-    fn new(screen: impl Into<String>, tab: u64) -> Self {
-        Self {
-            tab,
-            screen: screen.into(),
-            selection: None,
-        }
-    }
-}
-
-pub(crate) enum ProjectContent {
-    List(konoma_plugin::view::ListView),
-    Lines(Vec<Line<'static>>),
-    Diff(ProjectDiff),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProjectControlId {
-    Screens,
-    Move,
-    Mark,
-    Filter,
-    Back,
-    Help,
-    Open,
-    NewTab,
-    Copy,
-    Actions,
-    Scroll,
-    Hscroll,
-    Ends,
-    DiffLayout,
-    Act,
-}
-
-#[derive(Clone)]
-pub(crate) struct ProjectControl {
-    pub id: ProjectControlId,
-    pub keys: Vec<KeyPress>,
-    pub label: String,
-    shared_notation: bool,
-}
-
-impl ProjectControl {
-    pub(crate) fn new(id: ProjectControlId, keys: Vec<KeyPress>, label: impl Into<String>) -> Self {
-        Self {
-            id,
-            keys,
-            label: label.into(),
-            shared_notation: false,
-        }
-    }
-
-    fn shared(mut self) -> Self {
-        self.shared_notation = true;
-        self
-    }
-
-    pub(crate) fn rendered_keys(&self) -> String {
-        self.keys
-            .iter()
-            .map(|key| {
-                if self.shared_notation {
-                    if key.code == KeyCode::BackTab && !key.ctrl {
-                        "Shift-Tab".into()
-                    } else {
-                        crate::ops::keys::help_key(*key)
-                    }
-                } else {
-                    crate::ops::keys::footer_key(*key, true)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("/")
-    }
-
-    pub(crate) fn render(&self) -> String {
-        format!("{}:{}", self.rendered_keys(), self.label)
-    }
-}
-/// Immutable diff data owns its layout cache, so a replacement view always invalidates it.
-pub(crate) struct ProjectDiff {
-    pub lines: Vec<crate::git::DiffLine>,
-    pub header: Vec<Line<'static>>,
-    pub theme: String,
-    pub no_changes: String,
-    split_rows: usize,
-    unified_width: usize,
-    cache: std::sync::Mutex<Option<Arc<ProjectDiffLayout>>>,
-    #[cfg(test)]
-    layouts: std::sync::atomic::AtomicUsize,
-}
-
-pub(crate) struct ProjectDiffLayout {
-    pub lines: Vec<Line<'static>>,
-    hscroll: u16,
-    width: u16,
-    split: bool,
-    start: usize,
-    count: usize,
-}
-
-impl ProjectDiff {
-    pub fn new(
-        lines: Vec<crate::git::DiffLine>,
-        header: Vec<Line<'static>>,
-        theme: String,
-        no_changes: String,
-    ) -> Self {
-        // This constructor runs on the project worker. Keep totals separate from highlighted
-        // rows so key handling and row queries never need to render the document.
-        let split_rows = crate::preview::gitdiff::side_by_side_row_count(&lines, "");
-        let unified_width = crate::preview::gitdiff::unified_max_hscroll(&lines, 0)
-            .max(header.iter().map(Line::width).max().unwrap_or(0));
-        Self {
-            lines,
-            header,
-            theme,
-            no_changes,
-            split_rows,
-            unified_width,
-            cache: Default::default(),
-            #[cfg(test)]
-            layouts: Default::default(),
-        }
-    }
-
-    fn header_rows(&self) -> usize {
-        self.header.len() + usize::from(!self.header.is_empty())
-    }
-
-    pub fn row_count(&self, split: bool) -> usize {
-        self.header_rows()
-            + if self.lines.is_empty() {
-                usize::from(!self.header.is_empty())
-            } else if split {
-                self.split_rows
-            } else {
-                self.lines.len()
-            }
-    }
-
-    pub fn metrics(&self, width: u16, split: bool) -> (usize, u16) {
-        let max_h = if self.lines.is_empty() {
-            0
-        } else if split {
-            crate::preview::gitdiff::side_by_side_max_hscroll(&self.lines, usize::from(width))
-        } else {
-            self.unified_width
-                .max(usize::from(!self.header.is_empty()))
-                .saturating_sub(usize::from(width))
-        };
-        (self.row_count(split), max_h.min(u16::MAX as usize) as u16)
-    }
-
-    pub fn layout(
-        &self,
-        width: u16,
-        split: bool,
-        offset: u16,
-        start: usize,
-        count: usize,
-    ) -> Arc<ProjectDiffLayout> {
-        use crate::preview::gitdiff::{diff_lines_range, diff_lines_side_by_side_range};
-        use ratatui::style::{Color, Style};
-        // Stacked panning only moves the Paragraph; it does not change its highlighted lines.
-        let offset = if split { offset } else { 0 };
-        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(cached) = cache.as_ref().filter(|c| {
-            c.width == width
-                && c.split == split
-                && c.hscroll == offset
-                && c.start == start
-                && c.count == count
-        }) {
-            return cached.clone();
-        }
-        #[cfg(test)]
-        self.layouts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let iw = usize::from(width);
-        let end = start.saturating_add(count);
-        let mut lines: Vec<_> = self
-            .header
-            .iter()
-            .skip(start)
-            .take(count)
-            .cloned()
-            .collect();
-        if !self.header.is_empty() && start <= self.header.len() && self.header.len() < end {
-            lines.push(Line::styled(
-                "─".repeat(iw.max(1)),
-                Style::new().fg(Color::DarkGray),
-            ));
-        }
-        let header_rows = self.header_rows();
-        let diff_start = start.saturating_sub(header_rows);
-        let diff_count = end.saturating_sub(header_rows.max(start));
-        if self.lines.is_empty() {
-            if !self.header.is_empty() && start <= header_rows && header_rows < end {
-                lines.push(Line::styled(
-                    self.no_changes.clone(),
-                    Style::new().fg(Color::DarkGray),
-                ));
-            }
-        } else if diff_count > 0 {
-            if split {
-                lines.extend(diff_lines_side_by_side_range(
-                    &self.lines,
-                    "",
-                    &self.theme,
-                    iw,
-                    usize::from(offset),
-                    diff_start,
-                    diff_count,
-                ));
-            } else {
-                lines.extend(diff_lines_range(
-                    &self.lines,
-                    "",
-                    &self.theme,
-                    iw,
-                    diff_start,
-                    diff_count,
-                ));
-            }
-        }
-        let drawn = Arc::new(ProjectDiffLayout {
-            lines,
-            hscroll: offset,
-            width,
-            split,
-            start,
-            count,
-        });
-        *cache = Some(drawn.clone());
-        drawn
-    }
-
-    #[cfg(test)]
-    pub fn layout_count(&self) -> usize {
-        self.layouts.load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct ProjectFrame {
-    pub key: ScreenKey,
-    pub cursor: usize,
-    pub scroll: u16,
-    pub hscroll: u16,
-    pub marked: BTreeSet<usize>,
-    pub query: String,
-    pub filtering: bool,
-    filter_anchor: usize,
-    initialized: bool,
-    pending: std::collections::VecDeque<ProjectInput>,
-}
-
-#[derive(Clone)]
-enum ProjectInput {
-    Key(KeyEvent),
-    Act(Box<ProjectInvocation>),
-}
-
-impl ProjectFrame {
-    fn new(key: ScreenKey) -> Self {
-        Self {
-            key,
-            cursor: 0,
-            scroll: 0,
-            hscroll: 0,
-            marked: BTreeSet::new(),
-            query: String::new(),
-            filtering: false,
-            filter_anchor: 0,
-            initialized: false,
-            pending: Default::default(),
-        }
-    }
-}
-
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::project::presentation::ProjectControl;
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::project::presentation::ProjectControlId;
+use konoma_plugin::host::project::presentation::{
+    MotionPairs, ProjectCapabilities, ProjectMotionKeys, ProjectOpenFacts, ProjectPresentation,
+    ProjectPresentationBinding, ProjectPresentationContent, ProjectPresentationFacts,
+    ProjectPresentationWords,
+};
 #[derive(Clone)]
 pub(crate) struct ProjectNavigation {
-    pub project: ProjectKey,
-    pub stack: Vec<ProjectFrame>,
+    state: ProjectScreenState<ProjectInvocation>,
     origin_mode: Mode,
     origin_path: Option<PathBuf>,
     origin_kind: Option<PreviewKind>,
-    origin_scroll: u16,
-    origin_hscroll: u16,
+    /// The tab as it was when the screens covered it, saved the way a tab switch saves it. Leaving
+    /// puts it back through the restore a tab switch uses (`App::put_tab_back`).
+    origin_tab: Option<Box<PerTab>>,
 }
 
-#[derive(Clone)]
-pub(crate) struct ProjectEffect {
-    pub project: ProjectKey,
-    pub tab: u64,
-    pub tree_root: PathBuf,
-    pub view: Option<ScreenKey>,
-    pub outcome: Option<Outcome>,
-    pub tree_status: bool,
-    pub label: String,
+#[cfg(test)]
+mod presentation_frame_tests {
+    use super::*;
+    use konoma_plugin::host::project::presentation::project_presentation_build_count;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn project_presentation_is_built_once_per_frame() {
+        let dir = crate::test_support::unique_tmp("project_presentation_frame");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
+        app.tab.project_navigation = Some(ProjectNavigation {
+            state: ProjectScreenState::new(
+                ProjectKey {
+                    plugin: "example".into(),
+                    root: dir.to_path_buf(),
+                    marker: "project".into(),
+                },
+                ScreenKey::new("items", app.tab.id),
+            ),
+            origin_mode: Mode::Tree,
+            origin_path: None,
+            origin_kind: None,
+            origin_tab: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        for help in [false, true] {
+            app.show_help = help;
+            app.pending_leader = None;
+            let before = project_presentation_build_count();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert_eq!(
+                project_presentation_build_count() - before,
+                1,
+                "help={help}"
+            );
+        }
+        app.show_help = false;
+        for leader in [
+            crate::keymap::LeaderId::Copy,
+            crate::keymap::LeaderId::Actions,
+        ] {
+            app.pending_leader = Some(leader);
+            let before = project_presentation_build_count();
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            assert_eq!(project_presentation_build_count() - before, 1, "{leader:?}");
+        }
+    }
+}
+
+impl std::ops::Deref for ProjectNavigation {
+    type Target = ProjectScreenState<ProjectInvocation>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for ProjectNavigation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+pub(crate) type ProjectEffect = effects::ProjectEffect<ProjectSurface>;
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProjectSurface {
+    mode: Mode,
+    path: Option<PathBuf>,
+}
+
+impl ProjectSurface {
+    pub(super) fn from_tab(tab: &PerTab) -> Self {
+        Self {
+            mode: tab.mode,
+            path: tab.preview_path.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct ProjectInvocation {
-    project: ProjectKey,
-    action: PluginAct,
-    declaration: Act,
-    pub(super) context: ProjectAct,
+    shared: SharedInvocation,
     effect: ProjectEffect,
-    origin_mode: Mode,
-    origin_path: Option<PathBuf>,
 }
 
-impl ProjectInvocation {
-    pub(crate) fn destructive(&self) -> bool {
-        self.declaration.destructive
-    }
-
-    pub(crate) fn confirmation_text(&self, prompt: &Confirmation, lang: &str) -> String {
-        let row = self.context.selected.as_ref();
-        let name = row
-            .map(|row| row.name.as_deref().unwrap_or(&row.value))
-            .unwrap_or("");
-        prompt.text.get(lang).replace("{row}", name)
+impl std::ops::Deref for ProjectInvocation {
+    type Target = SharedInvocation;
+    fn deref(&self) -> &Self::Target {
+        &self.shared
     }
 }
 
-#[derive(Clone)]
-pub(crate) enum ProjectPrompt {
-    Confirmation(Confirmation),
-    Text(TextInput),
-    Choice(ChoiceInput),
+impl std::ops::DerefMut for ProjectInvocation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shared
+    }
 }
 
-pub(crate) enum ProjectDialog {
-    Projects {
-        projects: Vec<ProjectKey>,
-        selected: usize,
-    },
-    Act {
-        invocation: Box<ProjectInvocation>,
-        prompts: Vec<ProjectPrompt>,
-        stage: usize,
-        buffer: String,
-        cursor: usize,
-        selected: usize,
-    },
+impl PromptInvocation for ProjectInvocation {
+    type Surface = ProjectSurface;
+    fn prompt_invocation(&self) -> &SharedInvocation {
+        &self.shared
+    }
+    fn prompt_invocation_mut(&mut self) -> &mut SharedInvocation {
+        &mut self.shared
+    }
 }
 
-/// Refreshes keep the identity the user selected, even when the provider reorders its rows.
-fn remap_project_rows(
-    tab: &mut PerTab,
-    project: &ProjectKey,
-    screen: &ScreenKey,
-    old: Option<&ProjectContent>,
-    new: &ProjectContent,
-) {
-    let (Some(ProjectContent::List(old)), ProjectContent::List(new)) = (old, new) else {
-        return;
-    };
-    for nav in [&mut tab.project_navigation, &mut tab.project_return]
-        .into_iter()
-        .flatten()
-        .filter(|nav| &nav.project == project)
-    {
-        for frame in nav.stack.iter_mut().filter(|frame| &frame.key == screen) {
-            let selected = old
-                .visible_rows(&frame.query)
-                .get(frame.cursor)
-                .and_then(|index| old.rows.get(*index))
-                .map(ProjectRow::from);
-            let marked: Vec<_> = frame
-                .marked
-                .iter()
-                .filter_map(|index| old.rows.get(*index))
-                .map(ProjectRow::from)
-                .collect();
-            if let Some(selected) = selected {
-                if let Some(cursor) = new
-                    .visible_rows(&frame.query)
-                    .iter()
-                    .position(|index| ProjectRow::from(&new.rows[*index]) == selected)
-                {
-                    frame.cursor = cursor;
-                } else {
-                    frame.cursor = 0;
-                    frame
-                        .pending
-                        .retain(|input| matches!(input, ProjectInput::Act(_)));
-                }
-            }
-            frame.marked = new
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(_, row)| marked.contains(&ProjectRow::from(*row)))
-                .map(|(index, _)| index)
-                .collect();
-        }
+impl ProjectActionInvocation for ProjectInvocation {
+    type Effect = ProjectEffect;
+    fn into_effect(mut self, tree_status: bool) -> ProjectEffect {
+        self.effect.tree_status = tree_status;
+        self.effect
+    }
+}
+
+fn project_context(tab: &mut PerTab) -> ProjectContextMut<'_, ProjectInvocation> {
+    ProjectContextMut {
+        id: tab.id,
+        active: tab.project_navigation.as_mut().map(|nav| &mut nav.state),
+        returned: tab.project_return.as_mut().map(|nav| &mut nav.state),
+        pending_acts: &mut tab.project_pending_acts,
+        request: None,
     }
 }
 
 impl App {
-    fn project_frame_mut(&mut self) -> Option<&mut ProjectFrame> {
-        self.tab.project_navigation.as_mut()?.stack.last_mut()
-    }
-
     fn project_list_right(&self, key: KeyEvent) -> bool {
-        use crate::keymap::{Action, Binding, KeyPress, Motion, Resolution};
-        if !self
-            .project_content()
-            .is_some_and(|v| matches!(v.as_ref(), ProjectContent::List(_)))
-        {
-            return false;
-        }
-        if key.code == KeyCode::Right {
-            return true;
-        }
+        use crate::keymap::{Action, Motion, Resolution};
         let kp = KeyPress::norm(&key);
         #[cfg(feature = "git")]
-        let binding = self
+        let list_override = self
             .keymaps
             .types
             .get(&crate::keymap::ViewType::List)
-            .and_then(|t| t.get(&kp));
+            .and_then(|table| table.get(&kp))
+            .map(|binding| {
+                matches!(
+                    binding,
+                    crate::keymap::Binding::Run(Action::Navigate(Motion::Right))
+                )
+            });
         #[cfg(not(feature = "git"))]
-        let binding = None;
-        match binding {
-            Some(Binding::Run(Action::Navigate(Motion::Right))) => true,
-            Some(_) => false,
-            None => {
-                self.keymaps.resolve(Context::Text, None, kp)
-                    == Resolution::Action(Action::Navigate(Motion::Right))
-            }
-        }
+        let list_override = None;
+        input::list_right(
+            self.project_content()
+                .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))),
+            key.code,
+            list_override,
+            self.keymaps
+                .resolve_on(Context::Text, self.screen_keys_for(Context::Text), kp)
+                == Resolution::Action(Action::Navigate(Motion::Right)),
+        )
     }
 
     fn project_enter_action(&self) -> Option<crate::keymap::Action> {
@@ -487,7 +499,11 @@ impl App {
         )
     }
 
-    pub(crate) fn project_open_control(&self) -> Option<ProjectControl> {
+    fn project_open_facts(
+        &self,
+        actions: &[PluginAct],
+        bindings: &[ProjectPresentationBinding],
+    ) -> Option<ProjectOpenFacts> {
         use crate::keymap::{Action, KeyPress, Motion};
         if !self
             .project_content()
@@ -496,27 +512,33 @@ impl App {
             return None;
         }
         let action = self.project_enter_action()?;
-        if !crate::ops::action_enabled(self, Context::Canvas, action) {
-            return None;
-        }
         let Action::Plugin(act) = action else {
             return None;
         };
+        if !actions
+            .iter()
+            .position(|a| *a == act)
+            .is_some_and(|index| bindings[index].enabled)
+        {
+            return None;
+        }
         let label = self
             .plugin_keys
             .declaration(act)?
             .label
             .get(self.plugin_lang())
             .to_string();
-        let mut candidates = self
-            .keymaps
-            .keys_of(Context::Text, Action::Navigate(Motion::Right));
+        let mut candidates = self.keymaps.keys_of_on(
+            Context::Text,
+            self.screen_keys_for(Context::Text),
+            Action::Navigate(Motion::Right),
+        );
         #[cfg(feature = "git")]
         if let Some(table) = self.keymaps.types.get(&crate::keymap::ViewType::List) {
             candidates.extend(table.keys().copied());
         }
         candidates.push(KeyPress::key(KeyCode::Right));
-        let mut keys = vec![KeyPress::key(KeyCode::Enter)];
+        let mut keys = Vec::new();
         for key in candidates {
             if self.project_list_right(KeyEvent::new(
                 key.code,
@@ -530,183 +552,39 @@ impl App {
                 keys.push(key);
             }
         }
-        Some(ProjectControl::new(ProjectControlId::Open, keys, label))
+        Some(ProjectOpenFacts {
+            right_aliases: keys,
+            label,
+        })
     }
 
-    fn handle_project_text_key(&mut self, key: KeyEvent) -> bool {
-        use crate::keymap::{Action, KeyPress, Motion, Resolution};
-        let Some(content) = self.project_content() else {
-            return false;
-        };
-        let is_diff = matches!(content.as_ref(), ProjectContent::Diff(_));
-        if matches!(content.as_ref(), ProjectContent::List(_)) {
-            return false;
+    fn project_viewport(&self) -> ProjectViewport {
+        ProjectViewport {
+            cols: self.tab.preview_cols,
+            rows: self.tab.preview_viewport,
         }
-        if is_diff
-            && self
-                .keymaps
-                .resolve(Context::Diff, None, KeyPress::norm(&key))
-                == Resolution::Action(Action::CycleDiffLayout)
-        {
-            let Some(frame) = self.project_frame_mut() else {
-                return false;
-            };
-            frame.hscroll = 0;
-            // Project diffs always show raw lines, independent of the origin preview's presentation.
-            self.diff_layout = self.diff_layout.next();
-            self.tab.preview_hscroll = 0;
-            self.tab.git_detail_hscroll = 0;
-            let label = match self.diff_layout {
-                DiffLayout::Unified => Msg::DiffUnified,
-                DiffLayout::Split => Msg::DiffSideBySide,
-                DiffLayout::Auto => Msg::DiffAuto,
-            };
-            self.flash = Some(tr(self.lang, label).into());
-            return true;
-        }
-        let action = crate::ops::keys::fixed_action(Context::Text, key.code).or_else(|| match self
-            .keymaps
-            .resolve(Context::Text, None, KeyPress::norm(&key))
-        {
-            Resolution::Action(action) => Some(action),
-            _ => None,
-        });
-        let Some(Action::Navigate(motion)) = action else {
-            return false;
-        };
-        let width = self.tab.preview_cols;
-        let (total, max_h) = match content.as_ref() {
-            ProjectContent::Lines(lines) => (
-                lines.len(),
-                lines
-                    .iter()
-                    .map(Line::width)
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_sub(width as usize)
-                    .min(u16::MAX as usize) as u16,
-            ),
-            ProjectContent::Diff(diff) => diff.metrics(width, self.diff_is_split(width)),
-            ProjectContent::List(_) => return false,
-        };
-        let max_v = total
-            .saturating_sub(self.tab.preview_viewport as usize)
-            .min(u16::MAX as usize) as u16;
-        let Some(frame) = self.project_frame_mut() else {
-            return false;
-        };
-        frame.scroll = frame.scroll.min(max_v);
-        frame.hscroll = frame.hscroll.min(max_h);
-        match motion {
-            Motion::Up => frame.scroll = frame.scroll.saturating_sub(1),
-            Motion::Down => frame.scroll = frame.scroll.saturating_add(1).min(max_v),
-            Motion::HalfUp => frame.scroll = frame.scroll.saturating_sub(10),
-            Motion::HalfDown => frame.scroll = frame.scroll.saturating_add(10).min(max_v),
-            Motion::PageUp => frame.scroll = frame.scroll.saturating_sub(20),
-            Motion::PageDown => frame.scroll = frame.scroll.saturating_add(20).min(max_v),
-            Motion::Top => frame.scroll = 0,
-            Motion::Bottom => frame.scroll = max_v,
-            Motion::Left => frame.hscroll = frame.hscroll.saturating_sub(4),
-            Motion::Right => frame.hscroll = frame.hscroll.saturating_add(4).min(max_h),
-            Motion::LineHome => frame.hscroll = 0,
-            Motion::LineEnd => frame.hscroll = max_h,
-        }
-        true
     }
 
-    fn handle_project_list_motion(&mut self, key: KeyEvent) -> bool {
-        use crate::keymap::{Action, KeyPress, Motion, Resolution};
-        let Some(content) = self.project_content() else {
-            return false;
-        };
-        let ProjectContent::List(list) = content.as_ref() else {
-            return false;
-        };
-        let action = crate::ops::keys::fixed_action(Context::Text, key.code).or_else(|| match self
-            .keymaps
-            .resolve(Context::Text, None, KeyPress::norm(&key))
-        {
-            Resolution::Action(action) => Some(action),
-            _ => None,
-        });
-        let Some(Action::Navigate(motion)) = action else {
-            return false;
-        };
-        if motion == Motion::Right {
-            return false;
-        }
-        // The legacy branch panel consumes page motions without moving its cursor.
-        if self.project_picker()
-            && matches!(
-                motion,
-                Motion::HalfUp | Motion::HalfDown | Motion::PageUp | Motion::PageDown
-            )
-        {
-            return true;
-        }
-        if motion == Motion::Left {
-            if self.project_graph_jj().is_some() || self.project_pushed() {
+    fn apply_project_motion_result(&mut self, result: ProjectMotionResult) -> bool {
+        match result {
+            ProjectMotionResult::Unhandled => false,
+            ProjectMotionResult::Handled => true,
+            ProjectMotionResult::Back => {
                 self.project_back();
-                return true;
+                true
             }
-            return false;
-        }
-        let visible = self.project_visible_rows();
-        let selectable: Vec<_> = visible
-            .iter()
-            .enumerate()
-            .filter(|(_, index)| list.rows[**index].selectable)
-            .map(|(cursor, _)| cursor)
-            .collect();
-        let Some(frame) = self.project_frame_mut() else {
-            return false;
-        };
-        let at = selectable
-            .iter()
-            .position(|cursor| *cursor == frame.cursor)
-            .unwrap_or(0);
-        let last = selectable.len().saturating_sub(1);
-        let next = match motion {
-            Motion::Up => at.saturating_sub(1),
-            Motion::Down => at.saturating_add(1).min(last),
-            Motion::HalfUp => at.saturating_sub(10),
-            Motion::HalfDown => at.saturating_add(10).min(last),
-            Motion::PageUp => at.saturating_sub(if key.code == KeyCode::PageUp { 10 } else { 20 }),
-            Motion::PageDown => at
-                .saturating_add(if key.code == KeyCode::PageDown {
-                    10
-                } else {
-                    20
-                })
-                .min(last),
-            Motion::Top => 0,
-            Motion::Bottom => last,
-            _ => at,
-        };
-        frame.cursor = selectable.get(next).copied().unwrap_or(0);
-        true
-    }
-
-    fn project_filter_anchor(&self) -> usize {
-        self.project_frame()
-            .map(|frame| {
-                self.project_visible_rows()
-                    .get(frame.cursor)
-                    .copied()
-                    .unwrap_or(frame.filter_anchor)
-            })
-            .unwrap_or(0)
-    }
-
-    fn project_filter_changed(&mut self, anchor: usize) {
-        let visible = self.project_visible_rows();
-        let cursor = visible
-            .iter()
-            .position(|index| *index >= anchor)
-            .unwrap_or(visible.len().saturating_sub(1));
-        if let Some(frame) = self.project_frame_mut() {
-            frame.cursor = cursor;
-            frame.filter_anchor = visible.get(cursor).copied().unwrap_or(anchor);
+            ProjectMotionResult::LayoutChanged(layout) => {
+                // Project diffs always show raw lines, independent of the origin preview's presentation.
+                self.diff_layout = layout;
+                self.tab.preview_hscroll = 0;
+                let label = match layout {
+                    DiffLayout::Unified => Msg::DiffUnified,
+                    DiffLayout::Split => Msg::DiffSideBySide,
+                    DiffLayout::Auto => Msg::DiffAuto,
+                };
+                self.flash = Some(tr(self.lang, label).into());
+                true
+            }
         }
     }
 
@@ -714,147 +592,76 @@ impl App {
         self.tab.project_navigation.is_some()
     }
 
-    fn project_waiting_for_view(&self) -> bool {
-        let Some(nav) = &self.tab.project_navigation else {
-            return false;
-        };
-        let Some(frame) = nav.stack.last() else {
-            return false;
-        };
-        self.project_runtimes
-            .get(&nav.project)
-            .is_some_and(|runtime| {
-                !runtime.acting
-                    && runtime.error.is_none()
-                    && (!runtime.ready
-                        || runtime.busy
-                        || runtime.contexts.get(&frame.key)
-                            != self.project_request(&frame.key).project.as_ref()
-                        || !runtime.views.contains_key(&frame.key)
-                        || runtime.dirty.contains(&frame.key))
-            })
-    }
-
-    fn queue_project_input(&mut self, input: ProjectInput) {
-        if !self.project_active() {
-            if let ProjectInput::Act(invocation) = input {
-                if self.tab.project_pending_acts.len() < 4096 {
-                    self.tab.project_pending_acts.push_back(*invocation);
-                } else {
-                    self.flash = Some(tr(self.lang, Msg::ProjectBusy).into());
-                }
-            }
-            return;
-        }
-        if let Some(frame) = self
-            .tab
+    /// The status-bar chips of a git or jj project canvas (backend, and the screen on top of its
+    /// navigation stack), from the one derivation the standalone program's chrome also draws.
+    /// `None` for no project and for a canvas of another provider.
+    pub(crate) fn project_vcs_chips(
+        &self,
+    ) -> Option<konoma_plugin::host::project::vcs_chips::VcsChips> {
+        self.tab
             .project_navigation
-            .as_mut()
-            .and_then(|nav| nav.stack.last_mut())
-        {
-            if frame.pending.len() < 4096 {
-                if self.project_replaying {
-                    frame.pending.push_front(input);
-                } else {
-                    frame.pending.push_back(input);
-                }
-            } else {
-                self.flash = Some(tr(self.lang, Msg::ProjectBusy).into());
-            }
-        }
+            .as_ref()?
+            .vcs_chips(self.lang == crate::i18n::Lang::Jp)
     }
 
-    pub(crate) fn project_input_replaying(&self) -> bool {
-        self.project_replaying
+    #[cfg(test)]
+    fn project_waiting_for_view(&self) -> bool {
+        let request = self
+            .project_frame()
+            .and_then(|frame| self.project_request(&frame.key));
+        input::waiting(
+            self.tab.project_navigation.as_ref().map(|nav| &nav.state),
+            &self.project_runtimes,
+            request.as_ref().and_then(|req| req.project.as_ref()),
+        )
     }
 
-    pub(super) fn cancel_project_input(&mut self) {
-        self.tab.project_pending_acts.clear();
-        if let Some(nav) = &mut self.tab.project_navigation {
-            // Modal pushed screens can opt out of being retained across tab changes.
-            while nav.stack.len() > 1
-                && nav.stack.last().is_some_and(|frame| {
-                    self.project_runtimes
-                        .get(&nav.project)
-                        .is_some_and(|runtime| {
-                            runtime
-                                .project
-                                .declaration
-                                .screens
-                                .iter()
-                                .any(|screen| screen.id == frame.key.screen && screen.transient)
-                        })
-                })
-            {
-                nav.stack.pop();
-            }
-            for frame in &mut nav.stack {
-                frame.pending.clear();
-            }
-        }
-    }
-
-    fn project_pending_interaction(&self) -> bool {
-        let Some(nav) = &self.tab.project_navigation else {
-            return false;
-        };
-        let Some(frame) = nav.stack.last() else {
-            return false;
-        };
-        let Some(ProjectInput::Key(key)) = frame.pending.front() else {
-            return false;
-        };
-        if key.code == KeyCode::Char(' ') {
-            return true;
-        }
-        self.plugin_keys
-            .acts_of(&nav.project.plugin)
-            .iter()
-            .any(|binding| {
-                binding.key == Some(crate::keymap::KeyPress::norm(key))
-                    && self
-                        .plugin_keys
-                        .declaration(binding.act)
-                        .is_some_and(|decl| {
-                            decl.confirmation.is_some()
-                                || decl.text_input.is_some()
-                                || decl.choice_input.is_some()
-                        })
-            })
-    }
-
-    /// Loading never consumes an operation key. Replay through the ordinary dispatcher so the
-    /// current view, context and write guard are consulted after the reply, including dialogs.
-    pub(super) fn replay_project_keys(&mut self) -> bool {
-        if self.project_replaying {
-            return false;
-        }
-        self.project_replaying = true;
-        let mut changed = false;
-        for _ in 0..64 {
-            if self.project_waiting_for_view() {
-                break;
-            }
-            let input = self
+    fn with_project_host<T>(
+        &mut self,
+        run: impl FnOnce(
+            &mut ProjectHost<'_, ProjectInvocation>,
+            &mut ProjectContextMut<'_, ProjectInvocation>,
+        ) -> T,
+    ) -> T {
+        let request = self
+            .project_frame()
+            .and_then(|frame| self.project_request(&frame.key))
+            .and_then(|req| req.project);
+        let mut host = ProjectHost::new(
+            &mut self.project_runtimes,
+            &mut self.project_dialog,
+            &mut self.project_replaying,
+        );
+        let mut context = ProjectContextMut {
+            id: self.tab.id,
+            active: self
                 .tab
                 .project_navigation
                 .as_mut()
-                .and_then(|nav| nav.stack.last_mut())
-                .and_then(|frame| frame.pending.pop_front());
-            let input = input.or_else(|| {
-                let invocation = self.tab.project_pending_acts.front()?;
-                if self
-                    .project_runtimes
-                    .get(&invocation.project)
-                    .is_some_and(|runtime| runtime.busy)
-                {
-                    return None;
-                }
-                self.tab
-                    .project_pending_acts
-                    .pop_front()
-                    .map(|invocation| ProjectInput::Act(Box::new(invocation)))
-            });
+                .map(|nav| &mut nav.state),
+            returned: self.tab.project_return.as_mut().map(|nav| &mut nav.state),
+            pending_acts: &mut self.tab.project_pending_acts,
+            request,
+        };
+        run(&mut host, &mut context)
+    }
+
+    pub(crate) fn project_input_replaying(&self) -> bool {
+        self.project_replaying.is_replaying()
+    }
+
+    pub(super) fn cancel_project_input(&mut self) {
+        self.with_project_host(|host, context| host.cancel_input(context));
+    }
+
+    /// Each raw key returns through the ordinary dispatcher with all SDK borrows released.
+    pub(super) fn replay_project_keys(&mut self) -> bool {
+        if !self.with_project_host(|host, _| host.begin_replay()) {
+            return false;
+        }
+        let mut changed = false;
+        loop {
+            let input = self.with_project_host(|host, context| host.next_replay(context));
             let Some(input) = input else {
                 break;
             };
@@ -865,140 +672,169 @@ impl App {
                     crate::resolve_key_result(self, result);
                 }
                 ProjectInput::Act(invocation) => self.execute_project_act(*invocation),
+                ProjectInput::Refresh => self.project_refresh(),
             }
         }
-        self.project_replaying = false;
+        self.with_project_host(|host, _| host.end_replay());
         changed
     }
-
     pub(crate) fn project_frame(&self) -> Option<&ProjectFrame> {
-        self.tab.project_navigation.as_ref()?.stack.last()
+        self.tab.project_navigation.as_ref()?.frame()
     }
 
     pub(crate) fn project_content(&self) -> Option<Arc<ProjectContent>> {
         let nav = self.tab.project_navigation.as_ref()?;
         let key = &nav.stack.last()?.key;
         let runtime = self.project_runtimes.get(&nav.project)?;
-        if runtime.contexts.get(key) != self.project_request(key).project.as_ref() {
+        if runtime.contexts.get(key)
+            != self
+                .project_request(key)
+                .as_ref()
+                .and_then(|req| req.project.as_ref())
+        {
             return None;
         }
         runtime.views.get(key).cloned()
     }
 
     pub(crate) fn project_marks_enabled(&self) -> bool {
-        self.tab
-            .project_navigation
-            .as_ref()
-            .and_then(|nav| {
-                let frame = nav.stack.last()?;
-                Some(
-                    self.project_runtimes
-                        .get(&nav.project)?
-                        .project
-                        .declaration
-                        .screens
-                        .iter()
-                        .any(|s| s.id == frame.key.screen && s.marks),
-                )
-            })
-            .unwrap_or(false)
+        self.tab.project_navigation.as_ref().is_some_and(|nav| {
+            nav.marks_enabled(
+                self.project_runtimes
+                    .get(&nav.project)
+                    .map(|runtime| &runtime.project.declaration),
+            )
+        })
     }
 
     pub(crate) fn project_visible_rows(&self) -> Vec<usize> {
-        let Some(frame) = self.project_frame() else {
+        let Some(nav) = self.tab.project_navigation.as_ref() else {
             return Vec::new();
         };
         let Some(content) = self.project_content() else {
             return Vec::new();
         };
-        match content.as_ref() {
-            ProjectContent::List(list) => list.visible_rows(&frame.query),
-            ProjectContent::Lines(lines) => (0..lines.len()).collect(),
-            ProjectContent::Diff(diff) => {
-                (0..diff.row_count(self.diff_is_split(self.tab.preview_cols))).collect()
-            }
-        }
+        nav.visible_rows(&content, self.project_viewport(), self.diff_layout)
     }
 
-    fn project_selected_index(&self) -> Option<usize> {
-        let index = self
-            .project_visible_rows()
-            .get(self.project_frame()?.cursor)
-            .copied()?;
-        if let Some(content) = self.project_content() {
-            if let ProjectContent::List(list) = content.as_ref() {
-                if !list.rows.get(index)?.selectable || list.rows.get(index)?.filter_fallback {
-                    return None;
-                }
-            }
-        }
-        Some(index)
-    }
-
+    /// The selected row's target exactly as the plugin declared it — no existence check. The
+    /// launch decisions (`e`, `o`, `Ctrl-t`) go through [`project_launch_target`], which filters
+    /// this by the owner's cached decision.
     pub(crate) fn project_row_target(&self) -> Option<PathBuf> {
-        let index = self.project_selected_index()?;
-        match self.project_content()?.as_ref() {
-            ProjectContent::List(list) => list.rows.get(index)?.target.clone(),
-            _ => None,
-        }
+        self.tab.project_navigation.as_ref()?.selected_target(
+            self.project_content()?.as_ref(),
+            self.project_viewport(),
+            self.diff_layout,
+        )
     }
 
-    pub(crate) fn project_new_tab_hint(&self) -> Option<(String, String)> {
-        let entry = self.project_new_tab_control()?;
-        Some((entry.rendered_keys(), entry.label))
+    /// The one answer to "the target a key may open on this row": the row's target only while
+    /// the owner marks it launchable — existence decided off the UI thread and cached in
+    /// `ProjectRuntime::launch_targets`, so a deleted file's row is `None` while an existing
+    /// directory row (a worktree) stays launchable. `e`, `o`, `Ctrl-t`, their gate and their
+    /// hints all read this; never stat the file system here.
+    pub(crate) fn project_launch_target(&self) -> Option<PathBuf> {
+        let path = self.project_row_target()?;
+        let nav = self.tab.project_navigation.as_ref()?;
+        self.project_runtimes
+            .get(&nav.project)?
+            .can_launch_target(&nav.frame()?.key, &path)
+            .then_some(path)
     }
 
-    fn project_new_tab_control(&self) -> Option<ProjectControl> {
-        self.project_row_target().map(|_| {
-            ProjectControl::new(
-                ProjectControlId::NewTab,
-                vec![KeyPress::ctrl_ch('t')],
-                tr(self.lang, Msg::HintNewTab),
-            )
-            .shared()
-        })
+    pub(crate) fn project_preview_launch_target(&self) -> Option<PathBuf> {
+        let path = self.tab.preview_path.as_ref()?;
+        let available = self
+            .diff_target_kind_cache
+            .as_ref()
+            .filter(|(target, _, _)| target == path)
+            .map(|(_, _, exists)| *exists)
+            .unwrap_or_else(|| {
+                self.tab.project_return.as_ref().is_some_and(|nav| {
+                    nav.frame().is_some_and(|frame| {
+                        self.project_runtimes
+                            .get(&nav.project)
+                            .is_some_and(|runtime| runtime.can_launch_target(&frame.key, path))
+                    })
+                })
+            });
+        available.then(|| path.clone())
     }
 
-    fn action_project(&self, p: PluginAct) -> Option<&ProjectKey> {
-        if let Some(nav) = &self.tab.project_navigation {
-            return (nav.project.plugin == p.plugin()).then_some(&nav.project);
+    /// Use the selected project's complete owner-prepared list, not the tree's status cache.
+    /// The owner resolves target existence; filtering here only reads cached values.
+    pub(super) fn project_diff_changed_paths(&self) -> Option<Vec<PathBuf>> {
+        let plugin = match self.selected_diff_backend()? {
+            crate::vcs::VcsKind::Git => "git",
+            #[cfg(feature = "git")]
+            crate::vcs::VcsKind::Jj => "jj",
+        };
+        let nav = self
+            .tab
+            .project_return
+            .as_ref()
+            .or(self.tab.project_navigation.as_ref())?;
+        if nav.project.plugin != plugin {
+            return None;
         }
-        if let Some(nav) = &self.tab.project_return {
-            if nav.project.plugin == p.plugin() {
-                return Some(&nav.project);
-            }
+        let runtime = self.project_runtimes.get(&nav.project)?;
+        // Arbitrary OpenDiff callers' rows are not a changed-file catalogue.
+        // The standard VCS declaration owns that catalogue on its Changes screen.
+        if !runtime
+            .project
+            .declaration
+            .screens
+            .iter()
+            .any(|screen| screen.id == "changes")
+        {
+            return None;
         }
-        self.tab
+        let key = ScreenKey::new("changes", nav.frame()?.key.tab);
+        let paths = runtime
+            .views
+            .get(&key)
+            .and_then(|content| {
+                let ProjectContent::List(list) = content.as_ref() else {
+                    return None;
+                };
+                Some(
+                    list.rows
+                        .iter()
+                        .filter(|row| row.selectable && row.kind == "file")
+                        .filter_map(|row| row.target.as_ref())
+                        .filter(|path| runtime.can_launch_target(&key, path))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
+        Some(konoma_plugin::host::project::diff_files::ordered_changed_paths(&self.tab.root, paths))
+    }
+
+    fn action_project(&self, action: PluginAct) -> Option<ProjectKey> {
+        let detected: Vec<_> = self
+            .tab
             .projects
             .projects
             .iter()
-            .filter(|project| project.plugin == p.plugin())
-            .find_map(|project| {
-                self.project_runtimes
-                    .get_key_value(&ProjectKey::from(project))
-                    .map(|(key, _)| key)
-            })
+            .map(ProjectKey::from)
+            .collect();
+        actions::action_project(
+            self.tab.project_navigation.as_ref().map(|nav| &nav.project),
+            self.tab.project_return.as_ref().map(|nav| &nav.project),
+            &detected,
+            action.plugin(),
+            |key| self.project_runtimes.contains_key(key),
+        )
     }
-
     pub(crate) fn project_act_context(&self) -> ProjectAct {
-        if let Some(frame) = self.project_frame() {
-            let mut context = ProjectAct::new().screen(&frame.key.screen).tab(self.tab.id);
-            if let Some(content) = self.project_content() {
-                if let ProjectContent::List(list) = content.as_ref() {
-                    if let Some(row) = self.project_selected_index().and_then(|i| list.rows.get(i))
-                    {
-                        context = context.selected(ProjectRow::from(row));
-                    }
-                    context = context.marked(
-                        frame
-                            .marked
-                            .iter()
-                            .filter_map(|i| list.rows.get(*i))
-                            .map(ProjectRow::from),
-                    );
-                }
-            }
-            return context;
+        if let Some(nav) = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .filter(|nav| nav.frame().is_some())
+        {
+            return nav.act_context(self.project_content().as_deref());
         }
         if self.is_git_diff_preview() {
             return self
@@ -1023,105 +859,125 @@ impl App {
         context
     }
 
-    pub(crate) fn project_acts_in(&self, ctx: Context) -> Vec<&ActBinding> {
-        let host_diff = ctx == Context::Diff;
-        let context_matches = if self.project_active() {
-            ctx == Context::Canvas
-        } else {
-            matches!(ctx, Context::Tree | Context::TreeVisual) || host_diff
-        };
-        if !context_matches {
-            return Vec::new();
+    fn project_action(&self, action: PluginAct) -> Option<ProjectAction> {
+        let declaration = self.plugin_keys.declaration(action)?.clone();
+        let key = self
+            .plugin_keys
+            .acts_of(action.plugin())
+            .iter()
+            .find(|binding| binding.act == action)
+            .and_then(|binding| binding.key);
+        Some(ProjectAction {
+            id: ProjectActionId {
+                plugin: action.plugin().into(),
+                action: action.act().into(),
+            },
+            declaration,
+            key,
+        })
+    }
+
+    fn project_scope(&self, ctx: Context) -> ProjectActionScope {
+        if let Some(nav) = &self.tab.project_navigation {
+            if ctx != Context::Canvas {
+                return ProjectActionScope::None;
+            }
+            return ProjectActionScope::Screen {
+                plugin: nav.project.plugin.clone(),
+                context: self.project_act_context(),
+                diff: self
+                    .project_content()
+                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::Diff(_))),
+                jumps: self
+                    .plugin_keys
+                    .jumps_of(&nav.project.plugin)
+                    .iter()
+                    .filter_map(|jump| jump.key)
+                    .collect(),
+            };
         }
-        let context = self.project_act_context();
-        let ids: BTreeSet<_> = if let Some(nav) = &self.tab.project_navigation {
-            [nav.project.plugin.as_str()].into_iter().collect()
-        } else if matches!(ctx, Context::Tree | Context::TreeVisual) || self.is_git_diff_preview() {
-            self.tab
-                .projects
-                .projects
-                .iter()
-                .map(|p| p.plugin.as_str())
-                .collect()
+        let plugins = self
+            .tab
+            .projects
+            .projects
+            .iter()
+            .map(|project| project.plugin.clone())
+            .collect();
+        if matches!(ctx, Context::Tree | Context::TreeVisual) {
+            ProjectActionScope::TreeSelection {
+                plugins,
+                context: self.project_act_context(),
+            }
+        } else if ctx == Context::Diff && self.is_git_diff_preview() {
+            ProjectActionScope::HostDiff { plugins }
         } else {
-            return Vec::new();
-        };
-        ids.into_iter()
+            ProjectActionScope::None
+        }
+    }
+
+    pub(crate) fn project_acts_in(&self, ctx: Context) -> Vec<&ActBinding> {
+        let scope = self.project_scope(ctx);
+        let ids: BTreeSet<_> = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .map(|nav| vec![nav.project.plugin.as_str()])
+            .unwrap_or_else(|| {
+                self.tab
+                    .projects
+                    .projects
+                    .iter()
+                    .map(|p| p.plugin.as_str())
+                    .collect()
+            })
+            .into_iter()
+            .collect();
+        let bindings: Vec<_> = ids
+            .into_iter()
             .flat_map(|id| self.plugin_keys.acts_of(id))
+            .collect();
+        let actions: Vec<_> = bindings
+            .iter()
+            .filter_map(|binding| self.project_action(binding.act))
+            .collect();
+        let allowed = actions::acts_in(&scope, &actions);
+        bindings
+            .into_iter()
             .filter(|binding| {
-                let Some(decl) = self.plugin_keys.declaration(binding.act) else {
-                    return false;
-                };
-                match &decl.project_context {
-                    Some(ActContext::Screen { screen, row_kinds }) => {
-                        self.project_active()
-                            && context.screen.as_ref() == Some(screen)
-                            && (row_kinds.is_empty()
-                                || context
-                                    .selected
-                                    .as_ref()
-                                    .is_some_and(|row| row_kinds.contains(&row.kind)))
-                    }
-                    Some(ActContext::TreeSelection) => {
-                        !self.project_active()
-                            && matches!(ctx, Context::Tree | Context::TreeVisual)
-                            && context.selected.is_some()
-                    }
-                    Some(ActContext::Diff) => {
-                        if self.project_active() {
-                            self.project_content().is_some_and(|view| {
-                                matches!(view.as_ref(), ProjectContent::Diff(_))
-                            })
-                        } else {
-                            self.is_git_diff_preview()
-                        }
-                    }
-                    _ => false,
-                }
+                allowed.iter().any(|a| {
+                    a.id.plugin == binding.act.plugin() && a.id.action == binding.act.act()
+                })
             })
             .collect()
     }
 
-    /// Screen actions own their keys before the project's shared screen jumps.
     pub(super) fn project_action_key(
         &self,
         ctx: Context,
         action: PluginAct,
         key: KeyPress,
     ) -> Option<KeyPress> {
-        if self.project_active() && ctx == Context::Canvas {
-            let screen_action = matches!(
-                self.plugin_keys.declaration(action)?.project_context,
-                Some(ActContext::Screen { .. })
-            );
-            let nav = self.tab.project_navigation.as_ref()?;
-            let shared = self
-                .project_runtimes
-                .get(&nav.project)
-                .is_some_and(|runtime| {
-                    runtime
-                        .project
-                        .declaration
-                        .screens
-                        .iter()
-                        .any(|screen| screen.key.is_some_and(|c| key == KeyPress::ch(c)))
-                });
-            if shared && !screen_action {
-                return None;
-            }
-        }
-        Some(key)
+        actions::action_key(&self.project_scope(ctx), &self.project_action(action)?, key)
     }
 
-    pub(crate) fn project_act_enabled(&self, p: PluginAct) -> Option<bool> {
-        self.plugin_keys.declaration(p)?.project_context.as_ref()?;
-        let key = self.action_project(p)?;
-        Some(self.project_runtimes.get(key).is_some_and(|r| {
-            r.ready && !r.acting && r.enabled.get(p.act()).copied().unwrap_or(false)
-        }))
+    pub(crate) fn project_act_enabled(&self, action: PluginAct) -> Option<bool> {
+        self.plugin_keys
+            .declaration(action)?
+            .project_context
+            .as_ref()?;
+        let project = self.action_project(action)?;
+        Some(actions::act_enabled(
+            self.project_runtimes.get(&project),
+            action.act(),
+        ))
+    }
+    pub(crate) fn project_is_enabled(&self, plugin: &str) -> bool {
+        crate::plugins::with_registry(&self.cfg.plugin_disabled(), |registry| {
+            registry.is_enabled(plugin)
+        }) && (plugin != "git" || self.cfg.external.git)
     }
 
-    /// `p` already belongs to OpenGitView. The legacy hub remains the fallback.
+    /// `p` enters an enabled project, or queues entry until discovery answers.
     pub(crate) fn enter_project(&mut self) -> bool {
         self.ensure_project_detection();
         if self.tab.projects.pending() {
@@ -1133,26 +989,131 @@ impl App {
             .projects
             .projects
             .iter()
-            .filter(|p| !p.declaration.screens.is_empty())
+            .filter(|p| !p.declaration.screens.is_empty() && self.project_is_enabled(&p.plugin))
             .map(ProjectKey::from)
             .collect();
-        match projects.as_slice() {
-            [] => false,
-            [project] => {
-                self.open_project(project.clone());
-                true
+        let update = prompt::choose_projects(&mut self.project_dialog, projects);
+        let handled = !matches!(update, ProjectPromptUpdate::Unchanged);
+        self.apply_project_prompt_update(update);
+        handled
+    }
+
+    /// An old hub action name bound on a surface that is not a project canvas. The names that
+    /// opened an old screen or acted on the whole repository are read like they are on a screen
+    /// table: open the project the way `p` does, then run the operation `old_screens::ROWS` maps
+    /// the name to for the project's backend (a screen jump switches the screen in place). A name
+    /// with no operation for a backend that is already known does nothing and opens no project; a
+    /// name that needed a hub row is not routed here. While the project is not open yet
+    /// (detection pending, or the chooser up) the name waits in `project_enter_op` and runs when
+    /// the project opens (see `open_project`); it is dropped when none does.
+    #[cfg(feature = "git")]
+    pub(crate) fn run_old_hub_name(&mut self, name: &str) {
+        use crate::plugins::old_screens::{Target, ROWS};
+        let Some(row) = ROWS.iter().find(|row| row.old == name) else {
+            return;
+        };
+        let detected = if self.git_vcs == crate::vcs::VcsKind::Jj {
+            "jj"
+        } else {
+            "git"
+        };
+        let several = self
+            .tab
+            .projects
+            .projects
+            .iter()
+            .filter(|p| !p.declaration.screens.is_empty() && self.project_is_enabled(&p.plugin))
+            .count()
+            > 1;
+        let known = !self.tab.projects.pending() && !several;
+        let target = if detected == "jj" { &row.jj } else { &row.git };
+        if known && !matches!(target, Target::Op(_)) {
+            return;
+        }
+        self.tab.project_enter_op = Some(name.to_string());
+        if !self.enter_project() {
+            self.tab.project_enter_op = None;
+            self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
+        }
+        // A project that opened ran the name (`open_project`); a pending or chooser entry keeps it.
+    }
+
+    /// Run the old hub name a key asked for, in the project that has just opened. The row is read
+    /// for that project's plugin, not for the backend the tab was detected as.
+    #[cfg(feature = "git")]
+    pub(crate) fn run_old_hub_name_in_project(&mut self, name: &str) {
+        use crate::plugins::old_screens::{act_screen, Target, ROWS};
+        let Some(row) = ROWS.iter().find(|row| row.old == name) else {
+            return;
+        };
+        let target = |plugin: &str| match plugin {
+            "jj" => &row.jj,
+            _ => &row.git,
+        };
+        let Some(plugin) = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .map(|nav| nav.project.plugin.clone())
+        else {
+            return;
+        };
+        let Target::Op(ops) = target(&plugin) else {
+            return;
+        };
+        let Some(op) = ops.first() else {
+            return;
+        };
+        let act = PluginAct::new(&plugin, op);
+        let jump = self
+            .plugin_keys
+            .jumps_of(&plugin)
+            .iter()
+            .find(|j| j.op == *op)
+            .map(|j| j.screen.clone());
+        let screen = jump.clone().or_else(|| {
+            self.plugin_keys
+                .declaration(act)
+                .and_then(act_screen)
+                .map(str::to_string)
+        });
+        if let Some(screen) = screen {
+            let id = self.tab.id;
+            let on_it = self
+                .project_frame()
+                .is_some_and(|frame| frame.key.screen == screen);
+            if !on_it {
+                if let Some(frame) = self
+                    .tab
+                    .project_navigation
+                    .as_mut()
+                    .and_then(|nav| nav.frame_mut())
+                {
+                    *frame = ProjectFrame::new(ScreenKey::new(&screen, id));
+                    self.ensure_project_view();
+                }
             }
-            _ => {
-                self.project_dialog = Some(ProjectDialog::Projects {
-                    projects,
-                    selected: 0,
-                });
-                true
+        }
+        // The operation goes in as its own key, so the project's input path waits for the view,
+        // asks for the text or the confirmation, and refuses a write like any pressed key. An
+        // operation without a key on the canvas has nothing to press.
+        if jump.is_none() {
+            if let Some(key) = self.plugin_key_of(Context::Canvas, act) {
+                // The host's input path takes the press only while it waits for the view; a
+                // loaded screen leaves it to the key's own action, as a pressed key would.
+                if !self.project_press(key) {
+                    self.run_plugin_action(act);
+                }
             }
         }
     }
 
     pub(super) fn open_project(&mut self, key: ProjectKey) {
+        // The old hub name that waited for this project (taken whether or not it opens).
+        let op = self.tab.project_enter_op.take();
+        if !self.project_is_enabled(&key.plugin) {
+            return;
+        }
         if let Some(project) = self
             .tab
             .projects
@@ -1163,936 +1124,723 @@ impl App {
         {
             self.start_project_runtime(project);
         }
-        let Some(runtime) = self.project_runtimes.get(&key) else {
-            return;
-        };
-        let Some(screen) = runtime
-            .project
-            .declaration
-            .screens
-            .iter()
-            .find(|s| !s.pushed)
+        let Some(screen) =
+            self.with_project_host(|host, context| host.first_screen(&key, context.id))
         else {
             return;
         };
-        let screen = ScreenKey::new(&screen.id, self.tab.id);
         self.show_project_screen(key, screen);
+        #[cfg(feature = "git")]
+        if let Some(name) = op {
+            self.run_old_hub_name_in_project(&name);
+        }
+        #[cfg(not(feature = "git"))]
+        let _ = op;
     }
 
     fn show_project_screen(&mut self, key: ProjectKey, screen: ScreenKey) {
-        self.tab.project_navigation = Some(ProjectNavigation {
-            project: key,
-            stack: vec![ProjectFrame::new(screen)],
-            origin_mode: self.tab.mode,
-            origin_path: self.tab.preview_path.clone(),
-            origin_kind: self.tab.preview_kind.clone(),
-            origin_scroll: self.tab.preview_scroll,
-            origin_hscroll: self.tab.preview_hscroll,
-        });
+        if !self.project_is_enabled(&key.plugin) {
+            return;
+        }
+        self.tab.project_navigation = Some(self.navigation_over_here(ProjectHost::<
+            ProjectInvocation,
+        >::start_screen(
+            key, screen
+        )));
         self.ensure_project_view();
     }
 
-    fn ensure_project_view(&mut self) {
-        self.initialize_project_frame();
-        let Some(nav) = &self.tab.project_navigation else {
-            return;
-        };
-        let Some(frame) = nav.stack.last() else {
-            return;
-        };
-        let req = self.project_request(&frame.key);
-        let Some(runtime) = self.project_runtimes.get_mut(&nav.project) else {
-            return;
-        };
-        if runtime.busy
-            || !runtime.ready
-            || runtime.error.is_some()
-            || (runtime.views.contains_key(&frame.key)
-                && !runtime.dirty.contains(&frame.key)
-                && runtime.contexts.get(&frame.key) == req.project.as_ref())
-        {
-            return;
+    /// A navigation that remembers what it covers: the mode, the file and kind of the preview and
+    /// the whole tab as a tab switch would save it. A screen opened over screens that are already
+    /// open keeps what the first of them covered.
+    fn navigation_over_here(
+        &mut self,
+        state: ProjectScreenState<ProjectInvocation>,
+    ) -> ProjectNavigation {
+        if let Some(nav) = &self.tab.project_navigation {
+            return ProjectNavigation {
+                state,
+                origin_mode: nav.origin_mode,
+                origin_path: nav.origin_path.clone(),
+                origin_kind: nav.origin_kind.clone(),
+                origin_tab: nav.origin_tab.clone(),
+            };
         }
-        if runtime
-            .tx
-            .try_send(ProjectJob::View {
-                key: frame.key.clone(),
-                req,
-            })
-            .is_ok()
-        {
-            runtime.busy = true;
-            #[cfg(test)]
-            {
-                runtime.view_request = Some(frame.key.clone());
-            }
-        }
+        // The first screen covers the tab's screen: that screen is left as a tab switch leaves it.
+        // Its state is saved (the snapshot below, put back by `leave_project_screens`) and its
+        // live work is dropped by the same function the tab switch uses (`leave_tab_view`). What
+        // then reads or changes the tab's view fields while covered changes a working copy that
+        // the return replaces.
+        // The media this tab shows is about to be put back from the stash, as on a tab switch.
+        self.stash_media_cache();
+        let mut snapshot = self.snapshot_tab();
+        snapshot.project_navigation = None;
+        let nav = ProjectNavigation {
+            state,
+            origin_mode: self.tab.mode,
+            origin_path: self.tab.preview_path.clone(),
+            origin_kind: self.tab.preview_kind.clone(),
+            origin_tab: Some(Box::new(snapshot)),
+        };
+        self.leave_tab_view();
+        nav
     }
 
-    fn project_back(&mut self) {
-        let Some(mut nav) = self.tab.project_navigation.take() else {
-            return;
+    /// Test-only: a project screen opened over what the tab shows, the way `show_project_screen`
+    /// does it (without a project plugin behind it).
+    #[cfg(test)]
+    pub(crate) fn cover_with_project_screen_for_test(&mut self) {
+        let key = ProjectKey {
+            plugin: "example".into(),
+            root: self.tab.root.clone(),
+            marker: "project".into(),
         };
-        if nav.stack.len() > 1 {
-            nav.stack.pop();
-            self.tab.project_navigation = Some(nav);
+        let state = ProjectScreenState::new(key, ScreenKey::new("items", self.tab.id));
+        self.tab.project_navigation = Some(self.navigation_over_here(state));
+    }
+
+    /// Test-only: leaving the top project screen.
+    #[cfg(test)]
+    pub(crate) fn leave_project_screens_for_test(&mut self) {
+        self.leave_project_screens();
+    }
+
+    fn ensure_project_view(&mut self) {
+        let info = self.project_context_info(&self.tab);
+        self.with_project_host(|host, context| host.ensure_view(context, &info));
+    }
+
+    pub(crate) fn project_back(&mut self) {
+        if self.with_project_host(|host, context| host.pop_screen(context)) {
             self.ensure_project_view();
             return;
         }
-        match (nav.origin_mode, nav.origin_path) {
-            (Mode::Preview, Some(path)) => {
-                if matches!(nav.origin_kind, Some(PreviewKind::GitDiff(_))) {
-                    self.open_git_diff(&path);
-                } else {
-                    self.enter_preview(&path);
-                }
-                self.tab.preview_scroll = nav.origin_scroll;
-                self.tab.preview_hscroll = nav.origin_hscroll;
-            }
-            _ => self.back_to_tree(),
+        self.leave_project_screens();
+    }
+
+    /// A jump to a file or directory (paste-jump, a bookmark) while a project screen is in front:
+    /// leave the screen first, as its back key does, so the target lands on the base screen and
+    /// is shown instead of being opened under the screen.
+    /// (A jump to a directory changes the root, and `clear_for_root_change` closes the screens.)
+    pub(crate) fn leave_project_screens_for_jump(&mut self) {
+        if self.project_active() {
+            self.leave_project_screens();
         }
     }
 
+    /// Close the project screens and return to where they were opened from (the tree, or the
+    /// Preview they overlaid). Leaving the top screen does this; so does a project that is no
+    /// longer detected.
+    pub(crate) fn leave_project_screens(&mut self) {
+        let Some(nav) = self.tab.project_navigation.take() else {
+            return;
+        };
+        if let Some(origin) = nav.origin_tab {
+            // The covered screen comes back as a tab does: the whole saved state, brought up to
+            // date with the files as they are now (`put_tab_back`), a diff included (it is read
+            // from git again there, with the view, page and scroll it was left at). What the
+            // project screens legitimately went on changing while they covered it is kept from
+            // the working state (`PerTab::restored`, its `live` group). A tree comes back the
+            // same way: the working copy's tree was changed while covered and is replaced.
+            self.put_tab_back(*origin, true);
+        } else {
+            // A navigation made without a saved tab (a test's fixture): the screen it names.
+            match (nav.origin_mode, nav.origin_path) {
+                (Mode::Preview, Some(path)) => self.enter_preview(&path),
+                _ => self.back_to_tree(),
+            }
+        }
+    }
+
+    /// A project that the latest detection answer no longer lists: its screens close as when
+    /// leaving them from the top screen, and the flash is the one `p` gives where there is no
+    /// project. Its runtime is dropped by the next poll, which keeps only detected projects.
+    pub(super) fn retire_project(&mut self, key: &ProjectKey) {
+        let mut retired = false;
+        if self
+            .tab
+            .project_return
+            .as_ref()
+            .is_some_and(|nav| &nav.project == key)
+        {
+            self.tab.project_return = None;
+            retired = true;
+        }
+        if self
+            .tab
+            .project_navigation
+            .as_ref()
+            .is_some_and(|nav| &nav.project == key)
+        {
+            self.leave_project_screens();
+            retired = true;
+        }
+        // A chooser that lists it drops that candidate; with none left it closes and the old hub
+        // name that waited for it is dropped.
+        if konoma_plugin::host::project::prompt::retain_projects(
+            &mut self.project_dialog,
+            |candidate| candidate != key,
+        ) {
+            self.tab.project_enter_op = None;
+            retired = true;
+        }
+        // A confirmation or text input of the project closes (its keys would otherwise stay with a
+        // dialog that can no longer act), and its queued invocations are dropped. Another
+        // project's dialog and queue entries stay.
+        if konoma_plugin::host::project::prompt::close_act_dialog_of(&mut self.project_dialog, key)
+        {
+            retired = true;
+        }
+        let queued = self.tab.project_pending_acts.len();
+        self.tab.project_pending_acts.retain(|invocation| {
+            konoma_plugin::host::project::prompt::PromptInvocation::prompt_invocation(invocation)
+                .origin
+                .project
+                != *key
+        });
+        if self.tab.project_pending_acts.len() != queued {
+            retired = true;
+        }
+        if retired {
+            self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
+        }
+    }
+
+    /// Refresh on a project canvas, from the `Space` menu's item or the host's `refresh` action
+    /// in whichever layer it came from. It runs the project's refresh operation itself, not a key
+    /// (a key would be read through the config and could be any operation).
+    pub(crate) fn project_refresh(&mut self) {
+        let update = self.with_project_host(|host, context| host.refresh(context));
+        self.apply_project_update(update);
+    }
+
+    /// The key of a canvas control as the footer and the help name it, or `None` where that key
+    /// does not act (the control is not named on this screen; `Tab` does nothing on a pushed
+    /// screen). The `Space` menu lists a control iff this answers, and pressing the item presses
+    /// this key.
+    pub(crate) fn project_control_key(&self, control: ProjectMenuControl) -> Option<KeyPress> {
+        let (presentation, _) = self.project_presentation()?;
+        self.project_control_key_in(&presentation, control)
+    }
+
+    /// [`Self::project_control_key`] over a presentation already built (the menu builds the
+    /// presentation once and asks for every control).
+    pub(crate) fn project_control_key_in(
+        &self,
+        presentation: &ProjectPresentation,
+        control: ProjectMenuControl,
+    ) -> Option<KeyPress> {
+        use konoma_plugin::host::project::presentation::ProjectControlId as Id;
+        let want = match control {
+            ProjectMenuControl::Search => Id::Filter,
+            ProjectMenuControl::NextScreen | ProjectMenuControl::PrevScreen => Id::Screens,
+            ProjectMenuControl::Back => Id::Back,
+        };
+        let keys = &presentation.controls().iter().find(|c| c.id == want)?.keys;
+        match control {
+            ProjectMenuControl::Search | ProjectMenuControl::Back => keys.first().copied(),
+            ProjectMenuControl::NextScreen | ProjectMenuControl::PrevScreen
+                if self.project_pushed() =>
+            {
+                None
+            }
+            ProjectMenuControl::NextScreen => keys.iter().copied().find(|k| k.code == KeyCode::Tab),
+            ProjectMenuControl::PrevScreen => {
+                keys.iter().copied().find(|k| k.code == KeyCode::BackTab)
+            }
+        }
+    }
+
+    /// The plain letter a canvas control's menu item asks for. It comes from the keymap alone (the
+    /// filter keys; the scheme's `Left` keys then the back keys), never from which controls this
+    /// screen names, so the letter assignment is the same on every screen of the project and a
+    /// control that stops acting does not move the letters after it. The screen cycle has none.
+    pub(crate) fn project_control_letter(&self, control: ProjectMenuControl) -> Option<KeyPress> {
+        use crate::keymap::{Action, Motion};
+        let keys: Vec<KeyPress> = match control {
+            ProjectMenuControl::Search => self.project_filter_keys(),
+            ProjectMenuControl::Back => self
+                .keymaps
+                .keys_of_on(
+                    Context::Text,
+                    self.screen_keys_for(Context::Text),
+                    Action::Navigate(Motion::Left),
+                )
+                .into_iter()
+                .chain(self.project_back_keys())
+                .collect(),
+            ProjectMenuControl::NextScreen | ProjectMenuControl::PrevScreen => Vec::new(),
+        };
+        keys.into_iter().find_map(konoma_host_core::menu::plain_key)
+    }
+
+    /// Run a canvas control chosen from the `Space` menu: press its key (see
+    /// [`Self::project_press`]).
+    pub(crate) fn project_press_control(&mut self, control: ProjectMenuControl) {
+        if let Some(key) = self.project_control_key(control) {
+            self.project_press(key);
+        }
+    }
+
+    /// A canvas control chosen from the `Space` menu runs the key's own path: the same handler
+    /// the key goes through, so the menu and the key cannot differ.
+    pub(crate) fn project_press(&mut self, key: KeyPress) -> bool {
+        let modifiers = if key.ctrl {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::NONE
+        };
+        self.handle_project_key(KeyEvent::new(key.code, modifiers))
+    }
+
     pub(crate) fn handle_project_key(&mut self, key: KeyEvent) -> bool {
+        self.handle_project_key_in(key, true)
+    }
+
+    /// [`Self::handle_project_key`] where `blocked_by_overlay` says whether an overlay in front of
+    /// the project (help, lists, Info, a dialog) keeps the key from the project. An app-level
+    /// action the overlay's own surface dispatched (the refresh bound in the help) passes `false`:
+    /// it acts on the project although the overlay is up.
+    fn handle_project_key_in(&mut self, key: KeyEvent, blocked_by_overlay: bool) -> bool {
         if self.project_dialog.is_some() {
             self.project_dialog_key(key);
             return true;
         }
-        if !self.project_active()
-            || self.show_help
-            || self.dialog.is_some()
-            || self.is_tab_list()
-            || self.is_bookmark_list()
-            || self.is_info()
-        {
-            return false;
-        }
-        // The legacy picker binds h/l explicitly; physical horizontal arrows are inert.
-        if self.project_picker()
-            && matches!(key.code, KeyCode::Left | KeyCode::Right)
-            && key.modifiers.is_empty()
-        {
-            return true;
-        }
-        let interaction = self.project_pending_interaction();
-        let navigation = !interaction
-            && (self.pending_leader.is_none()
-                && matches!(
-                    key.code,
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Tab | KeyCode::BackTab
-                )
-                || self.pending_leader.is_none()
-                    && self.tab.project_navigation.as_ref().is_some_and(|nav| {
-                        self.project_runtimes
-                            .get(&nav.project)
-                            .is_some_and(|runtime| {
-                                runtime.project.declaration.screens.iter().any(|screen| {
-                                    screen.key.is_some_and(|c| key.code == KeyCode::Char(c))
-                                })
-                            })
-                    }));
-        let global = !interaction
-            && (key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                || self
-                    .keymaps
-                    .layer_of_key(Context::Canvas, crate::keymap::KeyPress::norm(&key))
-                    == Some(crate::keymap::KeyLayer::Global));
-        let local_movement = !interaction
-            && self.pending_leader.is_none()
-            && self.project_content().is_some()
-            && matches!(
-                key.code,
-                KeyCode::Char('j' | 'k' | 'g' | 'G' | 'V' | '/')
-                    | KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::Home
-                    | KeyCode::End
-                    | KeyCode::PageUp
-                    | KeyCode::PageDown
-            );
-        if !navigation
-            && !global
-            && !local_movement
-            && (self.project_waiting_for_view()
-                || !self.project_replaying
-                    && self
-                        .project_frame()
-                        .is_some_and(|frame| !frame.pending.is_empty()))
-        {
-            if let Some(crate::keymap::Action::Plugin(action)) =
-                self.plugin_action_for_key(Context::Canvas, crate::keymap::KeyPress::norm(&key))
-            {
-                let writes = self
-                    .plugin_keys
-                    .declaration(action)
-                    .is_some_and(|decl| decl.writes);
-                if !self.allow_write(action.plugin(), writes, false) {
-                    return true;
-                }
-            }
-            self.queue_project_input(ProjectInput::Key(key));
-            return true;
-        }
-        if global {
-            if let Some(frame) = self
-                .tab
-                .project_navigation
-                .as_mut()
-                .and_then(|nav| nav.stack.last_mut())
-            {
-                frame.pending.clear();
-            }
-        }
-        if self.pending_leader.is_some() {
-            return false;
-        }
-        if self.project_frame().is_some_and(|f| f.filtering) {
-            let anchor = self.project_filter_anchor();
-            let frame = self
-                .tab
-                .project_navigation
-                .as_mut()
-                .unwrap()
-                .stack
-                .last_mut()
-                .unwrap();
-            match key.code {
-                KeyCode::Esc => {
-                    frame.query.clear();
-                    frame.filtering = false;
-                }
-                KeyCode::Enter => frame.filtering = false,
-                KeyCode::Backspace => {
-                    frame.query.pop();
-                }
-                KeyCode::Char(c)
-                    if key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
-                        && !c.is_control() =>
-                {
-                    frame.query.push(c);
-                }
-                _ => {}
-            }
-            self.project_filter_changed(anchor);
-            return true;
-        }
-        if self.handle_project_text_key(key) || self.handle_project_list_motion(key) {
-            return true;
-        }
-        if self.project_list_right(key) {
-            if let Some(action) = self.project_enter_action() {
-                let result = crate::dispatch_action(self, action, self.surface());
-                crate::resolve_key_result(self, result);
-            }
-            return true;
-        }
-        if crate::keymap::KeyPress::norm(&key) == crate::keymap::KeyPress::ctrl_ch('t') {
-            let result = self.tab_new_from_selection();
-            crate::resolve_key_result(self, result.map(|()| false));
-            return true;
-        }
-        if key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            return false;
-        }
-        match key.code {
-            KeyCode::Char('r') => {
-                let nav = self.tab.project_navigation.as_ref().unwrap();
-                let key = nav.stack.last().unwrap().key.clone();
-                if let Some(runtime) = self.project_runtimes.get_mut(&nav.project) {
-                    runtime.dirty.insert(key);
-                    runtime.invalidated |= runtime.busy;
-                    runtime.error = None;
-                }
-                self.ensure_project_view();
-                return true;
-            }
-            KeyCode::Esc
-                if self
-                    .project_frame()
-                    .is_some_and(|frame| !frame.query.is_empty()) =>
-            {
-                let anchor = self.project_filter_anchor();
-                if let Some(frame) = self.project_frame_mut() {
-                    frame.query.clear();
-                }
-                self.project_filter_changed(anchor);
-                return true;
-            }
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.project_back();
-                return true;
-            }
-            KeyCode::Tab | KeyCode::BackTab => {
-                let Some(nav) = self.tab.project_navigation.as_mut() else {
-                    return false;
-                };
-                let Some(runtime) = self.project_runtimes.get(&nav.project) else {
-                    return false;
-                };
-                let screens = &runtime.project.declaration.screens;
-                let Some(frame) = nav.stack.last_mut() else {
-                    return false;
-                };
-                if screens.iter().any(|s| s.id == frame.key.screen && s.pushed) {
-                    return true;
-                }
-                let screens: Vec<_> = screens.iter().filter(|s| !s.pushed).collect();
-                if screens.is_empty() {
-                    return true;
-                }
-                let at = screens
-                    .iter()
-                    .position(|s| s.id == frame.key.screen)
-                    .unwrap_or(0);
-                let next = if key.code == KeyCode::BackTab {
-                    (at + screens.len() - 1) % screens.len()
-                } else {
-                    (at + 1) % screens.len()
-                };
-                *frame = ProjectFrame::new(ScreenKey::new(&screens[next].id, self.tab.id));
-                self.ensure_project_view();
-                return true;
-            }
-            KeyCode::Char('/')
-                if self
-                    .project_content()
-                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_)))
-                    && self.project_filter_enabled() =>
-            {
-                let anchor = self.project_filter_anchor();
-                self.tab
-                    .project_navigation
-                    .as_mut()
-                    .unwrap()
-                    .stack
-                    .last_mut()
-                    .unwrap()
-                    .filtering = true;
-                if let Some(frame) = self.project_frame_mut() {
-                    frame.query.clear();
-                }
-                self.project_filter_changed(anchor);
-                return true;
-            }
-            KeyCode::Char('V')
-                if self
-                    .project_content()
-                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) =>
-            {
-                if !self.project_marks_enabled() {
-                    return true;
-                }
-                if let Some(index) = self.project_selected_index() {
-                    let marks = &mut self
-                        .tab
-                        .project_navigation
-                        .as_mut()
-                        .unwrap()
-                        .stack
-                        .last_mut()
-                        .unwrap()
-                        .marked;
-                    if !marks.remove(&index) {
-                        marks.insert(index);
-                    }
-                }
-                return true;
-            }
-            KeyCode::Char(c) => {
-                // A screen's own action takes precedence over shared screen jumps.
-                if self
-                    .plugin_action_for_key(Context::Canvas, KeyPress::norm(&key))
-                    .is_some()
-                {
-                    return false;
-                }
-                let pushed = self.project_pushed();
-                let nav = self.tab.project_navigation.as_mut().unwrap();
-                if let Some(screen) = self.project_runtimes[&nav.project]
-                    .project
-                    .declaration
-                    .screens
-                    .iter()
-                    .find(|s| s.key == Some(c))
-                {
-                    if pushed {
-                        return true;
-                    }
-                    *nav.stack.last_mut().unwrap() =
-                        ProjectFrame::new(ScreenKey::new(&screen.id, self.tab.id));
-                    self.ensure_project_view();
-                    return true;
-                }
-            }
-            _ => {}
-        }
-        false
+        let facts = self.project_key_facts(
+            konoma_plugin::host::project::project_key_press(&key),
+            blocked_by_overlay,
+        );
+        let update = self.with_project_host(|host, context| host.handle_key(context, key, &facts));
+        self.apply_project_update(update)
     }
 
+    /// What the host decided about a key for the project layer. `kp` is the key as the project
+    /// layer reads it ([`konoma_plugin::host::project::project_key_press`]); `None` is a key it has
+    /// no form for, which is in no host table, so every lookup below is skipped for it.
+    fn project_key_facts(&self, kp: Option<KeyPress>, blocked_by_overlay: bool) -> ProjectKeyFacts {
+        use crate::keymap::{Action, Motion, Resolution};
+        #[cfg(feature = "git")]
+        use crate::keymap::{Binding, ViewType};
+        let blocked = blocked_by_overlay
+            && (self.show_help
+                || self.dialog.is_some()
+                || self.is_tab_list()
+                || self.is_bookmark_list()
+                || self.is_info());
+        let Some(kp) = kp else {
+            return ProjectKeyFacts {
+                blocked,
+                leader: self.pending_leader.is_some(),
+                viewport: self.project_viewport(),
+                layout: self.diff_layout,
+                ..ProjectKeyFacts::of_no_key()
+            };
+        };
+        #[cfg(feature = "git")]
+        let list_override = self
+            .keymaps
+            .types
+            .get(&ViewType::List)
+            .and_then(|table| table.get(&kp))
+            .map(|binding| matches!(binding, Binding::Run(Action::Navigate(Motion::Right))));
+        #[cfg(not(feature = "git"))]
+        let list_override = None;
+        let motion = crate::ops::keys::fixed_action(Context::Text, kp.code)
+            .or_else(|| {
+                match self.keymaps.resolve_on(
+                    Context::Text,
+                    self.screen_keys_for(Context::Text),
+                    kp,
+                ) {
+                    Resolution::Action(action) => Some(action),
+                    _ => None,
+                }
+            })
+            .and_then(|action| match action {
+                Action::Navigate(motion) => Some(motion),
+                _ => None,
+            });
+        let action =
+            self.plugin_action_for_key(Context::Canvas, kp)
+                .and_then(|action| match action {
+                    Action::Plugin(p) => Some(p),
+                    _ => None,
+                });
+        let actions = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .map(|nav| {
+                self.plugin_keys
+                    .acts_of(&nav.project.plugin)
+                    .iter()
+                    .filter_map(|b| self.project_action(b.act))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let jumps = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .map(|nav| self.plugin_keys.jumps_of(&nav.project.plugin).to_vec())
+            .unwrap_or_default();
+        ProjectKeyFacts {
+            jumps,
+            back_keys: self.project_back_keys(),
+            filter_keys: self.project_filter_keys(),
+            blocked,
+            leader: self.pending_leader.is_some(),
+            global: self.keymaps.layer_of_key_on(
+                Context::Canvas,
+                self.screen_keys_for(Context::Canvas),
+                kp,
+            ) == Some(crate::keymap::KeyLayer::Global),
+            motion,
+            cycle_layout: self
+                .project_content()
+                .is_some_and(|c| matches!(c.as_ref(), ProjectContent::Diff(_)))
+                && self
+                    .keymaps
+                    .resolve_on(Context::Diff, self.screen_keys_for(Context::Diff), kp)
+                    == Resolution::Action(Action::CycleDiffLayout),
+            list_override,
+            text_right: self.keymaps.resolve_on(
+                Context::Text,
+                self.screen_keys_for(Context::Text),
+                kp,
+            ) == Resolution::Action(Action::Navigate(Motion::Right)),
+            action: action.and_then(|p| self.project_action(p).map(|a| a.id)),
+            enter_action: self.project_enter_action().and_then(|action| match action {
+                Action::Plugin(p) => self.project_action(p).map(|a| a.id),
+                _ => None,
+            }),
+            actions,
+            policy: action
+                .map(|p| self.project_write_policy(p.plugin()))
+                .unwrap_or_default(),
+            viewport: self.project_viewport(),
+            layout: self.diff_layout,
+        }
+    }
+
+    fn apply_project_update(&mut self, update: ProjectUpdate<ProjectInvocation>) -> bool {
+        let handled = update.dispatch != ProjectDispatch::Unhandled;
+        if update.dispatch == ProjectDispatch::LeaveProject {
+            self.project_back();
+        }
+        for command in update.commands {
+            match command {
+                ProjectCommand::TreeStatus => self.git_status_dirty = true,
+                ProjectCommand::Label(label) => self.flash = Some(label),
+                ProjectCommand::Copy(text) => self.set_clipboard_flash(&text),
+                ProjectCommand::Flash(message) => {
+                    self.flash = Some(message.get(self.plugin_lang()).into())
+                }
+                ProjectCommand::UnknownScreen => {
+                    self.flash = Some(tr(self.lang, Msg::ProjectUnknownScreen).into())
+                }
+                ProjectCommand::StartScreen { project, screen } => {
+                    self.show_project_screen(project, screen)
+                }
+                ProjectCommand::Navigation {
+                    outcome,
+                    save_return,
+                } => {
+                    let read_context = self
+                        .tab
+                        .project_navigation
+                        .as_ref()
+                        .map(|nav| {
+                            use crate::vcs::Preference;
+                            konoma_plugin::host::project::DiffReadContext::new(
+                                match nav.project.plugin.as_str() {
+                                    "git" => Preference::Git,
+                                    "jj" => Preference::Jj,
+                                    _ => Preference::Auto,
+                                },
+                            )
+                        })
+                        .unwrap_or_default();
+                    if save_return {
+                        self.tab.project_return = self.tab.project_navigation.take();
+                    }
+                    let result = if let konoma_plugin::Outcome::OpenDiff { path } = outcome {
+                        self.open_git_diff_with(
+                            &path,
+                            super::git_view::DiffOpen {
+                                read_context,
+                                ..Default::default()
+                            },
+                        );
+                        Ok(())
+                    } else {
+                        self.apply_plugin_navigation(outcome)
+                    };
+                    crate::resolve_key_result(self, result.map(|()| false));
+                }
+                ProjectCommand::EnsureView => self.ensure_project_view(),
+                ProjectCommand::Dispatch(id) => {
+                    let action =
+                        crate::keymap::Action::Plugin(PluginAct::new(&id.plugin, &id.action));
+                    let result = crate::dispatch_action(self, action, self.surface());
+                    crate::resolve_key_result(self, result);
+                }
+                ProjectCommand::NewTab => {
+                    let result = self.tab_new_from_selection();
+                    crate::resolve_key_result(self, result.map(|()| false));
+                }
+                ProjectCommand::LayoutChanged(layout) => {
+                    self.apply_project_motion_result(ProjectMotionResult::LayoutChanged(layout));
+                }
+                ProjectCommand::Notice(notice) => {
+                    let message = match notice {
+                        ProjectNotice::Busy => Msg::ProjectBusy,
+                        ProjectNotice::ReadOnly => Msg::PluginReadOnly,
+                        ProjectNotice::SelectionChanged => Msg::ProjectSelectionChanged,
+                    };
+                    self.flash = Some(tr(self.lang, message).into());
+                }
+            }
+        }
+        if let Some(prompt) = update.prompt {
+            self.apply_project_prompt_update(prompt);
+        }
+        // Only an act refused before it ran returns events here; the rest come from the poll.
+        for event in update.events {
+            if let ProjectEvent::Retry(invocation) = event {
+                self.reopen_project_input(invocation);
+            }
+        }
+        handled
+    }
+
+    fn project_write_policy(&self, plugin: &str) -> ProjectWritePolicy {
+        let declared_read_only =
+            crate::plugins::with_registry(&self.cfg.plugin_disabled(), |registry| {
+                registry
+                    .manifest(plugin)
+                    .is_some_and(|manifest| manifest.read_only)
+            });
+        let configured = self
+            .cfg
+            .plugins
+            .get(plugin)
+            .and_then(|table| table.get("read_only"))
+            .cloned();
+        ProjectWritePolicy {
+            declared_read_only,
+            configured,
+        }
+    }
+
+    fn project_act_facts(
+        &self,
+        action: &ProjectActionId,
+        project: ProjectKey,
+        confirmation: bool,
+    ) -> ProjectActFacts<ProjectSurface> {
+        ProjectActFacts {
+            origin: ProjectOrigin {
+                context: self.tab.id,
+                project,
+                root: self.tab.root.clone(),
+                screen: self.project_frame().map(|frame| frame.key.clone()),
+                surface: ProjectSurface {
+                    mode: self.tab.mode,
+                    path: self.tab.preview_path.clone(),
+                },
+            },
+            binding: self
+                .plugin_binding_in(
+                    self.key_context().unwrap_or_else(|| self.base_context()),
+                    PluginAct::new(&action.plugin, &action.action),
+                )
+                .is_some(),
+            policy: self.project_write_policy(&action.plugin),
+            context: self.project_act_context(),
+            confirmation,
+        }
+    }
     fn project_confirmation_enabled(&self, plugin: &str, prompt: &Confirmation) -> bool {
         let Some(key) = &prompt.setting else {
             return true;
         };
         let settings = crate::plugins::effective_settings(&self.cfg, plugin);
         let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
-        let value = settings.get(key).or_else(|| {
-            registry
-                .manifest(plugin)?
+        let default = registry.manifest(plugin).and_then(|manifest| {
+            manifest
                 .settings
                 .iter()
                 .find(|setting| &setting.name == key)
                 .map(|setting| &setting.default)
         });
-        !matches!(value, Some(konoma_plugin::Value::Bool(false)))
+        prompt::confirmation_enabled(prompt, settings.get(key), default)
     }
 
     pub(crate) fn request_project_act(&mut self, action: PluginAct) -> bool {
-        let Some(decl) = self.plugin_keys.declaration(action).cloned() else {
+        let Some(declaration) = self.project_action(action) else {
             return false;
         };
-        if decl.project_context.is_none() {
+        if declaration.declaration.project_context.is_none() {
             return false;
         }
-        let Some(project) = self.action_project(action).cloned() else {
+        let Some(project) = self.action_project(action) else {
             return true;
         };
-        if !self.allow_write(action.plugin(), decl.writes, false) {
-            return true;
-        }
-        if !self.project_act_enabled(action).unwrap_or(false) {
-            return true;
-        }
-        let mut context = self.project_act_context();
-        if decl.copy && context.selected.is_none() {
-            if let Some(selection) = self
-                .project_frame()
-                .and_then(|frame| frame.key.selection.as_ref())
-            {
-                context = context.selected(ProjectRow::new("selection", selection));
-            }
-        }
-        let effect = ProjectEffect {
-            project: project.clone(),
-            tab: self.tab.id,
-            tree_root: self.tab.root.clone(),
-            view: self.project_frame().map(|f| f.key.clone()),
-            outcome: None,
-            tree_status: false,
-            label: decl.label.get(self.plugin_lang()).into(),
-        };
-        let mut prompts = Vec::new();
-        if let Some(prompt) = decl
+        let confirmation = declaration
+            .declaration
             .confirmation
             .as_ref()
-            .filter(|prompt| self.project_confirmation_enabled(action.plugin(), prompt))
-        {
-            prompts.push(ProjectPrompt::Confirmation(prompt.clone()));
-        }
-        if let Some(prompt) = &decl.text_input {
-            prompts.push(ProjectPrompt::Text(prompt.clone()));
-        }
-        if let Some(prompt) = &decl.choice_input {
-            prompts.push(ProjectPrompt::Choice(prompt.clone()));
-        }
-        let invocation = ProjectInvocation {
-            project,
-            action,
-            declaration: decl,
-            context,
-            effect,
-            origin_mode: self.tab.mode,
-            origin_path: self.tab.preview_path.clone(),
-        };
-        if prompts.is_empty() {
-            self.execute_project_act(invocation);
-        } else {
-            let buffer = match &prompts[0] {
-                ProjectPrompt::Text(input) => input.initial.clone(),
-                _ => String::new(),
-            };
-            let cursor = buffer.chars().count();
-            self.project_dialog = Some(ProjectDialog::Act {
-                invocation: Box::new(invocation),
-                prompts,
-                stage: 0,
-                buffer,
-                cursor,
-                selected: 0,
-            });
-        }
-        true
-    }
-
-    pub(super) fn execute_project_act(&mut self, mut invocation: ProjectInvocation) {
-        if invocation.effect.tree_root != self.tab.root
-            || invocation.origin_mode != self.tab.mode
-            || invocation.origin_path != self.tab.preview_path
-            || invocation.effect.view.as_ref() != self.project_frame().map(|frame| &frame.key)
-        {
-            return;
-        }
-        if !self.allow_write(
-            invocation.action.plugin(),
-            invocation.declaration.writes,
-            false,
-        ) {
-            return;
-        }
-        let Some(runtime) = self.project_runtimes.get(&invocation.project) else {
-            return;
-        };
-        if runtime.busy && !runtime.acting {
-            self.queue_project_input(ProjectInput::Act(Box::new(invocation)));
-            return;
-        }
-        if runtime.busy || !runtime.ready {
-            self.flash = Some(tr(self.lang, Msg::ProjectBusy).into());
-            return;
-        }
-        if !runtime
-            .enabled
-            .get(invocation.action.act())
-            .copied()
-            .unwrap_or(false)
-        {
-            return;
-        }
-        if invocation.context.screen.is_some() && invocation.context.selected.as_ref().is_some_and(|selected| self.project_content().is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(list) if !list.rows.iter().any(|row| &ProjectRow::from(row) == selected)))) {
-            self.flash = Some(tr(self.lang, Msg::ProjectSelectionChanged).into());
-            return;
-        }
-        if self
-            .plugin_binding_in(
-                self.key_context().unwrap_or_else(|| self.base_context()),
-                invocation.action,
-            )
-            .is_none()
-        {
-            return;
-        }
-        let mut targets = BTreeSet::new();
-        let mut chip = false;
-        // Actions can change the gitdir; only a chip-only refresh skips watch discovery.
-        let mut watch = invocation.declaration.refresh.is_empty();
-        for target in &invocation.declaration.refresh {
-            watch |= !matches!(target, RefreshTarget::Chip);
-            match target {
-                RefreshTarget::CurrentScreen => {
-                    if let Some(key) = &invocation.effect.view {
-                        targets.insert(key.clone());
-                    }
-                }
-                RefreshTarget::Screen { screen } => {
-                    let cached: Vec<_> = runtime
-                        .views
-                        .keys()
-                        .filter(|key| &key.screen == screen)
-                        .cloned()
-                        .collect();
-                    if cached.is_empty() {
-                        targets.insert(ScreenKey::new(screen, invocation.effect.tab));
-                    } else {
-                        targets.extend(cached);
-                    }
-                }
-                RefreshTarget::AllScreens => {
-                    targets.extend(runtime.views.keys().cloned());
-                    for screen in &runtime.project.declaration.screens {
-                        if !targets.iter().any(|key| key.screen == screen.id) {
-                            targets.insert(ScreenKey::new(&screen.id, invocation.effect.tab));
-                        }
-                    }
-                }
-                RefreshTarget::TreeStatus => invocation.effect.tree_status = true,
-                RefreshTarget::Chip => chip = true,
-                _ => {}
-            }
-        }
-        let refresh = targets
-            .into_iter()
-            .map(|key| {
-                let req = self.project_request(&key);
-                (key, req)
+            .is_none_or(|prompt| self.project_confirmation_enabled(action.plugin(), prompt));
+        let facts = self.project_act_facts(&declaration.id, project.clone(), confirmation);
+        let effect = ProjectEffect::new(
+            facts.origin.clone(),
+            declaration.declaration.label.get(self.plugin_lang()),
+        );
+        let update = self.with_project_host(|host, context| {
+            host.request_act(context, &declaration, &facts, |shared| ProjectInvocation {
+                shared,
+                effect,
             })
-            .collect();
-        let retry = invocation
-            .declaration
-            .text_input
-            .as_ref()
-            .filter(|input| input.keep_on_failure)
-            .map(|_| Box::new(invocation.clone()));
-        let runtime = self.project_runtimes.get_mut(&invocation.project).unwrap();
-        let job = ProjectJob::Act {
-            action: invocation.action.act().into(),
-            context: invocation.context,
-            refresh,
-            chip,
-            watch,
-            effect: Box::new(invocation.effect),
-        };
-        if runtime.tx.try_send(job).is_ok() {
-            runtime.busy = true;
-            runtime.acting = true;
-            runtime.pending_retry = retry;
-            if let Some(frame) = self
-                .tab
-                .project_navigation
-                .as_mut()
-                .and_then(|nav| nav.stack.last_mut())
-            {
-                frame.pending.clear();
-            }
-        }
-    }
-
-    fn reopen_project_input(&mut self, invocation: ProjectInvocation) {
-        if invocation.effect.tab != self.tab.id
-            || invocation.effect.tree_root != self.tab.root
-            || !self.tab.project_navigation.as_ref().is_some_and(|nav| {
-                nav.project == invocation.project
-                    && nav
-                        .stack
-                        .last()
-                        .is_some_and(|frame| Some(&frame.key) == invocation.effect.view.as_ref())
-            })
-            || self.dialog.is_some()
-            || self.project_dialog.is_some()
-            || self.is_text_input_active()
-            || self.project_frame().is_some_and(|frame| frame.filtering)
-        {
-            return;
-        }
-        let Some(prompt) = invocation.declaration.text_input.clone() else {
-            return;
-        };
-        let Some(buffer) = invocation.context.text.clone() else {
-            return;
-        };
-        let cursor = buffer.chars().count();
-        self.project_dialog = Some(ProjectDialog::Act {
-            invocation: Box::new(invocation),
-            prompts: vec![ProjectPrompt::Text(prompt)],
-            stage: 0,
-            buffer,
-            cursor,
-            selected: 0,
         });
+        self.apply_project_update(update)
+    }
+
+    pub(super) fn execute_project_act(&mut self, invocation: ProjectInvocation) {
+        let project = self
+            .tab
+            .project_navigation
+            .as_ref()
+            .map(|nav| nav.project.clone())
+            .unwrap_or_else(|| invocation.origin.project.clone());
+        let facts = self.project_act_facts(&invocation.action, project, true);
+        // Snapshot every live context before borrowing the shared screen states.
+        let live: Vec<_> = std::iter::once(&self.tab)
+            .chain(self.tabs.iter())
+            .map(|tab| self.project_context_info(tab))
+            .collect();
+        let update = self.with_project_host(|host, context| {
+            host.execute_act(context, invocation, &facts, |key| {
+                effects::request_for(&live, key)
+            })
+        });
+        self.apply_project_update(update);
+    }
+    fn reopen_project_input(&mut self, invocation: ProjectInvocation) {
+        let Some(nav) = self.tab.project_navigation.as_ref() else {
+            return;
+        };
+        let current = ProjectOrigin {
+            context: self.tab.id,
+            project: nav.project.clone(),
+            root: self.tab.root.clone(),
+            screen: nav.frame().map(|frame| frame.key.clone()),
+            surface: ProjectSurface {
+                mode: self.tab.mode,
+                path: self.tab.preview_path.clone(),
+            },
+        };
+        let blockers = ProjectPromptBlockers {
+            dialog: self.dialog.is_some(),
+            text_input: self.is_text_input_active(),
+            filtering: self.project_frame().is_some_and(|frame| frame.filtering),
+        };
+        self.with_project_host(|host, _| host.reopen_retry(invocation, &current, blockers));
     }
 
     pub(crate) fn poll_project_jobs(&mut self) -> bool {
-        let live_tabs: std::collections::HashSet<_> = std::iter::once(&self.tab)
+        let live: Vec<_> = std::iter::once(&self.tab)
             .chain(self.tabs.iter())
-            .map(|tab| tab.id)
+            .map(|tab| self.project_context_info(tab))
             .collect();
-        let retained: std::collections::HashSet<_> = std::iter::once(&self.tab)
+        let retained: Vec<_> = std::iter::once(&self.tab)
             .chain(self.tabs.iter())
             .flat_map(|tab| tab.projects.projects.iter().map(ProjectKey::from))
             .collect();
-        self.project_runtimes
-            .retain(|key, _| retained.contains(key));
+        // Registry, settings and ReadScope remain host-owned.
         for project in self.tab.projects.projects.clone() {
             self.start_project_runtime(project);
         }
-        let mut changed = false;
-        let mut effects = Vec::new();
-        let mut watches = Vec::new();
-        let mut chip_errors = Vec::new();
-        let mut errors = Vec::new();
-        let mut retries = Vec::new();
-        for (key, runtime) in &mut self.project_runtimes {
-            while let Some(reply) = runtime
-                .pending
-                .take()
-                .or_else(|| runtime.rx.try_recv().ok())
-            {
-                changed = true;
-                runtime.busy = false;
-                runtime.acting = false;
-                if let Some(invocation) = runtime.pending_retry.take().filter(|_| reply.act_failed)
-                {
-                    retries.push(*invocation);
+        let update = {
+            let mut host = ProjectHost::new(
+                &mut self.project_runtimes,
+                &mut self.project_dialog,
+                &mut self.project_replaying,
+            );
+            let mut contexts: Vec<_> = std::iter::once(&mut self.tab)
+                .chain(self.tabs.iter_mut())
+                .map(project_context)
+                .collect();
+            host.poll(&mut contexts, &live, &retained)
+        };
+        let mut changed = update.changed;
+        for event in update.events {
+            match event {
+                ProjectEvent::Watch(key, paths) => {
+                    for tab in std::iter::once(&mut self.tab).chain(self.tabs.iter_mut()) {
+                        tab.projects.set_watch_paths(
+                            &key.plugin,
+                            &key.root,
+                            &key.marker,
+                            paths.clone(),
+                        );
+                    }
                 }
-                #[cfg(test)]
-                {
-                    runtime.view_request = None;
-                }
-                runtime.ready |= reply.error.is_none();
-                runtime.error = reply.error;
-                if let Some(paths) = reply.watch_paths {
-                    runtime.watch_paths = Some(paths);
-                }
-                if !reply.enabled.is_empty() {
-                    runtime.enabled = reply.enabled;
-                }
-                if !runtime.invalidated {
-                    runtime.contexts.extend(
-                        reply
-                            .contexts
-                            .into_iter()
-                            .filter(|(screen, _)| live_tabs.contains(&screen.tab)),
-                    );
-                    for (screen, view) in reply
-                        .views
-                        .into_iter()
-                        .filter(|(screen, _)| live_tabs.contains(&screen.tab))
+                ProjectEvent::Effect(effect) => {
+                    if effect.tree_status && self.tab.root.starts_with(&effect.origin.project.root)
                     {
-                        let old = runtime.views.get(&screen).map(Arc::as_ref);
-                        remap_project_rows(&mut self.tab, key, &screen, old, &view);
-                        for tab in &mut self.tabs {
-                            remap_project_rows(tab, key, &screen, old, &view);
+                        self.git_status_dirty = true;
+                    }
+                    if effect.origin.context == self.tab.id {
+                        self.apply_project_effect(effect);
+                    } else if let Some(tab) = self
+                        .tabs
+                        .iter_mut()
+                        .find(|tab| tab.id == effect.origin.context)
+                    {
+                        tab.project_effects.push(effect);
+                    }
+                }
+                ProjectEvent::EnsureView => {
+                    for effect in std::mem::take(&mut self.tab.project_effects) {
+                        self.apply_project_effect(effect);
+                        changed = true;
+                    }
+                    if self.tab.project_enter_pending && !self.tab.projects.pending() {
+                        self.tab.project_enter_pending = false;
+                        if !self.enter_project() {
+                            self.tab.project_enter_op = None;
+                            self.flash = Some(tr(self.lang, Msg::NotAGitRepo).into());
                         }
-                        runtime.dirty.remove(&screen);
-                        runtime.views.insert(screen, view);
+                        changed = true;
                     }
+                    self.ensure_project_view();
                 }
-                if let Some(chip) = reply.chip {
-                    if !runtime.chip_dirty {
-                        runtime.chip = chip;
-                    }
+                ProjectEvent::Error(error) => {
+                    self.flash = Some(error.message.get(self.plugin_lang()).into())
                 }
-                if let Some(error) = reply.chip_error {
-                    chip_errors.push((key.clone(), error));
-                }
-                if runtime.invalidated {
-                    runtime.dirty.extend(runtime.views.keys().cloned());
-                    runtime.invalidated = false;
-                }
-                if let Some(effect) = reply.effect {
-                    effects.push(effect);
-                }
-                if let Some(error) = &runtime.error {
+                ProjectEvent::ChipError(key, error) => {
                     if self
                         .tab
-                        .project_navigation
-                        .as_ref()
-                        .is_some_and(|nav| &nav.project == key)
+                        .projects
+                        .projects
+                        .iter()
+                        .any(|p| ProjectKey::from(p) == key)
                     {
-                        errors.push(error.clone());
+                        self.flash = Some(error.message.get(self.plugin_lang()).into());
                     }
                 }
+                ProjectEvent::Retry(invocation) => self.reopen_project_input(invocation),
             }
-            if !runtime.busy && !runtime.closed_tabs.is_empty() {
-                match runtime.tx.try_send(ProjectJob::TabsClosed {
-                    tabs: runtime.closed_tabs.iter().copied().collect(),
-                }) {
-                    Ok(()) => {
-                        runtime.closed_tabs.clear();
-                        runtime.busy = true;
-                    }
-                    // A failed open has no session left to notify.
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                        runtime.closed_tabs.clear()
-                    }
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-                }
-            }
-            if let Some(paths) = &runtime.watch_paths {
-                watches.push((key.clone(), paths.clone()));
-            }
-            if runtime.refresh_watch
-                && !runtime.busy
-                && runtime.ready
-                && runtime.tx.try_send(ProjectJob::Watch).is_ok()
-            {
-                runtime.refresh_watch = false;
-                runtime.chip_dirty = false;
-                runtime.busy = true;
-            }
-            if runtime.chip_dirty
-                && runtime.ready
-                && !runtime.busy
-                && runtime.tx.try_send(ProjectJob::Chip).is_ok()
-            {
-                runtime.chip_dirty = false;
-                runtime.busy = true;
-            }
-        }
-        for (key, paths) in watches {
-            for tab in std::iter::once(&mut self.tab).chain(self.tabs.iter_mut()) {
-                tab.projects
-                    .set_watch_paths(&key.plugin, &key.root, &key.marker, paths.clone());
-            }
-        }
-        for effect in effects {
-            if effect.tree_status && self.tab.root.starts_with(&effect.project.root) {
-                self.git_status_dirty = true;
-            }
-            if effect.tab == self.tab.id {
-                self.apply_project_effect(effect);
-            } else if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == effect.tab) {
-                tab.project_effects.push(effect);
-            }
-        }
-        for effect in std::mem::take(&mut self.tab.project_effects) {
-            self.apply_project_effect(effect);
-            changed = true;
-        }
-        if self.tab.project_enter_pending && !self.tab.projects.pending() {
-            self.tab.project_enter_pending = false;
-            if !self.enter_project() {
-                self.open_git_view();
-            }
-            changed = true;
-        }
-        self.ensure_project_view();
-        for error in errors {
-            self.flash = Some(error.message.get(self.plugin_lang()).into());
-        }
-        for (key, error) in chip_errors {
-            if self
-                .tab
-                .projects
-                .projects
-                .iter()
-                .any(|p| ProjectKey::from(p) == key)
-            {
-                self.flash = Some(error.message.get(self.plugin_lang()).into());
-            }
-        }
-        for invocation in retries {
-            self.reopen_project_input(invocation);
         }
         changed
     }
 
-    fn initialize_project_frame(&mut self) {
-        if let Some(nav) = self.tab.project_navigation.as_mut() {
-            if let Some(frame) = nav.stack.last_mut() {
-                if !frame.initialized {
-                    if let Some(view) = self
-                        .project_runtimes
-                        .get(&nav.project)
-                        .and_then(|r| r.views.get(&frame.key))
-                    {
-                        if let ProjectContent::List(list) = view.as_ref() {
-                            if let Some(cursor) =
-                                list.visible_rows(&frame.query).iter().position(|index| {
-                                    let row = &list.rows[*index];
-                                    row.initial_selection && row.selectable && !row.filter_fallback
-                                })
-                            {
-                                frame.cursor = cursor;
-                            }
-                            let marks =
-                                self.project_runtimes
-                                    .get(&nav.project)
-                                    .is_some_and(|runtime| {
-                                        runtime
-                                            .project
-                                            .declaration
-                                            .screens
-                                            .iter()
-                                            .any(|s| s.id == frame.key.screen && s.marks)
-                                    });
-                            frame.marked.extend(
-                                list.rows
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(_, row)| marks && row.marked && row.selectable)
-                                    .map(|(i, _)| i),
-                            );
-                        }
-                        frame.initialized = true;
-                    }
-                }
-            }
-        }
-    }
-
     fn apply_project_effect(&mut self, effect: ProjectEffect) {
-        if self.tab.root != effect.tree_root || matches!(effect.outcome, Some(Outcome::Unhandled)) {
-            return;
-        }
-        if effect.tree_status {
-            self.git_status_dirty = true;
-        }
-        if !matches!(
-            effect.outcome,
-            Some(Outcome::Redraw | Outcome::PushScreen { .. } | Outcome::PopScreen)
-        ) {
-            self.flash = Some(effect.label);
-        }
-        if matches!(
-            &effect.outcome,
-            Some(
-                Outcome::PushScreen { .. }
-                    | Outcome::PopScreen
-                    | Outcome::OpenFile { .. }
-                    | Outcome::OpenDiff { .. }
-                    | Outcome::SwitchRoot { .. }
-                    | Outcome::OpenTab { .. }
-            )
-        ) && effect.view.is_some()
-            && !self.tab.project_navigation.as_ref().is_some_and(|nav| {
-                nav.project == effect.project
-                    && nav.stack.last().map(|frame| &frame.key) == effect.view.as_ref()
-            })
-        {
-            return;
-        }
-        match effect.outcome {
-            Some(Outcome::PopScreen) => {
-                if self.project_pushed() {
-                    self.project_back();
-                }
-            }
-            Some(Outcome::Copy { text }) => self.set_clipboard_flash(&text),
-            Some(Outcome::Flash(message)) => {
-                self.flash = Some(message.get(self.plugin_lang()).into())
-            }
-            Some(Outcome::PushScreen { screen, selection }) => {
-                if !self
-                    .project_runtimes
-                    .get(&effect.project)
-                    .is_some_and(|runtime| {
-                        runtime
-                            .project
-                            .declaration
-                            .screens
-                            .iter()
-                            .any(|s| s.id == screen)
-                    })
-                {
-                    self.flash = Some(tr(self.lang, Msg::ProjectUnknownScreen).into());
-                    return;
-                }
-                let target = ScreenKey {
-                    screen,
-                    selection,
-                    tab: effect.tab,
-                };
-                if self.tab.project_navigation.is_none() && effect.view.is_none() {
-                    self.show_project_screen(effect.project, target);
-                    return;
-                }
-                let Some(nav) = self.tab.project_navigation.as_mut().filter(|nav| {
-                    nav.project == effect.project
-                        && nav.stack.last().map(|f| &f.key) == effect.view.as_ref()
-                }) else {
-                    return;
-                };
-                nav.stack.push(ProjectFrame::new(target));
-            }
-            Some(outcome @ (Outcome::OpenFile { .. } | Outcome::OpenDiff { .. })) => {
-                self.tab.project_return = self.tab.project_navigation.take();
-                let result = self.apply_plugin_navigation(outcome);
-                crate::resolve_key_result(self, result.map(|()| false));
-            }
-            Some(outcome @ Outcome::SwitchRoot { .. }) => {
-                let result = self.apply_plugin_navigation(outcome);
-                crate::resolve_key_result(self, result.map(|()| false));
-            }
-            Some(outcome @ Outcome::OpenTab { .. }) => {
-                let result = self.apply_plugin_navigation(outcome);
-                crate::resolve_key_result(self, result.map(|()| false));
-            }
-            _ => {}
-        }
+        let current = self.project_context_info(&self.tab);
+        let update =
+            self.with_project_host(|host, context| host.apply_effect(context, &current, effect));
+        self.apply_project_update(update);
     }
 
     #[cfg(test)]
@@ -2106,270 +1854,372 @@ impl App {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn project_control_entries(&self) -> Option<Vec<ProjectControl>> {
-        use ProjectControlId as Id;
+        Some(self.project_presentation()?.0.controls().to_vec())
+    }
+
+    /// The keys that leave the project canvas: the fixed `q` while the effective keymap leaves it
+    /// bound to the screen's back operation, plus every key the keymap binds to that operation.
+    /// The one answer for the key handling ([`ProjectKeyFacts::back_keys`]) and the footer and
+    /// help hints.
+    fn project_back_keys(&self) -> Vec<KeyPress> {
+        use crate::keymap::Action;
+        // The released hub's `q` was the screen table's close: `git_close` everywhere but on the
+        // worktree list, whose close is `worktree_close` (the other did nothing there).
+        #[cfg(feature = "git")]
+        let ops: &[Action] = if self.canvas_is_worktrees() {
+            &[Action::WorktreeClose]
+        } else {
+            &[Action::GitClose]
+        };
+        #[cfg(not(feature = "git"))]
+        let ops: &[Action] = &[];
+        self.project_operation_keys('q', ops)
+    }
+
+    /// The keys that start the list filter on the project canvas, decided like
+    /// [`App::project_back_keys`] for the fixed `/`. The branch and worktree lists also take their
+    /// own released operation (`branch_filter_start`, `worktree_filter_start`); on any other
+    /// screen those did nothing visible and still do not.
+    fn project_filter_keys(&self) -> Vec<KeyPress> {
+        use crate::keymap::Action;
+        #[cfg(feature = "git")]
+        let ops: &[Action] = {
+            use crate::keymap::{Context, Screen};
+            match self.canvas_screen() {
+                Some(Context::Screen(_, Screen::Branches)) => {
+                    &[Action::ListFilterStart, Action::BranchFilterStart]
+                }
+                Some(Context::Screen(_, Screen::Worktrees)) => {
+                    &[Action::ListFilterStart, Action::WorktreeFilterStart]
+                }
+                _ => &[Action::ListFilterStart],
+            }
+        };
+        #[cfg(not(feature = "git"))]
+        let ops: &[Action] = &[];
+        self.project_operation_keys('/', ops)
+    }
+
+    /// `worktree_close` bound to another screen's key. The released hub reopened itself
+    /// (`open_git_view`): on its change list that read the entries again and put the cursor on
+    /// the first row; over any other list nothing visible changed. The canvas reads the changes
+    /// as its own `r` does, and the list starts over at its first row when the new rows arrive.
+    /// It never raises the legacy hub's flag, which would outlive the project.
+    #[cfg(feature = "git")]
+    pub(crate) fn project_worktree_close_elsewhere(&mut self) {
+        use crate::keymap::{Context, Screen};
+        if matches!(
+            self.canvas_screen(),
+            Some(Context::Screen(_, Screen::Changes))
+        ) {
+            self.with_project_host(|host, context| host.reload_screen_from_top(context));
+            self.ensure_project_view();
+        }
+    }
+
+    #[cfg(feature = "git")]
+    fn canvas_is_worktrees(&self) -> bool {
+        use crate::keymap::{Context, Screen};
+        matches!(
+            self.canvas_screen(),
+            Some(Context::Screen(_, Screen::Worktrees))
+        )
+    }
+
+    /// The plain keys that run one of the canvas operations `ops` on the screen the canvas shows:
+    /// the fixed key `fixed` (it is not in the keymap) unless the config gave it another meaning
+    /// (see [`KeyMap::fixed_key_acts_on`]), then every key the effective keymap resolves to one of
+    /// `ops`, Ctrl chords included (a screen table may bind `ctrl-x`).
+    fn project_operation_keys(&self, fixed: char, ops: &[crate::keymap::Action]) -> Vec<KeyPress> {
+        let screen = self.screen_keys_for(Context::Canvas);
+        let mut keys = Vec::new();
+        if self
+            .keymaps
+            .fixed_key_acts_on(screen, KeyPress::ch(fixed), ops)
+        {
+            keys.push(KeyPress::ch(fixed));
+        }
+        for op in ops {
+            for key in self.keymaps.keys_of_on(Context::Canvas, screen, *op) {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        keys
+    }
+
+    /// The keys of the project's tool launch, shown in the footer where the old hub showed `!`:
+    /// the changes screens (its screen table is the only one that binds it).
+    fn project_tool_keys(&self) -> Vec<KeyPress> {
+        #[cfg(feature = "git")]
+        {
+            if self.project_tool_screen() {
+                return self.keymaps.keys_of_on(
+                    Context::Canvas,
+                    self.screen_keys_for(Context::Canvas),
+                    crate::keymap::Action::GitLaunchTool,
+                );
+            }
+        }
+        Vec::new()
+    }
+
+    /// Whether the project canvas shows the version-control changes screen, the only canvas
+    /// screen where `!` (the project's tool) acts, as in the old hub whose screen table bound it
+    /// there alone. The footer's `!:tool` token and the key's gate both ask this.
+    #[cfg(feature = "git")]
+    pub(crate) fn project_tool_screen(&self) -> bool {
+        matches!(
+            self.canvas_screen(),
+            Some(Context::Screen(_, crate::keymap::Screen::Changes))
+        )
+    }
+
+    pub(crate) fn project_presentation(&self) -> Option<(ProjectPresentation, Vec<PluginAct>)> {
+        use crate::keymap::{Action, LeaderId, Motion};
         if !self.project_active() {
             return None;
         }
-        let mut controls = if let Some(controls) = self.project_text_controls() {
-            controls
-        } else {
-            let list = self
-                .project_content()
-                .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_)));
-            let mut controls = vec![
-                ProjectControl::new(
-                    Id::Screens,
-                    vec![KeyPress::key(KeyCode::Tab), KeyPress::key(KeyCode::BackTab)],
-                    tr(self.lang, Msg::FtScreens),
-                )
-                .shared(),
-                ProjectControl::new(
-                    Id::Move,
-                    vec![KeyPress::ch('j'), KeyPress::ch('k')],
-                    if list {
-                        konoma_plugin::t!(en: "move", ja: "移動")
-                            .get(self.plugin_lang())
-                            .to_string()
-                    } else {
-                        tr(self.lang, Msg::Scroll).into()
-                    },
-                )
-                .shared(),
-            ];
-            if list && self.project_marks_enabled() {
-                controls.push(
-                    ProjectControl::new(
-                        Id::Mark,
-                        vec![KeyPress::ch('V')],
-                        konoma_plugin::t!(en: "mark", ja: "マーク").get(self.plugin_lang()),
+        let (actions, bindings) = self.project_presentation_bindings();
+        let motion_keys = |motions: &[Motion]| {
+            motions
+                .iter()
+                .flat_map(|m| {
+                    self.keymaps.keys_of_on(
+                        Context::Text,
+                        self.screen_keys_for(Context::Text),
+                        Action::Navigate(*m),
                     )
-                    .shared(),
-                );
-            }
-            if list && self.project_filter_enabled() {
-                controls.push(
-                    ProjectControl::new(
-                        Id::Filter,
-                        vec![KeyPress::ch('/')],
-                        tr(self.lang, Msg::HintFilter),
-                    )
-                    .shared(),
-                );
-            }
-            controls.push(
-                ProjectControl::new(
-                    Id::Back,
-                    vec![KeyPress::ch('q')],
-                    konoma_plugin::t!(en: "back", ja: "戻る").get(self.plugin_lang()),
-                )
-                .shared(),
-            );
-            controls.push(
-                ProjectControl::new(
-                    Id::Help,
-                    vec![KeyPress::ch('?')],
-                    tr(self.lang, Msg::HintHelp),
-                )
-                .shared(),
-            );
-            controls
+                })
+                .collect()
         };
-        controls.extend(self.project_open_control());
-        controls.extend(self.project_new_tab_control());
-        if crate::ops::menu::opens(self, Context::Canvas, crate::keymap::LeaderId::Copy) {
-            let keys = self
-                .keymaps
-                .leader_keys_of(Context::Canvas)
-                .into_iter()
-                .filter(|(_, id)| *id == crate::keymap::LeaderId::Copy)
-                .map(|(key, _)| key)
-                .collect::<Vec<_>>();
-            if !keys.is_empty() {
-                controls.push(ProjectControl::new(
-                    Id::Copy,
-                    keys,
-                    tr(self.lang, Msg::CopyHint),
-                ));
+        let filter_label = self.tab.project_navigation.as_ref().and_then(|nav| {
+            let screen = &nav.stack.last()?.key.screen;
+            self.project_runtimes
+                .get(&nav.project)?
+                .project
+                .declaration
+                .screens
+                .iter()
+                .find(|decl| &decl.id == screen)?
+                .filter_label
+                .as_ref()
+                .map(|label| label.get(self.plugin_lang()).to_string())
+        });
+        let mut graph_scroll = Vec::new();
+        let enabled: Vec<_> = [Action::Navigate(Motion::Down), Action::Navigate(Motion::Up)]
+            .into_iter()
+            .filter(|a| crate::ops::action_enabled(self, Context::Text, *a))
+            .collect();
+        let (columns, _) = crate::ops::keys::columns(self, Context::Text, &enabled);
+        for key in columns.into_iter().flatten() {
+            if !graph_scroll.contains(&key) {
+                graph_scroll.push(key);
             }
         }
-        let bindings = self.project_acts_in(Context::Canvas);
-        if konoma_plugin::host::acts::menu_candidates(&bindings)
-            .iter()
-            .any(|(act, _)| {
-                crate::ops::action_enabled(
-                    self,
+        let facts = ProjectPresentationFacts {
+            content: self
+                .project_content()
+                .map(|content| match content.as_ref() {
+                    ProjectContent::List(_) => ProjectPresentationContent::List,
+                    ProjectContent::Lines(_) => ProjectPresentationContent::Lines,
+                    ProjectContent::Diff(_) => ProjectPresentationContent::Diff,
+                }),
+            marks: self.project_marks_enabled(),
+            filter: self.project_filter_enabled(),
+            pushed: self.project_pushed(),
+            picker: self.project_picker(),
+            graph_jj: self.project_graph_jj(),
+            vcs_jj: self.project_vcs_jj(),
+            // `row_target` means "Ctrl-t acts on this row": the owner's launchable decision,
+            // like the gate and the handler, so a deleted file's row shows no Ctrl-t hint.
+            row_target: self.project_launch_target().is_some(),
+            open: self.project_open_facts(&actions, &bindings),
+            motions: ProjectMotionKeys {
+                scroll: motion_keys(&[Motion::Down, Motion::Up]),
+                hscroll: motion_keys(&[Motion::Left, Motion::Right]),
+                ends: motion_keys(&[Motion::Top, Motion::Bottom]),
+                diff_layout: self.keymaps.keys_of_on(
+                    Context::Diff,
+                    self.screen_keys_for(Context::Diff),
+                    Action::CycleDiffLayout,
+                ),
+                half_page: motion_keys(&[Motion::HalfDown, Motion::HalfUp]),
+                page: motion_keys(&[Motion::PageDown, Motion::PageUp]),
+                line_ends: motion_keys(&[Motion::LineHome, Motion::LineEnd]),
+                left: motion_keys(&[Motion::Left]),
+                back: self.project_back_keys(),
+                filter: self.project_filter_keys(),
+                help: self.keymaps.keys_of_on(
                     Context::Canvas,
-                    crate::keymap::Action::Plugin(*act),
-                )
+                    self.screen_keys_for(Context::Canvas),
+                    Action::ToggleHelp,
+                ),
+                pairs: {
+                    let pair = |a: Motion, b: Motion| -> (Vec<KeyPress>, Vec<KeyPress>) {
+                        (motion_keys(&[a]), motion_keys(&[b]))
+                    };
+                    MotionPairs {
+                        scroll: pair(Motion::Down, Motion::Up),
+                        hscroll: pair(Motion::Left, Motion::Right),
+                        line_ends: pair(Motion::LineHome, Motion::LineEnd),
+                        page: pair(Motion::PageDown, Motion::PageUp),
+                        half_page: pair(Motion::HalfDown, Motion::HalfUp),
+                    }
+                },
+            },
+            graph_scroll,
+            copy_keys: if bindings
+                .iter()
+                .any(|b| b.binding.copy_key.is_some() && b.enabled)
+            {
+                self.keymaps
+                    .leader_keys_of_on(Context::Canvas, self.screen_keys_for(Context::Canvas))
+                    .into_iter()
+                    .filter(|(_, id)| *id == LeaderId::Copy)
+                    .map(|(key, _)| key)
+                    .collect()
+            } else {
+                vec![]
+            },
+            filter_label,
+            tool_keys: self.project_tool_keys(),
+            ..Default::default()
+        };
+        let facts = match self.tab.project_navigation.as_ref().and_then(|nav| {
+            let screen = nav.stack.last()?.key.screen.clone();
+            let screens = &self
+                .project_runtimes
+                .get(&nav.project)?
+                .project
+                .declaration
+                .screens;
+            Some((
+                screens,
+                screen,
+                self.plugin_keys.jumps_of(&nav.project.plugin),
+            ))
+        }) {
+            Some((screens, screen, jumps)) => {
+                facts.with_declared_screens(screens, &screen, self.plugin_lang(), jumps)
+            }
+            None => facts,
+        };
+        let move_list = konoma_plugin::t!(en: "move", ja: "移動");
+        let mark = konoma_plugin::t!(en: "mark", ja: "マーク");
+        let back = konoma_plugin::t!(en: "back", ja: "戻る");
+        let words = ProjectPresentationWords {
+            language: self.plugin_lang(),
+            screens: tr(self.lang, Msg::FtScreens),
+            move_list: move_list.get(self.plugin_lang()),
+            scroll: tr(self.lang, Msg::Scroll),
+            mark: mark.get(self.plugin_lang()),
+            filter: tr(self.lang, Msg::HintFilter),
+            back: back.get(self.plugin_lang()),
+            help: tr(self.lang, Msg::HintHelp),
+            new_tab: tr(self.lang, Msg::HintNewTab),
+            copy: tr(self.lang, Msg::CopyHint),
+            actions: tr(self.lang, Msg::WkActionsTitle),
+            hscroll: tr(self.lang, Msg::HintHscroll),
+            ends: tr(self.lang, Msg::HintEnds),
+            diff_layout: tr(self.lang, Msg::FtDiffLayout),
+            cycle: tr(self.lang, Msg::ProjectCycle),
+            pop: tr(self.lang, Msg::ProjectBack),
+            apply: tr(self.lang, Msg::FtApply),
+            cancel: tr(self.lang, Msg::FtCancel),
+            nav: tr(self.lang, Msg::FtNav),
+            search: tr(self.lang, Msg::HintSearch),
+            half_page: tr(self.lang, Msg::HelpHalfPage),
+            page: tr(self.lang, Msg::HintPage),
+            line_ends: tr(self.lang, Msg::HintLineEnds),
+            close: tr(self.lang, Msg::FtClose),
+            tool: tr(self.lang, Msg::FtTool),
+        };
+        Some((
+            ProjectPresentation::build(
+                &facts,
+                ProjectCapabilities { can_open_tab: true },
+                &bindings,
+                &words,
+            ),
+            actions,
+        ))
+    }
+
+    fn project_presentation_bindings(&self) -> (Vec<PluginAct>, Vec<ProjectPresentationBinding>) {
+        let mut actions = Vec::new();
+        let bindings = self
+            .plugin_context_bindings(Context::Canvas)
+            .into_iter()
+            .enumerate()
+            .map(|(index, b)| {
+                actions.push(b.act);
+                ProjectPresentationBinding {
+                    enabled: crate::ops::action_enabled(
+                        self,
+                        Context::Canvas,
+                        crate::keymap::Action::Plugin(b.act),
+                    ),
+                    declared_enter: self
+                        .plugin_keys
+                        .declaration(b.act)
+                        .is_some_and(|a| a.key.as_deref() == Some("Enter")),
+                    binding: konoma_plugin::host::acts::ActBinding {
+                        act: index,
+                        copy_key: b.copy_key,
+                        hint_group: b.hint_group,
+                        key: b.key,
+                        context: b.context,
+                        label: b.label,
+                        help: b.help,
+                        footer: b.footer,
+                        writes: b.writes,
+                    },
+                }
             })
-        {
-            controls.push(
-                ProjectControl::new(
-                    Id::Actions,
-                    vec![KeyPress::ch(' ')],
-                    tr(self.lang, Msg::WkActionsTitle).trim(),
-                )
-                .shared(),
-            );
-        }
-        Some(controls)
+            .collect();
+        (actions, bindings)
     }
 
     /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
     pub(crate) fn project_picker(&self) -> bool {
-        self.project_frame()
-            .is_some_and(|frame| frame.key.screen == "graph_picker")
-            && self
-                .tab
-                .project_navigation
-                .as_ref()
-                .is_some_and(|nav| matches!(nav.project.plugin.as_str(), "git" | "jj"))
-    }
-
-    pub(crate) fn project_filter_enabled(&self) -> bool {
         self.tab
             .project_navigation
             .as_ref()
-            .and_then(|nav| {
-                let frame = nav.stack.last()?;
+            .is_some_and(|nav| nav.picker())
+    }
+
+    pub(crate) fn project_filter_enabled(&self) -> bool {
+        self.tab.project_navigation.as_ref().is_none_or(|nav| {
+            nav.filter_enabled(
                 self.project_runtimes
-                    .get(&nav.project)?
-                    .project
-                    .declaration
-                    .screens
-                    .iter()
-                    .find(|screen| screen.id == frame.key.screen)
-            })
-            .is_none_or(|screen| screen.filter)
+                    .get(&nav.project)
+                    .map(|runtime| &runtime.project.declaration),
+            )
+        })
     }
 
     /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
     pub(crate) fn project_graph_jj(&self) -> Option<bool> {
-        let nav = self.tab.project_navigation.as_ref()?;
-        if nav.stack.last()?.key.screen != "graph" {
-            return None;
-        }
-        match nav.project.plugin.as_str() {
-            "git" => Some(false),
-            "jj" => Some(true),
-            _ => None,
-        }
+        self.tab.project_navigation.as_ref()?.graph_jj()
+    }
+
+    /// jj or git on any screen of the project (see `graph_jj` for the graph alone).
+    pub(crate) fn project_vcs_jj(&self) -> Option<bool> {
+        self.tab.project_navigation.as_ref()?.vcs_jj()
     }
 
     pub(crate) fn project_pushed(&self) -> bool {
         self.tab.project_navigation.as_ref().is_some_and(|nav| {
-            self.project_runtimes
-                .get(&nav.project)
-                .is_some_and(|runtime| {
-                    nav.stack.last().is_some_and(|f| {
-                        runtime
-                            .project
-                            .declaration
-                            .screens
-                            .iter()
-                            .any(|s| s.id == f.key.screen && s.pushed)
-                    })
-                })
+            nav.pushed(
+                self.project_runtimes
+                    .get(&nav.project)
+                    .map(|runtime| &runtime.project.declaration),
+            )
         })
-    }
-
-    pub(crate) fn project_text_hints(&self) -> Option<Vec<(String, String)>> {
-        Some(
-            self.project_text_controls()?
-                .into_iter()
-                .map(|entry| (entry.rendered_keys(), entry.label))
-                .collect(),
-        )
-    }
-
-    fn project_text_controls(&self) -> Option<Vec<ProjectControl>> {
-        use crate::keymap::{Action, Motion};
-        use ProjectControlId as Id;
-        let content = self.project_content()?;
-        if matches!(content.as_ref(), ProjectContent::List(_)) {
-            return None;
-        }
-        let groups = [
-            (Id::Scroll, vec![Motion::Down, Motion::Up], Msg::Scroll),
-            (
-                Id::Hscroll,
-                vec![Motion::Left, Motion::Right],
-                Msg::HintHscroll,
-            ),
-            (Id::Ends, vec![Motion::Top, Motion::Bottom], Msg::HintEnds),
-        ];
-        let mut hints = Vec::new();
-        for (id, motions, label) in groups {
-            let keys = motions
-                .into_iter()
-                .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(m)))
-                .collect::<Vec<_>>();
-            if !keys.is_empty() {
-                hints.push(ProjectControl::new(id, keys, tr(self.lang, label)));
-            }
-        }
-        if matches!(content.as_ref(), ProjectContent::Diff(_)) {
-            let keys = self
-                .keymaps
-                .keys_of(Context::Diff, Action::CycleDiffLayout)
-                .into_iter()
-                .collect::<Vec<_>>();
-            if !keys.is_empty() {
-                hints.insert(
-                    hints.len().min(2),
-                    ProjectControl::new(Id::DiffLayout, keys, tr(self.lang, Msg::FtDiffLayout)),
-                );
-            }
-        }
-        if !self.project_pushed() {
-            hints.push(
-                ProjectControl::new(
-                    Id::Screens,
-                    vec![KeyPress::key(KeyCode::Tab), KeyPress::key(KeyCode::BackTab)],
-                    tr(self.lang, Msg::ProjectCycle),
-                )
-                .shared(),
-            );
-        }
-        hints.push(
-            ProjectControl::new(
-                Id::Back,
-                vec![KeyPress::ch('q'), KeyPress::key(KeyCode::Esc)],
-                tr(self.lang, Msg::ProjectBack),
-            )
-            .shared(),
-        );
-        hints.push(
-            ProjectControl::new(
-                Id::Help,
-                vec![KeyPress::ch('?')],
-                tr(self.lang, Msg::HintHelp),
-            )
-            .shared(),
-        );
-        Some(hints)
-    }
-
-    pub(crate) fn project_text_help(&self) -> Option<Vec<(String, String)>> {
-        use crate::keymap::{Action, Motion};
-        let mut hints = self.project_text_hints()?;
-        for (motions, label) in [
-            ([Motion::HalfDown, Motion::HalfUp], Msg::HelpHalfPage),
-            ([Motion::PageDown, Motion::PageUp], Msg::HintPage),
-            ([Motion::LineHome, Motion::LineEnd], Msg::HintLineEnds),
-        ] {
-            let keys = motions
-                .into_iter()
-                .flat_map(|m| self.keymaps.keys_of(Context::Text, Action::Navigate(m)))
-                .map(crate::ops::keys::help_key)
-                .collect::<Vec<_>>()
-                .join(" / ");
-            if !keys.is_empty() {
-                hints.push((keys, tr(self.lang, label).into()));
-            }
-        }
-        Some(hints)
     }
 
     pub(crate) fn project_chips(&self) -> Vec<Line<'static>> {
@@ -2388,26 +2238,90 @@ impl App {
     }
 
     pub(crate) fn return_to_project(&mut self) -> bool {
-        let Some(nav) = self.tab.project_return.take() else {
+        if self
+            .tab
+            .project_return
+            .as_ref()
+            .is_some_and(|nav| !self.project_is_enabled(&nav.project.plugin))
+        {
+            self.tab.project_return = None;
             return false;
-        };
-        self.tab.project_navigation = Some(nav);
+        }
+        if !ProjectHost::<ProjectInvocation>::restore_return(
+            &mut self.tab.project_navigation,
+            &mut self.tab.project_return,
+        ) {
+            return false;
+        }
+        // The screen opened from the project (a diff) is left: the stack covers it again, and
+        // leaving the stack puts back what its first screen covered (the saved tab of the
+        // navigation), not this one. Its live work goes as on a tab switch.
+        self.leave_tab_view();
         self.ensure_project_view();
         true
     }
 
-    pub(crate) fn resize_project(&mut self, cols: u16, rows: u16) {
-        if self.tab.preview_cols != cols || self.tab.preview_viewport != rows {
-            self.tab.preview_cols = cols;
-            self.tab.preview_viewport = rows;
-            if let Some(nav) = &self.tab.project_navigation {
-                if let Some(runtime) = self.project_runtimes.get_mut(&nav.project) {
-                    runtime.dirty.extend(runtime.views.keys().cloned());
-                    runtime.invalidated |= runtime.busy;
-                }
-            }
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn project_diff_baseline_text_for_test(&self) -> Option<String> {
+        use konoma_plugin::host::project::md_diff::{MdDiffKind, MdDiffOutcome};
+        let path = self.tab.preview_path.as_deref()?;
+        let kind = if self.preview_is_diff_representation() {
+            MdDiffKind::Gutter
+        } else {
+            MdDiffKind::Rendered
+        };
+        match self.md_diff.landed_for(path, kind) {
+            Some(MdDiffOutcome::Ready { old_pre, .. }) => Some(old_pre),
+            _ => None,
         }
+    }
+
+    pub(super) fn return_to_project_after_discard(&mut self) -> bool {
+        let Some(project) = self
+            .tab
+            .project_return
+            .as_ref()
+            .map(|nav| nav.project.clone())
+        else {
+            return false;
+        };
+        self.with_project_host(|host, _| {
+            host.invalidate(
+                &project,
+                konoma_plugin::host::project::ProjectInvalidation::Detection,
+            )
+        });
+        self.return_to_project()
+    }
+
+    pub(crate) fn resize_project(&mut self, cols: u16, rows: u16) {
+        let previous = ProjectViewport {
+            cols: self.tab.preview_cols,
+            rows: self.tab.preview_viewport,
+        };
+        self.tab.preview_cols = cols;
+        self.tab.preview_viewport = rows;
+        self.with_project_host(|host, context| {
+            host.resize(context, previous, ProjectViewport { cols, rows })
+        });
         self.ensure_project_view();
+    }
+
+    /// Whether a project act that declares `writes` is running now, in any tab. Reads (refresh,
+    /// status, log) never count: the host knows an act writes from its own declaration.
+    pub fn project_write_running(&self) -> bool {
+        self.project_runtimes
+            .values()
+            .any(|runtime| runtime.write_act_running())
+    }
+
+    /// Whether a git write is running right now, whichever path started it: the file diff's
+    /// background discard (`git_op_running()`), or a project act that declares `writes` (the vcs plugin's
+    /// commit / checkout / worktree add / discard / stage / sync). The one answer for the quit
+    /// warning, the busy indicator and the watcher-burst deferral, so they cannot drift apart.
+    /// Reads (refresh, status, log) never count.
+    pub fn git_write_running(&self) -> bool {
+        self.git_op_running() || self.project_write_running()
     }
 
     #[cfg(test)]
@@ -2418,19 +2332,7 @@ impl App {
     }
 
     pub(super) fn project_tab_closed(&mut self, tab: u64) {
-        for runtime in self.project_runtimes.values_mut() {
-            runtime.views.retain(|key, _| key.tab != tab);
-            runtime.contexts.retain(|key, _| key.tab != tab);
-            runtime.dirty.retain(|key| key.tab != tab);
-            runtime.closed_tabs.insert(tab);
-            if runtime
-                .pending_retry
-                .as_ref()
-                .is_some_and(|act| act.effect.tab == tab)
-            {
-                runtime.pending_retry = None;
-            }
-        }
+        self.with_project_host(|host, _| host.close_context(tab));
     }
 
     #[cfg(test)]

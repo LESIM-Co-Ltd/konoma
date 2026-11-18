@@ -15,90 +15,6 @@ fn cfg_keys(table: &str, pairs: &[(&str, &str)]) -> Config {
     cfg
 }
 
-/// `Enter` on a jj bookmark list used to reach the checkout: it was handled outside
-/// `dispatch_action`, so the read-only guard never saw it (`l` was refused, `Enter` was not).
-#[cfg(feature = "git")]
-#[test]
-fn e2e_enter_on_a_jj_bookmark_list_is_refused_like_every_other_write() {
-    let Some(dir) = jj_seed_repo("ops_jj_enter_checkout") else {
-        return;
-    };
-    let root = canon(&dir);
-    let mut s = Sim::new(&root).with_async_git_ops();
-    assert!(
-        !crate::vcs::caps(&s.app.tab.root).write,
-        "sanity: this fixture must resolve to the read-only jj backend"
-    );
-    s.key('p');
-    s.key('b');
-    assert!(
-        s.app.is_git_branches(),
-        "the bookmark fixture opens the list"
-    );
-    // The footer of the same list does not offer the checkout (checked before the refusal's
-    // flash takes the footer's place).
-    s.see("/:search");
-    s.dont_see("checkout");
-    s.app.flash = None;
-    s.enter();
-    assert!(
-        s.app.flash.as_deref().is_some_and(
-            |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
-        ),
-        "Enter on a bookmark must be refused with the read-only flash, got {:?}",
-        s.app.flash
-    );
-    assert!(
-        s.app.busy_jobs().is_empty(),
-        "a refused Enter must not start a checkout: {:?}",
-        s.app.busy_jobs()
-    );
-    assert!(
-        s.app.is_git_branches(),
-        "a refused write must not leave the list"
-    );
-}
-
-/// The contrast: git keeps its `Enter` = checkout.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_enter_on_a_git_branch_list_still_checks_out() {
-    let dir = sandbox("ops_git_enter_checkout");
-    seed_repo(&dir);
-    let root = canon(&dir);
-    let mut s = Sim::new(&root).with_async_git_ops();
-    s.key('p');
-    s.key('b');
-    assert!(s.app.is_git_branches());
-    // Move onto `feature-x`, the branch that is not checked out (the list starts on the current one).
-    let want = s
-        .app
-        .git_branch_view()
-        .iter()
-        .position(|b| b.name == "feature-x")
-        .expect("seed_repo creates feature-x");
-    while s.app.git_branch_sel() != want {
-        s.key(if s.app.git_branch_sel() > want {
-            'k'
-        } else {
-            'j'
-        });
-    }
-    s.see("l/Enter:checkout");
-    s.enter();
-    s.drain_git_ops();
-    let head = std::process::Command::new("git")
-        .current_dir(&root)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&head.stdout).trim(),
-        "feature-x",
-        "Enter still checks the branch out on git"
-    );
-}
-
 /// `p` outside a repository: the footer does not offer it and pressing it says why.
 #[test]
 fn e2e_git_hub_key_is_not_offered_outside_a_repository() {
@@ -110,7 +26,7 @@ fn e2e_git_hub_key_is_not_offered_outside_a_repository() {
     s.draw();
     s.dont_see("p:git");
     s.key('p');
-    assert!(!s.app.is_git_view());
+    assert!(!s.app.project_active(), "p opens no project screen");
     assert!(
         s.app.flash.as_deref().is_some_and(
             |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::NotAGitRepo))
@@ -249,7 +165,7 @@ fn e2e_dump_footer_and_help_when_asked() {
     let mut cfg = cfg_en();
     #[cfg(feature = "git")]
     hub_screen_keys(&mut cfg);
-    let mut s = Sim::with_config_sized(&root, cfg, 200, 130)
+    let mut s = Sim::with_host_keys_as_written(&root, cfg, 200, 130)
         .with_picker()
         .with_media();
     shot("tree", &mut s);
@@ -273,16 +189,15 @@ fn e2e_dump_footer_and_help_when_asked() {
         s.key('d');
         shot("diff", &mut s);
         s.key('q');
+        // The project screens (changes, log, graph, branches) are reached with Tab.
         s.key('p');
-        shot("git hub", &mut s);
-        s.key('l');
-        shot("git log", &mut s);
-        s.key('q');
-        s.key('g');
-        shot("git graph", &mut s);
-        s.key('q');
-        s.key('b');
-        shot("git branches", &mut s);
+        super::vcs_changes::drain(&mut s);
+        shot("project changes", &mut s);
+        for label in ["project log", "project graph", "project branches"] {
+            s.tab();
+            super::vcs_changes::drain(&mut s);
+            shot(label, &mut s);
+        }
     }
     std::fs::write(path, out).unwrap();
 }

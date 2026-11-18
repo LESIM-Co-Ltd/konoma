@@ -47,9 +47,9 @@ use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
-    App, FileOpResult, FilterPoolResult, FsBurstKinds, GitOpResult, IgnoredResult, KittyResult,
-    MdDiffResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaDiffResult, MediaResult,
-    RemoteFetch, SortKey, StatusResult,
+    App, DeferredFsBurst, FileOpResult, FilterPoolResult, FsBurstKinds, GitOpResult, IgnoredResult,
+    KittyResult, MdDiffResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaDiffResult,
+    MediaResult, RemoteFetch, SortKey, StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -447,6 +447,8 @@ fn run_application(startup: host::Startup) -> Result<()> {
     // repo it's ~5ms, and on a large repo it can take hundreds of ms, stalling the UI on every tab
     // switch/directory move.
     let (status_tx, status_rx) = std::sync::mpsc::channel::<StatusResult>();
+    #[cfg(feature = "git")]
+    let (follow_tx, follow_rx) = std::sync::mpsc::channel::<app::FollowResult>();
     // Markdown block-diff computation (`docs/STATUS.md` ★未修正 item 4: the ordinary preview's own
     // change gutter and the diff's `Rendered` presentation both need "old/new text, preprocessed,
     // `diff_align`'d" — I/O + a real CPU cost on a large document — also goes to a separate thread.
@@ -472,12 +474,15 @@ fn run_application(startup: host::Startup) -> Result<()> {
 
     let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
+    app.attach_preview_resolution_worker(media_tx.clone());
     app.attach_media_loader(media_tx);
     app.attach_kitty_loader(kitty_tx);
     app.attach_md_image_loader(md_img_tx);
     app.attach_remote_md_loader(md_remote_tx);
     app.attach_git_loader(ignored_tx);
     app.attach_status_loader(status_tx);
+    #[cfg(feature = "git")]
+    app.attach_follow_loader(follow_tx);
     app.attach_md_diff_loader(md_diff_tx);
     app.attach_media_diff_loader(media_diff_tx);
     app.attach_fileop_runner(fileop_tx);
@@ -549,6 +554,8 @@ fn run_application(startup: host::Startup) -> Result<()> {
             md_enc: md_enc_res_rx,
             ignored: ignored_rx,
             status: status_rx,
+            #[cfg(feature = "git")]
+            follow: follow_rx,
             md_diff: md_diff_rx,
             media_diff: media_diff_rx,
             fileop: fileop_rx,
@@ -600,7 +607,7 @@ fn terminal_gone(err: &anyhow::Error) -> bool {
 /// panics when the tty is gone, and a panic inside a panic hook aborts the process (SIGABRT on a
 /// closed terminal). `main` installs its own hook that tears the terminal down quietly, and only
 /// for a panic that ends the process.
-fn init_terminal() -> ratatui::DefaultTerminal {
+fn init_terminal() -> konoma_plugin::ratatui_backend::HostTerminal {
     let started = crossterm::terminal::enable_raw_mode().and_then(|()| {
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
     });
@@ -608,11 +615,17 @@ fn init_terminal() -> ratatui::DefaultTerminal {
         preview::command::restore_terminal_quietly();
         panic!("failed to initialize terminal: {e}");
     }
-    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
-        .unwrap_or_else(|e| {
-            preview::command::restore_terminal_quietly();
-            panic!("failed to initialize terminal: {e}")
-        })
+    // Through `WideSafeBackend`: the bare crossterm backend writes a blank over the character
+    // after a VS16 emoji (see `konoma_plugin::ratatui_backend`).
+    konoma_plugin::ratatui_backend::HostTerminal::new(
+        konoma_plugin::ratatui_backend::WideSafeBackend::new(
+            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+        ),
+    )
+    .unwrap_or_else(|e| {
+        preview::command::restore_terminal_quietly();
+        panic!("failed to initialize terminal: {e}")
+    })
 }
 
 fn resize_worker(rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<ResizeResult>) {
@@ -788,6 +801,8 @@ struct WorkerRx {
     md_enc: std::sync::mpsc::Receiver<MdEncodeResult>,
     ignored: std::sync::mpsc::Receiver<IgnoredResult>,
     status: std::sync::mpsc::Receiver<StatusResult>,
+    #[cfg(feature = "git")]
+    follow: std::sync::mpsc::Receiver<app::FollowResult>,
     md_diff: std::sync::mpsc::Receiver<MdDiffResult>,
     media_diff: std::sync::mpsc::Receiver<MediaDiffResult>,
     fileop: std::sync::mpsc::Receiver<FileOpResult>,
@@ -810,6 +825,10 @@ struct WorkerRx {
 /// Otherwise: by the next GIF frame's deadline if one is playing (whichever of the full-screen and
 /// the Markdown-inline animations is sooner), and by a plain idle timeout when nothing is going on.
 fn poll_timeout(app: &App) -> Duration {
+    #[cfg(feature = "git")]
+    if app.follow_work_pending() {
+        return Duration::from_millis(16);
+    }
     if app.is_media_loading()
         || app.md_pixels_pending()
         || app.kitty_build_pending()
@@ -868,7 +887,7 @@ fn animation_timers_due(app: &mut App, now: std::time::Instant) -> bool {
 }
 
 fn run(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
     app: &mut App,
     mut resp_rx: UnboundedReceiver<ResizeResult>,
     mut rx: WorkerRx,
@@ -947,8 +966,7 @@ fn run(
     // fs events produced by an in-progress file operation (a bulk write we caused ourselves)
     // aren't processed on the spot — they're accumulated and applied only once after the
     // operation finishes (should_defer_fs_events below).
-    let mut deferred_fs = false;
-    let mut deferred_kinds = FsBurstKinds::default();
+    let mut deferred_burst = DeferredFsBurst::default();
 
     let mut needs_redraw = true;
     // Keys typed while the startup terminal query was in flight (see `term_query`); replayed after
@@ -1077,7 +1095,7 @@ fn run(
             // git status, and derived views
             // (symmetric with run_editor's restore calling reload_preview. Prevents the Git view's
             // git_view_entries from going stale — #4).
-            let _ = app.refresh();
+            app.external_returned(app::ExternalReturn::Tree);
             needs_redraw = true;
         }
 
@@ -1177,6 +1195,12 @@ fn run(
                 needs_redraw = true;
             }
         }
+        #[cfg(feature = "git")]
+        while let Ok(result) = rx.follow.try_recv() {
+            if app.apply_follow(result) {
+                needs_redraw = true;
+            }
+        }
 
         // Apply the separate thread's media-diff completion(s) (`docs/FEATURE-MEDIA-DIFF.md`).
         while let Ok(result) = rx.media_diff.try_recv() {
@@ -1239,8 +1263,7 @@ fn run(
         let defer_fs = app.should_defer_fs_events();
         while let Ok((kinds, paths)) = fs_rx.try_recv() {
             if defer_fs {
-                deferred_fs = true;
-                deferred_kinds.merge(kinds);
+                deferred_burst.hold(kinds);
                 continue;
             }
             fs_changed = true;
@@ -1260,11 +1283,9 @@ fn run(
         // Apply the accumulated burst exactly once, on the first loop after the operation finishes
         // (defer is lifted).
         // changed_paths stays empty = "which paths changed is unknown" = err safe (also reload the preview).
-        if !defer_fs && deferred_fs {
-            deferred_fs = false;
+        if let Some(kinds) = deferred_burst.release(defer_fs) {
             fs_changed = true;
-            burst_kinds.merge(deferred_kinds);
-            deferred_kinds = FsBurstKinds::default();
+            burst_kinds.merge(kinds);
         }
         // Build-churn guard: when every path in the burst is gitignored, the ignore rules
         // themselves haven't changed, and nothing was created/removed/renamed, skip the whole tree
@@ -1451,7 +1472,7 @@ fn watch_failed_flash(lang: crate::i18n::Lang, path: &std::path::Path) -> String
 /// Without this, keys can become garbled or stop working after return (ratatui::init assumes legacy
 /// input, so we realign the state).
 fn run_editor(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
     app: &mut App,
     path: &std::path::Path,
     line: Option<usize>,
@@ -1463,7 +1484,7 @@ fn run_editor(
     let cwd = path.parent().unwrap_or(path).to_path_buf();
     let status = run_external(terminal, app, prog, args, &cwd)?;
     match status {
-        Ok(_) => app.reload_preview(), // apply the rewritten result (drop the cache + re-open the window)
+        Ok(_) => app.external_returned(app::ExternalReturn::File), // apply the rewritten result (drop the cache + re-open the window)
         Err(e) => {
             app.flash = Some(konoma_plugin::host::launch::editor_failed_notice(
                 app.lang,
@@ -1478,7 +1499,7 @@ fn run_editor(
 /// editor does; the first that starts and does not exit non-zero wins. What it may have rewritten
 /// is read again; a chain that all failed is told like a failed editor.
 fn run_terminal_chain(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
     app: &mut App,
     attempts: &[konoma_plugin::launch::Attempt],
     cwd: &std::path::Path,
@@ -1489,7 +1510,7 @@ fn run_terminal_chain(
         status.map(|s| Some(konoma_plugin::launch::status_code(s)))
     });
     match outcome {
-        Ok(_) => app.reload_preview(),
+        Ok(_) => app.external_returned(app::ExternalReturn::File),
         Err(e) => {
             app.flash = Some(konoma_plugin::host::launch::editor_failed_notice(
                 app.lang, &e,
@@ -1503,41 +1524,45 @@ fn run_terminal_chain(
 /// `cfg`, trims surrounding whitespace, and falls back to the well-known default (`lazygit` /
 /// `lazyjj`) when the configured value is empty (or all whitespace, since trimming it first makes
 /// that collapse to empty too). Pulled out of `run_git_tool` as a pure function — that function
-/// needs a real `ratatui::DefaultTerminal` to suspend/restore and spawns a real process, so the
+/// needs a real `konoma_plugin::ratatui_backend::HostTerminal` to suspend/restore and spawns a real process, so the
 /// selection logic (which section is consulted per `VcsKind`, and the fallback behavior) was
 /// previously unreachable from a test. Returns `(resolved command line, default tool name)`; the
 /// default name is echoed back mainly so tests can assert it directly rather than re-deriving it.
 fn tool_command(vcs: crate::vcs::VcsKind, cfg: &config::Config) -> (String, &'static str) {
-    // `!` launches the tool for whichever system owns the directory: lazygit knows nothing about a
-    // jj repository, and running it there would show a repository the user is not working in.
-    let (tmpl, fallback) = match vcs {
-        crate::vcs::VcsKind::Git => (cfg.git.tool.trim(), "lazygit"),
+    let jj = match vcs {
+        crate::vcs::VcsKind::Git => false,
         #[cfg(feature = "git")]
-        crate::vcs::VcsKind::Jj => (cfg.jj.tool.trim(), "lazyjj"),
+        crate::vcs::VcsKind::Jj => true,
     };
-    let resolved = if tmpl.is_empty() { fallback } else { tmpl };
-    (resolved.to_string(), fallback)
+    konoma_host_core::project::tool_command(&cfg.git.tool, &cfg.jj.tool, jj)
+}
+
+fn git_tool_plan(app: &App) -> Option<konoma_plugin::host::project::launch::ProjectToolLaunch> {
+    konoma_plugin::host::project::launch::project_tool_launch(
+        &tool_command(app.diff_vcs(), &app.cfg).0,
+        &git_workdir(&app.tab.root),
+    )
 }
 
 /// Launch the backend's own external tool synchronously in the repo workdir -- `[git] tool`
 /// (default lazygit) for git, `[jj] tool` (default lazyjj) for jj; see [`tool_command`]. The command
 /// is split on whitespace into prog + args. The cwd is the workdir discovered from app.tab.root via git
 /// (or root if none). A launch failure (not installed, etc.) is reported as an error via flash.
-fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
-    let (tmpl, _fallback) = tool_command(app.git_vcs, &app.cfg);
-    let mut parts = tmpl.split_whitespace().map(|s| s.to_string());
-    let Some(prog) = parts.next() else {
+fn run_git_tool(
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
+    app: &mut App,
+) -> Result<()> {
+    let Some(plan) = git_tool_plan(app) else {
         return Ok(());
     };
-    let args: Vec<String> = parts.collect();
-    let cwd = git_workdir(&app.tab.root);
-    let status = run_external(terminal, app, &prog, &args, &cwd)?;
+    let prog = &plan.attempt.prog;
+    let status = run_external(terminal, app, prog, &plan.attempt.args, &plan.cwd)?;
     if let Err(e) = status {
         app.flash = Some(format!(
             "{}{prog}: {e}",
             i18n::tr(
                 app.lang,
-                match app.git_vcs {
+                match app.diff_vcs() {
                     crate::vcs::VcsKind::Git => crate::i18n::Msg::GitToolFailed,
                     #[cfg(feature = "git")]
                     crate::vcs::VcsKind::Jj => crate::i18n::Msg::JjToolFailed,
@@ -1549,12 +1574,12 @@ fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Resul
 }
 
 /// Return the workdir of the repo containing `root` (when the git feature is enabled). Returns root
-/// itself if none is found. Goes through `git::workdir` rather than calling libgit2 here, so the
+/// itself if none is found. Goes through `vcs::workdir` rather than calling libgit2 here, so the
 /// external git tool starts in the working-tree root even in a repository libgit2 cannot open
 /// (reftable — see the discovery section at the top of `git.rs`).
 #[cfg(feature = "git")]
 fn git_workdir(root: &std::path::Path) -> PathBuf {
-    git::workdir(root).unwrap_or_else(|| root.to_path_buf())
+    vcs::workdir(root).unwrap_or_else(|| root.to_path_buf())
 }
 
 #[cfg(not(feature = "git"))]
@@ -1566,7 +1591,7 @@ fn git_workdir(root: &std::path::Path) -> PathBuf {
 /// TUI → launches → restores, returning the process exit status (an io::Error on launch failure). Shared
 /// by the editor and git tool. See `run_editor` for suspend/restore details (alternate screen, input-mode reset, draining leftover bytes).
 fn run_external(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut konoma_plugin::ratatui_backend::HostTerminal,
     app: &mut App,
     prog: &str,
     args: &[String],
@@ -1702,69 +1727,6 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::LineHome => app.preview_hscroll_home(),
             Motion::LineEnd => app.preview_hscroll_end(),
         },
-        #[cfg(feature = "git")]
-        Surface::GitDetail => match m {
-            Motion::Up => app.git_detail_scroll_by(-1),
-            Motion::Down => app.git_detail_scroll_by(1),
-            Motion::Top => app.git_detail_scroll_to(false),
-            Motion::Bottom => app.git_detail_scroll_to(true),
-            Motion::PageUp => app.git_detail_scroll_by(-20),
-            Motion::PageDown => app.git_detail_scroll_by(20),
-            Motion::HalfUp => app.git_detail_scroll_by(-10),
-            Motion::HalfDown => app.git_detail_scroll_by(10),
-            Motion::Left => app.git_detail_hscroll_by(-4),
-            Motion::Right => app.git_detail_hscroll_by(4),
-            Motion::LineHome => app.git_detail_hscroll_home(),
-            Motion::LineEnd => app.git_detail_hscroll_end(),
-        },
-        #[cfg(feature = "git")]
-        Surface::GitChanges => match m {
-            Motion::Up => app.git_view_move(-1),
-            Motion::Down => app.git_view_move(1),
-            Motion::Top => app.git_view_move(i32::MIN),
-            Motion::Bottom => app.git_view_move(i32::MAX),
-            _ => {}
-        },
-        #[cfg(feature = "git")]
-        Surface::GitLog => match m {
-            Motion::Up => app.git_log_move(-1),
-            Motion::Down => app.git_log_move(1),
-            Motion::Top => app.git_log_move(i32::MIN),
-            Motion::Bottom => app.git_log_move(i32::MAX),
-            _ => {}
-        },
-        #[cfg(feature = "git")]
-        Surface::GitGraph => match m {
-            Motion::Up => app.git_graph_move(-1),
-            Motion::Down => app.git_graph_move(1),
-            Motion::Top => app.git_graph_move(i32::MIN),
-            Motion::Bottom => app.git_graph_move(i32::MAX),
-            _ => {}
-        },
-        #[cfg(feature = "git")]
-        Surface::GitGraphPicker => match m {
-            Motion::Up => app.git_graph_picker_move(-1),
-            Motion::Down => app.git_graph_picker_move(1),
-            Motion::Top => app.git_graph_picker_jump(true),
-            Motion::Bottom => app.git_graph_picker_jump(false),
-            _ => {}
-        },
-        #[cfg(feature = "git")]
-        Surface::GitBranches => match m {
-            Motion::Up => app.git_branch_move(-1),
-            Motion::Down => app.git_branch_move(1),
-            Motion::Top => app.git_branch_move(i32::MIN),
-            Motion::Bottom => app.git_branch_move(i32::MAX),
-            _ => {}
-        },
-        #[cfg(feature = "git")]
-        Surface::GitWorktrees => match m {
-            Motion::Up => app.git_worktree_move(-1),
-            Motion::Down => app.git_worktree_move(1),
-            Motion::Top => app.git_worktree_move(i32::MIN),
-            Motion::Bottom => app.git_worktree_move(i32::MAX),
-            _ => {}
-        },
         Surface::Bookmarks => match m {
             // j/k only, matching legacy behavior (g/G/Home/End are unassigned).
             Motion::Up => app.bookmark_list_move(-1),
@@ -1806,6 +1768,15 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
     }
 }
 
+/// `p`: enter the project, or say that there is none. A name still waiting for a project is
+/// replaced by this newer key.
+fn open_project_like_p(app: &mut App) {
+    app.tab.project_enter_op = None;
+    if !app.enter_project() {
+        app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::NotAGitRepo).into());
+    }
+}
+
 /// Central dispatch that runs a resolved `Action`. Only `Quit` requests exit, returning `Ok(true)`.
 /// Surface-dependent behavior (motion amount, the q/Esc return target) branches on `sfc` (§5).
 fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> {
@@ -1815,7 +1786,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
     // than each handler discovering it separately and failing in its own way.
     let ctx = app
         .key_context()
-        .or_else(|| keymap::Context::of_surface(sfc, false, false))
+        .or_else(|| keymap::Context::of_surface(sfc, false))
         .unwrap_or(keymap::Context::Tree);
     // These handlers always started by waiting for a fresh scan; the gate reads its answer.
     if ctx == keymap::Context::Tree
@@ -1892,17 +1863,35 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ToggleInfo => app.toggle_info(),
         Action::RequestEdit => app.request_edit(),
         Action::OpenExternal => app.open_in_other_app(),
-        Action::OpenGitView => {
-            if !app.enter_project() {
-                app.open_git_view();
+        // An old hub name bound off a project canvas is read like it is on a screen table.
+        #[cfg(feature = "git")]
+        Action::GitOpenLog
+        | Action::GitOpenGraph
+        | Action::GitOpenBranches
+        | Action::GitOpenWorktrees
+        | Action::GitWorktreeDiff
+        | Action::GitCommit
+        | Action::GitStageAll
+        | Action::GitUnstageAll
+        | Action::JjSync
+        | Action::GitGraphToggleAll
+        | Action::BranchCreate
+        | Action::WorktreeCreate => {
+            let name = keymap::action_name(action);
+            if matches!(ctx, keymap::Context::Canvas | keymap::Context::Screen(..)) {
+                // The project is already open: read the name for its plugin, never the old host dialog.
+                app.run_old_hub_name_in_project(&name);
+            } else {
+                app.run_old_hub_name(&name);
             }
         }
-        Action::Refresh => {
-            app.refresh_explicit()?;
-            // The log, the graph, the branch and worktree lists read again too.
-            #[cfg(feature = "git")]
-            app.reload_front_list();
-        }
+        Action::OpenGitView => open_project_like_p(app),
+        // On a project canvas the key `r` is the host's own refresh; the menu item runs that path.
+        // While a project screen covers the screen under it, `Refresh` is the project's own from
+        // whichever layer the key came (an overlay in front included), never the hidden
+        // preview's or the tree's.
+        Action::Refresh if app.project_active() => app.project_refresh(),
+        Action::Refresh => app.refresh_explicit()?,
         Action::CyclePathStyle => app.cycle_path_style(),
         // The old sort overlay is gone: `open_sort_menu` is another name for the `,` menu of the
         // frontmost context (the tree's holds the sort letters).
@@ -1961,20 +1950,9 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::VisualCommit => app.exit_visual_commit(),
         Action::VisualSelectSiblings => app.visual_select_scope(false),
         Action::VisualSelectAll => app.visual_select_scope(true),
-        Action::PreviewBack => {
-            if app.return_to_project() {
-                return Ok(false);
-            }
-            // A git diff preview — or an ordinary preview that *is* the diff's own `Preview`
-            // representation (`tab.preview_from_diff`, `docs/FEATURE-MD-RENDERED-DIFF.md` §4) —
-            // returns to the Git view (or the tree, whichever it came from). Everything else
-            // returns to the tree.
-            if app.is_git_diff_preview() || app.preview_is_diff_representation() {
-                app.close_git_diff();
-            } else {
-                app.back_to_tree();
-            }
-        }
+        // Whatever key it is bound to, going back from a project screen is the project's own back.
+        Action::PreviewBack if app.project_active() => app.project_back(),
+        Action::PreviewBack => close_preview(app),
         Action::SearchStart => app.start_search(),
         // `n` / `N` step through the matches of a search; with no search active a text or document
         // preview steps through its changes instead (layer 1).
@@ -1997,8 +1975,6 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::LinkFocusPrev => app.md_focus_move(-1),
         Action::LinkOpen => app.md_activate_focused()?,
         Action::OpenLinkNewTab => app.md_open_focused_link_new_tab()?,
-        #[cfg(feature = "git")]
-        Action::OpenInNewTab if sfc == Surface::GitChanges => app.git_view_open_in_new_tab()?,
         Action::OpenInNewTab => app.tab_new_from_selection()?,
         Action::ImageZoomIn => app.image_zoom_by(konoma_widgets::image_view::ZOOM_FACTOR),
         Action::ImageZoomOut => app.image_zoom_by(1.0 / konoma_widgets::image_view::ZOOM_FACTOR),
@@ -2026,8 +2002,6 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         }
         Action::TabListActivate => app.tab_list_activate(),
         Action::OutlineJump => app.outline_jump(),
-        #[cfg(feature = "git")]
-        Action::GitGraphPickerApply => app.git_graph_picker_apply(),
         // A checkbox toggles, or a `<details>` summary expands/collapses (same as Enter).
         Action::ToggleFocusedItem => {
             if app.md_focused_task() {
@@ -2040,10 +2014,13 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::DiffNextChange => app.diff_change_jump(1),
         #[cfg(feature = "git")]
         Action::DiffPrevChange => app.diff_change_jump(-1),
-        #[cfg(feature = "git")]
-        Action::GitScreenNext => app.git_screen_cycle(1),
-        #[cfg(feature = "git")]
-        Action::GitScreenPrev => app.git_screen_cycle(-1),
+        // A canvas control chosen from the `Space` menu presses the control's key, so the menu
+        // and the key share one path.
+        Action::ProjectControl(control) => {
+            if app.project_active() {
+                app.project_press_control(control);
+            }
+        }
         Action::ListFilterStart => {
             if let Some(l) = app.front_list() {
                 app.list_filter_start(l);
@@ -2057,95 +2034,52 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => app.toggle_follow_diff_scope(),
         #[cfg(feature = "git")]
-        Action::GitStage => app.git_view_stage(),
-        #[cfg(feature = "git")]
-        Action::GitUnstage => app.git_view_unstage(),
-        #[cfg(feature = "git")]
-        Action::GitStageAll => app.git_view_stage_all(),
-        #[cfg(feature = "git")]
-        Action::GitUnstageAll => app.git_view_unstage_all(),
-        #[cfg(feature = "git")]
-        Action::GitDiscard => app.git_view_start_discard(),
-        #[cfg(feature = "git")]
-        Action::GitCommit => app.start_git_commit(),
-        #[cfg(feature = "git")]
-        Action::GitWorktreeDiff => app.open_worktree_detail(),
-        #[cfg(feature = "git")]
-        Action::GitOpenLog => app.open_git_log(),
-        #[cfg(feature = "git")]
-        Action::GitOpenGraph => app.open_git_graph(),
-        #[cfg(feature = "git")]
-        Action::GitOpenBranches => app.open_git_branches(),
-        #[cfg(feature = "git")]
-        Action::GitOpenWorktrees => app.open_git_worktrees(),
-        #[cfg(feature = "git")]
         Action::GitLaunchTool => app.launch_git_tool(),
+        // `worktree_close` bound to a key of a project screen. Off a canvas the name did what `p`
+        // does in the released hub (it reopened the hub, and the project's changes screen replaced
+        // the hub). A project canvas has no hub behind it (its own back is the project key
+        // handler's), so the operation bound to another key there must not open one: leaving the
+        // canvas would show the hub over the tree.
         #[cfg(feature = "git")]
-        Action::GitOpenSelectedDiff => {
-            if let Some(p) = app.git_view_selected() {
-                app.open_git_diff(&p);
+        Action::WorktreeClose => {
+            if sfc == Surface::PreviewCanvas {
+                app.project_worktree_close_elsewhere()
+            } else if !matches!(ctx, keymap::Context::Canvas | keymap::Context::Screen(..)) {
+                open_project_like_p(app)
             }
         }
-        #[cfg(feature = "git")]
-        Action::GitOpenDetail => match sfc {
-            Surface::GitLog => app.open_git_commit_detail(),
-            Surface::GitGraph => app.open_git_graph_detail(),
-            _ => {}
-        },
-        #[cfg(feature = "git")]
-        Action::GitGraphSetBase => app.git_graph_set_base(),
-        #[cfg(feature = "git")]
-        Action::GitGraphClearBase => app.git_graph_clear_base(),
-        #[cfg(feature = "git")]
-        Action::GitGraphToggleAll => app.git_graph_toggle_all(),
-        #[cfg(feature = "git")]
-        Action::JjSync => app.jj_start_sync(),
-        #[cfg(feature = "git")]
-        Action::GitGraphOpenPicker => app.git_graph_open_picker(),
-        #[cfg(feature = "git")]
-        Action::GitGraphPickerToggle => app.git_graph_picker_toggle(),
-        #[cfg(feature = "git")]
-        Action::GitGraphPickerAll => app.git_graph_picker_all(),
-        #[cfg(feature = "git")]
-        Action::GitGraphPickerCurrentOnly => app.git_graph_picker_current_only(),
-        #[cfg(feature = "git")]
-        Action::GitGraphPickerMoveUp => app.git_graph_picker_reorder(-1),
-        #[cfg(feature = "git")]
-        Action::GitGraphPickerMoveDown => app.git_graph_picker_reorder(1),
-        #[cfg(feature = "git")]
-        Action::BranchFilterStart => app.git_branch_start_filter(),
-        #[cfg(feature = "git")]
-        Action::BranchCheckout => app.checkout_selected_branch()?,
-        #[cfg(feature = "git")]
-        Action::BranchCreate => app.start_create_branch(),
-        #[cfg(feature = "git")]
-        Action::BranchDelete => app.start_delete_branch(),
-        #[cfg(feature = "git")]
-        Action::WorktreeFilterStart => app.git_worktree_start_filter(),
-        #[cfg(feature = "git")]
-        Action::WorktreeGoto => app.worktree_goto(),
-        #[cfg(feature = "git")]
-        Action::WorktreeGotoNewTab => app.worktree_goto_new_tab()?,
-        #[cfg(feature = "git")]
-        Action::WorktreeClose => app.close_git_worktrees(),
-        #[cfg(feature = "git")]
-        Action::WorktreeShowChanges => app.worktree_show_changes(),
-        #[cfg(feature = "git")]
-        Action::WorktreeCreate => app.start_create_worktree(),
         #[cfg(feature = "git")]
         Action::GitCopy(kind) => app.git_copy(kind),
         #[cfg(feature = "git")]
         Action::CopyBranchName => app.git_copy_branch_name(),
+        // The old hub's names that acted on a row, a list or a screen of the hub. No production
+        // path enters the hub now, and such a name off a canvas did nothing in the hub because it
+        // needed a hub row (the names that did something are routed above).
         #[cfg(feature = "git")]
-        Action::GitClose => match sfc {
-            Surface::GitDetail => app.close_git_detail(),
-            Surface::GitLog => app.close_git_log(),
-            Surface::GitGraphPicker => app.git_graph_picker_cancel(),
-            Surface::GitGraph => app.close_git_graph(),
-            Surface::GitBranches => app.close_git_branches(),
-            Surface::GitChanges => app.close_git_view(),
-            _ => {}
-        },
+        Action::GitStage
+        | Action::GitUnstage
+        | Action::GitDiscard
+        | Action::GitOpenSelectedDiff
+        | Action::GitOpenDetail
+        | Action::GitGraphSetBase
+        | Action::GitGraphClearBase
+        | Action::GitGraphOpenPicker
+        | Action::GitGraphPickerApply
+        | Action::GitGraphPickerToggle
+        | Action::GitGraphPickerAll
+        | Action::GitGraphPickerCurrentOnly
+        | Action::GitGraphPickerMoveUp
+        | Action::GitGraphPickerMoveDown
+        | Action::GitScreenNext
+        | Action::GitScreenPrev
+        | Action::BranchFilterStart
+        | Action::BranchCheckout
+        | Action::BranchDelete
+        | Action::WorktreeFilterStart
+        | Action::WorktreeGoto
+        | Action::WorktreeGotoNewTab
+        | Action::WorktreeShowChanges
+        | Action::GitClose => {}
     }
     Ok(false)
 }
@@ -2154,21 +2088,6 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
 fn list_surface(l: app::list_filter::ListId) -> Surface {
     use app::list_filter::ListId;
     match l {
-        #[cfg(feature = "git")]
-        ListId::Changes => Surface::GitChanges,
-        #[cfg(feature = "git")]
-        ListId::Log => Surface::GitLog,
-        #[cfg(feature = "git")]
-        ListId::Graph => Surface::GitGraph,
-        #[cfg(feature = "git")]
-        ListId::Branches => Surface::GitBranches,
-        #[cfg(feature = "git")]
-        ListId::Worktrees => Surface::GitWorktrees,
-        // The version-control lists exist only in a build with `git`; there is nothing to move.
-        #[cfg(not(feature = "git"))]
-        ListId::Changes | ListId::Log | ListId::Graph | ListId::Branches | ListId::Worktrees => {
-            Surface::Tree
-        }
         ListId::Bookmarks => Surface::Bookmarks,
         ListId::Tabs => Surface::Tabs,
         ListId::Outline => Surface::Outline,
@@ -2216,16 +2135,6 @@ fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool>
             (KeyCode::Char(c), false) => app.mark_input(c),
             _ => app.cancel_mark(),
         },
-        #[cfg(feature = "git")]
-        Surface::BranchFilter => match (code, ctrl) {
-            (KeyCode::Esc, _) => app.git_branch_filter_clear(),
-            (KeyCode::Enter, _) => app.git_branch_filter_commit(),
-            (KeyCode::Backspace, _) => app.git_branch_filter_backspace(),
-            (KeyCode::Down, _) => app.git_branch_move(1),
-            (KeyCode::Up, _) => app.git_branch_move(-1),
-            (KeyCode::Char(c), false) => app.git_branch_filter_push(c),
-            _ => {}
-        },
         Surface::ListFilter => {
             let Some(l) = app.filtering_list() else {
                 return Ok(false);
@@ -2240,16 +2149,6 @@ fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool>
                 _ => {}
             }
         }
-        #[cfg(feature = "git")]
-        Surface::WorktreeFilter => match (code, ctrl) {
-            (KeyCode::Esc, _) => app.git_worktree_filter_clear(),
-            (KeyCode::Enter, _) => app.git_worktree_filter_commit(),
-            (KeyCode::Backspace, _) => app.git_worktree_filter_backspace(),
-            (KeyCode::Down, _) => app.git_worktree_move(1),
-            (KeyCode::Up, _) => app.git_worktree_move(-1),
-            (KeyCode::Char(c), false) => app.git_worktree_filter_push(c),
-            _ => {}
-        },
         _ => {}
     }
     Ok(false)
@@ -2298,6 +2197,24 @@ fn handle_modal_confirm(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bo
         _ => {}
     }
     Ok(false)
+}
+
+/// Close the preview on screen: back to the project canvas it was opened from, else to the git
+/// view / tree it came from. `q` and `Esc` both end here, so they cannot disagree about where a
+/// preview returns to (and a saved `project_return` is never orphaned by a close to the tree).
+fn close_preview(app: &mut App) {
+    if app.return_to_project() {
+        return;
+    }
+    // A git diff preview — or an ordinary preview that *is* the diff's own `Preview`
+    // representation (`tab.preview_from_diff`, `docs/FEATURE-MD-RENDERED-DIFF.md` §4) —
+    // returns to the Git view (or the tree, whichever it came from). Everything else
+    // returns to the tree.
+    if app.is_git_diff_preview() || app.preview_is_diff_representation() {
+        app.close_git_diff();
+    } else {
+        app.back_to_tree();
+    }
 }
 
 /// Per-surface fixed handling of Esc (clear search/filter, close overlays, cancel visual …). Always quit=false.
@@ -2354,74 +2271,16 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         | Surface::PreviewImage
         | Surface::PreviewTable
         | Surface::PreviewCanvas => {
-            // If a search is active, clear it; otherwise return to the tree.
+            // If a search is active, clear it; otherwise close the preview as `q` does.
             if app.preview_search_query().is_some() {
                 app.search_clear();
             } else {
-                app.back_to_tree();
+                close_preview(app);
             }
         }
         // Esc while a line is selected clears the selection (doesn't return to the tree).
         Surface::PreviewTextVisual => app.preview_exit_visual(),
-        #[cfg(feature = "git")]
-        Surface::GitDetail => app.close_git_detail(),
-        // Esc with a query clears the filter; without one, closes the list (as the branch list does).
-        #[cfg(feature = "git")]
-        Surface::GitLog => {
-            if app
-                .list_filter_query(app::list_filter::ListId::Log)
-                .is_empty()
-            {
-                app.close_git_log();
-            } else {
-                app.list_filter_clear(app::list_filter::ListId::Log);
-            }
-        }
-        #[cfg(feature = "git")]
-        Surface::GitGraph => {
-            if app
-                .list_filter_query(app::list_filter::ListId::Graph)
-                .is_empty()
-            {
-                app.close_git_graph();
-            } else {
-                app.list_filter_clear(app::list_filter::ListId::Graph);
-            }
-        }
-        #[cfg(feature = "git")]
-        Surface::GitGraphPicker => app.git_graph_picker_cancel(),
-        #[cfg(feature = "git")]
-        Surface::GitBranches => {
-            // Esc with a query clears the filter; without one, closes it (the same convention as
-            // the tree filter).
-            if app.git_branch_query().is_empty() {
-                app.close_git_branches();
-            } else {
-                app.git_branch_filter_clear();
-            }
-        }
-        #[cfg(feature = "git")]
-        Surface::GitWorktrees => {
-            // Esc with a query clears the filter; without one, closes it (same convention as
-            // the branches list / tree filter).
-            if app.git_worktree_query().is_empty() {
-                app.close_git_worktrees();
-            } else {
-                app.git_worktree_filter_clear();
-            }
-        }
-        #[cfg(feature = "git")]
-        Surface::GitChanges => {
-            if app
-                .list_filter_query(app::list_filter::ListId::Changes)
-                .is_empty()
-            {
-                app.close_git_view();
-            } else {
-                app.list_filter_clear(app::list_filter::ListId::Changes);
-            }
-        }
-        Surface::PreviewGitDiff => app.close_git_diff(),
+        Surface::PreviewGitDiff => close_preview(app),
         _ => {}
     }
     false
@@ -2437,6 +2296,7 @@ fn handle_fixed_key(
     sfc: Surface,
     ctx: Option<keymap::Context>,
     key: KeyEvent,
+    kp: KeyPress,
 ) -> Result<Option<bool>> {
     let Some(ctx) = ctx else {
         return Ok(None);
@@ -2447,7 +2307,7 @@ fn handle_fixed_key(
     // A canvas hands the navigation fixed keys to the plugin: the key runs the plugin's action
     // when it declares one on it (the same lookup the footer and help use), else nothing.
     if ctx == keymap::Context::Canvas {
-        if let Some(a) = app.plugin_action_for_key(ctx, KeyPress::norm(&key)) {
+        if let Some(a) = app.plugin_action_for_key(ctx, kp) {
             return dispatch_action(app, a, sfc).map(Some);
         }
     }
@@ -2470,10 +2330,19 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     if app.handle_project_key(key) {
         return Ok(false);
     }
+    // The key as the frontmost layer reads it: a chord the project in front has no form for is a
+    // key of no host table, and closes a which-key menu like any other key not in it.
+    let Some(kp) = app.layer_key(&key) else {
+        app.pending_leader = None;
+        return Ok(false);
+    };
     let sfc = app.surface();
     // The keymap context: `None` exactly on the surfaces that do not use the keymap (text input,
     // confirm modals), which are handled before any lookup below.
     let ctx = app.key_context();
+    // The plugin screen a project canvas shows: its `[keys."<id>.<screen>"]` keys sit on top of
+    // the context's own layers in every lookup below.
+    let screen = ctx.and_then(|c| app.screen_keys_for(c));
 
     if app.follow_enabled() {
         // User's choice (2026-07-23): follow is maximally sticky = within the follow diff, every
@@ -2484,7 +2353,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         let leaves_follow_view = app.pending_leader.is_none()
             && ctx.is_some_and(|c| {
                 matches!(
-                    app.keymaps.resolve(c, None, KeyPress::norm(&key)),
+                    app.keymaps.resolve_on(c, screen, kp),
                     Resolution::Action(Action::PreviewBack)
                 )
             });
@@ -2501,8 +2370,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         return handle_modal_confirm(app, sfc, key);
     }
 
-    let kp = KeyPress::norm(&key);
-
     // 2) Waiting on a which-key leader: resolve from leaders (an unknown suffix cancels and does
     // not fall through — §5).
     if let Some(lead) = app.pending_leader.take() {
@@ -2514,7 +2381,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     }
 
     // 3) Pre-empt surface-independent fixed keys (arrows = Navigate / Esc / Enter / Tab·BackTab) (requirements 3/4).
-    if let Some(done) = handle_fixed_key(app, sfc, ctx, key)? {
+    if let Some(done) = handle_fixed_key(app, sfc, ctx, key, kp)? {
         return Ok(done);
     }
 
@@ -2526,7 +2393,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     if let Some(a) = app.plugin_action_for_key(ctx, kp) {
         return dispatch_action(app, a, sfc);
     }
-    match app.keymaps.resolve(ctx, None, kp) {
+    match app.keymaps.resolve_on(ctx, screen, kp) {
         Resolution::EnterLeader(id) => {
             // The copy leader (default `y`) always opens the which-key menu. While focused on a
             // code block in decorated Markdown, `c:code block` appears in that menu and is
@@ -3707,79 +3574,6 @@ mod tests {
         assert!(!app.is_filtering() && app.filter_query().is_none());
     }
 
-    #[cfg(feature = "git")]
-    #[test]
-    fn help_opens_in_git_view_and_shows_git_keys() {
-        let dir = unique_tmp("konoma_git_help_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        konoma_vcs_core::git2::Repository::init(&dir).unwrap();
-        std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-        app.open_git_view();
-        assert!(app.is_git_view());
-
-        // `?` in the git view → help opens (previously it got swallowed by the git intercept and
-        // never opened).
-        handle_key(&mut app, key('?')).unwrap();
-        assert!(app.show_help, "git モードで ? がヘルプを開く");
-
-        // The help content is the git-specific one (the changes-hub section, stage-family keys).
-        let lines = ui::help::help_lines(&app);
-        let text: String = lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref().to_string()))
-            .collect();
-        assert!(
-            text.contains("Git changes") || text.contains("変更ハブ"),
-            "git 節が出る: {text}"
-        );
-        assert!(
-            text.contains("stage") || text.contains("ステージ"),
-            "ステージ系キーが出る"
-        );
-
-        // `?` while help is shown closes it.
-        handle_key(&mut app, key('?')).unwrap();
-        assert!(!app.show_help, "? で閉じる");
-    }
-
-    #[cfg(feature = "git")]
-    #[test]
-    fn tab_keys_per_tab_git_mode_and_literal_in_filter() {
-        let dir = unique_tmp("konoma_tab_gitview_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        konoma_vcs_core::git2::Repository::init(&dir).unwrap();
-        std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-
-        // While filter input is active, t is captured as a plain "character," not a new tab.
-        handle_key(&mut app, key('/')).unwrap();
-        let tc = app.tab_count();
-        handle_key(&mut app, key('t')).unwrap();
-        assert_eq!(app.tab_count(), tc, "絞り込み中は t で新タブにしない");
-        assert_eq!(app.filter_query(), Some("t"));
-        // Same for I (tab_new_after): a text-input surface never inherits global, so it's typed
-        // literally too, not turned into a new tab.
-        handle_key(&mut app, key('I')).unwrap();
-        assert_eq!(app.tab_count(), tc, "絞り込み中は I でも新タブにしない");
-        assert_eq!(app.filter_query(), Some("tI"));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
-
-        // Even while in the git view, t can open a new tab. The new tab is a plain Tree (git mode
-        // is per-tab).
-        app.open_git_view();
-        assert!(app.is_git_view());
-        handle_key(&mut app, key('t')).unwrap();
-        assert_eq!(app.tab_count(), tc + 1, "git ビュー中でも t で新タブ");
-        assert!(!app.is_git_view(), "新タブは git ビュー無しで始まる");
-        // Returning to the original tab **restores git mode** (you can view a document in another
-        // tab and come back).
-        handle_key(&mut app, key('1')).unwrap(); // to tab 0
-        assert!(app.is_git_view(), "タブを戻ると git モードのまま");
-    }
-
     #[test]
     fn copy_leader_sets_then_clears_pending() {
         use keymap::LeaderId;
@@ -4152,6 +3946,141 @@ mod tests {
             .unwrap();
         let second = loop_body[flush - 200..flush].contains("preview::command::terminal_write()");
         assert!(second, "the deletes are flushed under the guard");
+    }
+
+    /// Every async result kind and every timer of the run loop, read from its source, has a
+    /// decision for a result that lands while a project screen covers the tab it was asked for: a
+    /// test that delivers it under a project screen and after a tab switch away (applied to
+    /// App-level state or dropped, nothing drawn in front, the same screen after the return), or
+    /// the reason it cannot be delivered in a test. A new receiver or timer fails this test until
+    /// it is added to the list.
+    #[test]
+    fn every_async_result_kind_and_timer_of_the_run_loop_has_a_covered_test() {
+        enum Covered {
+            Test(&'static str),
+            /// The project screen's own answers: they are for the screen in front.
+            Front,
+            /// No test can deliver it without a new production seam (file:line).
+            NoSeam(&'static str),
+        }
+        use Covered::*;
+        const KINDS: &[(&str, Covered)] = &[
+            ("rx.plugin_updates", NoSeam("src/plugin_cli/update_check.rs:48")),
+            ("app.poll_projects", Front),
+            ("hl_rx", Test("vcs_kind_highlight_warm_delivered_while_away")),
+            ("resp_rx", Test("vcs_kind_image_resize_delivered_while_away")),
+            ("rx.media", Test("vcs_kind_media_load_delivered_while_away")),
+            ("rx.kitty", Test("vcs_kind_kitty_build_delivered_while_away")),
+            ("rx.md_img", Test("vcs_kind_md_image_decode_delivered_while_away")),
+            ("rx.md_remote", Test("vcs_kind_md_remote_fetch_delivered_while_away")),
+            ("rx.md_enc", Test("vcs_kind_md_image_encode_delivered_while_away")),
+            ("rx.ignored", Test("vcs_kind_ignored_scan_delivered_while_away")),
+            ("rx.status", Test("vcs_kind_status_scan_delivered_while_away")),
+            ("rx.md_diff", Test("vcs_kind_md_block_diff_delivered_while_away")),
+            ("rx.follow", Test("vcs_kind_follow_baseline_delivered_while_away")),
+            ("rx.media_diff", Test("vcs_kind_media_diff_delivered_while_away")),
+            ("rx.fileop", Test("vcs_kind_file_operation_delivered_while_away")),
+            ("rx.office", Test("vcs_kind_office_launch_delivered_while_away")),
+            ("rx.gitop", Test("vcs_kind_git_write_delivered_while_away")),
+            ("rx.pool", Test("vcs_kind_filter_pool_delivered_while_away")),
+            ("fs_rx", Test("vcs_kind_watch_event_delivered_while_away")),
+            ("app.follow_jump", Test("vcs_kind_follow_jump_delivered_while_away")),
+            ("app.advance_gif_if_due", Test("vcs_kind_gif_timer_delivered_while_away")),
+            ("app.advance_md_gifs_if_due", Test("vcs_kind_md_gif_timer_delivered_while_away")),
+            (
+                "app.canvas_redraw_if_due",
+                Test("e2e_canvas_timer_asks_nothing_behind_a_project_screen_and_asks_again_after_leaving"),
+            ),
+            // Process-wide (idle plugin children), run by every `animation_timers_due` call.
+            ("plugins::external::reap_if_due", Test("vcs_kind_reaper_stops_an_idle_plugin_child_while_away")),
+        ];
+        let src = include_str!("lib.rs");
+        let production = &src[..src.find("\nmod tests {").expect("tests module")];
+        // The code of one top-level item, comments left out.
+        let item = |head: &str| -> String {
+            let at = production
+                .find(head)
+                .unwrap_or_else(|| panic!("{head} not found (the self-scan is broken)"));
+            let rest = &production[at..];
+            rest[..rest.find("\n}\n").expect("end of the item")]
+                .lines()
+                .map(|l| l.split("//").next().unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let run = item("\nfn run(");
+        let timers = item("\nfn animation_timers_due(");
+        let worker = item("\nstruct WorkerRx {");
+        let path_char = |c: char| c.is_alphanumeric() || c == '_' || c == '.' || c == ':';
+        let mut found = std::collections::BTreeSet::new();
+        // 1. Every receiver drained by the loop.
+        for (at, _) in run.match_indices(".try_recv()") {
+            let start = run[..at].rfind(|c| !path_char(c)).map_or(0, |i| i + 1);
+            found.insert(run[start..at].to_string());
+        }
+        // 2. Every `WorkerRx` field, whatever reads it (`apply`, a helper of its own).
+        for line in worker.lines().skip(1) {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            if let Some((field, _)) = line.split_once(':') {
+                let key = format!("rx.{}", field.trim());
+                assert!(run.contains(&key), "{key} is never read by the run loop");
+                found.insert(key);
+            }
+        }
+        // 3. Answers the loop polls the App for.
+        for (at, _) in run.match_indices("app.poll_") {
+            let end = at + run[at..].find('(').expect("a call");
+            found.insert(run[at..end].to_string());
+        }
+        // 4. Timers: every `*_if_due` of `animation_timers_due`, and the follow dwell's jump.
+        for (at, _) in timers.match_indices("_if_due(") {
+            let start = timers[..at].rfind(|c| !path_char(c)).map_or(0, |i| i + 1);
+            found.insert(timers[start..at + "_if_due".len()].to_string());
+        }
+        if run.contains("app.follow_jump(") {
+            found.insert("app.follow_jump".to_string());
+        }
+        let listed: std::collections::BTreeSet<String> =
+            KINDS.iter().map(|(k, _)| k.to_string()).collect();
+        assert_eq!(listed.len(), KINDS.len(), "a kind is listed twice");
+        assert!(
+            found.len() >= 24,
+            "the self-scan found only {} kinds: {found:?}",
+            found.len()
+        );
+        assert_eq!(
+            found, listed,
+            "the run loop's result kinds and timers are not the listed ones: decide how a result \
+             that lands while a project screen covers the tab is handled, and list it"
+        );
+        let tests = [
+            include_str!("e2e_tests/vcs_project_covered_kinds_cases.rs"),
+            include_str!("e2e_tests/canvas_input.rs"),
+        ];
+        let mut no_seam = 0;
+        for (kind, covered) in KINDS {
+            match covered {
+                Test(name) => {
+                    let decl = format!("fn {name}() {{");
+                    assert!(
+                        tests.iter().any(|t| t.contains(&decl)),
+                        "{kind}: the test {name} does not exist"
+                    );
+                }
+                Front => assert_eq!(
+                    *kind, "app.poll_projects",
+                    "only the project runtime is the front's own"
+                ),
+                NoSeam(at) => {
+                    no_seam += 1;
+                    assert!(at.contains(".rs:"), "{kind}: name the file:line");
+                }
+            }
+        }
+        assert!(no_seam <= 1, "{no_seam} kinds have no test");
     }
 
     /// Every `terminal.draw(` and `terminal.clear(` in this file (the run loop, the return from an

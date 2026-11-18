@@ -197,11 +197,18 @@ pub struct SharedUi {
     pub lang: String,
     /// Preview paging key style: "vim" | "less".
     pub keys: String,
+    /// File-diff representation as written; resolved by `DiffView::parse` at use.
+    pub diff_view: String,
+    /// Status rows: only "bottom" combines them; other values use the host's split layout.
+    pub statusbar: String,
     /// The longest side, in pixels, an SVG picture is drawn at (konoma's `ui.svg_max_px`; its
     /// default is `konoma_plugin::canvas_pictures::DEFAULT_SVG_MAX_PX`, pinned by a test there).
     pub svg_max_px: u32,
     /// Wrapping in text previews and documents (konoma's `ui.wrap`): `false` scrolls sideways.
     pub wrap: bool,
+    /// Git change markers in the left margin of file previews (konoma's `ui.git_gutter`;
+    /// default `true`).
+    pub git_gutter: bool,
     /// How a path is written in a title: "relative" | "home" | "full" (konoma's `ui.path_style`).
     pub path_style: String,
     /// Icon glyphs in a document (konoma's `ui.icons`).
@@ -232,8 +239,11 @@ impl Default for SharedUi {
         Self {
             lang: "auto".into(),
             keys: "vim".into(),
+            diff_view: "rendered".into(),
+            statusbar: "split".into(),
             svg_max_px: DEFAULT_SVG_MAX_PX,
             wrap: true,
+            git_gutter: true,
             path_style: "relative".into(),
             icons: true,
             tab_width: 4,
@@ -247,6 +257,8 @@ impl Default for SharedUi {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SharedExternal {
+    /// Whether a preview rule may run its command.
+    pub preview_commands: bool,
     /// Opening URLs/files with the OS handler.
     pub open_links: bool,
     /// `e` on an Office document opens it in a GUI app instead of handing the zip to the editor.
@@ -254,14 +266,63 @@ pub struct SharedExternal {
     /// Fetching `http(s)://` images a document names (`curl`): the only network call. Off marks
     /// every remote image failed without asking.
     pub remote_images: bool,
+    /// The legacy master switch of the git integration (konoma's `external.git`).
+    pub git: bool,
+    /// Whether `!` may launch the external git/jj tool (konoma's `external.git_tool`).
+    pub git_tool: bool,
 }
 
 impl Default for SharedExternal {
     fn default() -> Self {
         Self {
+            preview_commands: true,
             open_links: true,
             office_apps: true,
             remote_images: true,
+            git: true,
+            git_tool: true,
+        }
+    }
+}
+
+/// The `[git]` settings the project screens read (konoma's `GitConfig` has the same names and
+/// defaults for these).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SharedGit {
+    /// External git tool launched with `!` (command and arguments).
+    pub tool: String,
+    /// Initial diff layout: "unified" | "split" | "auto".
+    pub diff: String,
+    /// Initial media layout, preserved as written and resolved by `MediaDiffLayout::parse`.
+    pub media_diff: String,
+    /// Where a new linked worktree is placed, relative to the main worktree.
+    pub worktree_dir: String,
+}
+
+impl Default for SharedGit {
+    fn default() -> Self {
+        Self {
+            tool: "lazygit".into(),
+            diff: "unified".into(),
+            media_diff: "auto".into(),
+            worktree_dir: "../".into(),
+        }
+    }
+}
+
+/// The `[jj]` settings the project screens read.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SharedJj {
+    /// External jj tool launched with `!` (command and arguments).
+    pub tool: String,
+}
+
+impl Default for SharedJj {
+    fn default() -> Self {
+        Self {
+            tool: "lazyjj".into(),
         }
     }
 }
@@ -271,13 +332,35 @@ impl Default for SharedExternal {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct SharedConfig {
+    pub preview: PreviewConfig,
     pub ui: SharedUi,
     pub keys: KeysConfig,
     pub editor: EditorConfig,
     pub external: SharedExternal,
+    pub git: SharedGit,
+    pub jj: SharedJj,
     /// The `[plugins.<id>]` tables as written (the host reads `enabled`; the rest is the plugin's
     /// own settings, converted by `konoma_plugin::config`).
     pub plugins: std::collections::BTreeMap<String, toml::Table>,
+}
+
+/// User assignments precede default bindings declared by the registered plugins.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PreviewConfig {
+    pub rules: Vec<Rule>,
+}
+
+/// A preview assignment. Glob and MIME are alternatives; builtin precedes command.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Rule {
+    pub glob: Option<String>,
+    pub mime: Option<String>,
+    pub builtin: Option<String>,
+    pub command: Option<String>,
+    pub render_as: Option<String>,
+    pub detached: bool,
 }
 
 impl SharedConfig {
@@ -492,6 +575,27 @@ mod tests {
         assert_eq!(d.math_color(), DEFAULT_MATH_COLOR);
         assert_eq!(visible_math_color("wihte"), DEFAULT_MATH_COLOR);
         assert_eq!(visible_math_color(" #123456 "), "#123456");
+    }
+
+    #[test]
+    fn media_diff_keeps_raw_strings_and_rejects_non_strings() {
+        assert_eq!(SharedConfig::parse("").unwrap().git.media_diff, "auto");
+        for raw in [
+            "auto",
+            "side",
+            "stack",
+            "split",
+            "horizontal",
+            "side-by-side",
+            "vertical",
+            "stacked",
+            "unified",
+            "typo",
+        ] {
+            let c = SharedConfig::parse(&format!("[git]\nmedia_diff='{raw}'")).unwrap();
+            assert_eq!(c.git.media_diff, raw);
+        }
+        assert!(SharedConfig::parse("[git]\nmedia_diff=17").is_err());
     }
 
     #[test]

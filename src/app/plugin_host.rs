@@ -118,6 +118,52 @@ impl LongFirstFrame {
 
 #[cfg(test)]
 thread_local! {
+    static OPEN_HOLD: std::cell::RefCell<Option<Arc<crate::plugins::test_plugins::Latch>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only: while it lives, every plugin `open` this test's UI thread starts waits on the worker
+/// until `gate` is opened, so "the document's text has not arrived yet" is a state the test makes
+/// (and ends), not a race against the plugin's speed.
+#[cfg(test)]
+pub(crate) struct HoldOpens;
+
+#[cfg(test)]
+impl HoldOpens {
+    pub(crate) fn until(gate: &Arc<crate::plugins::test_plugins::Latch>) -> HoldOpens {
+        OPEN_HOLD.with(|c| *c.borrow_mut() = Some(Arc::clone(gate)));
+        HoldOpens
+    }
+}
+
+#[cfg(test)]
+impl Drop for HoldOpens {
+    fn drop(&mut self) {
+        OPEN_HOLD.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// The plugin held behind the gate of [`HoldOpens`], if one is in force.
+#[cfg(test)]
+struct HeldPlugin {
+    inner: Arc<dyn Plugin>,
+    gate: Arc<crate::plugins::test_plugins::Latch>,
+}
+
+#[cfg(test)]
+impl Plugin for HeldPlugin {
+    fn manifest(&self) -> konoma_plugin::Manifest {
+        self.inner.manifest()
+    }
+
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        self.gate.wait();
+        self.inner.open(input, cx)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
     static RESULT_WAIT_FLOOR: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
 }
 
@@ -1343,6 +1389,8 @@ impl App {
     }
 
     fn open_plugin(&mut self, keep_previous: bool) {
+        #[cfg(test)]
+        crate::test_support::note_tab_view_load();
         // A delegated command's show is started with the media load (`start_command_plugin`),
         // which owns it; this is not the place to drop it.
         if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. })) {
@@ -1687,6 +1735,14 @@ impl App {
             markdown_first_frame_budget()
         } else {
             first_frame_budget()
+        };
+        #[cfg(test)]
+        let plugin: Arc<dyn Plugin> = match OPEN_HOLD.with(|c| c.borrow().clone()) {
+            Some(gate) => Arc::new(HeldPlugin {
+                inner: plugin,
+                gate,
+            }),
+            None => plugin,
         };
         let work = self.plugin_work(id, path, PluginJob::Open { plugin, input }, req);
         self.dispatch_plugin_work(work, Wait::Result(budget));

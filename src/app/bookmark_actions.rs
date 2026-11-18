@@ -30,6 +30,40 @@ impl FsBurstKinds {
     }
 }
 
+/// Watcher bursts held back while one of konoma's own writes runs (`App::should_defer_fs_events`),
+/// applied as **one** merged burst on the first loop after the write ends. The write's own
+/// completion (an old-hub `apply_git_op`, a project act's reply) is what lifts the predicate, so
+/// the flush is not tied to either path: nothing is lost and the tree refreshes once.
+#[derive(Debug, Default)]
+pub struct DeferredFsBurst {
+    pending: bool,
+    kinds: FsBurstKinds,
+}
+
+impl DeferredFsBurst {
+    /// Hold one event's flags back instead of applying the burst now.
+    pub fn hold(&mut self, kinds: FsBurstKinds) {
+        self.pending = true;
+        self.kinds.merge(kinds);
+    }
+
+    /// Whether anything is being held.
+    #[cfg(test)]
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
+
+    /// While `defer` is true nothing is released. Once it is false, the held burst's merged flags
+    /// come out exactly once (`None` when nothing was held or it was already released).
+    pub fn release(&mut self, defer: bool) -> Option<FsBurstKinds> {
+        if defer || !self.pending {
+            return None;
+        }
+        self.pending = false;
+        Some(std::mem::take(&mut self.kinds))
+    }
+}
+
 /// The file each filtered view was sitting on before a tree rebuild, so the cursor can be put back
 /// on the *same file* rather than the same index (see `App::capture_view_anchors`).
 struct ViewAnchors {
@@ -155,6 +189,7 @@ impl App {
             }
             Some(p) if p.is_file() => {
                 self.close_bookmark_list();
+                self.leave_project_screens_for_jump();
                 self.enter_preview(&p);
             }
             Some(p) => {
@@ -183,6 +218,7 @@ impl App {
         self.tab.selected = 0;
         self.rebuild_tree_notify();
         self.tab.mode = Mode::Tree;
+        self.begin_preview_load();
         self.tab.preview_path = None;
         self.set_preview_kind(None);
     }
@@ -276,6 +312,7 @@ impl App {
             if p.is_dir() {
                 self.jump_to_dir(p);
             } else if p.is_file() {
+                self.leave_project_screens_for_jump();
                 self.enter_preview(&p); // a file opens in the preview (tree is left unchanged)
             } else {
                 self.flash = Some(format!(
@@ -358,39 +395,62 @@ impl App {
         self.reapply_filter(None);
     }
 
-    /// Re-establish whichever tree filter is up after something changed *what the tree contains*
-    /// (currently `.` = `toggle_hidden`). A no-op when nothing is filtering.
+    /// Rebuild the tree after something changed *what the tree contains* (`.` = `toggle_hidden`,
+    /// the sort menu, a reveal after a file operation), with whichever tree filter is up put back
+    /// on top. Without a filter it is `rebuild_tree`.
     ///
     /// The pool is re-collected rather than re-filtered, because `show_hidden` is baked into the
     /// walk that produced it — re-running the query over the old pool would keep the filter's idea
     /// of "every file under here" from before the toggle.
     ///
-    /// `anchor` must be taken by the caller **before** it rebuilds the tree — by the time this runs,
-    /// `entries` is the unfiltered listing again (see `filter_anchor`).
-    pub(super) fn refilter_after_visibility_change(&mut self, anchor: Option<PathBuf>) {
+    /// `anchor` must be taken by the caller **before** this runs (`visibility_change_anchor`), from
+    /// the list the cursor is on. The filter work runs even when the walk fails (a rebuild can
+    /// fail transiently and keeps the last good `entries`); the walk's result is returned.
+    pub(super) fn rebuild_tree_refiltered(&mut self, anchor: Option<PathBuf>) -> Result<()> {
+        if self.tab.changed_filter {
+            return self.rebuild_tree_under_changed_list(anchor);
+        }
+        let tree = self.rebuild_tree();
         if self.tab.tree_filter.is_some() {
             self.kick_filter_pool_start();
             self.reapply_filter(anchor);
-        } else if self.tab.changed_filter {
-            // The changed-files list is derived from git status, not from a pool, so it only needs
-            // rebuilding — but it needs it for the same reason: `rebuild_tree` just replaced it
-            // with the ordinary listing. Which is also why the anchor is the caller's: it was taken
-            // before that rebuild.
-            //
-            // Must not rebuild synchronously while a status scan is still in flight — the same
-            // hazard `refresh_fs_inner` already guards against: switching to a different repo's
-            // tab and back can leave `git_status` empty for the moment between the kick and its
-            // landing (the workdir changed, so the kick clears it), and rebuilding against it here
-            // would make the filter judge "zero changes" and silently turn itself off, even
-            // showing a false "no changed files". Publish the anchor instead and let
-            // `apply_statuses` do the rebuild once the real result lands.
-            if self.git_status_pending.is_none() {
-                self.tab.changed_anchor_pending = None;
-                self.reapply_changed_filter(anchor);
-            } else {
-                self.tab.changed_anchor_pending = anchor;
-            }
         }
+        tree
+    }
+
+    /// Rebuild the tree while the `C` list is up: the one place every rebuild under `C` goes
+    /// through (a watch event, a tab switch and the return from a project screen, which are the
+    /// same refresh; a sort or hidden-file toggle; a reveal; the rebuild after a discard).
+    ///
+    /// The `C` list is derived from git status alone, never from the directory walk. While the
+    /// scan that will derive it again is out, the list keeps the list it had (its rows, the cursor
+    /// on its file, the visual range over those rows) and `anchor` is published for
+    /// `apply_statuses`, which rebuilds the list when the scan lands, with the sort and hidden
+    /// setting as they are then. The walk's whole tree is no `C` list: drawing it under the
+    /// "CHANGED (n)" title contradicts the title, with the cursor on a row of the wrong list. It
+    /// must also not rebuild against the statuses while a scan is out: right after switching back
+    /// from a different repo's tab `git_status` is empty, and the filter would judge "zero
+    /// changes" and silently turn itself off (see `rebuild_changed_list_when_status_ready`).
+    ///
+    /// The walk still runs for what it owns besides `entries` (whether the listing is stale, the
+    /// VCS detection, the detail cells) and its result is returned.
+    pub(super) fn rebuild_tree_under_changed_list(
+        &mut self,
+        anchor: Option<PathBuf>,
+    ) -> Result<()> {
+        let kept = (
+            self.tab.entries.clone(),
+            self.tab.selected,
+            self.tab.visual_anchor,
+        );
+        // Published before a synchronous scan in `rebuild_changed_list_when_status_ready` can land
+        // and consume it (the same order as `capture_view_anchors`).
+        self.publish_changed_anchor(anchor.clone());
+        let tree = self.rebuild_tree();
+        if !self.rebuild_changed_list_when_status_ready(anchor) {
+            (self.tab.entries, self.tab.selected, self.tab.visual_anchor) = kept;
+        }
+        tree
     }
 
     /// Add one character to the filter input (live filtering).
@@ -442,7 +502,7 @@ impl App {
         // explicit `reapply_changed_filter(None)` gets there — `toggle_changed_filter`'s ON branch
         // always calls this right before setting `changed_filter = true`, so clearing it here closes
         // that window at its one entry point rather than at every place `changed_filter` goes false.
-        self.tab.changed_anchor_pending = None;
+        self.retire_changed_anchor();
     }
 
     /// Attach the Sender of the worker that finishes filter-pool scans in the background (called by
@@ -505,6 +565,8 @@ impl App {
     /// collected so far are usable immediately: filtering a partial pool is not wrong, just
     /// incomplete, and it fills in while the user is still typing.
     fn kick_filter_pool_start(&mut self) {
+        #[cfg(test)]
+        crate::test_support::note_filter_pool_ask();
         // Supersede anything in flight (an FS-driven refresh from the previous filter session).
         self.invalidate_filter_pool_scan();
         let gen = self.filter_pool_gen;
@@ -568,6 +630,8 @@ impl App {
     /// have), so there is no synchronous part at all — the current pool keeps showing until the new
     /// one lands, exactly the way `kick_status_refresh` keeps the previous statuses on screen.
     fn kick_filter_pool_refresh(&mut self) {
+        #[cfg(test)]
+        crate::test_support::note_filter_pool_ask();
         // Already scanning this very root: record the request and honour it once, on arrival.
         // Without this, an agent writing a burst of files would stack up one whole-tree walk per
         // event — the same pile-up `kick_status_refresh` guards against, and for the same reason
@@ -743,26 +807,67 @@ impl App {
     /// reimplemented (and re-broken) at each call site.
     ///
     /// **Honors an already-published, not-yet-consumed `changed_anchor_pending` instead of
-    /// re-reading `entries`.** Once a refresh captures an anchor and defers the rebuild (a status
-    /// scan is in flight), `entries` stops being the changed list until that rebuild actually runs
-    /// — it is the *whole tree* left behind by `rebuild_tree` in the meantime. A caller that reads
-    /// `entries` again in that window (a second FS event before the first scan lands, or a sort/
-    /// hidden-file toggle pressed in the same window) would silently anchor to whatever sits at
-    /// `selected` in the wrong structure and clobber the correct, still-pending identity.
+    /// re-reading `entries`.** Once a rebuild is deferred to a status scan in flight, every
+    /// rebuild under `C` keeps the list it had (`rebuild_tree_under_changed_list`), but the
+    /// pending identity can name a file that list has no row for yet (a reveal of a file just
+    /// created). A caller that reads `entries` again in that window would anchor to the old
+    /// cursor's file and clobber that still-pending identity. Honored only while it still stands
+    /// for the cursor (`standing_changed_anchor`): after a move by the user, the cursor's file.
     /// `None` when `C` isn't the active filter, so callers can call this unconditionally.
     pub(super) fn changed_filter_anchor(&self) -> Option<PathBuf> {
         if !self.tab.changed_filter {
             return None;
         }
-        self.tab
-            .changed_anchor_pending
-            .clone()
+        self.standing_changed_anchor()
             .or_else(|| self.filter_anchor())
+    }
+
+    /// Publish `anchor` as the identity a deferred `C` rebuild lands the cursor on
+    /// (`apply_statuses`). The one place it is published: by every rebuild under `C`
+    /// (`capture_view_anchors`, `rebuild_tree_under_changed_list`) and by every jump while a scan is
+    /// out (`publish_jump_target`). The identity stands for the cursor's row as it is now, so that
+    /// row's file is recorded with it; called while `entries` is still the `C` list.
+    pub(super) fn publish_changed_anchor(&mut self, anchor: Option<PathBuf>) {
+        self.tab.changed_anchor_row = anchor.as_ref().and_then(|_| self.filter_anchor());
+        self.tab.changed_anchor_pending = anchor;
+    }
+
+    /// A jump revealed `target` under `C` (`reveal_path_deep`, after it moved the cursor or found
+    /// no row to move it to). While a status scan is out the list is the one kept from before the
+    /// scan, and the target is the identity the deferred rebuild lands the cursor on, whether that
+    /// list has a row for it (the cursor is on it now) or not yet (a new change; the cursor did not
+    /// move). It replaces whatever an earlier jump or rebuild published: left in place, an earlier
+    /// jump's identity still stands for the cursor whenever this jump put the cursor on the row it
+    /// was published for, and the landing scan carries the cursor off the file jumped to last. With
+    /// no scan out the list is current and nothing waits.
+    pub(super) fn publish_jump_target(&mut self, target: &Path) {
+        if self.tab.changed_filter && self.git_status_pending.is_some() {
+            self.publish_changed_anchor(Some(target.to_path_buf()));
+        }
+    }
+
+    /// Retire the published identity: nothing waits for a scan any more (the list was rebuilt, or
+    /// `C` is being discarded).
+    fn retire_changed_anchor(&mut self) {
+        self.tab.changed_anchor_pending = None;
+        self.tab.changed_anchor_row = None;
+    }
+
+    /// The published identity while it still stands for the cursor, the one rule both readers
+    /// (`changed_filter_anchor`, `apply_statuses`) go through: it stands for the cursor only until
+    /// the user moves it. Once the cursor is on another row than the one the identity was
+    /// published for, the cursor's own file is the identity and this is `None`. Every way the
+    /// user moves the cursor (keys, the mouse, a search or `n`/`N` jump) puts it on another row of
+    /// `entries`, so this one comparison covers them all and no move path clears anything. Compared
+    /// by file, not by index: a rebuild that keeps the list keeps the cursor on its file.
+    fn standing_changed_anchor(&self) -> Option<PathBuf> {
+        let pending = self.tab.changed_anchor_pending.as_ref()?;
+        (self.filter_anchor() == self.tab.changed_anchor_row).then(|| pending.clone())
     }
 
     /// The anchor to capture right before a caller's own `rebuild_tree()`, for whichever of the two
     /// mutually-exclusive tree filters (`/` or `C`) is currently active — feeds
-    /// `refilter_after_visibility_change`. `/`'s anchor is always a fresh `entries` read (its pool
+    /// `rebuild_tree_refiltered`. `/`'s anchor is always a fresh `entries` read (its pool
     /// isn't touched by a caller's rebuild the way `C`'s status-driven list is); `C`'s goes through
     /// `changed_filter_anchor` for the reason documented there.
     pub(super) fn visibility_change_anchor(&self) -> Option<PathBuf> {
@@ -842,14 +947,12 @@ impl App {
     /// The sorted list of files with a git status under the current root (the review work-list).
     /// Deleted files have a status but no longer exist, so they are excluded (nothing to preview/select).
     pub(super) fn changed_paths(&self) -> Vec<PathBuf> {
-        let mut v: Vec<PathBuf> = self
+        let paths = self
             .git_status
             .keys()
             .filter(|p| p.starts_with(&self.tab.root) && p.is_file())
-            .cloned()
-            .collect();
-        v.sort();
-        v
+            .cloned();
+        konoma_plugin::host::project::diff_files::ordered_changed_paths(&self.tab.root, paths)
     }
 
     /// `C`: toggle the changed-files-only view. ON shows the flat list of changed files (like the `/`
@@ -896,6 +999,15 @@ impl App {
     /// still have the changed list?" instead of inheriting an answer. `None` = don't follow anything
     /// (the cursor is being reset or retargeted anyway).
     pub(super) fn reapply_changed_filter(&mut self, anchor: Option<PathBuf>) {
+        self.reapply_changed_filter_following([anchor]);
+    }
+
+    /// `reapply_changed_filter` with the files to keep the cursor on in order of preference: the
+    /// cursor goes to the first one the new list has a row for.
+    fn reapply_changed_filter_following(
+        &mut self,
+        anchors: impl IntoIterator<Item = Option<PathBuf>>,
+    ) {
         let entries: Vec<super::Entry> = self
             .changed_paths()
             .into_iter()
@@ -917,10 +1029,13 @@ impl App {
         // Follow the file the cursor was on to wherever the re-sorted list put it. If it is no longer
         // listed (committed, reverted, deleted) there is nothing to follow, so fall back to the
         // positional clamp below — exactly the old behaviour.
-        if let Some(p) = anchor {
-            if let Some(i) = self.tab.entries.iter().position(|e| e.path == p) {
-                self.tab.selected = i;
-            }
+        let entries = &self.tab.entries;
+        if let Some(i) = anchors
+            .into_iter()
+            .flatten()
+            .find_map(|p| entries.iter().position(|e| e.path == p))
+        {
+            self.tab.selected = i;
         }
         if self.tab.selected >= self.tab.entries.len() {
             self.tab.selected = self.tab.entries.len().saturating_sub(1);
@@ -1000,6 +1115,8 @@ impl App {
     fn diff_jump_changed(&mut self, dir: i64) {
         let paths = if self.diff_follow_scope {
             self.follow_session_paths()
+        } else if let Some(paths) = self.project_diff_changed_paths() {
+            paths
         } else {
             self.ensure_git_status_now();
             self.changed_paths()
@@ -1011,19 +1128,11 @@ impl App {
         let Some(crate::preview::PreviewKind::GitDiff(cur)) = self.tab.preview_kind.clone() else {
             return;
         };
-        let len = paths.len() as i64;
-        let idx = match paths.iter().position(|p| *p == cur) {
-            Some(i) => (i as i64 + dir).rem_euclid(len) as usize,
-            // The currently shown file isn't in the set (e.g. it was just committed): start from the first/last.
-            None => {
-                if dir > 0 {
-                    0
-                } else {
-                    (len - 1) as usize
-                }
-            }
+        let Some(target) =
+            konoma_plugin::host::project::diff_files::step_changed_path(&paths, &cur, dir)
+        else {
+            return;
         };
-        let target = paths[idx].clone();
         if target == cur {
             return; // only one target
         }
@@ -1038,10 +1147,9 @@ impl App {
         } else {
             let _ = self.reveal_path_deep(&target);
         }
-        // A fresh `open_git_diff` would reset `came_from_git_view`/`diff_follow_scope`/the
+        // A fresh `open_git_diff` would reset `diff_follow_scope`/the
         // presentation to the target file's own config default, so carry the current ones over
-        // instead (so cycling from a hub-opened diff still returns to the hub with `q`, a
-        // follow-scoped cycle keeps going, and the presentation — source/rendered/preview — is never
+        // instead (so a follow-scoped cycle keeps going, and the presentation — source/rendered/preview — is never
         // reset by simply moving to the next changed file: `docs/FEATURE-MD-RENDERED-DIFF.md` §4's
         // "n/N で次のファイルの diff へ移っても表現は維持"). Carries `diff_view_choice` — the
         // presentation actually *chosen* — not the current file's already-rounded `diff_view`: a
@@ -1058,9 +1166,9 @@ impl App {
         self.open_git_diff_with(
             &target,
             DiffOpen {
+                read_context: self.tab.diff_read_context,
                 follow_scope: self.diff_follow_scope,
                 view: Some(self.tab.diff_view_choice),
-                came_from_git_view: Some(self.tab.came_from_git_view),
                 ..Default::default()
             },
         );
@@ -1093,11 +1201,12 @@ impl App {
         };
         let paths = if self.diff_follow_scope {
             self.follow_session_paths()
+        } else if let Some(paths) = self.project_diff_changed_paths() {
+            paths
         } else {
             self.changed_paths()
         };
-        let i = paths.iter().position(|q| q == p)?;
-        Some((i + 1, paths.len()))
+        konoma_plugin::host::project::diff_files::changed_path_position(&paths, p)
     }
 
     /// Refetch git status if root changed (called just before rendering). Does nothing if root is unchanged.
@@ -1221,6 +1330,7 @@ impl App {
             // is a filesystem lookup plus a cached probe, so settle it here rather than describing
             // the previous repository until the scan lands.
             self.git_vcs = crate::vcs::detect(&self.tab.root);
+            self.refresh_vcs_watch(self.git_vcs);
         }
         self.git_status_gen = self.git_status_gen.wrapping_add(1);
         self.git_status_pending = Some(self.tab.root.clone());
@@ -1256,7 +1366,9 @@ impl App {
             self.apply_statuses(res);
             return;
         };
+        let vcs_config = crate::vcs::WorkerConfig::capture();
         std::thread::spawn(move || {
+            vcs_config.install();
             // If the worker panics, no result comes back and `git_status_pending` stays set forever,
             // spinning the spinner and freezing status. `compute_or_fallback` (principle #3)
             // guarantees a result either way — unlike the old `if let Some(res) = catch_silent(..) {
@@ -1340,6 +1452,7 @@ impl App {
         self.git_status = res.statuses;
         self.git_branch = res.branch;
         self.git_vcs = res.vcs;
+        self.refresh_vcs_watch(res.vcs);
         self.git_worktree_origin = res.worktree_origin;
         self.git_status_workdir = res.workdir;
         // A matching generation = this result belongs to the current workdir. The root at the time
@@ -1356,18 +1469,23 @@ impl App {
         // The "changed files only" filter's list is entries **already derived** from statuses, so a
         // re-render alone won't fix it. Rebuild it the moment the new status arrives (live follow-along for an agent's edits).
         if self.tab.changed_filter {
-            // Whoever rebuilt the tree out from under the list and left the rebuild to us also left
-            // the cursor's identity (`changed_anchor_pending`) — `entries` is the whole tree by now,
-            // so it cannot be recovered here. When nobody did, `entries` still *is* the list (this
-            // lands straight from the channel, or from a synchronous scan before any rebuild) and
-            // reading it live is right — and necessary, because this is the path an agent's writes
-            // take: without it the list re-sorts under a cursor that never moved.
-            let anchor = self
-                .tab
-                .changed_anchor_pending
-                .take()
-                .or_else(|| self.filter_anchor());
-            self.reapply_changed_filter(anchor);
+            // Whoever left the rebuild to us also left the cursor's identity
+            // (`changed_anchor_pending`). While the scan was out `entries` kept the list it had,
+            // but the identity can name a file that list has no row for yet: a reveal after a
+            // file operation aims at the file it just created. When nobody left one, `entries`
+            // *is* the list (this lands straight from the channel, or from a synchronous scan
+            // before any rebuild) and reading it live is right — and necessary, because this is
+            // the path an agent's writes take: without it the list re-sorts under a cursor that
+            // never moved.
+            //
+            // The identity stands for the cursor (`standing_changed_anchor`): once the user moved
+            // the cursor meanwhile, the cursor's file is the identity. When the new list has no row
+            // for the identity (a jump to a file that turns out not to be changed), the cursor stays
+            // on its own file, as the same jump leaves it with no scan out.
+            let standing = self.standing_changed_anchor();
+            let cursor = self.filter_anchor();
+            self.retire_changed_anchor();
+            self.reapply_changed_filter_following([standing, cursor]);
         }
         true
     }
@@ -1381,7 +1499,9 @@ impl App {
             self.apply_ignored(IgnoredResult { gen, workdir, set });
             return;
         };
+        let vcs_config = crate::vcs::WorkerConfig::capture();
         std::thread::spawn(move || {
+            vcs_config.install();
             // Same `compute_or_fallback` safety net as `spawn_or_sync_statuses` (principle #3): the
             // `tx.send(..)` below is unconditional. If the scan panics, `git_ignored_pending` would
             // otherwise latch forever (a spinner that never stops, and the ignore set frozen at
@@ -1503,9 +1623,16 @@ impl App {
     ///   retrying a doomed download on every single one is exactly what `md_remote_failed` exists to
     ///   prevent (see that field's own doc comment on `App`).
     pub fn refresh(&mut self) -> Result<()> {
+        self.refresh_routed().unwrap_or(Ok(()))
+    }
+
+    /// [`App::refresh`], telling whether the tab's view was in front and refreshed (`None`: a
+    /// project screen covers it, and only the `App`-level freshness ran; see
+    /// `refresh_fs_routed`). For a caller whose own view work (a reveal) hangs on the refresh.
+    pub(super) fn refresh_routed(&mut self) -> Option<Result<()>> {
         self.md_remote_failed.clear();
         // An explicit reload (`r` / fileops / returning from an external tool) also rebuilds the ignore set (full recompute).
-        self.refresh_fs(true)
+        self.refresh_fs_routed(true, &[], true)
     }
 
     /// `r`, the user's own refresh: [`App::refresh`], and a plugin's file is read again even when
@@ -1522,6 +1649,9 @@ impl App {
     /// and refetch only the cheap `statuses`+`branch`. Ignore rules (`.gitignore` /
     /// `.git/info/exclude`) rarely change, so this is called with `true` only when they actually change, also rebuilding
     /// `ignored`. This avoids a few-hundred-ms freeze per event on large repositories.
+    /// No production caller: the run loop's events come through `refresh_fs_watched`, the user's
+    /// and the file operations' reloads through `refresh`; the tests use it as an FS event.
+    #[cfg(test)]
     pub fn refresh_fs(&mut self, recompute_ignored: bool) -> Result<()> {
         // Unknown changed paths = the safe side (also reload the preview).
         self.refresh_fs_changed(recompute_ignored, &[])
@@ -1533,12 +1663,16 @@ impl App {
     /// Purpose: while an agent keeps rewriting `src/`, avoid rebuilding the decoration of an
     /// unrelated `docs/foo.md` on every single event (= re-rendering the whole Markdown / re-parsing
     /// the entire CSV). Tree rebuild, git status, the changed filter, and the git view still follow along on every event as before.
+    /// Routed as every refresh of the filesystem view (`refresh_fs_routed`). No production
+    /// caller (see `refresh_fs`).
+    #[cfg(test)]
     pub fn refresh_fs_changed(
         &mut self,
         recompute_ignored: bool,
         changed: &[std::path::PathBuf],
     ) -> Result<()> {
-        self.refresh_fs_inner(recompute_ignored, changed, true)
+        self.refresh_fs_routed(recompute_ignored, changed, true)
+            .unwrap_or(Ok(()))
     }
 
     /// The tab-switch variant: refresh the tree / git status / derived views, but **do not reload the
@@ -1550,7 +1684,9 @@ impl App {
     /// to, so reporting is done **here** instead of leaving a `let _ = …` for a future edit to
     /// forget. See `refresh_reporting_staleness` for why the flash is edge-triggered.
     pub(super) fn refresh_fs_after_tab_switch(&mut self) {
-        self.refresh_reporting_staleness(|app| app.refresh_fs_inner(false, &[], false));
+        self.refresh_reporting_staleness(|app| {
+            app.refresh_fs_routed(false, &[], false).unwrap_or(Ok(()))
+        });
     }
 
     /// The fs-watch driven refresh, for `main`'s run loop. Same reason as
@@ -1558,7 +1694,35 @@ impl App {
     /// so there is no `?` to ride and no `resolve_key_result` to reach — a swallowed error here
     /// leaves the tree silently stale.
     pub fn refresh_fs_watched(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
-        self.refresh_reporting_staleness(|app| app.refresh_fs_changed(recompute_ignored, changed));
+        self.refresh_reporting_staleness(|app| {
+            app.refresh_fs_routed(recompute_ignored, changed, true)
+                .unwrap_or(Ok(()))
+        });
+    }
+
+    /// The one routing point of every refresh of the filesystem view (a watch event, the end of a
+    /// tab switch, `r`, a file operation's completion, a follow change; `refresh_fs_inner` has no
+    /// other caller): is a tab's view in front? A project screen that covers the tab's
+    /// screen has left that screen as a tab switch leaves a tab (`leave_tab_view` dropped its
+    /// live work), so the refresh is handled as for a tab in the background: the App-level
+    /// freshness runs (git status, the follow reads, the diff caches, the picture cache by
+    /// changed path), and the view itself is not refreshed: the return reads it again from the
+    /// files as they are then (`put_tab_back`, then `refresh_fs_after_tab_switch`). Nothing is
+    /// recorded for later; refreshing the view here would only restart, behind the screen, the
+    /// work the cover dropped (plugin show, media loads, the filter-pool scan of the tree).
+    /// Returns the result of the view's refresh when the tab's view is in front, `None` when a
+    /// project screen covers it.
+    fn refresh_fs_routed(
+        &mut self,
+        recompute_ignored: bool,
+        changed: &[std::path::PathBuf],
+        reload_preview: bool,
+    ) -> Option<Result<()>> {
+        if self.project_screen_covers() {
+            self.refresh_while_covered(recompute_ignored, changed);
+            return None;
+        }
+        Some(self.refresh_fs_inner(recompute_ignored, changed, reload_preview))
     }
 
     /// Note which file each filtered view is "on", **before** a `rebuild_tree` replaces `entries`
@@ -1583,20 +1747,42 @@ impl App {
         };
         // The same value for the `C` list, and taken here for the same reason. It is *also* published
         // on `App`, because the rebuild is frequently deferred to whenever the status scan lands
-        // (below) — by then this stack frame is long gone, and `entries` is the whole tree, so
-        // `apply_statuses` has no way to work it out for itself.
+        // (below) — by then this stack frame is long gone. Every rebuild under `C` keeps the list it
+        // had meanwhile, but another rebuild in that window (a reveal after a file operation) can
+        // publish a file that list has no row for yet, and `apply_statuses` cannot work that
+        // identity out from `entries`.
         //
-        // Captured via `changed_filter_anchor`, which honors a previous refresh's still-unconsumed
-        // anchor instead of re-reading `entries` (see that method's doc comment). Re-reading it
-        // unconditionally here was the bug: once one refresh defers its rebuild, `entries` stays the
-        // *whole tree* (left behind by `rebuild_tree` below) until that deferred rebuild actually
-        // runs — a second refresh landing in that window (an agent writing files back-to-back,
-        // faster than one `git status` scan) would read `selected`'s position in the wrong
-        // structure and overwrite the correct pending identity with it, so the eventual landing
-        // dragged the cursor onto a file the user was never on.
+        // Captured via `changed_filter_anchor`, which honors a previous rebuild's still-unconsumed
+        // anchor instead of re-reading `entries` (see that method's doc comment): after such a
+        // reveal, a refresh landing in the window (an agent writing files back-to-back, faster
+        // than one `git status` scan) would otherwise read the old cursor's file from the kept
+        // list and overwrite the pending identity with it, so the eventual landing put the cursor
+        // back on a file the user had moved off.
         let changed = self.changed_filter_anchor();
-        self.tab.changed_anchor_pending = changed.clone();
+        self.publish_changed_anchor(changed.clone());
         ViewAnchors { filter, changed }
+    }
+
+    /// Rebuild the `C` list from the latest statuses, unless a status scan is in flight. Must not
+    /// rebuild while a scan is in flight. Right after switching back from a different repo's tab,
+    /// `git_status` is empty (right after the kick discarded the other repo's leftovers), so
+    /// rebuilding here would make the filter judge "zero changes" and **silently turn itself off,
+    /// even showing a false "no changed files"**. Wait instead — `apply_statuses` rebuilds it once
+    /// the result arrives. Returns whether it rebuilt.
+    pub(super) fn rebuild_changed_list_when_status_ready(
+        &mut self,
+        anchor: Option<PathBuf>,
+    ) -> bool {
+        self.refresh_git_if_needed();
+        if self.git_status_pending.is_some() {
+            return false;
+        }
+        // Rebuilding here and now, so nothing is deferred: drop the published copy rather
+        // than leave it for an unrelated later scan to pick up. The local is the same value
+        // (a synchronous scan above may already have taken the published one).
+        self.retire_changed_anchor();
+        self.reapply_changed_filter(anchor);
+        true
     }
 
     /// `rebuild_tree`, plus putting whichever filtered view is active back on top of the fresh
@@ -1605,23 +1791,13 @@ impl App {
     /// (with the anchors from `capture_view_anchors`) anywhere the tree is re-derived.
     /// Returns `rebuild_tree`'s result unchanged; the view work happens either way.
     fn rebuild_tree_preserving_filtered_view(&mut self, anchors: ViewAnchors) -> Result<()> {
-        let tree = self.rebuild_tree();
-        // While the changed-files-only filter is active, rebuild the list from the latest statuses (follows an agent's edits).
+        // While the changed-files-only filter is active, rebuild the list from the latest statuses
+        // (follows an agent's edits), through the one place that owns the `C` list's rule.
         if self.tab.changed_filter {
-            self.refresh_git_if_needed();
-            // Must not rebuild while a scan is in flight. Right after switching back from a
-            // different repo's tab, `git_status` is empty (right after the kick discarded the other
-            // repo's leftovers), so rebuilding here would make the filter judge "zero changes" and
-            // **silently turn itself off, even showing a false "no changed files"**. Wait instead —
-            // `apply_statuses` rebuilds it once the result arrives.
-            if self.git_status_pending.is_none() {
-                // Rebuilding here and now, so nothing is deferred: drop the published copy rather
-                // than leave it for an unrelated later scan to pick up. The local is the same value
-                // (a synchronous scan above may already have taken the published one).
-                self.tab.changed_anchor_pending = None;
-                self.reapply_changed_filter(anchors.changed);
-            }
-        } else if self.tab.tree_filter.is_some() {
+            return self.rebuild_tree_under_changed_list(anchors.changed);
+        }
+        let tree = self.rebuild_tree();
+        if self.tab.tree_filter.is_some() {
             // While the text filter (`/`) is active, rebuild_tree resets entries back to showing
             // everything, so re-filter **immediately** with the pool we already have (fixing the
             // inconsistency where the query is restored but the list shows everything).
@@ -1651,13 +1827,33 @@ impl App {
         self.refresh_reporting_staleness(|app| app.rebuild_tree_preserving_filtered_view(anchors));
     }
 
-    fn refresh_fs_inner(
-        &mut self,
-        recompute_ignored: bool,
-        changed: &[std::path::PathBuf],
-        reload_preview: bool,
-    ) -> Result<()> {
-        let anchors = self.capture_view_anchors();
+    /// A filesystem change (a watch event, an external program's return) while a project screen
+    /// covers the tab's screen: the `App`-level freshness, and the outage of the root the canvas
+    /// in front reads.
+    fn refresh_while_covered(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
+        self.refresh_app_freshness(recompute_ignored, changed);
+        // The canvas in front reads the same root: a root that is gone is an outage of the screen
+        // in front, shown by its `STALE` chip. This is the canvas's own state, not a record for
+        // the tab (the return's rebuild sets `tree_stale` again either way).
+        if !self.tab.root.is_dir() {
+            self.tree_stale = true;
+        }
+    }
+
+    /// What a filesystem change makes stale on `App`, whichever screen is in front: the follow
+    /// reads, the picture cache by changed path, the git status (and the ignore set when
+    /// `recompute_ignored`), the diff caches and the change gutter. Shared by the refresh of the
+    /// view in front (`refresh_fs_inner`) and by a watch event while a project screen covers the
+    /// tab's screen (`refresh_fs_watched`).
+    fn refresh_app_freshness(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
+        #[cfg(feature = "git")]
+        self.follow_worker.invalidate_reads();
+        // An inline Markdown image is a *second* file a preview is drawn from, and its cache entry
+        // is keyed by path, so the entry outlives a rewrite of the bytes behind it and has to be
+        // dropped by hand. The cache is `App`'s (shared by every tab and kept while a screen is
+        // left), so the entry goes whatever the screen in front shows: a document shown again
+        // later (a tab switch back, the return from a project screen) reads the new bytes.
+        self.drop_changed_md_images(changed);
         if recompute_ignored {
             self.git_status_for = None; // recompute statuses+branch on the next render
             self.git_status_dirty = true; // an ignore-rule change can also change status output = invalidate the workdir cache
@@ -1668,25 +1864,31 @@ impl App {
         }
         self.invalidate_diff_caches(); // the working tree may have changed → drop the diff caches (keeps up with external edits)
         self.gutter_cache = None; // same as above: the git change gutter is also rebuilt on a working-tree change
-                                  // We do rebuild the tree, but its transient failure (e.g. a subdirectory being
-                                  // expanded briefly becomes unreadable while an agent bulk-rewrites files)
-                                  // must **not skip** the preview/view reload below. Those only depend on
-                                  // preview_path / git state, not the new tree, so the tree's Err is returned at the end.
+    }
+
+    fn refresh_fs_inner(
+        &mut self,
+        recompute_ignored: bool,
+        changed: &[std::path::PathBuf],
+        reload_preview: bool,
+    ) -> Result<()> {
+        // Before the status kick of `refresh_app_freshness`: the anchors publish the `C`-list
+        // anchor that a synchronous scan consumes (see `capture_view_anchors`).
+        let anchors = self.capture_view_anchors();
+        self.refresh_app_freshness(recompute_ignored, changed);
+        // We do rebuild the tree, but its transient failure (e.g. a subdirectory being expanded
+        // briefly becomes unreadable while an agent bulk-rewrites files) must **not skip** the
+        // preview/view reload below. Those only depend on preview_path / git state, not the new
+        // tree, so the tree's Err is returned at the end.
         let tree = self.rebuild_tree_preserving_filtered_view(anchors);
         // Drop paths that vanished from the selection set (retain keeps only ones that still exist; symlinks aren't followed).
         self.tab.selection.retain(|p| p.symlink_metadata().is_ok());
-        // Only make the active derived view follow along.
-        if self.is_git_view() {
-            self.git_view_reload();
-        }
         if reload_preview
             && matches!(self.tab.mode, Mode::Preview)
             && self.preview_affected_by(changed)
         {
-            // An inline Markdown image is a *second* file the preview is drawn from, and its cache
-            // entry is keyed by path — so the entry outlives a rewrite of the bytes behind it and
-            // has to be dropped by hand before the reload re-reads the document.
-            self.drop_changed_md_images(changed);
+            // (The pictures of `changed` were dropped from the cache above, before this reload
+            // re-reads the document.)
             // An event that names the shown file itself reopens a plugin's file without asking
             // the stamp when the stamp cannot be trusted (the file was modified within
             // `RACY_WINDOW` of when it was taken); the stamp decides for empty / `.git`-only /

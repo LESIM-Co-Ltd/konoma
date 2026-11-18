@@ -218,20 +218,20 @@ fn reasking_for_a_picture_after_its_entry_was_dropped_ends_decoded() {
     // Leaving the document: the entry goes (its decode result is still on its way).
     app.md_images.cache.remove(&png);
     app.ensure_md_image(&url, 10, 4, 0, 4);
-    let t = std::time::Instant::now();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while app
         .md_images
         .cache
         .get(&png)
         .is_none_or(|e| e.decoded.is_none())
     {
-        assert!(
-            t.elapsed() < std::time::Duration::from_secs(20),
-            "the new decode never landed"
-        );
-        if let Ok(res) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            app.apply_md_image(res);
-        }
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("reask dropped picture: the new decode must finish");
+        let res = rx
+            .recv_timeout(left)
+            .expect("reask dropped picture: an outstanding decode must answer");
+        app.apply_md_image(res);
         // A frame later the picture is asked for again if its entry was forgotten.
         app.ensure_md_image(&url, 10, 4, 0, 4);
     }
@@ -444,4 +444,20 @@ fn an_encode_of_unchanged_pixels_is_final_and_a_replacement_between_encodes_leav
     assert!(app.apply_md_encode(worker.encode(again)));
     app.ensure_md_image(&url, 20, 10, 0, 1);
     assert!(enc_rx.try_recv().is_err(), "and then it is final");
+}
+impl App {
+    /// Which inline-picture channel a test must receive before the next draw can make progress.
+    pub(crate) fn remote_images_pending_for_test(&self) -> bool {
+        !self.md_remote_inflight.is_empty()
+    }
+
+    pub(crate) fn media_generation_for_test(&self) -> u64 {
+        self.media_gen
+    }
+}
+
+impl MediaResult {
+    pub(crate) fn generation_for_test(&self) -> u64 {
+        self.gen
+    }
 }

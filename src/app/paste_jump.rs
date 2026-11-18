@@ -282,6 +282,9 @@ impl App {
     /// `line` when given). Sets a `→ path[:line]` flash. Also reused by "open link in a new tab"
     /// (`md_open_focused_link_new_tab`) after it creates the fresh tab.
     pub(crate) fn paste_jump_to(&mut self, path: &Path, line: Option<usize>) {
+        // A project screen in front is left first (as its back key does), so the jump lands on
+        // the base screen and is shown instead of running under the screen.
+        self.leave_project_screens_for_jump();
         if !path.starts_with(&self.tab.root) {
             let anchor = if path.is_dir() {
                 path.to_path_buf()
@@ -297,10 +300,12 @@ impl App {
         let revealed = self.reveal_path_deep(path).unwrap_or(false);
         let mut disp = super::home_relative(path);
         if path.is_file() {
-            self.enter_preview(path);
-            if let Some(l) = line {
-                self.preview_goto_line(l);
-                disp.push_str(&format!(":{l}"));
+            match line {
+                Some(l) => {
+                    self.enter_preview_landing(path, super::Landing::GotoLine(l));
+                    disp.push_str(&format!(":{l}"));
+                }
+                None => self.enter_preview(path),
             }
         } else if !revealed && path != self.tab.root {
             // A directory we could not surface in the tree (hidden by the dotfile filter), and it is

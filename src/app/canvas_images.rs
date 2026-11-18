@@ -227,6 +227,16 @@ impl App {
         }
     }
 
+    /// Test-only: how many entries of the inline-picture cache hold the frames of an animation.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn md_animated_entries_for_test(&self) -> usize {
+        self.md_images
+            .cache
+            .values()
+            .filter(|e| e.frames.len() >= 2)
+            .count()
+    }
+
     /// Test-only: the inline-image overlay pass number, and the pass that last asked for `key`.
     #[cfg(test)]
     pub(crate) fn md_frame_and_last_used_for_test(&self, key: &Path) -> (u64, Option<u64>) {

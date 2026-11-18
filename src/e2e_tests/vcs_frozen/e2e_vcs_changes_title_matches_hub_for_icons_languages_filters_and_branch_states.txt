@@ -1,0 +1,1057 @@
+# frozen vcs frames: e2e_vcs_changes_title_matches_hub_for_icons_languages_filters_and_branch_states
+case state=branch icons=false lang=en q="" title
+region x=0..23 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master  (7) ─|
+row 1 S|a23|
+case state=branch icons=false lang=en q="" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=false lang=en q=""
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=false lang=en q="txt" title
+region x=0..28 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master /txt  (7) ─|
+row 1 S|a28|
+case state=branch icons=false lang=en q="txt" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=false lang=en q="txt"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=false lang=en q="a-" title
+region x=0..27 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master /a-  (1) ─|
+row 1 S|a27|
+case state=branch icons=false lang=en q="a-" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=false lang=en q="a-"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|                                                                                        |
+row 3 S|c88|
+row 4 T|                                                                                        |
+row 4 S|c88|
+row 5 T|                                                                                        |
+row 5 S|c88|
+row 6 T|                                                                                        |
+row 6 S|c88|
+row 7 T|                                                                                        |
+row 7 S|c88|
+row 8 T|                                                                                        |
+row 8 S|c88|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=false lang=en q="zzz-no-hit" title
+region x=0..35 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master /zzz-no-hit  (0) ─|
+row 1 S|a35|
+case state=branch icons=false lang=en q="zzz-no-hit" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=false lang=en q="zzz-no-hit"
+region x=0..88 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                        |
+row 2 S|a88|
+row 3 T|                                                                                        |
+row 3 S|a88|
+row 4 T|                                                                                        |
+row 4 S|a88|
+row 5 T|                                                                                        |
+row 5 S|a88|
+row 6 T|                                                                                        |
+row 6 S|a88|
+row 7 T|                                                                                        |
+row 7 S|a88|
+row 8 T|                                                                                        |
+row 8 S|a88|
+row 9 T|                                                                                        |
+row 9 S|a88|
+case state=branch icons=false lang=ja q="" title
+region x=0..23 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master  (7) ─|
+row 1 S|a23|
+case state=branch icons=false lang=ja q="" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=false lang=ja q=""
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=false lang=ja q="txt" title
+region x=0..28 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master /txt  (7) ─|
+row 1 S|a28|
+case state=branch icons=false lang=ja q="txt" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=false lang=ja q="txt"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=false lang=ja q="a-" title
+region x=0..27 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master /a-  (1) ─|
+row 1 S|a27|
+case state=branch icons=false lang=ja q="a-" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=false lang=ja q="a-"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|                                                                                        |
+row 3 S|c88|
+row 4 T|                                                                                        |
+row 4 S|c88|
+row 5 T|                                                                                        |
+row 5 S|c88|
+row 6 T|                                                                                        |
+row 6 S|c88|
+row 7 T|                                                                                        |
+row 7 S|c88|
+row 8 T|                                                                                        |
+row 8 S|c88|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=false lang=ja q="zzz-no-hit" title
+region x=0..35 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master /zzz-no-hit  (0) ─|
+row 1 S|a35|
+case state=branch icons=false lang=ja q="zzz-no-hit" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=false lang=ja q="zzz-no-hit"
+region x=0..88 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                        |
+row 2 S|a88|
+row 3 T|                                                                                        |
+row 3 S|a88|
+row 4 T|                                                                                        |
+row 4 S|a88|
+row 5 T|                                                                                        |
+row 5 S|a88|
+row 6 T|                                                                                        |
+row 6 S|a88|
+row 7 T|                                                                                        |
+row 7 S|a88|
+row 8 T|                                                                                        |
+row 8 S|a88|
+row 9 T|                                                                                        |
+row 9 S|a88|
+case state=branch icons=true lang=en q="" title
+region x=0..21 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master  (7) ─|
+row 1 S|a21|
+case state=branch icons=true lang=en q="" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=true lang=en q=""
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=true lang=en q="txt" title
+region x=0..26 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master /txt  (7) ─|
+row 1 S|a26|
+case state=branch icons=true lang=en q="txt" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=true lang=en q="txt"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=true lang=en q="a-" title
+region x=0..25 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master /a-  (1) ─|
+row 1 S|a25|
+case state=branch icons=true lang=en q="a-" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=true lang=en q="a-"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|                                                                                        |
+row 3 S|c88|
+row 4 T|                                                                                        |
+row 4 S|c88|
+row 5 T|                                                                                        |
+row 5 S|c88|
+row 6 T|                                                                                        |
+row 6 S|c88|
+row 7 T|                                                                                        |
+row 7 S|c88|
+row 8 T|                                                                                        |
+row 8 S|c88|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=true lang=en q="zzz-no-hit" title
+region x=0..33 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master /zzz-no-hit  (0) ─|
+row 1 S|a33|
+case state=branch icons=true lang=en q="zzz-no-hit" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=true lang=en q="zzz-no-hit"
+region x=0..88 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                        |
+row 2 S|a88|
+row 3 T|                                                                                        |
+row 3 S|a88|
+row 4 T|                                                                                        |
+row 4 S|a88|
+row 5 T|                                                                                        |
+row 5 S|a88|
+row 6 T|                                                                                        |
+row 6 S|a88|
+row 7 T|                                                                                        |
+row 7 S|a88|
+row 8 T|                                                                                        |
+row 8 S|a88|
+row 9 T|                                                                                        |
+row 9 S|a88|
+case state=branch icons=true lang=ja q="" title
+region x=0..21 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master  (7) ─|
+row 1 S|a21|
+case state=branch icons=true lang=ja q="" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=true lang=ja q=""
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=true lang=ja q="txt" title
+region x=0..26 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master /txt  (7) ─|
+row 1 S|a26|
+case state=branch icons=true lang=ja q="txt" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=true lang=ja q="txt"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=true lang=ja q="a-" title
+region x=0..25 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master /a-  (1) ─|
+row 1 S|a25|
+case state=branch icons=true lang=ja q="a-" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=true lang=ja q="a-"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|                                                                                        |
+row 3 S|c88|
+row 4 T|                                                                                        |
+row 4 S|c88|
+row 5 T|                                                                                        |
+row 5 S|c88|
+row 6 T|                                                                                        |
+row 6 S|c88|
+row 7 T|                                                                                        |
+row 7 S|c88|
+row 8 T|                                                                                        |
+row 8 S|c88|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=branch icons=true lang=ja q="zzz-no-hit" title
+region x=0..33 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master /zzz-no-hit  (0) ─|
+row 1 S|a33|
+case state=branch icons=true lang=ja q="zzz-no-hit" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=branch icons=true lang=ja q="zzz-no-hit"
+region x=0..88 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                        |
+row 2 S|a88|
+row 3 T|                                                                                        |
+row 3 S|a88|
+row 4 T|                                                                                        |
+row 4 S|a88|
+row 5 T|                                                                                        |
+row 5 S|a88|
+row 6 T|                                                                                        |
+row 6 S|a88|
+row 7 T|                                                                                        |
+row 7 S|a88|
+row 8 T|                                                                                        |
+row 8 S|a88|
+row 9 T|                                                                                        |
+row 9 S|a88|
+case state=detached icons=false lang=en q="" title
+region x=0..21 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: HEAD  (7) ─|
+row 1 S|a21|
+case state=detached icons=false lang=en q="" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=false lang=en q=""
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=false lang=en q="txt" title
+region x=0..26 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: HEAD /txt  (7) ─|
+row 1 S|a26|
+case state=detached icons=false lang=en q="txt" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=false lang=en q="txt"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=false lang=en q="a-" title
+region x=0..25 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: HEAD /a-  (1) ─|
+row 1 S|a25|
+case state=detached icons=false lang=en q="a-" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=false lang=en q="a-"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|                                                                                        |
+row 3 S|c88|
+row 4 T|                                                                                        |
+row 4 S|c88|
+row 5 T|                                                                                        |
+row 5 S|c88|
+row 6 T|                                                                                        |
+row 6 S|c88|
+row 7 T|                                                                                        |
+row 7 S|c88|
+row 8 T|                                                                                        |
+row 8 S|c88|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=false lang=en q="zzz-no-hit" title
+region x=0..33 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: HEAD /zzz-no-hit  (0) ─|
+row 1 S|a33|
+case state=detached icons=false lang=en q="zzz-no-hit" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=false lang=en q="zzz-no-hit"
+region x=0..88 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                        |
+row 2 S|a88|
+row 3 T|                                                                                        |
+row 3 S|a88|
+row 4 T|                                                                                        |
+row 4 S|a88|
+row 5 T|                                                                                        |
+row 5 S|a88|
+row 6 T|                                                                                        |
+row 6 S|a88|
+row 7 T|                                                                                        |
+row 7 S|a88|
+row 8 T|                                                                                        |
+row 8 S|a88|
+row 9 T|                                                                                        |
+row 9 S|a88|
+case state=detached icons=false lang=ja q="" title
+region x=0..21 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: HEAD  (7) ─|
+row 1 S|a21|
+case state=detached icons=false lang=ja q="" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=false lang=ja q=""
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=false lang=ja q="txt" title
+region x=0..26 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: HEAD /txt  (7) ─|
+row 1 S|a26|
+case state=detached icons=false lang=ja q="txt" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=false lang=ja q="txt"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=false lang=ja q="a-" title
+region x=0..25 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: HEAD /a-  (1) ─|
+row 1 S|a25|
+case state=detached icons=false lang=ja q="a-" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=false lang=ja q="a-"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|                                                                                        |
+row 3 S|c88|
+row 4 T|                                                                                        |
+row 4 S|c88|
+row 5 T|                                                                                        |
+row 5 S|c88|
+row 6 T|                                                                                        |
+row 6 S|c88|
+row 7 T|                                                                                        |
+row 7 S|c88|
+row 8 T|                                                                                        |
+row 8 S|c88|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=false lang=ja q="zzz-no-hit" title
+region x=0..33 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: HEAD /zzz-no-hit  (0) ─|
+row 1 S|a33|
+case state=detached icons=false lang=ja q="zzz-no-hit" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=false lang=ja q="zzz-no-hit"
+region x=0..88 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                        |
+row 2 S|a88|
+row 3 T|                                                                                        |
+row 3 S|a88|
+row 4 T|                                                                                        |
+row 4 S|a88|
+row 5 T|                                                                                        |
+row 5 S|a88|
+row 6 T|                                                                                        |
+row 6 S|a88|
+row 7 T|                                                                                        |
+row 7 S|a88|
+row 8 T|                                                                                        |
+row 8 S|a88|
+row 9 T|                                                                                        |
+row 9 S|a88|
+case state=detached icons=true lang=en q="" title
+region x=0..19 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ HEAD  (7) ─|
+row 1 S|a19|
+case state=detached icons=true lang=en q="" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=true lang=en q=""
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=true lang=en q="txt" title
+region x=0..24 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ HEAD /txt  (7) ─|
+row 1 S|a24|
+case state=detached icons=true lang=en q="txt" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=true lang=en q="txt"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=true lang=en q="a-" title
+region x=0..23 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ HEAD /a-  (1) ─|
+row 1 S|a23|
+case state=detached icons=true lang=en q="a-" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=true lang=en q="a-"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|                                                                                        |
+row 3 S|c88|
+row 4 T|                                                                                        |
+row 4 S|c88|
+row 5 T|                                                                                        |
+row 5 S|c88|
+row 6 T|                                                                                        |
+row 6 S|c88|
+row 7 T|                                                                                        |
+row 7 S|c88|
+row 8 T|                                                                                        |
+row 8 S|c88|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=true lang=en q="zzz-no-hit" title
+region x=0..31 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ HEAD /zzz-no-hit  (0) ─|
+row 1 S|a31|
+case state=detached icons=true lang=en q="zzz-no-hit" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=true lang=en q="zzz-no-hit"
+region x=0..88 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                        |
+row 2 S|a88|
+row 3 T|                                                                                        |
+row 3 S|a88|
+row 4 T|                                                                                        |
+row 4 S|a88|
+row 5 T|                                                                                        |
+row 5 S|a88|
+row 6 T|                                                                                        |
+row 6 S|a88|
+row 7 T|                                                                                        |
+row 7 S|a88|
+row 8 T|                                                                                        |
+row 8 S|a88|
+row 9 T|                                                                                        |
+row 9 S|a88|
+case state=detached icons=true lang=ja q="" title
+region x=0..19 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ HEAD  (7) ─|
+row 1 S|a19|
+case state=detached icons=true lang=ja q="" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=true lang=ja q=""
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=true lang=ja q="txt" title
+region x=0..24 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ HEAD /txt  (7) ─|
+row 1 S|a24|
+case state=detached icons=true lang=ja q="txt" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=true lang=ja q="txt"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|  M repo/b-unstaged.txt                                                                 |
+row 3 S|c2d2c84|
+row 4 T|  D repo/c-deleted.txt                                                                  |
+row 4 S|c2e2c84|
+row 5 T|● R repo/d-renamed.txt                                                                  |
+row 5 S|c2f2c84|
+row 6 T|  U repo/e-untracked.txt                                                                |
+row 6 S|c2g2c84|
+row 7 T|● A repo/f-added.txt                                                                    |
+row 7 S|c2h2c84|
+row 8 T|  M repo/日 本 語 .txt                                                                     |
+row 8 S|c2d2c84|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=true lang=ja q="a-" title
+region x=0..23 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ HEAD /a-  (1) ─|
+row 1 S|a23|
+case state=detached icons=true lang=ja q="a-" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=true lang=ja q="a-"
+region x=0..88 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                                   |
+row 2 S|a2b2a17c67|
+row 3 T|                                                                                        |
+row 3 S|c88|
+row 4 T|                                                                                        |
+row 4 S|c88|
+row 5 T|                                                                                        |
+row 5 S|c88|
+row 6 T|                                                                                        |
+row 6 S|c88|
+row 7 T|                                                                                        |
+row 7 S|c88|
+row 8 T|                                                                                        |
+row 8 S|c88|
+row 9 T|                                                                                        |
+row 9 S|c88|
+case state=detached icons=true lang=ja q="zzz-no-hit" title
+region x=0..31 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ HEAD /zzz-no-hit  (0) ─|
+row 1 S|a31|
+case state=detached icons=true lang=ja q="zzz-no-hit" corner
+region x=89..90 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case state=detached icons=true lang=ja q="zzz-no-hit"
+region x=0..88 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                        |
+row 2 S|a88|
+row 3 T|                                                                                        |
+row 3 S|a88|
+row 4 T|                                                                                        |
+row 4 S|a88|
+row 5 T|                                                                                        |
+row 5 S|a88|
+row 6 T|                                                                                        |
+row 6 S|a88|
+row 7 T|                                                                                        |
+row 7 S|a88|
+row 8 T|                                                                                        |
+row 8 S|a88|
+row 9 T|                                                                                        |
+row 9 S|a88|

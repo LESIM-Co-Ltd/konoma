@@ -1,0 +1,73 @@
+{
+  "en": {
+    "preview_text": {
+      "host": "j/k:scroll  /:search  n/N:change  v/V:select  Y:@ref  F:FOLLOW  R:back to diff  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  g/G:ends  h/l:hscroll  0/$:line ends  [/]:tab  ,:view  C-f/C-b/PgDn/PgUp:page",
+      "app": "j/k:scroll  n/N:change  R:back to diff  q:back  ?:help  e:edit  o:open in app  g/G:ends  h/l:hscroll  0/$:line ends  ,:view  C-f/C-b/PgDn/PgUp:page"
+    },
+    "preview_project": {
+      "host": "l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+      "app": "l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:back"
+    },
+    "preview_jj_project": {
+      "host": "l/Enter:diff  d:diff-all  b:bookmarks  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+      "app": "l/Enter:diff  d:diff-all  b:bookmarks  !:tool  /:search  Tab/⇧Tab:screens  h/q:back"
+    },
+    "preview_image": {
+      "host": "+/-:zoom  =:fit  h/j/k/l:pan  R:back to diff  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  [/]:tab  ,:view",
+      "app": "+/-:zoom  =:fit  h/j/k/l:pan  R:back to diff  q:back  ?:help  e:edit  o:open in app  ,:view"
+    },
+    "preview_document": {
+      "host": "j/k:scroll  Tab:focus  O:outline  R:back to diff  /:search  n/N:change  F:FOLLOW  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  g/G:ends  [/]:tab  ,:view  C-f/C-b/PgDn/PgUp:page",
+      "app": "j/k:scroll  R:back to diff  n/N:change  q:back  ?:help  e:edit  o:open in app  g/G:ends  ,:view  C-f/C-b/PgDn/PgUp:page"
+    },
+    "changes_remap": {
+      "host": "Z/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+      "app": "Z/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
+    },
+    "contract_home": {
+      "host": "D:diff  l/Enter:push  /:search  Tab/⇧Tab:screens  h/q:close",
+      "app": "D:diff  l/Enter:push  /:search  Tab/⇧Tab:screens  h/q:quit"
+    },
+    "contract": {
+      "host": "{nav}:nav  D:diff  l/Enter:push  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "{nav}:nav  D:diff  l/Enter:push  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
+    }
+  },
+  "ja": {
+    "preview_text": {
+      "host": "j/k:スクロール  /:検索  n/N:変更箇所  v/V:選択  Y:@参照  F:追尾  R:diff に戻る  C-n/C-p:次/前ファイル  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  g/G:先頭/末尾  h/l:横移動  0/$:行頭/末  [/]:タブ  ,:表示  C-f/C-b/PgDn/PgUp:ページ",
+      "app": "j/k:スクロール  n/N:変更箇所  R:diff に戻る  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  g/G:先頭/末尾  h/l:横移動  0/$:行頭/末  ,:表示  C-f/C-b/PgDn/PgUp:ページ"
+    },
+    "preview_project": {
+      "host": "l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+      "app": "l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:戻る"
+    },
+    "preview_jj_project": {
+      "host": "l/Enter:差分  d:全差分  b:ブックマーク  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+      "app": "l/Enter:差分  d:全差分  b:ブックマーク  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:戻る"
+    },
+    "preview_image": {
+      "host": "+/-:ズーム  =:フィット  h/j/k/l:パン  R:diff に戻る  C-n/C-p:次/前ファイル  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  [/]:タブ  ,:表示",
+      "app": "+/-:ズーム  =:フィット  h/j/k/l:パン  R:diff に戻る  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  ,:表示"
+    },
+    "preview_document": {
+      "host": "j/k:スクロール  Tab:フォーカス  O:アウトライン  R:diff に戻る  /:検索  n/N:変更箇所  F:追尾  C-n/C-p:次/前ファイル  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  g/G:先頭/末尾  [/]:タブ  ,:表示  C-f/C-b/PgDn/PgUp:ページ",
+      "app": "j/k:スクロール  R:diff に戻る  n/N:変更箇所  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  g/G:先頭/末尾  ,:表示  C-f/C-b/PgDn/PgUp:ページ"
+    },
+    "changes_remap": {
+      "host": "Z/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+      "app": "Z/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
+    },
+    "contract_home": {
+      "host": "D:差分  l/Enter:重ねる  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+      "app": "D:差分  l/Enter:重ねる  /:検索  Tab/⇧Tab:画面  h/q:終了"
+    },
+    "contract": {
+      "host": "{nav}:移動  D:差分  l/Enter:重ねる  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+      "app": "{nav}:移動  D:差分  l/Enter:重ねる  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
+    }
+  },
+  "markdown_head_baseline": "# Title\n\nOriginal paragraph.\n\n## Section\n\nUnchanged paragraph.\n",
+  "git_staged_baseline": "base\n",
+  "jj_parent_baseline": "base\n"
+}

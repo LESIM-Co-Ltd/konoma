@@ -15,7 +15,7 @@ use crate::view::DocOptions;
 
 /// The notice appended to a Markdown file cut at the display limit (its own paragraph; the host
 /// writes it in this one language whatever the reader's).
-pub const TRUNCATED_NOTE: &str = "\n\n— (省略: 表示上限に達しました) —";
+pub use konoma_widgets::text::TRUNCATED_NOTE;
 
 /// The default open state of a `<details>` block from `md_details` and the tag's own `open`
 /// attribute: `"open"`/`"closed"` force it, anything else honors the attribute the way GitHub does.
@@ -68,6 +68,14 @@ pub struct PictureSlots<'a> {
     pub remote_on: bool,
 }
 
+/// Resource requests consumed by the same picture loop for ordinary documents and diffs.
+#[derive(Clone, Copy)]
+pub struct PictureRequests<'a> {
+    pub remote_urls: &'a [String],
+    pub mermaid_fences: &'a [String],
+    pub math_exprs: &'a [(String, bool)],
+}
+
 /// The decorated document.
 pub struct RenderedDocument {
     pub lines: Vec<Line<'static>>,
@@ -87,6 +95,16 @@ pub struct RenderedDocument {
     pub extras: MdRenderExtras,
     /// The open state of each `<details>` block, as drawn.
     pub details_states: Vec<bool>,
+}
+
+impl RenderedDocument {
+    pub fn requests(&self) -> PictureRequests<'_> {
+        PictureRequests {
+            remote_urls: &self.remote_urls,
+            mermaid_fences: &self.mermaid_fences,
+            math_exprs: &self.math_exprs,
+        }
+    }
 }
 
 /// Render Markdown `text` the way a document is drawn: front matter, footnotes and inline HTML
@@ -218,6 +236,24 @@ pub fn wrap_row_prefix(lines: &[Line<'static>], width: u16) -> Vec<usize> {
         pre.push(acc);
     }
     pre
+}
+
+/// Logical lines spanning display rows `[scroll, scroll + height)`, plus the hidden rows of
+/// the first line. An absent prefix means one row per line. Call after clamping the scroll.
+pub fn visible_line_range(
+    lines: usize,
+    prefix: &[usize],
+    scroll: usize,
+    height: u16,
+) -> (std::ops::Range<usize>, usize) {
+    let height = usize::from(height.max(1));
+    if prefix.len() == lines + 1 {
+        let lo = prefix.partition_point(|&p| p <= scroll).saturating_sub(1);
+        let hi = prefix.partition_point(|&p| p < scroll + height).min(lines);
+        (lo..hi.max(lo), scroll - prefix[lo])
+    } else {
+        (scroll.min(lines)..(scroll + height).min(lines), 0)
+    }
 }
 
 #[cfg(test)]

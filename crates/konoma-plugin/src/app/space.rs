@@ -41,6 +41,7 @@ pub(super) enum SpaceOp {
     Open,
     /// A display option the `,` menu has too (the path style, the wrap).
     Core(CoreAction),
+    Preview(konoma_host_core::keymap::HostOp),
     /// The declared action at this place among the actions of the screen's key context.
     Declared(usize),
 }
@@ -93,6 +94,25 @@ pub(super) fn items(
     launch: &LaunchFacts,
     enabled: impl Fn(&str) -> bool,
 ) -> Vec<Item<SpaceOp, String>> {
+    items_with_preview(
+        keys, defaults, ctx, lang, lang_str, acts, act_ctx, windowed, launch, enabled, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn items_with_preview(
+    keys: &CoreKeys,
+    defaults: &CoreKeys,
+    ctx: CoreContext,
+    lang: Lang,
+    lang_str: &str,
+    acts: &AppActs,
+    act_ctx: &str,
+    windowed: bool,
+    launch: &LaunchFacts,
+    enabled: impl Fn(&str) -> bool,
+    preview: Option<&crate::host::project::preview_presentation::PreviewValues>,
+) -> Vec<Item<SpaceOp, String>> {
     let here = hacts::acts_in(&acts.bindings, act_ctx);
     // The declared actions by their place, the handle the menu core wants (`Copy`).
     let numbered: Vec<ActBinding<usize>> = here
@@ -111,7 +131,11 @@ pub(super) fn items(
         })
         .collect();
     let refs: Vec<&ActBinding<usize>> = numbered.iter().collect();
-    let st = state(ctx, windowed, launch);
+    let mut st = state(ctx, windowed, launch);
+    if preview.is_some() {
+        st.returns_to_diff = true;
+        st.repr_text = true;
+    }
 
     let declared: Vec<(Cand, Option<KeyPress>)> = hacts::menu_candidates(&refs)
         .into_iter()
@@ -147,6 +171,7 @@ pub(super) fn items(
             Cand::Declared(_) => None,
         },
         |c| match c {
+            Cand::Op(op) if preview.is_some_and(|p| p.provided_op(op)) => true,
             Cand::Op(PreviewOp::Core(CoreAction::PreviewBack | CoreAction::ToggleHelp)) => true,
             // The host's gate opens it on every screen (it flashes where there is no cell), so a
             // key the user gave it over any screen lists it; the default key is the table's.
@@ -172,6 +197,12 @@ pub(super) fn items(
             }
         },
         |c| match c {
+            Cand::Op(op)
+                if preview.is_some_and(|p| p.provided_op(op))
+                    && preview.and_then(|p| p.label(op, lang)).is_some() =>
+            {
+                preview.and_then(|p| p.label(op, lang))
+            }
             Cand::Op(PreviewOp::Core(
                 a @ (CoreAction::PreviewBack | CoreAction::ToggleHelp | CoreAction::ImageZoomReset),
             )) => default_label(ctx, a).map(|m| m.tr(lang).to_string()),
@@ -215,6 +246,11 @@ pub(super) fn items(
             Cand::Op(PreviewOp::Core(CoreAction::RequestEdit)) => SpaceOp::Edit,
             Cand::Op(PreviewOp::Core(CoreAction::OpenExternal)) => SpaceOp::Open,
             Cand::Op(PreviewOp::Core(a)) => SpaceOp::Core(a),
+            Cand::Op(PreviewOp::Host(op))
+                if preview.is_some_and(|p| p.provided_op(PreviewOp::Host(op))) =>
+            {
+                SpaceOp::Preview(op)
+            }
             Cand::Declared(i) => SpaceOp::Declared(i),
             Cand::Op(_) => return None,
         };

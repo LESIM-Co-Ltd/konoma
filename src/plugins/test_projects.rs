@@ -189,6 +189,7 @@ impl Plugin for Screens {
                     .screen(ProjectScreen::new("text", "Text").key('z'))
                     .screen(ProjectScreen::new("diff", "Diff").key('d'))
                     .screen(ProjectScreen::new("doc", "Document").key('b'))
+                    .screen(ProjectScreen::new("pushed", "Pushed").pushed())
                     .watch("metadata/index")
                     .chip("project chip"),
             )
@@ -505,6 +506,7 @@ impl Session for ScreenSession {
                 View::List(ListView {
                     title: None,
                     bottom: None,
+                    heading: None,
                     rows: vec![
                         ListRow::new(
                             "item",
@@ -528,8 +530,10 @@ impl Session for ScreenSession {
                 "text selection={}",
                 project.selection.as_deref().unwrap_or("none")
             )]),
+            "pushed" => View::text(["pushed screen"]),
             "diff" => View::Diff(DiffView {
                 header: vec![],
+                title: None,
                 hunks: vec![DiffHunk {
                     path: None,
                     lines: vec![

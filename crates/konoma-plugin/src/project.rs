@@ -256,6 +256,11 @@ pub struct ProjectScreen {
     pub checks: bool,
     /// Reached only through `Outcome::PushScreen`, outside the screen tabs and their cycle.
     pub pushed: bool,
+    /// The footer hint of this screen's jump `key`, shown on the project's first screen: its
+    /// priority (smaller first, among the actions' footer priorities) and its word.
+    pub jump_hint: Option<(u8, Tr)>,
+    /// Show the host's new-tab key in this screen's footer at this priority.
+    pub new_tab_hint: Option<u8>,
 }
 
 impl ProjectScreen {
@@ -271,7 +276,18 @@ impl ProjectScreen {
             marks: false,
             checks: false,
             pushed: false,
+            jump_hint: None,
+            new_tab_hint: None,
         }
+    }
+
+    pub fn jump_hint(mut self, priority: u8, label: impl Into<Tr>) -> Self {
+        self.jump_hint = Some((priority, label.into()));
+        self
+    }
+    pub fn new_tab_hint(mut self, priority: u8) -> Self {
+        self.new_tab_hint = Some(priority);
+        self
     }
 
     pub fn key(mut self, key: char) -> Self {

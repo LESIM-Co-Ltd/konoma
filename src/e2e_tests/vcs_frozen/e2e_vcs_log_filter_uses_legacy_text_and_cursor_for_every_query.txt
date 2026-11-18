@@ -1,0 +1,513 @@
+# frozen vcs frames: e2e_vcs_log_filter_uses_legacy_text_and_cursor_for_every_query
+case align=right query0="長い件名" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	Reset	Reset	DIM
+style f	DarkGray	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 3 S|e8c60f1c1f1c1f26|
+row 4 T|fdfba92 8 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 …  作 者  Author · 2020-01-01 00:08|
+row 4 S|e8c60f1c1f1c1f26|
+row 5 T|47c9b1c 6 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 …  作 者  Author · 2020-01-01 00:06|
+row 5 S|e8c60f1c1f1c1f26|
+case align=right query0="長い件名" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b60c1b1c1b1c26|
+row 3 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 3 S|d8e4b1e1b1e1b1e1b1e1b1e1b1e1b1e1b1e2b1e1b1e6b1e1b1e6b1e1b1e6b1e1b1e6b1e2f1b1f1b1f26|
+row 4 T|fdfba92 8 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 …  作 者  Author · 2020-01-01 00:08|
+row 4 S|a8b60c1b1c1b1c26|
+row 5 T|47c9b1c 6 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 …  作 者  Author · 2020-01-01 00:06|
+row 5 S|a8b60c1b1c1b1c26|
+case align=right query1="作者" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	Reset	Reset	DIM
+style f	DarkGray	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|e8c60f1c1f1c1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|e8c60f1c1f1c1f26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|e8c60f1c1f1c1f26|
+case align=right query1="作者" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b60c1b1c1b1c26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|d8e4b1e1b1e1b1e51f1b1f1b1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|a8b60c1b1c1b1c26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|a8b60c1b1c1b1c26|
+case align=right query2="Author" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	Reset	Reset	DIM
+style f	DarkGray	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|e8c60f1c1f1c1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|e8c60f1c1f1c1f26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|e8c60f1c1f1c1f26|
+case align=right query2="Author" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b60c1b1c1b1c26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|d8e4b1e1b1e1b1e51f1b1f1b1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|a8b60c1b1c1b1c26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|a8b60c1b1c1b1c26|
+case align=right query3="2020-01-01 00:12" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|                                                                                                  |
+row 3 S|c98|
+row 4 T|                                                                                                  |
+row 4 S|c98|
+row 5 T|                                                                                                  |
+row 5 S|c98|
+case align=right query3="2020-01-01 00:12" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|                                                                                                  |
+row 3 S|c98|
+row 4 T|                                                                                                  |
+row 4 S|c98|
+row 5 T|                                                                                                  |
+row 5 S|c98|
+case align=right query4="924aeaa" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|                                                                                                  |
+row 3 S|c98|
+row 4 T|                                                                                                  |
+row 4 S|c98|
+row 5 T|                                                                                                  |
+row 5 S|c98|
+case align=right query4="924aeaa" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|                                                                                                  |
+row 3 S|c98|
+row 4 T|                                                                                                  |
+row 4 S|c98|
+row 5 T|                                                                                                  |
+row 5 S|c98|
+case align=right query5="Summary 作者" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	Reset	Reset	DIM
+style f	DarkGray	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|e8c60f1c1f1c1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|e8c60f1c1f1c1f26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|e8c60f1c1f1c1f26|
+case align=right query5="Summary 作者" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b60c1b1c1b1c26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|d8e4b1e1b1e1b1e51f1b1f1b1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|a8b60c1b1c1b1c26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|a8b60c1b1c1b1c26|
+case align=right query6="·" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                  |
+row 2 S|a98|
+row 3 T|                                                                                                  |
+row 3 S|a98|
+row 4 T|                                                                                                  |
+row 4 S|a98|
+row 5 T|                                                                                                  |
+row 5 S|a98|
+case align=right query6="·" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                  |
+row 2 S|a98|
+row 3 T|                                                                                                  |
+row 3 S|a98|
+row 4 T|                                                                                                  |
+row 4 S|a98|
+row 5 T|                                                                                                  |
+row 5 S|a98|
+case align=right query7="SUMMARY" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	Reset	Reset	DIM
+style f	DarkGray	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|e8c60f1c1f1c1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|e8c60f1c1f1c1f26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|e8c60f1c1f1c1f26|
+case align=right query7="SUMMARY" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b60c1b1c1b1c26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|d8e4b1e1b1e1b1e51f1b1f1b1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|a8b60c1b1c1b1c26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|a8b60c1b1c1b1c26|
+case align=right query8="summary" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	Reset	Reset	DIM
+style f	DarkGray	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b2d1c1d1c1d26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|e8c60f1c1f1c1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|e8c60f1c1f1c1f26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|e8c60f1c1f1c1f26|
+case align=right query8="summary" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	DarkGray	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:12|
+row 2 S|a8b60c1b1c1b1c26|
+row 3 T|6b3a937 11 日 本 語  Summary                                           作 者  Author · 2020-01-01 00:11|
+row 3 S|d8e4b1e1b1e1b1e51f1b1f1b1f26|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 … 作 者  Author · 2020-01-01 00:10|
+row 4 S|a8b60c1b1c1b1c26|
+row 5 T|233f7dc 9 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:09|
+row 5 S|a8b60c1b1c1b1c26|
+case align=inline query0="長い件名" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 3 S|d8c90|
+row 4 T|fdfba92 8 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc|
+row 4 S|d8c90|
+row 5 T|47c9b1c 6 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc|
+row 5 S|d8c90|
+case align=inline query0="長い件名" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM | REVERSED
+style d	Reset	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b90|
+row 3 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 3 S|c8d4b1d1b1d1b1d1b1d1b1d1b1d1b1d1b1d2b1d1b1d6b1d1b1d6b1d1b1d6b1d1b1d6b1d1b1d6b1d1b1d6b1d1b1d6b1d1b1d3|
+row 4 T|fdfba92 8 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc|
+row 4 S|a8b90|
+row 5 T|47c9b1c 6 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc|
+row 5 S|a8b90|
+case align=inline query1="作者" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|d8c17d5c1d1c1d27c38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|d8c90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|d8c16d5c1d1c1d27c39|
+case align=inline query1="作者" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM | REVERSED
+style d	Reset	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b90|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|c8d4b1d1b1d1b1d8c5b1c1b1c27b38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|a8b90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|a8b16a5b1a1b1a27b39|
+case align=inline query2="Author" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|d8c17d5c1d1c1d27c38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|d8c90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|d8c16d5c1d1c1d27c39|
+case align=inline query2="Author" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM | REVERSED
+style d	Reset	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b90|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|c8d4b1d1b1d1b1d8c5b1c1b1c27b38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|a8b90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|a8b16a5b1a1b1a27b39|
+case align=inline query3="2020-01-01 00:12" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|                                                                                                  |
+row 3 S|c98|
+row 4 T|                                                                                                  |
+row 4 S|c98|
+row 5 T|                                                                                                  |
+row 5 S|c98|
+case align=inline query3="2020-01-01 00:12" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|                                                                                                  |
+row 3 S|c98|
+row 4 T|                                                                                                  |
+row 4 S|c98|
+row 5 T|                                                                                                  |
+row 5 S|c98|
+case align=inline query4="924aeaa" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|                                                                                                  |
+row 3 S|c98|
+row 4 T|                                                                                                  |
+row 4 S|c98|
+row 5 T|                                                                                                  |
+row 5 S|c98|
+case align=inline query4="924aeaa" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|                                                                                                  |
+row 3 S|c98|
+row 4 T|                                                                                                  |
+row 4 S|c98|
+row 5 T|                                                                                                  |
+row 5 S|c98|
+case align=inline query5="Summary 作者" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|d8c17d5c1d1c1d27c38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|d8c90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|d8c16d5c1d1c1d27c39|
+case align=inline query5="Summary 作者" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM | REVERSED
+style d	Reset	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b90|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|c8d4b1d1b1d1b1d8c5b1c1b1c27b38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|a8b90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|a8b16a5b1a1b1a27b39|
+case align=inline query6="·" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                  |
+row 2 S|a98|
+row 3 T|                                                                                                  |
+row 3 S|a98|
+row 4 T|                                                                                                  |
+row 4 S|a98|
+row 5 T|                                                                                                  |
+row 5 S|a98|
+case align=inline query6="·" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                  |
+row 2 S|a98|
+row 3 T|                                                                                                  |
+row 3 S|a98|
+row 4 T|                                                                                                  |
+row 4 S|a98|
+row 5 T|                                                                                                  |
+row 5 S|a98|
+case align=inline query7="SUMMARY" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|d8c17d5c1d1c1d27c38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|d8c90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|d8c16d5c1d1c1d27c39|
+case align=inline query7="SUMMARY" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM | REVERSED
+style d	Reset	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b90|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|c8d4b1d1b1d1b1d8c5b1c1b1c27b38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|a8b90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|a8b16a5b1a1b1a27b39|
+case align=inline query8="summary" filtered
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b4c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b2c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b6c1b1c1b3|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|d8c17d5c1d1c1d27c38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|d8c90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|d8c16d5c1d1c1d27c39|
+case align=inline query8="summary" moved
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM | REVERSED
+style d	Reset	Reset	REVERSED
+row 2 T|924aeaa 12 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 2 S|a8b90|
+row 3 T|6b3a937 11 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:11                                      |
+row 3 S|c8d4b1d1b1d1b1d8c5b1c1b1c27b38|
+row 4 T|1750f62 10 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab|
+row 4 S|a8b90|
+row 5 T|233f7dc 9 日 本 語  Summary  · 作 者  Author  · 2020-01-01 00:09                                       |
+row 5 S|a8b16a5b1a1b1a27b39|

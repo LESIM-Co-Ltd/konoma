@@ -60,8 +60,13 @@ impl Drop for TestHome {
 
 /// `~/...` if under HOME, otherwise the full path.
 pub fn home_relative(path: &Path) -> String {
-    if let Some(home) = home_dir() {
-        if let Ok(rel) = path.strip_prefix(&home) {
+    home_relative_to(path, home_dir().as_deref())
+}
+
+/// The same display with a caller-supplied home, without reading the process environment.
+pub fn home_relative_to(path: &Path, home: Option<&Path>) -> String {
+    if let Some(home) = home {
+        if let Ok(rel) = path.strip_prefix(home) {
             if rel.as_os_str().is_empty() {
                 return "~".to_string();
             }

@@ -113,29 +113,7 @@ pub(super) fn para(text: &str) -> String {
 /// redrawing after each batch, until the pipeline has gone quiet.
 #[track_caller]
 fn settle_images(s: &mut Sim) {
-    // Idle-based: the limit restarts whenever a result arrives (see deck_view's `settle`).
-    let idle = std::time::Duration::from_secs(120);
-    let mut deadline = std::time::Instant::now() + idle;
-    loop {
-        let imgs: Vec<_> = s.md_img_rx.as_ref().unwrap().try_iter().collect();
-        let encs: Vec<_> = s.md_enc_rx.as_ref().unwrap().try_iter().collect();
-        let any = !imgs.is_empty() || !encs.is_empty();
-        for r in imgs {
-            s.app.apply_md_image(r);
-        }
-        for r in encs {
-            s.app.apply_md_encode(r);
-        }
-        s.draw();
-        if !any && !s.app.md_pixels_pending() {
-            return;
-        }
-        if any {
-            deadline = std::time::Instant::now() + idle;
-        }
-        assert!(std::time::Instant::now() < deadline, "images never settled");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    s.settle_inline_images("Word inline pictures", std::time::Duration::from_secs(120));
 }
 
 /// Moves the Tab focus forward until `want` is the focused kind (at most `max` presses).
@@ -955,15 +933,17 @@ fn e2e_word_a_result_for_a_file_left_behind_is_dropped() {
     s.select(EN);
     s.enter();
     assert!(s.app.is_document_loading());
-    // Leave for another file before the conversion lands.
+    // Keep the conversion's answer out of the app until the next file is ready. A fast/slow
+    // plain-text plugin must never be mistaken for this conversion on the shared channel.
+    let res = crate::test_support::recv_media_final(
+        &mut s.app,
+        s.media_rx.as_ref().unwrap(),
+        std::time::Duration::from_secs(10),
+        "stale Word conversion: retain its final answer",
+    );
     s.ctrl('n');
     assert!(s.app.tab.preview_path.clone().unwrap().ends_with("z.txt"));
-    let res = s
-        .media_rx
-        .as_ref()
-        .unwrap()
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the worker answers");
+    s.await_media("stale Word conversion: finish opening z.txt before applying the old answer");
     assert!(!s.app.apply_media(res), "stale");
     assert!(!s.app.document_ready());
     s.see("after the document");

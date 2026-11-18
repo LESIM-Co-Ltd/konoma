@@ -3110,9 +3110,9 @@ pub fn diff_since(_root: &Path, _base: &str) -> Vec<DiffLine> {
 }
 
 /// The commit time (Unix epoch seconds) of `git merge-base <base> HEAD`, i.e. the point where
-/// `base` and this worktree's HEAD last shared history. Used by `App::worktree_diff_base`
-/// (`src/app/git_view.rs`) to rank several candidate base branches for the worktree list's `d`
-/// diff: the candidate whose merge-base is *newest* is the branch this worktree most recently
+/// `base` and this worktree's HEAD last shared history. Used by the VCS plugin's worktree diff
+/// base (`worktrees::base` in `konoma-vcs`) to rank several candidate base branches for the
+/// worktree list's `d` diff: the candidate whose merge-base is *newest* is the branch this worktree most recently
 /// diverged from, which is the base that actually explains "everything since base" without
 /// dragging in an unrelated branch's own unrelated history.
 ///

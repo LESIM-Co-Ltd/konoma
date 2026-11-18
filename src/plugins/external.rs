@@ -1008,6 +1008,8 @@ pub(crate) fn reap_set_at(token: &str, now: Instant) -> usize {
 /// loop must not).
 /// The thread started, if any (the run loop lets go of it; a test joins it).
 pub(crate) fn reap_if_due(now: Instant) -> Option<std::thread::JoinHandle<()>> {
+    #[cfg(test)]
+    crate::test_support::note_reap_ask();
     reap_if_due_with(now, || {
         reap_all_at(Instant::now());
     })

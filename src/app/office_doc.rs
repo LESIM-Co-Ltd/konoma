@@ -124,17 +124,8 @@ pub(super) fn lazy_slide_source(
 /// Whether `path` is a presentation by its extension (PowerPoint or OpenDocument; the old binary
 /// `.ppt` included, which is told apart as unreadable). Decides which plugin a file under the old
 /// `builtin = "document"` rule goes to.
-pub(crate) fn is_presentation_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .is_some_and(|e| {
-            matches!(
-                e.as_str(),
-                "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "odp" | "otp"
-            )
-        })
-}
+#[cfg(test)]
+use konoma_plugin::host::file_preview::test_hooks::is_presentation_path;
 
 /// The slide the view is on: the last heading at or above the top. `None` before the first
 /// heading. `heads` are the headings' positions in the unit `top` uses. (Every heading can reach
@@ -511,6 +502,8 @@ impl App {
                 self.plugin_view_now(self.plugin_view_req());
             }
         }
+        // The text is here: a landing that waited for it runs now.
+        self.land_pending_document();
     }
 
     /// The plugin could not show the document (the reason is the show's failure): nothing of an
@@ -518,6 +511,13 @@ impl App {
     pub(super) fn document_failed(&mut self) {
         if !self.holds_document() {
             return;
+        }
+        // A failed document ends the wait for its text: a landing that waited for it is dropped,
+        // so a later successful read does not land a position asked of the failed one.
+        if self.tab.pending.as_ref().is_some_and(|p| {
+            p.kind_known && self.tab.preview_path.as_deref() == Some(p.path.as_path())
+        }) {
+            self.tab.pending = None;
         }
         self.set_document(None);
         self.md_cache = None;

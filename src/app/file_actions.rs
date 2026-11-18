@@ -143,13 +143,6 @@ impl App {
             })
         )
     }
-    /// Whether the current confirm dialog is a branch deletion (so the y/!/n wording is for a branch, not a file deletion).
-    pub fn confirm_is_branch_delete(&self) -> bool {
-        matches!(
-            self.dialog.as_ref().map(|d| &d.op),
-            Some(PendingOp::GitDeleteBranch { .. })
-        )
-    }
     /// Whether the current confirm dialog is a drag-and-drop transfer (so the keys/wording become c=copy / m=move).
     pub fn confirm_is_drop(&self) -> bool {
         matches!(
@@ -189,47 +182,39 @@ impl App {
             Some(PendingOp::BatchRenameInput { .. })
         )
     }
-    pub fn pending_is_git_commit(&self) -> bool {
-        matches!(
-            self.dialog.as_ref().map(|d| &d.op),
-            Some(PendingOp::GitCommit)
-        )
-    }
-    pub fn pending_is_git_create_branch(&self) -> bool {
-        matches!(
-            self.dialog.as_ref().map(|d| &d.op),
-            Some(PendingOp::GitCreateBranch)
-        )
-    }
-    pub fn pending_is_worktree_create(&self) -> bool {
-        matches!(
-            self.dialog.as_ref().map(|d| &d.op),
-            Some(PendingOp::WorktreeCreate)
-        )
+    /// Receive a paste from the terminal (including drag-and-drop). The paste goes where a key
+    /// would: to the frontmost layer only, decided by the same surface `handle_key` reads
+    /// ([`App::surface`]), before anything looks at what is under it. A text input in front
+    /// (dialog input / filter / search / a list's filter) gets the text, a plugin's canvas that
+    /// takes the typing gets it as one key, and the tree in front treats a pasted existing path as
+    /// a **drop** (a copy/move dialog, drop target = the cursor's base directory). Every other
+    /// layer has no form for a paste and nothing happens. Control characters are stripped from
+    /// inserted text.
+    pub fn handle_paste(&mut self, text: String) {
+        use crate::keymap::Surface;
+        let sfc = self.surface();
+        match sfc {
+            Surface::PluginInput => return self.plugin_input_paste(text),
+            Surface::Tree => return self.paste_drop(&text),
+            _ => {}
+        }
+        for ch in text.chars().filter(|c| !c.is_control()) {
+            match sfc {
+                Surface::DialogInput => self.dialog_input_push(ch),
+                Surface::Filter => self.filter_input_push(ch),
+                Surface::Search => self.search_input_push(ch),
+                Surface::ListFilter => match self.filtering_list() {
+                    Some(l) => self.list_filter_push(l, ch),
+                    None => return,
+                },
+                _ => return,
+            }
+        }
     }
 
-    /// Receive a paste from the terminal (including drag-and-drop). While input is active (dialog input / filter /
-    /// search / branch filter), **insert text**; in Tree mode, if the dropped content is an existing path,
-    /// open a **copy/move dialog** (drop target = the cursor's base directory). Control characters are stripped.
-    pub fn handle_paste(&mut self, text: String) {
-        // 0) A plugin's canvas that takes the typing gets the paste as one key.
-        if self.is_plugin_input() {
-            self.plugin_input_paste(text);
-            return;
-        }
-        // 1) While text input is active: feed it straight into the input field (control
-        // characters are dropped).
-        if self.is_text_input_active() {
-            for ch in text.chars().filter(|c| !c.is_control()) {
-                self.input_push_char(ch);
-            }
-            return;
-        }
-        // 2) Only Tree mode treats this as a "drop" (ignored in Preview, etc.).
-        if !matches!(self.tab.mode, Mode::Tree) {
-            return;
-        }
-        let sources = parse_dropped_paths(&text);
+    /// A paste on the tree in front: an existing path opens the drop's copy/move dialog.
+    fn paste_drop(&mut self, text: &str) {
+        let sources = parse_dropped_paths(text);
         if sources.is_empty() {
             return; // do nothing if there's no drop target (an existing path)
         }
@@ -264,19 +249,6 @@ impl App {
             Some(DialogKind::Input { .. })
         )
     }
-    /// Feed one character to the active input field (priority: dialog input > filter > search > branch filter).
-    fn input_push_char(&mut self, ch: char) {
-        if self.dialog_is_text_input() {
-            self.dialog_input_push(ch);
-        } else if self.is_filtering() {
-            self.filter_input_push(ch);
-        } else if self.is_searching() {
-            self.search_input_push(ch);
-        } else if let Some(l) = self.filtering_list() {
-            self.list_filter_push(l, ch);
-        }
-    }
-
     /// Execute the drop confirmation's `c`=copy / `m`=move. Transfers each source to the drop target and flashes the result.
     /// Runs in the background (design principle #4) — see `start_file_op`. Stops at the first
     /// error (unlike paste/duplicate), matching the original synchronous implementation.
@@ -320,8 +292,11 @@ impl App {
     /// A background **git write** is held back for the same reason: `checkout`/`discard`/`worktree
     /// add` rewrite the working tree, and a `pre-commit` hook can churn through it too. Nothing is
     /// missed — `apply_git_op` refreshes on completion, and the deferred burst is flushed right after.
+    /// A project act that declares `writes` (the vcs plugin's writes) counts the same
+    /// ([`App::git_write_running`]); its reply lifts the deferral and `DeferredFsBurst::release`
+    /// flushes the held burst on the next loop.
     pub fn should_defer_fs_events(&self) -> bool {
-        self.fileop_pending.is_some() || self.git_op_running()
+        self.fileop_pending.is_some() || self.git_write_running()
     }
 
     /// Start a filesystem operation in the background, or run it synchronously when no runner is
@@ -553,8 +528,18 @@ impl App {
         self.fileop_progress = None;
         self.fileop_total = 0;
         // Reload unconditionally (the disk has actually changed regardless of which tab is being
-        // viewed).
-        let mut post = self.refresh();
+        // viewed), through the one routing of the filesystem refreshes: while a project screen
+        // covers the tab's view, the view was left as a tab is left, so only the `App`-level
+        // freshness runs and there is no view to reveal in (the reveal hangs on the refresh of the
+        // view; the return reads the tree again, as a tab switch back does).
+        let mut post = Ok(());
+        let view_refreshed = match self.refresh_routed() {
+            Some(result) => {
+                post = result;
+                true
+            }
+            None => false,
+        };
         // Reveal (= move the cursor) only **when we're back on the tab that dispatched it**.
         // `reveal_and_select` unconditionally calls rebuild_tree, so doing it on another tab
         // would collapse its filter (`/`) or changed view (`C`) and even move that tab's cursor.
@@ -574,7 +559,7 @@ impl App {
         //     `refresh_fs_after_tab_switch` → `rebuild_tree`, so the new entries are there. Only
         //     the cursor position differs, and `n`/`N`, `/` and `C` are there to find them.
         // Pinned by `file_op_reveal_is_not_replayed_on_returning_to_the_tab`.
-        if post.is_ok() && res.root == self.tab.root {
+        if view_refreshed && post.is_ok() && res.root == self.tab.root {
             if let Some(p) = &res.last {
                 post = self.reveal_and_select(p);
             }
@@ -738,11 +723,18 @@ impl App {
                 }
             }
         }
-        if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
+        let found = self.tab.entries.iter().position(|e| e.path == target);
+        if let Some(i) = found {
             self.tab.selected = i;
-            return Ok(true);
         }
-        Ok(false)
+        // Under `C` while a status scan is out, the list is the one kept from before the scan, which
+        // has no row yet for a file the scan may list (a new change). Found or not, the target is
+        // the identity the deferred rebuild lands the cursor on, standing for the cursor's row as
+        // this jump left it, the way `reveal_and_select` leaves its target; it replaces an earlier
+        // jump's. With no scan out the list is current: a file it has no row for is not changed,
+        // and nothing waits.
+        self.publish_jump_target(target);
+        Ok(found.is_some())
     }
 
     /// After an operation, reveal and select `target`. If the parent is a collapsed dir, expand it
@@ -754,7 +746,7 @@ impl App {
     /// `apply_file_op`, create/rename via `dialog_submit`) used to silently drop out of `C`/`/` while
     /// the header kept claiming CHANGED/the query, because nothing reapplied the filter afterward.
     ///
-    /// The anchor passed to `refilter_after_visibility_change` is **`target` itself**, not the
+    /// The anchor passed to `rebuild_tree_refiltered` is **`target` itself**, not the
     /// pre-operation cursor: this method's whole point is "put the cursor on the thing that was just
     /// created/moved/duplicated", so re-finding `target` directly in the freshly filtered/changed
     /// list is what the caller wants, and (while a status scan is still in flight) is also what
@@ -772,8 +764,7 @@ impl App {
             }
         }
         let anchor = Some(target.to_path_buf());
-        self.rebuild_tree()?;
-        self.refilter_after_visibility_change(anchor);
+        self.rebuild_tree_refiltered(anchor)?;
         if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
             self.tab.selected = i;
         }

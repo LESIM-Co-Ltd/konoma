@@ -391,6 +391,10 @@ pub struct HintGroup {
     pub label: Tr,
     /// The help description; empty means the label in the selected language.
     pub help: Tr,
+    /// How many declared actions belong to the group. Set by the host when it binds the actions
+    /// (a screen may leave some members out of what it offers); 0 = not counted.
+    #[doc(hidden)]
+    pub members: usize,
 }
 
 impl HintGroup {
@@ -399,6 +403,7 @@ impl HintGroup {
             id: id.into(),
             label: label.into(),
             help: Tr::new(""),
+            members: 0,
         }
     }
 

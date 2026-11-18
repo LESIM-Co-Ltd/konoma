@@ -1,20 +1,24 @@
 //! Project owner worker contracts, including independent watch and chip replies.
 
 use super::*;
+use konoma_plugin::host::project::{content, ProjectContent, ProjectOrigin};
 use konoma_plugin::proc::{
     client::{Config, ProcPlugin, Spawned},
     frame,
     proto::{Answer, FromChild, Hello, HelloReply, Reply, ToChild, WState},
     wire::{layout_to_wire, manifest_to_wire},
 };
+use konoma_plugin::view::View;
 use konoma_plugin::{Manifest, ProjectDecl};
+use konoma_plugin::{Plugin, ReadScope, Settings, Tr};
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[test]
 fn project_diff_window_cells_match_full_render_at_headers_and_inside_change_blocks() {
     use crate::git::{DiffLine, DiffLineKind};
-    use crate::preview::gitdiff::{diff_lines, diff_lines_side_by_side};
+    use konoma_widgets::gitdiff::{diff_lines, diff_lines_side_by_side};
     use ratatui::{
         backend::TestBackend,
         layout::Rect,
@@ -145,7 +149,7 @@ fn project_diff_content_keeps_styled_header_and_one_marker_per_changed_path() {
         &ViewReq::new(80, 20),
         &ReadScope::unrestricted(),
         "base16-ocean.dark",
-        "en",
+        &project_messages(crate::i18n::Lang::En),
     )
     .unwrap();
     let ProjectContent::Diff(diff) = view else {
@@ -195,24 +199,21 @@ fn project_initial_watch_and_chip_failures_are_independent_and_chip_job_skips_wa
                 started: None,
                 outcome: None,
             });
+            let project = crate::plugins::projects::MatchedProject {
+                session_watch_paths: None,
+                plugin: "project-screens".into(),
+                root: dir.to_path_buf(),
+                marker: "project".into(),
+                declaration: plugin.manifest().project.unwrap(),
+            };
+            let chip = declaration_chip(&project, "ja");
             let runtime = ProjectRuntime::start(
-                crate::plugins::projects::MatchedProject {
-                    session_watch_paths: None,
-                    plugin: "project-screens".into(),
-                    root: dir.to_path_buf(),
-                    marker: "project".into(),
-                    declaration: plugin.manifest().project.unwrap(),
-                },
+                project,
                 plugin,
                 Vec::new(),
-                Settings::empty().clone(),
-                "ja".into(),
-                String::new(),
-                TermCaps::new(),
-                None,
-                false,
-                None,
-                "worker failed".into(),
+                chip,
+                || test_env("ja"),
+                |effect, outcome| effect.outcome = Some(outcome),
             );
             let initial = runtime.rx.recv_timeout(Duration::from_secs(20)).unwrap();
             assert_eq!(initial.error.is_some(), invalid_watch);
@@ -244,15 +245,16 @@ fn project_initial_watch_and_chip_failures_are_independent_and_chip_job_skips_wa
             let context = ProjectView::new("text").paths(&dir, &dir);
             let act_paths = vec![dir.join("after-act/index")];
             log.lock().unwrap().watch_paths = Some(act_paths.clone());
-            let effect = ProjectEffect {
-                project: ProjectKey::from(&runtime.project),
-                tab: 0,
-                tree_root: dir.to_path_buf(),
-                view: None,
-                outcome: None,
-                tree_status: false,
-                label: "current".into(),
-            };
+            let effect = ProjectEffect::new(
+                ProjectOrigin {
+                    project: ProjectKey::from(&runtime.project),
+                    context: 0,
+                    root: dir.to_path_buf(),
+                    screen: None,
+                    surface: Default::default(),
+                },
+                "current",
+            );
             runtime
                 .tx
                 .send(ProjectJob::Act {
@@ -378,24 +380,21 @@ fn project_chip_old_child_uses_localized_declaration_without_unknown_call() {
         )
         .unwrap(),
     );
+    let project = crate::plugins::projects::MatchedProject {
+        session_watch_paths: None,
+        plugin: "old-project".into(),
+        root: dir.to_path_buf(),
+        marker: "project".into(),
+        declaration,
+    };
+    let chip = declaration_chip(&project, "ja");
     let runtime = ProjectRuntime::start(
-        crate::plugins::projects::MatchedProject {
-            session_watch_paths: None,
-            plugin: "old-project".into(),
-            root: dir.to_path_buf(),
-            marker: "project".into(),
-            declaration,
-        },
+        project,
         plugin.clone(),
         Vec::new(),
-        Settings::empty().clone(),
-        "ja".into(),
-        String::new(),
-        TermCaps::new(),
-        None,
-        false,
-        None,
-        "worker failed".into(),
+        chip,
+        || test_env("ja"),
+        |effect, outcome| effect.outcome = Some(outcome),
     );
     let reply = runtime.rx.recv_timeout(Duration::from_secs(20)).unwrap();
     assert!(reply.error.is_none());
@@ -404,4 +403,17 @@ fn project_chip_old_child_uses_localized_declaration_without_unknown_call() {
     drop(runtime);
     plugin.stop();
     peer.join().unwrap();
+}
+
+fn test_env(lang: &str) -> ProjectEnv {
+    let mut messages = project_messages(crate::i18n::Lang::parse(lang));
+    messages.worker_failed = "worker failed".into();
+    ProjectEnv {
+        settings: Settings::empty().clone(),
+        lang: lang.into(),
+        theme: String::new(),
+        term: TermCaps::new(),
+        read_scope: ReadScope::unrestricted(),
+        messages,
+    }
 }

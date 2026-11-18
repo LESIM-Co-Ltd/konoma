@@ -26,6 +26,9 @@ pub fn wrapped_row_count<'a>(text: impl Into<ratatui::text::Text<'a>>, width: u1
         .line_count(width)
 }
 
+/// The notice appended to a Markdown document cut at the display limit.
+pub const TRUNCATED_NOTE: &str = "\n\n— (省略: 表示上限に達しました) —";
+
 /// Number of bytes read at once for detection and incremental reading.
 const SNIFF_BYTES: usize = 8 * 1024;
 /// Maximum bytes read for preview (to guard against huge files). `pub(crate)` so
