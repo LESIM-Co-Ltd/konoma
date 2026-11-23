@@ -574,9 +574,8 @@ mod tests {
                 "操作 `go` が未宣言の画面 `absent` を指定しています",
             ),
             (
-                Manifest::new("p", "1").action(
-                    Act::new("go").project_context(ActContext::screen("log", ["commit"])),
-                ),
+                Manifest::new("p", "1")
+                    .action(Act::new("go").project_context(ActContext::screen("log", ["commit"]))),
                 "操作 `go` が未宣言の画面 `log` を指定しています",
             ),
             (
