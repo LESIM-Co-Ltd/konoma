@@ -178,7 +178,9 @@ impl App {
             });
             return;
         };
+        let vcs_config = crate::vcs::WorkerConfig::capture();
         std::thread::spawn(move || {
+            vcs_config.install();
             // `compute_or_fallback`: a worker that panicked without a result would latch
             // `media_diff_pending` forever, freezing the diff on a "computing…" spinner that never
             // resolves (same reasoning `spawn_or_sync_md_diff` documents for its own panic net).
@@ -849,7 +851,7 @@ fn skip_doctype(body: &str) -> Option<&str> {
 /// `HEAD`/`@-` is strictly more useful than showing "new file" for one that in fact has real history
 /// — the caption always reports whichever base was actually used (`MediaBase`).
 ///
-/// [`DiffBaseline::FollowHead`] gets the identical fallback when `crate::git::blob_at` returns
+/// [`DiffBaseline::FollowHead`] gets the identical fallback when `crate::vcs::contents_at` returns
 /// `None` — **not** `unwrap_or_default()` into an empty byte vector. Text can default to empty
 /// because an empty old side just means "all added", but for a picture an empty `Vec<u8>` is a
 /// zero-byte file that fails to decode, not "absent": the old side would render as
@@ -874,7 +876,7 @@ fn resolve_old_bytes(
         DiffBaseline::FollowHead { sha } => {
             #[cfg(feature = "git")]
             {
-                match crate::git::blob_at(root, sha, path) {
+                match crate::vcs::contents_at(root, sha, path) {
                     Some(bytes) => (Some(bytes), MediaBase::FollowStart),
                     None => (crate::vcs::base_contents(root, path), vcs_base),
                 }

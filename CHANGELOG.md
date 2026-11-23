@@ -6,6 +6,9 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
+- `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
+
 ### Added
 - **Plugin update status.** Startup checks the public crates.io sparse index at most once per day and reports compatible updates separately from versions requiring a newer konoma. `konoma plugin list` also lists standard plugins and queries their current update status with a bounded timeout, without changing the saved startup check time. It reports unavailable or disabled checks; `[external] update_check = false` disables both startup and list queries.
 - **Extensible SDK validation errors.** The registry error and manifest reason enums are non-exhaustive, allowing new rejection reasons without breaking callers' matches.

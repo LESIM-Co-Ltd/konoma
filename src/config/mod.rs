@@ -17,6 +17,7 @@ pub struct Config {
     pub editor: EditorConfig,
     pub git: GitConfig,
     pub jj: JjConfig,
+    pub project: ProjectConfig,
     pub external: ExternalConfig,
     /// `[plugins.<id>]`: `enabled = false` switches a plugin off; the other keys are the plugin's
     /// own settings.
@@ -31,6 +32,13 @@ pub struct Config {
     /// (`plugin_disabled`), so a configuration with other external plugins never shares a registry.
     #[serde(skip)]
     pub external_plugins: Option<String>,
+}
+
+/// Project selection (`[project]`). An absent key defers to the legacy name, then `auto`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProjectConfig {
+    pub vcs: Option<String>,
 }
 
 /// Single on/off switch per external process konoma can launch (`[external]`). Everything defaults to
@@ -49,7 +57,7 @@ pub struct ExternalConfig {
     pub git: bool,
     /// The external git tool launched with `!` in the changes hub (`[git] tool`, default lazygit).
     pub git_tool: bool,
-    /// Which version-control system answers for a directory: `"auto"` (default), `"git"` or `"jj"`.
+    /// Legacy name for `[project] vcs`: `"auto"` (default), `"git"` or `"jj"`.
     ///
     /// `auto` keeps git wherever git can answer, so a repository that already worked shows exactly
     /// what it showed before; jj answers only where there is no git repository to ask (one created
@@ -134,7 +142,7 @@ pub struct GitConfig {
 }
 
 /// jj (Jujutsu) settings (`[jj]`). Only what has no git counterpart lives here — everything else
-/// about a jj repository is decided by `[external] vcs` and by jj itself.
+/// about a jj repository is decided by `[project] vcs` and by jj itself.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct JjConfig {
@@ -643,6 +651,11 @@ impl Default for UiConfig {
 }
 
 impl Config {
+    /// Effective VCS selection. The new key wins even when explicitly set to `auto`.
+    pub fn project_vcs(&self) -> &str {
+        self.project.vcs.as_deref().unwrap_or(&self.external.vcs)
+    }
+
     /// Loads the config and returns (config, load error). On parse failure it returns the defaults along with an error string.
     /// The TUI uses this to surface the error as a startup message (since silently falling back to defaults would go unnoticed).
     pub fn load_reporting() -> (Self, Option<String>) {
@@ -682,10 +695,14 @@ impl Config {
         let Ok(table) = text.parse::<toml::Table>() else {
             return Vec::new();
         };
-        match table.get("ui") {
+        let mut renamed = match table.get("ui") {
             Some(toml::Value::Table(ui)) => crate::plugins::moved_settings(ui, &cfg.plugins),
             _ => Vec::new(),
+        };
+        if table.get("external").and_then(|v| v.get("vcs")).is_some() {
+            renamed.push(("[external] vcs".into(), "[project] vcs".into()));
         }
+        renamed
     }
 
     /// Determines the PreviewKind for the given path. The user's `[[preview.rules]]` are tried

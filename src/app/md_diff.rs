@@ -146,7 +146,9 @@ impl App {
             });
             return;
         };
+        let vcs_config = crate::vcs::WorkerConfig::capture();
         std::thread::spawn(move || {
+            vcs_config.install();
             // `compute_or_fallback` (the same panic net `spawn_or_sync_statuses`/`_ignored` use):
             // without it, a panicking worker would send nothing, latch `md_diff_pending` forever,
             // and freeze the gutter/Rendered presentation on a spinner that never stops.
@@ -180,7 +182,7 @@ impl App {
             DiffBaseline::FollowHead { sha } => {
                 #[cfg(feature = "git")]
                 {
-                    Some(crate::git::blob_at(&req.root, sha, &req.path).unwrap_or_default())
+                    Some(crate::vcs::contents_at(&req.root, sha, &req.path).unwrap_or_default())
                 }
                 #[cfg(not(feature = "git"))]
                 {

@@ -1221,6 +1221,7 @@ impl App {
             // is a filesystem lookup plus a cached probe, so settle it here rather than describing
             // the previous repository until the scan lands.
             self.git_vcs = crate::vcs::detect(&self.tab.root);
+            self.refresh_vcs_watch(self.git_vcs);
         }
         self.git_status_gen = self.git_status_gen.wrapping_add(1);
         self.git_status_pending = Some(self.tab.root.clone());
@@ -1256,7 +1257,9 @@ impl App {
             self.apply_statuses(res);
             return;
         };
+        let vcs_config = crate::vcs::WorkerConfig::capture();
         std::thread::spawn(move || {
+            vcs_config.install();
             // If the worker panics, no result comes back and `git_status_pending` stays set forever,
             // spinning the spinner and freezing status. `compute_or_fallback` (principle #3)
             // guarantees a result either way — unlike the old `if let Some(res) = catch_silent(..) {
@@ -1340,6 +1343,7 @@ impl App {
         self.git_status = res.statuses;
         self.git_branch = res.branch;
         self.git_vcs = res.vcs;
+        self.refresh_vcs_watch(res.vcs);
         self.git_worktree_origin = res.worktree_origin;
         self.git_status_workdir = res.workdir;
         // A matching generation = this result belongs to the current workdir. The root at the time
@@ -1381,7 +1385,9 @@ impl App {
             self.apply_ignored(IgnoredResult { gen, workdir, set });
             return;
         };
+        let vcs_config = crate::vcs::WorkerConfig::capture();
         std::thread::spawn(move || {
+            vcs_config.install();
             // Same `compute_or_fallback` safety net as `spawn_or_sync_statuses` (principle #3): the
             // `tx.send(..)` below is unconditional. If the scan panics, `git_ignored_pending` would
             // otherwise latch forever (a spinner that never stops, and the ignore set frozen at
@@ -1657,6 +1663,8 @@ impl App {
         changed: &[std::path::PathBuf],
         reload_preview: bool,
     ) -> Result<()> {
+        #[cfg(feature = "git")]
+        self.follow_worker.invalidate_reads();
         let anchors = self.capture_view_anchors();
         if recompute_ignored {
             self.git_status_for = None; // recompute statuses+branch on the next render

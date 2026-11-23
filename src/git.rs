@@ -1,7 +1,11 @@
-// Git reading (status, diffs, log, the commit-graph layout) lives in the `konoma-vcs-core` crate;
-// re-exported here so every `crate::git::...` path in the host is unchanged. The core owns no
-// translations: the words of the graph's "uncommitted changes" row come from `i18n::worktree_labels`.
+// Shared VCS data types. Production reads and writes go through `crate::vcs`.
+pub use konoma_vcs_core::git::{
+    BranchInfo, ChangeEntry, CommitInfo, CommitMeta, DiffLine, DiffLineKind, FileStatus, GraphRow,
+    LegendEntry, WorktreeInfo,
+};
 
+// Legacy fixture helpers are available only to tests, never to host features.
+#[cfg(test)]
 pub use konoma_vcs_core::git::*;
 
 #[cfg(test)]

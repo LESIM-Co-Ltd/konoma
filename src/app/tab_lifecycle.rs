@@ -207,6 +207,13 @@ impl App {
             }
         }
         self.tab = t;
+        #[cfg(feature = "git")]
+        if self.follow_root.as_ref() != Some(&self.tab.root) {
+            self.follow_worker.cancel();
+        }
+        if let Some(cache) = &self.tab.vcs_watch {
+            self.git_vcs = cache.kind;
+        }
         self.clamp_table_cursor();
 
         // **Reload the tab that just became active from disk.** File watching only looks at the
