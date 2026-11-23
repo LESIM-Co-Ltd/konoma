@@ -11,12 +11,25 @@ pub fn build(
     target_root: &Path,
     run: impl FnOnce(&mut Command) -> io::Result<ExitStatus>,
 ) -> io::Result<PathBuf> {
-    let profile_dir = test_exe
+    let target_root = target_root.canonicalize()?;
+    // The test executable sits in `<target>/[<triple>/]<profile>/deps/` or, with the newer build-dir
+    // layout, in `<profile>/build/<pkg>/<hash>/out/`: the profile directory is the ancestor that is
+    // one level (or, for a cross build, two) under the target root.
+    let exe_dir = test_exe
         .parent()
-        .and_then(Path::parent)
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?
         .canonicalize()?;
-    let target_root = target_root.canonicalize()?;
+    let (profile_dir, parent) = exe_dir
+        .ancestors()
+        .find_map(|a| {
+            let parent = a.parent()?;
+            let one = parent == target_root;
+            let two = parent.parent() == Some(target_root.as_path());
+            // A profile directory holds `deps/` (or `build/`); a target-triple directory does not.
+            let is_profile = a.join("deps").is_dir() || a.join("build").is_dir();
+            (is_profile && (one || two)).then(|| (a.to_path_buf(), parent.to_path_buf()))
+        })
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
     let mut command = Command::new(cargo);
     command
         .args([
@@ -36,9 +49,6 @@ pub fn build(
     } else {
         profile
     });
-    let parent = profile_dir
-        .parent()
-        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
     let target = parent
         .strip_prefix(&target_root)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -81,33 +91,37 @@ chmod +x "$dest/konoma-demo-clock"
     let target_root = dir.join("target");
     for (profile, target) in [("release", ""), ("ci", "aarch64-unknown-linux-gnu")] {
         let profile_dir = target_root.join(target).join(profile);
-        std::fs::create_dir_all(profile_dir.join("deps")).unwrap();
-        test_support::write_executable(
-            &profile_dir.join("konoma-demo-clock"),
-            "#!/bin/sh\nprintf stale\n",
-        );
-        let executable = build(
-            cargo.as_os_str(),
-            &dir,
-            &profile_dir.join("deps/protocol"),
-            &target_root,
-            |command| {
-                command
-                    .env_clear()
-                    .env("PATH", "/usr/bin:/bin")
-                    .env("FAKE_TARGET", &target_root)
-                    .supervised_status()
-            },
-        )
-        .unwrap();
-        let output = std::process::Command::new(executable)
-            .supervised_output()
+        // The harness is in `deps/`, or in `build/<pkg>/<hash>/out/` with the newer layout.
+        for layout in ["deps", "build/konoma-plugin-test/0123abcd/out"] {
+            let exe_dir = profile_dir.join(layout);
+            std::fs::create_dir_all(&exe_dir).unwrap();
+            test_support::write_executable(
+                &profile_dir.join("konoma-demo-clock"),
+                "#!/bin/sh\nprintf stale\n",
+            );
+            let executable = build(
+                cargo.as_os_str(),
+                &dir,
+                &exe_dir.join("protocol"),
+                &target_root,
+                |command| {
+                    command
+                        .env_clear()
+                        .env("PATH", "/usr/bin:/bin")
+                        .env("FAKE_TARGET", &target_root)
+                        .supervised_status()
+                },
+            )
             .unwrap();
-        assert!(output.status.success());
-        assert_eq!(
-            output.stdout, b"fresh",
-            "profile {profile}, target {target}"
-        );
+            let output = std::process::Command::new(executable)
+                .supervised_output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                output.stdout, b"fresh",
+                "profile {profile}, target {target}, layout {layout}"
+            );
+        }
     }
 }
 

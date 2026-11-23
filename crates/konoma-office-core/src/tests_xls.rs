@@ -1634,6 +1634,72 @@ fn the_four_stream_names_are_found_at_the_root() {
 }
 
 #[test]
+fn workbook_precedes_book_without_regard_to_case_like_calamine_038() {
+    use calamine::Reader;
+    let dir = tmp("xls_case_priority");
+    for (book, workbook) in [
+        ("Book", "WORKBOOK"),
+        ("bOoK", "wOrKbOoK"),
+        ("BOOK", "Workbook"),
+    ] {
+        let p = dir.join("p.xls");
+        let chosen = harmless_book().stream();
+        write_cfb(
+            &p,
+            &[
+                (book, &book_with_far_cell(30, 2).stream()),
+                (workbook, &chosen),
+            ],
+        );
+        assert_eq!(
+            container::inspect(&p, &Limits::default()).unwrap(),
+            container::Detected::Xls
+        );
+        assert_eq!(
+            fmt_xls::read_workbook_stream(&p, &Limits::default()).unwrap(),
+            chosen
+        );
+        let mut oracle: calamine::Xls<_> = calamine::open_workbook(&p).unwrap();
+        let actual = oracle.worksheet_range("S").unwrap();
+        assert_eq!(actual.get_value((0, 0)), Some(&calamine::Data::Float(7.0)));
+        assert_eq!(actual.end(), Some((0, 0)));
+        assert_eq!(cell_text(&load(&p).unwrap(), 0, 0), "7.00");
+    }
+}
+
+#[test]
+fn case_duplicate_workbook_names_are_refused_before_calamine() {
+    let dir = tmp("xls_case_duplicate");
+    let p = dir.join("d.xls");
+    write_cfb(
+        &p,
+        &[
+            ("Workbook", &harmless_book().stream()),
+            ("ZZZZZZZZ", &book_with_far_cell(30, 2).stream()),
+        ],
+    );
+    let mut bytes = std::fs::read(&p).unwrap();
+    let name: Vec<_> = "ZZZZZZZZ"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let replacement: Vec<_> = "WORKBOOK"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let at = bytes.windows(name.len()).position(|s| s == name).unwrap();
+    bytes[at..at + name.len()].copy_from_slice(&replacement);
+    std::fs::write(&p, &bytes).unwrap();
+    // CFB names are case-insensitive: two such root siblings violate the directory ordering.
+    // Refusal keeps either unscanned stream out of the calamine container.
+    assert!(matches!(
+        container::inspect(&p, &Limits::default()),
+        Err(OfficeError::Corrupt(_))
+    ));
+    assert!(matches!(load(&p), Err(OfficeError::Corrupt(_))));
+}
+
+#[test]
 fn small_and_large_streams_in_both_sector_sizes_are_read_byte_for_byte() {
     use cfb::Version;
     let dir = tmp("xls_cfb_sizes");
@@ -3108,3 +3174,93 @@ fn version_zero_globals_are_read_as_biff8_and_sheets_use_the_globals_version() {
 
 #[cfg(test)]
 mod cost;
+
+#[test]
+fn calamine_038_biff5_cjk_labels_keep_their_encoded_bytes() {
+    use calamine::{Data, Reader};
+
+    let dir = tmp("xls_biff5_cjk038");
+    for (cp, bytes, want) in [
+        (932u16, [0x93, 0xfa, 0x96, 0x7b], "\u{65e5}\u{672c}"),
+        (936, [0xd6, 0xd0, 0xce, 0xc4], "\u{4e2d}\u{6587}"),
+        (950, [0xa4, 0xa4, 0xa4, 0xe5], "\u{4e2d}\u{6587}"),
+    ] {
+        let mut stream = bof(0x0500, 5);
+        stream.extend(rec(0x0042, &cp.to_le_bytes()));
+        stream.extend(xf_rec(0));
+        let at_bs = stream.len();
+        let mut bs = vec![0; 6];
+        bs.extend([1, b'S']);
+        stream.extend(rec(0x0085, &bs));
+        stream.extend(eof());
+        let sheet_at = stream.len();
+        stream.extend(bof(0x0500, 0x10));
+        let mut label = pos(0, 0, 0);
+        label.extend((bytes.len() as u16).to_le_bytes());
+        label.extend(bytes);
+        stream.extend(rec(0x0204, &label));
+        stream.extend(eof());
+        stream[at_bs + 4..at_bs + 8].copy_from_slice(&(sheet_at as u32).to_le_bytes());
+        let p = dir.join("s.xls");
+        write_cfb(&p, &[("/Book", &stream)]);
+        let mut reader: calamine::Xls<_> = calamine::open_workbook(&p).unwrap();
+        assert_eq!(
+            reader.worksheet_range("S").unwrap().get_value((0, 0)),
+            Some(&Data::String(want.into())),
+            "codepage {cp}"
+        );
+        let wb = load(&p).unwrap();
+        assert_eq!(wb.sheets[0].display(0, 0), want, "codepage {cp}");
+        assert_eq!(wb.sheets[0].cell(0, 0).unwrap().cell_type(), CellType::Text);
+    }
+}
+
+#[test]
+fn calamine_038_xls_workbook_and_book_stream_names_ignore_ascii_case() {
+    use calamine::Reader;
+
+    let stream = Book {
+        globals: globals(&[], &[0, 4]),
+        sheets: vec![sheet("S", vec![number(0, 0, 4, 1234.5)])],
+    }
+    .stream();
+    let dir = tmp("xls_stream_case038");
+    for name in ["/Workbook", "/Book", "/wOrKbOoK", "/bOoK"] {
+        let p = dir.join("s.xls");
+        write_cfb(&p, &[(name, &stream)]);
+        let mut reader: calamine::Xls<_> = calamine::open_workbook(&p).unwrap();
+        assert_eq!(
+            reader.worksheet_range("S").unwrap().get_value((0, 0)),
+            Some(&calamine::Data::Float(1234.5))
+        );
+        // cfb already resolves names without case; konoma still checks and repacks the stream.
+        let wb = load(&p).unwrap();
+        assert_eq!(wb.sheets[0].display(0, 0), "1,234.50");
+    }
+}
+
+#[test]
+fn calamine_038_rustsec_2026_0436_short_cfb_directory_is_an_error_without_panic() {
+    use calamine::Reader;
+
+    // A complete header and FAT, followed by just one byte of a directory sector.
+    // 0.37 passed that short entry to Directory::from_slice and panicked on buf[..64].
+    let container = fmt_xls::clean_container(&[]).unwrap();
+    let mut bytes = container.into_inner();
+    let dir_sector = u32::from_le_bytes(bytes[48..52].try_into().unwrap()) as usize;
+    bytes.truncate((dir_sector + 1) * 512 + 1);
+    let direct = std::panic::catch_unwind(|| calamine::Xls::new(std::io::Cursor::new(&bytes)));
+    assert!(
+        direct.is_ok(),
+        "calamine must reject the short directory without panicking"
+    );
+    assert!(direct.unwrap().is_err());
+    let dir = tmp("xls_rustsec0436");
+    let p = super::tests::write(&dir, "short.xls", &bytes);
+    // Bypass konoma's outer panic net: the ordinary error path itself must be safe.
+    let result = super::workbook::load_workbook_unguarded(&p, &LoadOptions::default());
+    assert!(
+        matches!(result, Err(OfficeError::Corrupt(ref text)) if !text.contains("crashed")),
+        "{result:?}"
+    );
+}

@@ -42,12 +42,16 @@ impl Launch {
         // Unit tests are linked into a harness; integration tests and production re-exec the
         // running application itself. Cargo builds this application beside the harness's deps.
         #[cfg(test)]
-        let executable = executable
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("konoma");
+        let executable = {
+            // The harness sits in `<profile>/deps/` or, with Cargo's newer build-dir layout, in
+            // `<profile>/build/<pkg>/<hash>/out/`: the application is in one of its ancestors.
+            let found = executable
+                .ancestors()
+                .skip(1)
+                .map(|a| a.join("konoma"))
+                .find(|p| p.is_file());
+            found.unwrap_or_else(|| executable.with_file_name("konoma"))
+        };
         Self::with_executable_lang(&executable, program.as_ref(), lang)
     }
 
