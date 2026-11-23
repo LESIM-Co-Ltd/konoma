@@ -332,3 +332,23 @@ pub fn program() -> Vec<Box<dyn konoma_plugin::Plugin>> {
         Box::new(VideoPlugin),
     ]
 }
+
+/// The same plugins as [`program`], under the name `konoma plugin install` calls: the library of
+/// a plugin crate `konoma-foo` offers `konoma_foo::plugins()`.
+pub fn plugins() -> Vec<Box<dyn konoma_plugin::Plugin>> {
+    program()
+}
+
+#[cfg(test)]
+mod plugins_fn_tests {
+    /// `konoma plugin install` builds a program that calls `plugins()`; it must be the program.
+    #[test]
+    fn plugins_is_the_program() {
+        let ids = |v: Vec<Box<dyn konoma_plugin::Plugin>>| -> Vec<String> {
+            v.iter().map(|p| p.manifest().id).collect()
+        };
+        let program = ids(super::program());
+        assert!(!program.is_empty());
+        assert_eq!(ids(super::plugins()), program);
+    }
+}

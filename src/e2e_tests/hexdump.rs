@@ -147,10 +147,8 @@ fn e2e_hexdump_key_can_be_rebound_and_hints_follow() {
             .any(|(k, a, _)| k == "W" && *a == Action::Plugin(width())),
         "{items:?}"
     );
-    assert!(s
-        .app
-        .startup_flash(None, 300)
-        .is_none_or(|f| !f.contains("hexdump")));
+    s.app.set_startup_flash(None, 300);
+    assert!(s.app.flash.as_ref().is_none_or(|f| !f.contains("hexdump")));
 }
 
 /// `[keys.hexdump] w = "noop"` takes the key away; the action stays in the menu.
@@ -228,9 +226,11 @@ fn e2e_hexdump_reserved_key_is_dropped_and_told_but_the_menu_keeps_the_action() 
         &[],
         "a.bin",
     );
+    s.app.set_startup_flash(None, 400);
     let note = s
         .app
-        .startup_flash(None, 400)
+        .flash
+        .as_ref()
         .expect("a startup message about the refused key");
     assert!(
         note.contains("jump") && note.contains("`j`") && note.contains("reserved"),
@@ -403,7 +403,7 @@ fn e2e_hexdump_the_host_shows_what_the_shared_rule_says() {
 /// it says so at startup (naming the plugin) and, on the file, on the screen (not a silent blank).
 #[test]
 fn e2e_hexdump_without_shows_is_named_at_startup_and_on_screen() {
-    let (s, _dir) = open(
+    let (mut s, _dir) = open(
         "e2e_hexdump_noshows",
         Variant {
             no_shows: true,
@@ -412,9 +412,11 @@ fn e2e_hexdump_without_shows_is_named_at_startup_and_on_screen() {
         &[],
         "a.bin",
     );
+    s.app.set_startup_flash(None, 400);
     let note = s
         .app
-        .startup_flash(None, 400)
+        .flash
+        .as_ref()
         .expect("a startup message about the missing shows");
     assert!(
         note.contains("hexdump-ns") && note.contains("shows"),

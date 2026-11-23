@@ -89,6 +89,8 @@ unicode-segmentation = "1"
 emojis = "0.9"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+# Rewrites `plugins.toml` in place (`konoma plugin`), keeping the user's comments and order.
+toml_edit = "0.25"
 sys-locale = "0.3"
 # クリップボード(konoma-host-core の `clipboard` が使う)。`wayland-data-control` を明示有効化=既定は X11 バックエンド(x11rb)のみで、
 # XWayland の無い Wayland セッション(sway/Hyprland で xwayland 無効・cage 等)では arboard の
@@ -165,6 +167,8 @@ skrifa.workspace = true
 # `ring`(rustls の暗号バックエンド)は入るが vendored/自己完結な Rust+一部アセンブリで、システムの
 # OpenSSL 等を要求しない＝配布容易性(PRD §5)を損なわない。
 ureq.workspace = true
+# Plugin update compatibility with the linked SDK (this version is already in Cargo.lock).
+semver = "=1.0.28"
 
 # Markdown / Mermaid / コードハイライト
 # 当初候補の ratatui-markdown(0.3.6) は ratatui ^0.29 依存で、画像プレビューが要求する
@@ -196,6 +200,7 @@ unicode-width.workspace = true
 # 設定
 serde.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 # The manifest cache of the plugins that run as programs of their own (`plugins::external`); also
 # read by the Office fixtures' tests.
 serde_json.workspace = true

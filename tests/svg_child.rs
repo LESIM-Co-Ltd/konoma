@@ -5,6 +5,9 @@
 
 #![cfg(unix)]
 
+#[path = "support/command.rs"]
+mod command;
+use command::CommandOutput;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
@@ -12,6 +15,10 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const FLAG: &str = "--internal-svg-render";
+
+mod environment {
+    include!("support/environment.rs");
+}
 
 /// The first thing the child writes, before it has read anything: it is ready for requests.
 const READY: &[u8] = b"KSRDY";
@@ -60,8 +67,10 @@ fn finish(child: &mut std::process::Child) -> std::process::ExitStatus {
     }
 }
 
-fn konoma() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_konoma"))
+fn konoma(env: &environment::Environment) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_konoma"));
+    env.configure(&mut command);
+    command
 }
 
 fn request(data: &[u8], base: &[u8], max_px: u32) -> Vec<u8> {
@@ -78,7 +87,8 @@ fn request(data: &[u8], base: &[u8], max_px: u32) -> Vec<u8> {
 
 /// Runs the child on `input` and returns (exit success, stdout).
 fn run(input: &[u8]) -> (bool, Vec<u8>) {
-    let mut child = konoma()
+    let env = environment::Environment::new("svg-child-run");
+    let mut child = konoma(&env)
         .arg(FLAG)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -199,8 +209,9 @@ fn a_malformed_request_is_refused_quickly_without_a_picture() {
 
 #[test]
 fn the_drawing_mode_is_not_advertised() {
+    let env = environment::Environment::new("svg-help");
     for flag in ["--help", "-h"] {
-        let out = konoma().arg(flag).output().unwrap();
+        let out = konoma(&env).arg(flag).supervised_output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.is_empty(), "{flag} printed nothing");
         assert!(
@@ -216,6 +227,7 @@ fn the_drawing_mode_is_not_advertised() {
 /// closed, though the child is still alive waiting for its request.
 #[test]
 fn the_child_holds_no_descriptor_it_inherited() {
+    let env = environment::Environment::new("svg-fds");
     let mut fds = [0i32; 2];
     // SAFETY: `fds` is a valid out-array of two ints.
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
@@ -223,7 +235,7 @@ fn the_child_holds_no_descriptor_it_inherited() {
     let (read_end, write_end) =
         unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
     let w = write_end.as_raw_fd();
-    let mut cmd = konoma();
+    let mut cmd = konoma(&env);
     cmd.arg(FLAG)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -259,7 +271,8 @@ fn the_child_holds_no_descriptor_it_inherited() {
 /// at start-up), instead of drawing — or waiting — forever.
 #[test]
 fn an_unsupervised_child_ends_itself() {
-    let mut child = konoma()
+    let env = environment::Environment::new("svg-alarm");
+    let mut child = konoma(&env)
         .arg(FLAG)
         .stdin(Stdio::piped()) // held open, nothing is ever sent
         .stdout(Stdio::null())
@@ -290,7 +303,8 @@ fn an_unsupervised_child_ends_itself() {
 #[cfg(target_os = "linux")]
 #[test]
 fn the_child_does_not_dump_core() {
-    let mut child = konoma()
+    let env = environment::Environment::new("svg-core");
+    let mut child = konoma(&env)
         .arg(FLAG)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -338,7 +352,7 @@ fn center_alpha(out: &[u8]) -> u8 {
 /// when its `<image href>` names a real one; the same SVG as a file beside its picture draws it.
 #[test]
 fn an_svg_with_no_base_directory_reads_no_file() {
-    let dir = std::env::temp_dir().join(format!("konoma-svgchild-nofile-{}", std::process::id()));
+    let dir = konoma_test_support::unique_tmp("svg-nofile");
     std::fs::create_dir_all(&dir).unwrap();
     let png = write_red_png(&dir, "secret.png");
     let doc = svg(&format!(
@@ -365,9 +379,9 @@ fn an_svg_with_no_base_directory_reads_no_file() {
 /// sequences into the pictures it answers with).
 #[test]
 fn the_drawing_mode_touches_neither_the_terminal_nor_the_temp_dir() {
-    let tmp = std::env::temp_dir().join(format!("konoma-svgchild-tmp-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).unwrap();
-    let mut child = konoma()
+    let env = environment::Environment::new("svg-no-temp");
+    let tmp = env.path("tmp");
+    let mut child = konoma(&env)
         .arg(FLAG)
         .env("TMPDIR", &tmp)
         .stdin(Stdio::piped())

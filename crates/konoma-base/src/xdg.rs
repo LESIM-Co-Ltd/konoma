@@ -69,6 +69,21 @@ pub fn dirs_config_path() -> Option<PathBuf> {
     dirs_config_path_from(xdg_config_home())
 }
 
+/// Data-scope base directory (`$XDG_DATA_HOME`, or `$HOME/.local/share`, or `None`).
+pub fn xdg_data_home() -> Option<PathBuf> {
+    xdg_base_dir(
+        std::env::var_os("XDG_DATA_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        ".local/share",
+    )
+}
+
+/// konoma's own data directory, `<data base>/konoma` (`None` when no base is known): where the
+/// konoma rebuilt with plugins lives (`konoma plugin`).
+pub fn data_dir() -> Option<PathBuf> {
+    Some(xdg_data_home()?.join("konoma"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +113,22 @@ mod tests {
     fn missing_or_empty_home_is_none() {
         assert_eq!(xdg_base_dir(None, None, ".config"), None);
         assert_eq!(xdg_base_dir(None, Some(OsStr::new("")), ".config"), None);
+    }
+
+    #[test]
+    fn data_base_follows_the_same_rule_with_a_local_share_suffix() {
+        assert_eq!(
+            xdg_base_dir(None, Some(OsStr::new("/h")), ".local/share"),
+            Some(PathBuf::from("/h/.local/share"))
+        );
+        assert_eq!(
+            xdg_base_dir(
+                Some(OsStr::new("/d")),
+                Some(OsStr::new("/h")),
+                ".local/share"
+            ),
+            Some(PathBuf::from("/d"))
+        );
     }
 
     #[test]

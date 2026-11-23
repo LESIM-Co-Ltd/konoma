@@ -423,11 +423,15 @@ pub(crate) fn hint_tokens(app: &App) -> Vec<String> {
 /// Render everything on one line (for statusbar="bottom"/"top"). Concatenates context + footer.
 pub fn render_combined(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = context_spans(app);
-    let used: usize = spans.iter().map(|s| s.width()).sum();
     spans.push(Span::from("  "));
-    let rest = area.width.saturating_sub(used as u16 + 2);
-    spans.extend(footer_spans(app, rest));
+    let rest = combined_footer_width(app, usize::from(area.width));
+    spans.extend(footer_spans(app, rest as u16));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Space left for hints or flash after the context chips and their separator.
+pub(crate) fn combined_footer_width(app: &App, width: usize) -> usize {
+    width.saturating_sub(usize::from(context_width(app)) + 2)
 }
 
 /// Render the context only (for the right side of the split header). Right-aligned.

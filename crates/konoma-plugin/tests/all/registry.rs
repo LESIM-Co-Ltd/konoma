@@ -448,7 +448,7 @@ fn a_content_type_is_taken_by_the_plugin_that_binds_that_type_only() {
 fn refused(m: Manifest) -> (String, String) {
     let mut r = Registry::new();
     match r.register(stub(m), PluginOrigin::User) {
-        Err(RegistryError::InvalidManifest { id, why }) => {
+        Err(RegistryError::InvalidManifest { id, why, .. }) => {
             assert!(r.ids().is_empty(), "a refused plugin is not registered");
             // The refusal is a note for the startup message, under a safe id.
             let notes = r.notes();

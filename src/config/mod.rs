@@ -20,6 +20,7 @@ pub struct Config {
     pub external: ExternalConfig,
     /// `[plugins.<id>]`: `enabled = false` switches a plugin off; the other keys are the plugin's
     /// own settings.
+    #[serde(deserialize_with = "crate::plugins::deserialize_tables")]
     pub plugins: crate::plugins::PluginTables,
     /// The old `[ui]` names the loaded file still uses, with what to write instead (not part of
     /// the file: filled in by `Config::load_reporting`, named once in the startup message).
@@ -67,7 +68,9 @@ pub struct ExternalConfig {
     pub pdf: bool,
     /// Video thumbnail extraction (ffmpegthumbnailer/ffmpeg).
     pub video: bool,
-    /// Fetching `http(s)://` images referenced from Markdown (`curl`) — the only outbound network call konoma makes.
+    /// Check crates.io for plugin updates in the background, at most once per day.
+    pub update_check: bool,
+    /// Fetching `http(s)://` images referenced from Markdown.
     pub remote_images: bool,
     /// Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
     pub open_links: bool,
@@ -89,6 +92,7 @@ impl Default for ExternalConfig {
             pdf: true,
             video: true,
             remote_images: true,
+            update_check: true,
             open_links: true,
             office_apps: true,
             preview_commands: true,
@@ -645,9 +649,14 @@ impl Config {
         let Some(path) = dirs_config_path() else {
             return (Config::default(), None);
         };
+        Self::load_path_reporting(&path)
+    }
+
+    /// The same loader with an explicit path, also used by the plugin CLI and isolated tests.
+    pub(crate) fn load_path_reporting(path: &Path) -> (Self, Option<String>) {
         // An absent config file is normal (it runs on defaults). Only report an error when it can
         // be read but is broken.
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = std::fs::read_to_string(path) else {
             return (Config::default(), None);
         };
         match toml::from_str::<Config>(&text) {
@@ -1693,6 +1702,35 @@ mermaid_rows = 100000
             assert_eq!(c.editor.ext, s.editor.ext, "{name}: editor.ext");
             assert_eq!(c.keys.copy_name, s.keys.copy_name, "{name}");
             assert_eq!(c.keys.surfaces, s.keys.surfaces, "{name}: key tables");
+        }
+    }
+    /// `[plugins] keep_build_cache` (an option of `konoma plugin`) sits beside the plugins' tables
+    /// without being one: the file must still load, with the plugins' tables intact.
+    #[test]
+    fn plugins_options_sit_beside_the_plugin_tables() {
+        let cfg: Config = toml::from_str(
+            "[plugins]\nkeep_build_cache = true\n[plugins.markdown]\nalerts = false\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.plugins.len(), 1, "the option is not a plugin");
+        assert!(cfg.plugins.contains_key("markdown"));
+        let cfg: Config = toml::from_str("[plugins]\nkeep_build_cache = false\n").unwrap();
+        assert!(cfg.plugins.is_empty());
+        // The same table as before, without the option.
+        let cfg: Config = toml::from_str("[plugins.markdown]\nalerts = false\n").unwrap();
+        assert_eq!(cfg.plugins.len(), 1);
+    }
+
+    #[test]
+    fn plugins_keys_that_are_neither_tables_nor_options_are_errors() {
+        for (text, needle) in [
+            ("[plugins]\nkeep_build_cache = \"yes\"\n", "true or false"),
+            ("[plugins]\nkeep_build_cache = 1\n", "true or false"),
+            ("[plugins]\nmarkdown = true\n", "must be a table"),
+            ("[plugins]\nbogus = \"x\"\n", "[plugins.bogus]"),
+        ] {
+            let e = toml::from_str::<Config>(text).unwrap_err().to_string();
+            assert!(e.contains(needle), "{text:?}: {e}");
         }
     }
 }

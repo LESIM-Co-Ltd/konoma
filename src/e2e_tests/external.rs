@@ -7,8 +7,10 @@ use super::*;
 use crate::plugins::external::{self, Env};
 use crate::plugins::external_testkit::{table, Lab, Mode, Rig, PATIENCE};
 use crate::plugins::{shared_registry, PluginTables};
+use crate::test_support::command::CommandOutput;
 use konoma_plugin::registry::PluginOrigin;
 use konoma_plugin::Plugin;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -320,14 +322,15 @@ fn e2e_ext_an_id_of_a_standard_plugin_is_refused_and_said_at_start_up() {
     let problems = external::problems(&token, crate::i18n::Lang::En);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("markdown") && problems[0].contains("already taken"));
-    let s = session(&lab, Some(token), t);
+    let mut s = session(&lab, Some(token), t);
     // The standard one is what is registered.
     assert_eq!(
         registry_of(&s).origin("markdown"),
         Some(PluginOrigin::Standard)
     );
     // The reason is in the start-up message.
-    let flash = s.app.startup_flash(None, 400).unwrap_or_default();
+    s.app.set_startup_flash(None, 400);
+    let flash = s.app.flash.clone().unwrap_or_default();
     assert!(flash.contains("already taken"), "{flash}");
     assert!(external::plugins_of(s.app.cfg.external_plugins.as_deref().unwrap()).is_empty());
 }
@@ -421,9 +424,10 @@ fn e2e_ext_failures_to_load_are_not_registered_and_say_why_in_both_languages() {
     let en = external::problems(&token, crate::i18n::Lang::En);
     assert!(en[0].contains("did not start"), "{en:?}");
     assert!(lab.cache_files().is_empty(), "a failure is not cached");
-    let s = session(&lab, Some(token), t);
+    let mut s = session(&lab, Some(token), t);
     assert!(registry_of(&s).manifest("ext-garbage").is_none());
-    let flash = s.app.startup_flash(None, 600).unwrap_or_default();
+    s.app.set_startup_flash(None, 600);
+    let flash = s.app.flash.clone().unwrap_or_default();
     assert!(flash.contains("did not start"), "{flash}");
 }
 
@@ -700,9 +704,12 @@ fn e2e_ext_a_child_that_takes_too_long_shows_cannot_preview_with_a_reason() {
 
 /// A pid that existed and was reaped.
 fn dead_pid() -> u32 {
-    let mut done = std::process::Command::new("true").spawn().unwrap();
+    let mut done = std::process::Command::new("true")
+        .process_group(0)
+        .spawn()
+        .unwrap();
     let pid = done.id();
-    done.wait().unwrap();
+    konoma_plugin::proc::process::wait(&mut done, std::time::Duration::from_secs(10)).unwrap();
     pid
 }
 
@@ -924,7 +931,7 @@ fn e2e_ext_the_exit_cleanup_really_stops_the_children() {
                 "--nocapture",
             ])
             .env(ENV, "1")
-            .output()
+            .supervised_output()
             .unwrap();
         assert!(
             out.status.success(),

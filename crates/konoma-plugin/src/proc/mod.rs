@@ -59,6 +59,8 @@
 pub mod client;
 pub mod frame;
 mod os;
+#[doc(hidden)]
+pub mod process;
 pub mod proto;
 mod server;
 pub mod wire;

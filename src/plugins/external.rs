@@ -721,11 +721,11 @@ pub(crate) fn problems(token: &str, lang: Lang) -> Vec<String> {
 }
 
 /// The ids already taken by the host: the standard plugins and its internal pseudo plugins.
-fn reserved_ids() -> Vec<String> {
-    super::standard_manifests()
+fn reserved_ids(linked: Option<&super::statics::StaticSet>) -> Vec<String> {
+    super::build_registry_with(&[], linked)
+        .ids()
         .into_iter()
-        .chain(super::internal_manifests())
-        .map(|m| m.id)
+        .map(str::to_owned)
         .collect()
 }
 
@@ -830,6 +830,15 @@ fn load_one(env: &Env, spec: &Spec) -> Result<Loaded, Problem> {
 /// nothing was asked for. An id that the host or an earlier program already has is refused (the
 /// one read later loses; config entries come before `--plugin` ones).
 pub(crate) fn install(env: &Env, tables: &PluginTables, dev: &[PathBuf]) -> Option<String> {
+    install_with_linked(env, tables, dev, super::statics::current())
+}
+
+fn install_with_linked(
+    env: &Env,
+    tables: &PluginTables,
+    dev: &[PathBuf],
+    linked: Option<&super::statics::StaticSet>,
+) -> Option<String> {
     let mut specs: Vec<Spec> = tables
         .iter()
         .filter_map(|(id, t)| spec_of_table(id, t).0)
@@ -869,7 +878,7 @@ pub(crate) fn install(env: &Env, tables: &PluginTables, dev: &[PathBuf]) -> Opti
             })
             .collect()
     });
-    let mut taken: Vec<String> = reserved_ids();
+    let mut taken: Vec<String> = reserved_ids(linked);
     let mut plugins = Vec::new();
     let mut problems = Vec::new();
     for (result, spec) in results.into_iter().zip(&specs) {
@@ -1064,6 +1073,37 @@ mod tests {
 
     fn tbl(src: &str) -> toml::Table {
         src.parse().unwrap()
+    }
+
+    #[test]
+    fn a_child_cannot_silently_collide_with_a_linked_plugin() {
+        use crate::plugins::external_testkit::{Ctl, Demo, Rig};
+        let lab = Lab::new("linked-duplicate");
+        let rig = Rig::new("custom-linked");
+        let program = lab.program("child", "identity");
+        let set = super::super::statics::StaticSet {
+            standard: true,
+            added: vec![Arc::new(Demo {
+                id: "custom-linked".into(),
+                version: "1.0.0".into(),
+                ctl: Arc::new(Ctl::default()),
+                pictures: false,
+            })],
+            replaced: BTreeMap::new(),
+        };
+        let token =
+            install_with_linked(&lab.env(&rig), &PluginTables::new(), &[program], Some(&set))
+                .unwrap();
+        assert!(
+            plugins_of(&token).is_empty(),
+            "the later child must be disabled"
+        );
+        for lang in [Lang::En, Lang::Jp] {
+            let notes = problems(&token, lang);
+            assert_eq!(notes.len(), 1);
+            assert!(notes[0].contains("custom-linked"), "{notes:?}");
+        }
+        wait_sweep(&token);
     }
 
     #[test]
