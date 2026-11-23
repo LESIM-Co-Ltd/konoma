@@ -12,14 +12,17 @@ use crate::plugins::external::{self, Env};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
-/// `target/<profile>/konoma-demo-clock`, found from the test executable (`target/<profile>/deps/`).
+/// `target/<profile>/konoma-demo-clock`, found from the test executable. The executable sits in
+/// `<profile>/deps/` or, with Cargo's newer build-dir layout, in `<profile>/build/<pkg>/<hash>/out/`,
+/// so every ancestor is tried.
 fn built_program() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let p = exe
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join("konoma-demo-clock");
+        .ancestors()
+        .skip(1)
+        .map(|a| a.join("konoma-demo-clock"))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| exe.with_file_name("konoma-demo-clock"));
     assert!(
         p.is_file(),
         "{} is missing: run `cargo build -p konoma-demo-clock` before these tests",
