@@ -18,6 +18,7 @@ use ratatui_image::Image;
 use crate::app::{App, ScrollExtent};
 use crate::i18n::tr;
 use crate::preview::image::ImageFailureMessage;
+use crate::preview::text;
 use crate::preview::PreviewKind;
 
 /// Context spans for the Preview view (top-left of the status bar). Chip + (when an image) zoom factor.
@@ -332,10 +333,11 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered().title(title);
     let inner = block.inner(area); // the display area with the frame excluded
 
-    // Total display row count: the shared count of the text alone (not a block-carrying paragraph's
-    // `line_count`, which adds the frame's two border rows), otherwise the logical line count.
+    // Total display row count: the count of the text alone at the inner width (not a
+    // block-carrying paragraph's `line_count`, which adds the frame's two border rows), otherwise
+    // the logical line count.
     let total_rows = if wrap {
-        konoma_widgets::text::wrapped_row_count(body.as_str(), inner.width)
+        text::wrapped_row_count(body.as_str(), inner.width)
     } else {
         logical_lines
     };
