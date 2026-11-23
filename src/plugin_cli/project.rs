@@ -373,6 +373,18 @@ mod tests {
         let konoma = artifact("konoma");
         let sdk = artifact("konoma_plugin");
         let deps = sdk.parent().unwrap();
+        // Every directory that holds a library artifact: with Cargo's newer build-dir layout the
+        // dependencies are spread over `build/<pkg>/<hash>/out/` rather than one `deps/`.
+        let mut search_dirs: Vec<std::path::PathBuf> = String::from_utf8_lossy(&build.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|message| message["reason"] == "compiler-artifact")
+            .flat_map(|message| message["filenames"].as_array().cloned().unwrap_or_default())
+            .filter_map(|filename| filename.as_str().map(std::path::PathBuf::from))
+            .filter_map(|filename| filename.parent().map(std::path::Path::to_path_buf))
+            .collect();
+        search_dirs.sort();
+        search_dirs.dedup();
         struct Binary(std::path::PathBuf);
         impl Drop for Binary {
             fn drop(&mut self) {
@@ -422,8 +434,11 @@ mod noisy {
             .arg(format!("konoma={}", konoma.display()))
             .arg("--extern")
             .arg(format!("konoma_plugin={}", sdk.display()))
-            .arg("-L")
-            .arg(format!("dependency={}", deps.display()))
+            .args(
+                search_dirs
+                    .iter()
+                    .flat_map(|dir| ["-L".to_string(), format!("dependency={}", dir.display())]),
+            )
             .supervised_output()
             .unwrap();
         assert!(

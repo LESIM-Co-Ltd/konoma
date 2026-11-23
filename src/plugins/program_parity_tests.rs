@@ -5,6 +5,7 @@
 //! the program picks the same one; when it is not, the program refuses the file, and says
 //! "reads as text" exactly when konoma shows the file as text.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ use crate::test_support::unique_tmp;
 
 type Program = (&'static str, fn() -> Vec<Box<dyn Plugin>>);
 
-/// Every plugin program of the workspace that `export!`s a list from its library. The test
+/// The standard plugin programs: crates konoma links that `export!` a program. The test
 /// `every_program_is_in_the_list` keeps this in step with the `main.rs` files.
 fn programs() -> Vec<Program> {
     vec![
@@ -227,21 +228,87 @@ fn the_media_program_picks_pictures_and_videos_by_content_not_name() {
     }
 }
 
-#[test]
-fn every_program_is_in_the_list() {
+fn read_manifest(path: &Path) -> toml::Value {
+    toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn konoma_dependencies() -> BTreeSet<String> {
+    let manifest = read_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"));
+    let tables = manifest.get("dependencies").into_iter().chain(
+        manifest
+            .get("target")
+            .and_then(toml::Value::as_table)
+            .into_iter()
+            .flat_map(|targets| targets.values())
+            .filter_map(|target| target.get("dependencies")),
+    );
+    tables
+        .flat_map(|table| table.as_table().unwrap())
+        .map(|(key, dependency)| {
+            dependency
+                .get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key)
+                .to_owned()
+        })
+        .collect()
+}
+
+fn program_names_by_dependency() -> (Vec<String>, Vec<String>) {
+    let dependencies = konoma_dependencies();
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates");
-    let mut found = Vec::new();
+    let mut standard = Vec::new();
+    let mut other = Vec::new();
     for e in std::fs::read_dir(crates).unwrap() {
         let dir = e.unwrap().path();
         let main = dir.join("src/main.rs");
         if let Ok(src) = std::fs::read_to_string(&main) {
             if src.contains("export!(@program") {
-                found.push(dir.file_name().unwrap().to_string_lossy().into_owned());
+                let manifest = read_manifest(&dir.join("Cargo.toml"));
+                let name = manifest["package"]["name"].as_str().unwrap().to_owned();
+                if dependencies.contains(&name) {
+                    standard.push(name);
+                } else {
+                    other.push(name);
+                }
             }
         }
     }
-    found.sort();
+    standard.sort();
+    other.sort();
+    (standard, other)
+}
+
+#[test]
+fn every_program_is_in_the_list() {
+    let (found, _) = program_names_by_dependency();
     let mut listed: Vec<String> = programs().iter().map(|(n, _)| n.to_string()).collect();
     listed.sort();
     assert_eq!(found, listed);
+}
+
+#[test]
+fn programs_not_linked_by_konoma_are_not_in_the_list() {
+    let (_, other) = program_names_by_dependency();
+    assert!(
+        !other.is_empty(),
+        "no programs outside konoma's dependencies"
+    );
+    assert!(
+        other.iter().any(|name| name == "konoma-sample-hexdump"),
+        "the sample must be outside konoma's dependencies: {other:?}"
+    );
+    let listed: BTreeSet<_> = programs().into_iter().map(|(name, _)| name).collect();
+    for name in other {
+        assert!(!listed.contains(name.as_str()), "{name} is in programs()");
+    }
+}
+
+#[test]
+fn standard_program_scan_has_at_least_seven_entries() {
+    let (standard, _) = program_names_by_dependency();
+    assert!(
+        standard.len() >= 7,
+        "standard program scan shrank: {standard:?}"
+    );
 }

@@ -4,6 +4,8 @@
 
 # konoma
 
+Build your own viewer: [Write a plugin](https://lesim-co-ltd.github.io/konoma/guides/write-a-plugin/).
+
 > Terminal file browser built for AI pair-programming — full-screen previews
 > (Markdown, images, PDF, CSV, spreadsheets, Word and PowerPoint), a git suite, and an agent-watch mode that
 > follows your AI's edits.
