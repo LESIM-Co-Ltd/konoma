@@ -2,6 +2,7 @@
 //! konoma reads them: wrapping, the document's colors, icons and tab stop.
 
 use konoma_host_core::shared::{SharedConfig, SharedTheme};
+use konoma_host_core::view_options::PathStyle;
 use konoma_widgets::markdown::CodeStyle;
 
 /// How text and documents are drawn (`[ui] wrap`, `icons`, `tab_width` and `[ui.theme]`).
@@ -10,6 +11,8 @@ use konoma_widgets::markdown::CodeStyle;
 pub struct Display {
     /// Soft-wrap text and documents. Off, they scroll sideways (`h` `l` `0` `$`).
     pub wrap: bool,
+    /// How a path is written in a title (`[ui] path_style`, cycled with `,` `p`).
+    pub path_style: PathStyle,
     /// Icon glyphs in a document.
     pub icons: bool,
     /// The tab stop of code blocks.
@@ -28,6 +31,7 @@ impl Display {
     pub fn of(cfg: &SharedConfig) -> Self {
         Self {
             wrap: cfg.ui.wrap,
+            path_style: PathStyle::parse(&cfg.ui.path_style),
             icons: cfg.ui.icons,
             tab_width: cfg.ui.tab_width,
             theme: cfg.ui.theme.clone(),

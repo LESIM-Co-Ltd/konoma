@@ -259,16 +259,16 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
 /// works (`PluginShow::enabled`), and a writing action is refused for a plugin set to
 /// `read_only = true` (one guard for every plugin's writes, with the reason).
 fn gate_plugin(app: &App, ctx: Context, p: crate::plugins::PluginAct) -> Gate {
-    let Some(binding) = app.plugin_binding_in(ctx, p) else {
-        return Gate::Off(None);
-    };
-    if !app.plugin_act_enabled(p) {
-        return Gate::Off(None);
+    use konoma_plugin::host::acts::{gate, ActGate};
+    match gate(
+        app.plugin_binding_in(ctx, p),
+        app.plugin_act_enabled(p),
+        app.plugin_is_read_only(p.plugin()),
+    ) {
+        ActGate::On => Gate::On,
+        ActGate::Off => Gate::Off(None),
+        ActGate::ReadOnly => Gate::Off(Some(Msg::PluginReadOnly)),
     }
-    if binding.writes && app.plugin_is_read_only(p.plugin()) {
-        return Gate::Off(Some(Msg::PluginReadOnly));
-    }
-    Gate::On
 }
 
 /// `e`: the target and whether opening it is possible (mirrors `App::request_edit`).
@@ -293,16 +293,18 @@ fn gate_edit(app: &App) -> Gate {
 fn gate_open_external(app: &App) -> Gate {
     match app.verb_target() {
         VerbTarget::File(p) => {
-            if crate::app::office_open::office_kind(&p).is_some() {
-                if app.cfg.external.office_apps {
-                    Gate::On
-                } else {
+            match konoma_plugin::launch::disabled_by(
+                konoma_plugin::Verb::Open,
+                &p,
+                &app.launch_policy(&p),
+            ) {
+                None => Gate::On,
+                Some(konoma_plugin::launch::Disabled::OfficeApps) => {
                     Gate::Off(Some(Msg::OfficeAppsDisabled))
                 }
-            } else if app.cfg.external.open_links {
-                Gate::On
-            } else {
-                Gate::Off(Some(Msg::ExternalOpenLinksDisabled))
+                Some(konoma_plugin::launch::Disabled::OpenLinks) => {
+                    Gate::Off(Some(Msg::ExternalOpenLinksDisabled))
+                }
             }
         }
         VerbTarget::Dir => Gate::Off(Some(Msg::NotAFile)),

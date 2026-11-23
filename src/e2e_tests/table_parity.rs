@@ -4,7 +4,7 @@
 //! the keys both have (the host also has search, copy, tabs and so on, which the app does not).
 
 use super::*;
-use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys};
+use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent};
 use konoma_plugin::TermCaps;
 use std::sync::Arc;
 
@@ -41,9 +41,22 @@ pub(super) fn presses(spec: &str) -> Vec<(KC, KM)> {
     spec.split_whitespace().map(token).collect()
 }
 
+/// How `e` and `o` run in the app of a parity test: konoma's defaults and the verbs the plugin
+/// declared. Nothing can start (the seams refuse); the launch parity test records instead.
+pub(super) fn default_launch(manifest: &konoma_plugin::Manifest) -> konoma_plugin::app::LaunchCx {
+    konoma_plugin::app::LaunchCx::new(
+        konoma_host_core::editor::EditorConfig::default(),
+        &konoma_host_core::shared::SharedExternal::default(),
+        manifest.verbs.clone(),
+    )
+}
+
 /// The rows of a buffer, a wide symbol counted once.
 pub(super) fn rows_of(term: &Terminal<TestBackend>) -> Vec<String> {
-    let buf = term.backend().buffer();
+    buffer_rows(term.backend().buffer())
+}
+
+pub(super) fn buffer_rows(buf: &ratatui::buffer::Buffer) -> Vec<String> {
     (0..buf.area.height)
         .map(|y| {
             let mut line = String::new();
@@ -76,6 +89,8 @@ fn app_rows(path: &std::path::Path, h: u16, spec: &str) -> Vec<String> {
         term: TermCaps::new(),
         title: "t".into(),
         shows: opened.shows.clone(),
+        path: opened.path.clone(),
+        launch: Some(default_launch(&opened.manifest)),
         ..AppCx::default()
     };
     let ev: Vec<AppEvent> = presses(spec)
@@ -91,7 +106,7 @@ fn app_rows(path: &std::path::Path, h: u16, spec: &str) -> Vec<String> {
         &mut *opened.session,
         &mut it,
         &cx,
-        &AppKeys::defaults(),
+        super::plugin_act_parity::app_default_keys(),
     )
     .unwrap();
     assert_eq!(
@@ -427,6 +442,11 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
             paged += usize::from(af[0].contains("Two") || af[0].contains("Three"));
         }
     }
+    assert_eq!(
+        checked + skipped + left,
+        909,
+        "every original combination is compared"
+    );
     // The footers really compared (the flash-only ones are counted apart, not here).
     assert!(checked > 880, "{checked}");
     assert!(skipped > 0 && skipped < 30, "{skipped}");
@@ -442,16 +462,11 @@ fn the_frame_cursor_popup_and_footer_agree_with_the_host() {
 /// The hints only the host has (search, copy, the files, the tabs, `q` going back), spelled out
 /// in full: a word the host adds that is not listed here fails the comparison.
 const HOST_ONLY: &[&str] = &[
-    ",:view",
     "[/]:tab",
     "/:search",
     "C-n/C-p:next/prev file",
-    "e:edit",
-    "e:open",
-    "o:open in app",
     "O:pages",
     "q:back",
-    "y:copy",
 ];
 
 /// The text of a help panel, one string per row, the runs of spaces made one.
@@ -469,7 +484,9 @@ pub(super) fn help_lines(rows: &[String], panel_x: Option<usize>) -> Vec<String>
                         }
                         col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
                     }
-                    out
+                    // The picture shows beside the panel: stop at the panel's right border
+                    // (no help text holds a `│`).
+                    out.split('│').next().unwrap_or("").to_string()
                 }
                 None => r.clone(),
             };
@@ -570,7 +587,36 @@ pub(super) fn same_help_rows(
         })
         .map(norm)
         .collect();
-    let app: Vec<String> = al.iter().map(norm).collect();
+    // The `Space` menu's section is the one place the two helps differ by letters, not only by
+    // rows: the host assigns the letters of the items without a key along its whole menu (the
+    // host-only items included), the app along its own. The section is compared by what it names:
+    // each label the app lists is a label of the host's section, and the app has the section
+    // whenever the host does (`space_menu_parity` compares the menus themselves).
+    let space_label = |r: &String| -> Option<String> {
+        let rest = r.strip_prefix("Space ")?;
+        rest.split_once(' ').map(|(_, l)| l.trim().to_string())
+    };
+    let host_space: Vec<String> = hl.iter().filter_map(&space_label).collect();
+    let app_space: Vec<String> = al.iter().filter_map(&space_label).collect();
+    if host_only.contains(&"Space ") {
+        for l in &app_space {
+            assert!(
+                host_space.contains(l),
+                "{what}: the app's Space item `{l}` is not one of the host's: {host_space:?}"
+            );
+        }
+        assert!(
+            host_space.is_empty() || !app_space.is_empty(),
+            "{what}: the app's help lacks the Space section the host has"
+        );
+    }
+    let app: Vec<String> = al
+        .iter()
+        .filter(|r| {
+            !(host_only.contains(&"Space ") && (r.starts_with("Space ") || r.as_str() == "Actions"))
+        })
+        .map(norm)
+        .collect();
     assert_eq!(
         kept, app,
         "{what}: the help rows differ\nhost: {hl:#?}\napp: {al:#?}"
@@ -676,6 +722,7 @@ fn the_table_help_rows_agree_with_the_host() {
     let root = canon(&dir);
     let mut compared = 0;
     let mut seen_rows = std::collections::BTreeSet::new();
+    let mut combinations = 0;
     for file in [
         "plain.csv",
         "cjk.csv",
@@ -686,18 +733,21 @@ fn the_table_help_rows_agree_with_the_host() {
         "three.xlsx",
     ] {
         for (spec, popup_open) in HELP_SPECS {
+            combinations += 1;
             // Whether a popup shows before `?` must match the flag (a table without cells
             // never opens one). The help is compared with the popup open too: the host draws
             // it above the other overlays.
             let before = spec.trim_end_matches('?').trim();
-            let (h0, _s0) = host_rows(&root, file, 70, before);
+            let (h0, mut s) = host_rows(&root, file, 70, before);
             let has_cells = file != "empty.csv";
             assert_eq!(
                 h0.iter().any(|l| l.contains("Cell ·")),
                 *popup_open && has_cells,
                 "{file} [{spec}]: the popup flag is wrong"
             );
-            let (h, _s) = host_rows(&root, file, 70, spec);
+            s.press(KC::Char('?'), KM::NONE);
+            assert!(!s.quit, "the host ended early: {spec}");
+            let h = rows_of(&s.term);
             let a = app_rows(&root.join(file), 69, spec);
             let what = format!("{file} [{spec}]");
             let (py, px) = h
@@ -757,6 +807,7 @@ fn the_table_help_rows_agree_with_the_host() {
             );
         }
     }
+    assert_eq!(combinations, 140, "every original combination is compared");
     assert!(compared > 800, "{compared}");
     assert_all_seen("table HOST_ONLY_ROWS", HOST_ONLY_ROWS, &seen_rows);
 }

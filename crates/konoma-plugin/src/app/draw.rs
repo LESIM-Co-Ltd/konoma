@@ -1,7 +1,7 @@
 //! Drawing a frame with ratatui.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier as RModifier, Style as RStyle};
+use ratatui::style::Style as RStyle;
 use ratatui::text::Line as RLine;
 use ratatui::widgets::{Block, Paragraph, Widget};
 
@@ -26,6 +26,9 @@ pub struct TextFrame {
     pub wrap: bool,
     /// Cells scrolled off the left edge (0 while wrapping).
     pub hscroll: u16,
+    /// Rows scrolled off the top, counted in drawn rows (wrapped rows while wrapping). 0 for the
+    /// text whose lines are already the window.
+    pub vscroll: u16,
     /// The bordered frame of the host's windowed text (the path, the position label and the
     /// scrollbar). `None`: the lines are drawn bare (the file shown as text after a page failed).
     pub border: Option<TextBorder>,
@@ -36,8 +39,10 @@ pub struct TextBorder {
     /// The path as the host titles it (or the file name).
     pub name: String,
     pub lang: Lang,
-    /// Where the window is in the file, in bytes (the unit the host's reader scrolls in).
-    pub extent: konoma_widgets::scroll::ScrollExtent,
+    /// Where the window is in the file, in bytes (the unit the host's reader scrolls in). `None`
+    /// for the text of a page that failed to draw: the host frames it with the path alone (no
+    /// position label, no scrollbar) and it has no caret.
+    pub extent: Option<konoma_widgets::scroll::ScrollExtent>,
 }
 
 /// What is drawn in the body.
@@ -269,7 +274,7 @@ pub fn body_of(area: Rect) -> Rect {
 pub fn draw(
     f: &mut ratatui::Frame,
     frame: &mut Frame,
-    footer: &str,
+    footer: &[ratatui::text::Span<'static>],
     bg: Option<ratatui::style::Color>,
 ) {
     let area = f.area();
@@ -289,21 +294,22 @@ pub fn draw(
             let text: Vec<RLine> = t.lines.clone();
             let mut para = Paragraph::new(text);
             if let Some(b) = &t.border {
-                para = para.block(
-                    Block::bordered()
-                        .title(super::document::path_title(&b.name))
-                        .title(konoma_widgets::scroll::scroll_title(
-                            b.extent,
-                            super::document::scroll_words(b.lang),
-                        )),
-                );
+                let mut block = Block::bordered().title(super::document::path_title(&b.name));
+                if let Some(e) = b.extent {
+                    block = block.title(konoma_widgets::scroll::scroll_title(
+                        e,
+                        super::document::scroll_words(b.lang),
+                    ));
+                }
+                para = para.block(block);
             }
             if t.wrap {
                 para = para.wrap(ratatui::widgets::Wrap { trim: false });
             }
-            para.scroll((0, t.hscroll)).render(body, f.buffer_mut());
-            if let Some(b) = &t.border {
-                konoma_widgets::scroll::render_scrollbar(f.buffer_mut(), body, b.extent);
+            para.scroll((t.vscroll, t.hscroll))
+                .render(body, f.buffer_mut());
+            if let Some(e) = t.border.as_ref().and_then(|b| b.extent) {
+                konoma_widgets::scroll::render_scrollbar(f.buffer_mut(), body, e);
             }
         }
         Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
@@ -328,9 +334,8 @@ pub fn draw(
         }
     }
     let foot = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
-    Paragraph::new(footer.to_string())
-        .style(RStyle::default().add_modifier(RModifier::REVERSED))
-        .render(foot, f.buffer_mut());
+    // The row is plain: the spans carry the style (the host's footer is dim hints, a bold notice).
+    Paragraph::new(RLine::from(footer.to_vec())).render(foot, f.buffer_mut());
 }
 
 #[cfg(test)]

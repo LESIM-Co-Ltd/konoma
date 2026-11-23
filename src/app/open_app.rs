@@ -9,7 +9,7 @@
 //! Office files, the OS default for everything else) on a worker thread, like `e` does for Office
 //! files (`office_open`), so the UI never blocks.
 
-use super::office_open::{attempts_for_verb, office_kind, OfficeOs};
+use super::office_open::{Launch, OfficeOs};
 use super::*;
 use crate::i18n::Msg;
 
@@ -25,10 +25,70 @@ pub(crate) enum VerbTarget {
     None,
 }
 
+/// The answer of the full plugin resolution for one file, with what it was decided from.
+#[derive(Debug)]
+pub(crate) struct VerbPluginMemo {
+    path: PathBuf,
+    stamp: Option<(std::time::SystemTime, u64)>,
+    settings: String,
+    id: Option<String>,
+}
+
+/// (mtime, size) of `path`: a changed file gets a different stamp, so its answer is decided again.
+fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
 impl App {
+    /// The id of the plugin that takes `path`: the one full decision (`plugins::plugin_id_of`: rules,
+    /// content sniff, text probe) that `e`, `o` and the footer/help all read, so they cannot
+    /// disagree.
+    ///
+    /// The file being previewed is not read again: the plugin its preview resolved to is the
+    /// answer. Any other file is read only when its (mtime, size) or the settings differ from the
+    /// last answer, so the per-frame footer costs one `stat`. `plugin_id_of` passes the preview's
+    /// own gate (`is_previewable`) first, so a FIFO or device is never opened.
+    pub(crate) fn verb_plugin_id(&self, path: &Path) -> Option<String> {
+        if self.tab.mode == Mode::Preview && self.tab.preview_path.as_deref() == Some(path) {
+            if let Some(PreviewKind::Plugin { id, .. }) = &self.tab.preview_kind {
+                return Some(id.clone());
+            }
+        }
+        let stamp = file_stamp(path);
+        let disabled = self.cfg.plugin_disabled();
+        let settings = format!("{:?}{:?}", self.cfg.preview.rules, disabled);
+        if let Some(m) = self.verb_plugin_memo.borrow().as_ref() {
+            if m.path == path && m.stamp == stamp && m.settings == settings {
+                return m.id.clone();
+            }
+        }
+        let id = crate::plugins::plugin_id_of(&self.cfg.preview.rules, &disabled, path);
+        *self.verb_plugin_memo.borrow_mut() = Some(VerbPluginMemo {
+            path: path.to_path_buf(),
+            stamp,
+            settings,
+            id: id.clone(),
+        });
+        id
+    }
+
+    /// The `verb` the plugin that takes `path` declares (`None` = none takes it or it declares no
+    /// such verb).
+    pub(crate) fn declared_verb(
+        &self,
+        path: &Path,
+        verb: konoma_plugin::Verb,
+    ) -> Option<konoma_plugin::VerbDecl> {
+        let id = self.verb_plugin_id(path)?;
+        crate::plugins::declared_verb_of(&self.cfg.plugin_disabled(), &id, verb)
+    }
+
     /// The file `e` and `o` act on. The changes list takes precedence over what is behind it (the
     /// hub opens over the tree and over a preview); a deleted file has nothing to open. Cheap:
-    /// reads cached state only, never the file system (the footer asks every frame).
+    /// reads cached state only, never the file system (the footer asks every frame). What plugin
+    /// takes the target is `verb_plugin_id`'s question, which stats the file and reads it only
+    /// when it changed.
     pub(crate) fn verb_target(&self) -> VerbTarget {
         if self.is_git_view() {
             return match self.git_view_entries().get(self.git_view_sel()) {
@@ -71,27 +131,26 @@ impl App {
                 return;
             }
         };
-        let kind = office_kind(&path);
-        if kind.is_some() {
-            if !self.cfg.external.office_apps {
-                self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into());
-                return;
-            }
-        } else if !self.cfg.external.open_links {
-            self.flash = Some(tr(self.lang, Msg::ExternalOpenLinksDisabled).into());
-            return;
-        }
-        let verb =
-            crate::plugins::open_verb(&self.cfg.preview.rules, &self.cfg.plugin_disabled(), &path);
+        let verb = crate::plugins::open_verb_of(
+            &self.cfg.plugin_disabled(),
+            self.verb_plugin_id(&path).as_deref(),
+        );
         let abs: PathBuf = std::path::absolute(&path).unwrap_or(path);
-        let os = OfficeOs::current();
-        let mut attempts = attempts_for_verb(os, &verb, kind, &abs);
-        if attempts.is_empty() {
-            // A plugin whose `open` names nothing this platform can start: the OS default.
-            let fallback = konoma_plugin::VerbDecl::new(konoma_plugin::Verb::Open)
-                .launcher(konoma_plugin::Launcher::OsDefault);
-            attempts = attempts_for_verb(os, &fallback, kind, &abs);
+        let launch = konoma_plugin::launch::resolve_launch(
+            konoma_plugin::Verb::Open,
+            OfficeOs::current(),
+            Some(&verb),
+            &abs,
+            &self.launch_policy(&abs),
+        );
+        match launch {
+            Launch::Gui(attempts) => self.start_chain(attempts),
+            Launch::Terminal(attempts) => self.queue_terminal_chain(&attempts, None, &abs),
+            Launch::Disabled(d) => {
+                self.flash = Some(konoma_plugin::host::launch::disabled_notice(self.lang, d))
+            }
+            // `o` never opens the editor.
+            Launch::Editor { .. } => {}
         }
-        self.start_chain(attempts);
     }
 }

@@ -92,6 +92,8 @@ pub mod document_pictures;
 #[cfg(feature = "pictures")]
 pub mod document_render;
 pub mod hints;
+#[cfg(feature = "host")]
+pub mod host;
 pub mod input;
 pub mod key;
 pub mod keys;
@@ -109,6 +111,7 @@ pub mod scope;
 pub mod session;
 pub mod settings;
 pub mod style;
+pub mod table_sep;
 #[cfg(feature = "widgets")]
 pub mod table_ui;
 pub mod testing;

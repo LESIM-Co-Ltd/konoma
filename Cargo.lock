@@ -1723,7 +1723,6 @@ name = "konoma"
 version = "0.31.2"
 dependencies = [
  "anyhow",
- "arboard",
  "base64 0.23.1",
  "cfb 0.15.0",
  "crossterm",
@@ -1816,9 +1815,12 @@ dependencies = [
 name = "konoma-host-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "arboard",
  "crossterm",
  "infer",
  "konoma-base",
+ "konoma-host-core",
  "konoma-test-support",
  "serde",
  "signal-hook 0.4.5",

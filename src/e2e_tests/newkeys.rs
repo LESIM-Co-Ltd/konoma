@@ -154,6 +154,8 @@ fn e2e_o_on_an_office_file_walks_the_office_chain_and_ignores_editor_ext() {
 /// The Office plugins' declared `open` chain is exactly the chain `e` walks, on both platforms.
 #[test]
 fn the_office_plugins_open_verb_is_the_chain_e_walks() {
+    // Real files: the decision passes the preview's gate, which a missing path does not.
+    let dir = sandbox("nk_open_chain");
     for (name, kind) in [
         ("a.xlsx", OfficeKind::Excel),
         ("a.ods", OfficeKind::Excel),
@@ -162,8 +164,12 @@ fn the_office_plugins_open_verb_is_the_chain_e_walks() {
         ("a.pptx", OfficeKind::PowerPoint),
         ("a.odp", OfficeKind::PowerPoint),
     ] {
-        let path = std::path::PathBuf::from("/work/nk").join(name);
-        let verb = crate::plugins::open_verb(&[], &[], &path);
+        let path = dir.join(name);
+        std::fs::write(&path, b"").unwrap();
+        let verb = crate::plugins::open_verb_of(
+            &[],
+            crate::plugins::plugin_id_of(&[], &[], &path).as_deref(),
+        );
         for os in [OfficeOs::MacOs, OfficeOs::Other] {
             assert_eq!(
                 attempts_for_verb(os, &verb, Some(kind), &path),
@@ -174,14 +180,151 @@ fn the_office_plugins_open_verb_is_the_chain_e_walks() {
     }
     // Everything else opens with the OS default alone.
     for name in ["a.txt", "a.rs", "a.md", "a.csv", "a.png", "Makefile"] {
-        let path = std::path::PathBuf::from("/work/nk").join(name);
-        let verb = crate::plugins::open_verb(&[], &[], &path);
+        let path = dir.join(name);
+        std::fs::write(&path, b"").unwrap();
+        let verb = crate::plugins::open_verb_of(
+            &[],
+            crate::plugins::plugin_id_of(&[], &[], &path).as_deref(),
+        );
         for os in [OfficeOs::MacOs, OfficeOs::Other] {
             let got = attempts_for_verb(os, &verb, None, &path);
             assert_eq!(got.len(), 1, "{name}");
             assert_eq!(got[0].opener, Opener::SystemDefault, "{name}");
         }
     }
+}
+
+/// The Office plugins' declared `edit` verb, read through the shared decision, is exactly the
+/// chain `plan` builds, on both platforms and for every kind (`e` used to build it directly).
+#[test]
+fn the_office_plugins_edit_verb_resolves_to_the_chain_plan_builds() {
+    let dir = sandbox("nk_edit_chain");
+    use konoma_plugin::launch::{resolve_launch, Launch, LaunchPolicy};
+    let policy = LaunchPolicy {
+        editor_ext_explicit: false,
+        office_apps: true,
+        open_links: true,
+    };
+    for (name, kind) in [
+        ("a.xlsx", OfficeKind::Excel),
+        ("a.ods", OfficeKind::Excel),
+        ("a.docx", OfficeKind::Word),
+        ("a.odt", OfficeKind::Word),
+        ("a.pptx", OfficeKind::PowerPoint),
+        ("a.odp", OfficeKind::PowerPoint),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, b"").unwrap();
+        let decl = crate::plugins::plugin_id_of(&[], &[], &path)
+            .and_then(|id| crate::plugins::declared_verb_of(&[], &id, konoma_plugin::Verb::Edit))
+            .unwrap_or_else(|| panic!("{name}: no edit verb declared"));
+        for os in [OfficeOs::MacOs, OfficeOs::Other] {
+            assert_eq!(
+                resolve_launch(konoma_plugin::Verb::Edit, os, Some(&decl), &path, &policy),
+                Launch::Gui(plan(os, kind, &path)),
+                "{name} on {os:?}"
+            );
+        }
+    }
+    // The same on the platform this test runs on, spelled out.
+    let path = std::path::Path::new("/work/nk/a.xlsx");
+    let first = plan(OfficeOs::current(), OfficeKind::Excel, path).remove(0);
+    if cfg!(target_os = "macos") {
+        assert_eq!(first.args, ["-b", "com.microsoft.Excel", "/work/nk/a.xlsx"]);
+    } else {
+        assert_eq!(first.prog, "libreoffice");
+    }
+}
+
+/// `e` on an Office document walks the declared chain through the launcher seam; on a text file it
+/// raises the editor request; `[editor] ext` and `[external] office_apps` keep their meaning.
+#[test]
+fn e2e_e_follows_the_declared_edit_verb_and_the_settings() {
+    let dir = sandbox("nk_e_declared");
+    seed_files(&dir);
+    for n in ["book.xlsx", "doc.docx", "deck.pptx"] {
+        std::fs::write(dir.join(n), b"x").unwrap();
+    }
+    let root = canon(&dir);
+
+    let mut s = Sim::with_config(&root, cfg_en());
+    let log = record(&mut s);
+    for (name, kind) in [
+        ("book.xlsx", OfficeKind::Excel),
+        ("doc.docx", OfficeKind::Word),
+        ("deck.pptx", OfficeKind::PowerPoint),
+    ] {
+        log.lock().unwrap().clear();
+        s.select(name);
+        assert!(has_token(&s, Context::Tree, "e:open"), "{name}");
+        s.key('e');
+        assert_eq!(
+            log.lock().unwrap().first(),
+            plan(OfficeOs::current(), kind, &root.join(name)).first(),
+            "{name}"
+        );
+        assert!(s.app.take_pending_edit().is_none(), "{name}");
+    }
+    // A text file goes to the editor.
+    log.lock().unwrap().clear();
+    s.select("notes.txt");
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert_eq!(
+        s.app.take_pending_edit().map(|(p, _)| p),
+        Some(root.join("notes.txt"))
+    );
+
+    // office_apps = false: `e` explains and starts nothing; the footer does not offer it.
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    let mut s = Sim::with_config(&root, cfg);
+    let log = record(&mut s);
+    s.select("book.xlsx");
+    assert!(!has_token(&s, Context::Tree, "e:open"));
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert!(s.app.take_pending_edit().is_none());
+    assert!(flash_is(&s, crate::i18n::Msg::OfficeAppsDisabled));
+
+    // An explicit `[editor] ext` wins even with office_apps = false.
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    cfg.editor.ext.insert("xlsx".into(), "vim".into());
+    let mut s = Sim::with_config(&root, cfg);
+    let log = record(&mut s);
+    s.select("book.xlsx");
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert_eq!(
+        s.app.take_pending_edit().map(|(p, _)| p),
+        Some(root.join("book.xlsx"))
+    );
+}
+
+/// `e` reads the `edit` verb of the plugin that shows the file: a rule that gives a Word file to
+/// the code plugin makes `e` open the editor, and the hint says "edit".
+#[test]
+fn e2e_e_reads_the_verb_of_the_plugin_the_rules_pick() {
+    let dir = sandbox("nk_e_rule");
+    std::fs::write(dir.join("doc.docx"), b"x").unwrap();
+    let root = canon(&dir);
+    let mut cfg = cfg_en();
+    cfg.preview.rules.push(crate::config::Rule {
+        glob: Some("*.docx".into()),
+        builtin: Some("code".into()),
+        ..Default::default()
+    });
+    let mut s = Sim::with_config(&root, cfg);
+    let log = record(&mut s);
+    s.select("doc.docx");
+    assert!(has_token(&s, Context::Tree, "e:edit"));
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert_eq!(
+        s.app.take_pending_edit().map(|(p, _)| p),
+        Some(root.join("doc.docx"))
+    );
 }
 
 /// The two switches keep their meaning: `open_links` stops the OS default, `office_apps` stops
@@ -1040,4 +1183,148 @@ fn e2e_the_help_names_the_new_keys_where_they_act() {
     s.key('?');
     s.see("open in another app");
     s.see("refresh");
+}
+
+// ---------------------------------------------------------------------------------------------
+// `e` and `o` decide which plugin takes a file the same way (the full resolution)
+// ---------------------------------------------------------------------------------------------
+
+const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
+
+/// A plugin that takes files by their content type alone and declares both launch verbs.
+struct Mimed;
+
+impl konoma_plugin::prelude::Plugin for Mimed {
+    fn manifest(&self) -> konoma_plugin::prelude::Manifest {
+        use konoma_plugin::prelude::*;
+        use konoma_plugin::{LaunchMode, Launcher, Verb, VerbDecl};
+        Manifest::new("x-nk-mimed", "0.1.0")
+            .bind(Bind::mime("application/vnd.sqlite3"))
+            .shows(ViewKind::Text)
+            .verb(
+                VerbDecl::new(Verb::Edit)
+                    .launcher(Launcher::Command(vec!["nk-edit".into(), "{path}".into()]))
+                    .mode(LaunchMode::Gui),
+            )
+            .verb(
+                VerbDecl::new(Verb::Open)
+                    .launcher(Launcher::Command(vec!["nk-open".into(), "{path}".into()]))
+                    .mode(LaunchMode::Gui),
+            )
+    }
+
+    fn open(
+        &self,
+        _: konoma_plugin::prelude::Input,
+        _: &konoma_plugin::prelude::OpenCx,
+    ) -> Result<Box<dyn konoma_plugin::prelude::Session>, konoma_plugin::prelude::Failure> {
+        Err(konoma_plugin::prelude::Failure::unsupported(
+            "not opened here",
+        ))
+    }
+}
+
+fn mimed_sim(name: &str, files: &[(&str, &[u8])]) -> (Sim, Log, crate::test_support::TmpDir) {
+    let dir = sandbox(name);
+    for (f, bytes) in files {
+        std::fs::write(dir.join(f), bytes).unwrap();
+    }
+    let marker = crate::plugins::test_plugins::register(name, Arc::new(Mimed));
+    let mut cfg = crate::plugins::test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    let log = record(&mut s);
+    (s, log, dir)
+}
+
+fn progs(log: &Log) -> Vec<String> {
+    log.lock().unwrap().iter().map(|a| a.prog.clone()).collect()
+}
+
+/// A plugin bound by content type alone: `e` walks its `edit` chain and `o` its `open` chain,
+/// and the footer words `e` after the chain (no file name or extension says so).
+#[test]
+fn e2e_e_and_o_use_the_same_plugin_when_it_is_bound_by_mime_alone() {
+    let (mut s, log, _dir) = mimed_sim("nk_mime_both", &[("blob.dat", SQLITE_MAGIC)]);
+    s.select("blob.dat");
+    assert!(
+        has_token(&s, Context::Tree, "e:open"),
+        "{:?}",
+        tokens(&s, Context::Tree)
+    );
+    s.key('e');
+    s.key('o');
+    assert_eq!(progs(&log), vec!["nk-edit", "nk-open"]);
+    assert!(s.app.take_pending_edit().is_none());
+}
+
+/// The same bytes under a name no glob knows are a file nobody takes: `e` opens the editor and
+/// the footer says "edit"; nothing is left over from the other file.
+#[test]
+fn e2e_a_file_no_plugin_takes_keeps_the_editor_and_the_edit_hint() {
+    let (mut s, log, _dir) = mimed_sim("nk_mime_none", &[("plain.dat", b"just text\n")]);
+    s.select("plain.dat");
+    assert!(has_token(&s, Context::Tree, "e:edit"));
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert!(s.app.take_pending_edit().is_some());
+}
+
+/// A `[[preview.rules]]` assignment by content type decides the plugin for `e` as it does for
+/// the preview and `o`.
+#[test]
+fn e2e_e_and_o_follow_a_rule_that_matches_by_content_type() {
+    let dir = sandbox("nk_rule_mime");
+    std::fs::write(dir.join("data.bin"), SQLITE_MAGIC).unwrap();
+    let mut cfg = cfg_en();
+    cfg.preview.rules.push(crate::config::Rule {
+        mime: Some("application/vnd.sqlite3".into()),
+        builtin: Some("spreadsheet".into()),
+        ..Default::default()
+    });
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    let log = record(&mut s);
+    s.select("data.bin");
+    assert!(
+        has_token(&s, Context::Tree, "e:open"),
+        "{:?}",
+        tokens(&s, Context::Tree)
+    );
+    s.key('e');
+    s.key('o');
+    let l = log.lock().unwrap();
+    let want = |a: &Attempt| a.args.iter().any(|x| x.ends_with("data.bin"));
+    assert!(l.len() >= 2, "both keys started their chain: {l:?}");
+    assert!(l.iter().all(want), "{l:?}");
+    assert!(s.app.take_pending_edit().is_none());
+}
+
+/// The answer is remembered between frames but not past a change of the file: the bytes decide
+/// the plugin, so a rewrite (even to the same size) is decided again.
+#[test]
+fn e2e_e_decides_again_when_the_file_changes() {
+    let (mut s, log, dir) = mimed_sim("nk_mime_change", &[("flip.dat", SQLITE_MAGIC)]);
+    let p = dir.join("flip.dat");
+    let mut same = SQLITE_MAGIC.to_vec();
+    s.select("flip.dat");
+    assert!(has_token(&s, Context::Tree, "e:open"));
+    assert!(has_token(&s, Context::Tree, "e:open"), "second frame, memo");
+    // Same size, other bytes, later mtime.
+    same.fill(b'x');
+    std::fs::write(&p, &same).unwrap();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+    std::fs::File::options()
+        .write(true)
+        .open(&p)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    assert!(
+        has_token(&s, Context::Tree, "e:edit"),
+        "{:?}",
+        tokens(&s, Context::Tree)
+    );
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert!(s.app.take_pending_edit().is_some());
 }

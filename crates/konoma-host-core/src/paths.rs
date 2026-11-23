@@ -24,10 +24,43 @@ pub fn rel_to_open(open_dir: &Path, path: &Path) -> String {
     }
 }
 
+/// HOME as `home_relative` reads it: the environment's, or in a test build this thread's override.
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if let Some(h) = TEST_HOME.with(|h| h.borrow().clone()) {
+        return Some(h);
+    }
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static TEST_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only: makes `home_relative` see `home` as HOME on this thread until the guard drops (the
+/// process environment is shared with parallel tests, so it is never written).
+#[cfg(any(test, feature = "test-hooks"))]
+#[must_use]
+pub struct TestHome(Option<PathBuf>);
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl TestHome {
+    pub fn set(home: &Path) -> Self {
+        Self(TEST_HOME.with(|h| h.borrow_mut().replace(home.to_path_buf())))
+    }
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl Drop for TestHome {
+    fn drop(&mut self) {
+        TEST_HOME.with(|h| *h.borrow_mut() = self.0.take());
+    }
+}
+
 /// `~/...` if under HOME, otherwise the full path.
 pub fn home_relative(path: &Path) -> String {
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
+    if let Some(home) = home_dir() {
         if let Ok(rel) = path.strip_prefix(&home) {
             if rel.as_os_str().is_empty() {
                 return "~".to_string();
@@ -65,4 +98,22 @@ pub fn rel_from(base: &Path, target: &Path) -> Option<PathBuf> {
         rel.push(c.as_os_str());
     }
     Some(rel)
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    #[test]
+    fn a_test_home_is_seen_on_this_thread_and_restored() {
+        let before = home_relative(Path::new("/zz/proj/x"));
+        {
+            let _h = TestHome::set(Path::new("/zz"));
+            assert_eq!(home_relative(Path::new("/zz/proj/x")), "~/proj/x");
+            assert_eq!(home_relative(Path::new("/zz")), "~");
+            let _inner = TestHome::set(Path::new("/zz/proj"));
+            assert_eq!(home_relative(Path::new("/zz/proj/x")), "~/x");
+        }
+        assert_eq!(home_relative(Path::new("/zz/proj/x")), before);
+    }
 }

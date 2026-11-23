@@ -37,7 +37,7 @@ fn code(k: KeyCode) -> AppEvent {
 
 /// Run the app over a 40-line text on a 24x8 screen (the text sits in a frame: the window is
 /// 5 rows, a page is 4: the host pages by one row less than the frame); returns the first row
-/// inside the frame and how many events were left unread.
+/// holding the caret (the line `e` would open) and how many events were left unread.
 fn run(k: &AppKeys, events: Vec<AppEvent>) -> (String, usize) {
     let dir = unique_tmp("app_keys");
     std::fs::create_dir_all(dir.as_path()).unwrap();
@@ -55,9 +55,19 @@ fn run(k: &AppKeys, events: Vec<AppEvent>) -> (String, usize) {
     let mut it = events.into_iter();
     run_with(&mut term, &mut *opened.session, &mut it, &cx, k).expect("runs");
     let buf = term.backend().buffer();
-    // Row 1, between the left border and the right border (where the scrollbar is).
+    // The row with the caret (the reversed character), between the left border and the right
+    // border (where the scrollbar is); the first row when there is none.
+    let row = (1..buf.area.height - 1)
+        .find(|&y| {
+            (1..buf.area.width - 1).any(|x| {
+                buf[(x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            })
+        })
+        .unwrap_or(1);
     let first: String = (1..buf.area.width - 1)
-        .map(|x| buf[(x, 1)].symbol().to_string())
+        .map(|x| buf[(x, row)].symbol().to_string())
         .collect::<String>()
         .trim_end()
         .to_string();
@@ -74,7 +84,7 @@ fn the_defaults_move_page_and_jump() {
     assert_eq!(run(&k, vec![ctrl('f'), ctrl('b')]).0, "line 00");
     assert_eq!(run(&k, vec![ctrl('d')]).0, "line 02");
     assert_eq!(run(&k, vec![ctrl('d'), ctrl('u')]).0, "line 00");
-    assert_eq!(run(&k, vec![key('G')]).0, "line 35");
+    assert_eq!(run(&k, vec![key('G')]).0, "line 39");
     assert_eq!(run(&k, vec![key('G'), key('g')]).0, "line 00");
 }
 
@@ -105,7 +115,7 @@ fn the_arrows_home_and_end_are_fixed_keys() {
         run(&k, vec![code(KeyCode::Down), code(KeyCode::Up)]).0,
         "line 00"
     );
-    assert_eq!(run(&k, vec![code(KeyCode::End)]).0, "line 35");
+    assert_eq!(run(&k, vec![code(KeyCode::End)]).0, "line 39");
     assert_eq!(
         run(&k, vec![code(KeyCode::End), code(KeyCode::Home)]).0,
         "line 00"
@@ -134,7 +144,7 @@ fn an_unbound_key_stops_acting() {
     assert_eq!(run(&k, vec![key('j'), key('j')]).0, "line 00");
     assert_eq!(
         run(&k, vec![key('k'), key('G')]).0,
-        "line 35",
+        "line 39",
         "the others are untouched"
     );
 }

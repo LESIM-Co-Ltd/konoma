@@ -51,6 +51,22 @@ pub fn is_fixed_code(code: KeyCode) -> bool {
 /// Every fixed key of `ctx` with its operation (`Context::all()` is the set of contexts that use
 /// the keymap, i.e. the ones that have fixed keys).
 pub fn fixed_bindings(ctx: Context) -> Vec<Fixed> {
+    // The preview screens' fixed keys are described once, in `konoma_host_core::preview_plan`
+    // (the standalone app's `Space` menu reads the same list). A canvas has nothing to move: its
+    // navigation fixed keys are the plugin's, so the host keeps only `Esc`
+    // (`keys::reserved("canvas")`).
+    if let Some(cctx) = crate::ops::preview_plan::core_of(ctx) {
+        return konoma_host_core::preview_plan::fixed_keys(cctx)
+            .into_iter()
+            .filter_map(|f| {
+                Some(Fixed {
+                    key: f.key,
+                    action: crate::ops::preview_plan::action_of(f.op)?,
+                    alias: f.alias,
+                })
+            })
+            .collect();
+    }
     let alias = |code, m| Fixed {
         key: KeyPress::key(code),
         action: Action::Navigate(m),
@@ -61,12 +77,6 @@ pub fn fixed_bindings(ctx: Context) -> Vec<Fixed> {
         action,
         alias: false,
     };
-    // A canvas has nothing to move: the navigation fixed keys (arrows, `Home` / `End`, `Enter`,
-    // `Tab`) are the plugin's (`handle_fixed_key` runs its action on one and otherwise does
-    // nothing), so the host keeps only `Esc` (`keys::reserved("canvas")`).
-    if ctx == Context::Canvas {
-        return vec![own(KeyCode::Esc, Action::Cancel)];
-    }
     let mut v = vec![
         alias(KeyCode::Up, Motion::Up),
         alias(KeyCode::Down, Motion::Down),
@@ -78,10 +88,6 @@ pub fn fixed_bindings(ctx: Context) -> Vec<Fixed> {
     ];
     if let Some(a) = enter_action(ctx) {
         v.push(own(KeyCode::Enter, a));
-    }
-    if matches!(ctx, Context::Text | Context::Document) {
-        v.push(own(KeyCode::Tab, Action::LinkFocusNext));
-        v.push(own(KeyCode::BackTab, Action::LinkFocusPrev));
     }
     // `Tab` / `Shift-Tab` walk the version-control screens: changes, log, graph, branches,
     // worktrees (the commit detail and the branch panel are not stops of the cycle).
@@ -103,12 +109,12 @@ pub fn fixed_bindings(ctx: Context) -> Vec<Fixed> {
 fn enter_action(ctx: Context) -> Option<Action> {
     Some(match ctx {
         Context::Tree => Action::TreeActivate,
-        Context::Text | Context::Document => Action::LinkOpen,
         Context::Bookmarks => Action::BookmarkJump,
         Context::Tabs => Action::TabListActivate,
         Context::Outline => Action::OutlineJump,
-        // The grid opens the full-cell popup and the popup closes itself (the same toggle).
-        Context::Table | Context::TableCell => Action::ToggleTableCell,
+        // The popup closes itself (the same toggle); the grid's own `Enter` is a preview screen's
+        // (`konoma_host_core::preview_plan::fixed_keys`).
+        Context::TableCell => Action::ToggleTableCell,
         #[cfg(feature = "git")]
         Context::Screen(_, s) => match s {
             Screen::Changes => Action::GitOpenSelectedDiff,

@@ -38,8 +38,8 @@ use crate::preview::markdown::{math_cells, mermaid_cells};
 #[cfg(test)]
 use crate::preview::markdown::{md_image_cells, slide_cells};
 use crate::preview::PreviewKind;
+use konoma_host_core::copy::at_ref_text;
 pub(crate) use konoma_host_core::paths::home_relative;
-use konoma_host_core::paths::{rel_from, rel_to_open};
 
 mod bookmark_actions;
 mod change_jump;
@@ -109,7 +109,6 @@ pub use bookmark_actions::FsBurstKinds;
 // type unqualified since it's defined there, so this re-export would be unused_imports outside cfg(test).
 #[cfg(test)]
 pub use preview_visual::PreviewSelection;
-use preview_visual::*;
 // Referenced by `ui/table.rs` (the full-cell popup renderer) as `crate::app::TableCellView`.
 pub use table_actions::TableCellView;
 
@@ -576,33 +575,8 @@ impl StatusbarLayout {
     }
 }
 
-/// Path display style. Used for the title (tree/preview). Cycle with the `p` key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathStyle {
-    /// Relative to the launch directory name (e.g. konoma/src/main.rs). Default.
-    Relative,
-    /// Relative to HOME (e.g. ~/work/konoma).
-    Home,
-    /// Full path (e.g. /Users/me/work/konoma).
-    Full,
-}
-
-impl PathStyle {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "home" => Self::Home,
-            "full" => Self::Full,
-            _ => Self::Relative,
-        }
-    }
-    pub fn next(self) -> Self {
-        match self {
-            Self::Relative => Self::Home,
-            Self::Home => Self::Full,
-            Self::Full => Self::Relative,
-        }
-    }
-}
+/// Path display style (`,` then `p`); shared with the standalone app.
+pub use konoma_host_core::view_options::PathStyle;
 
 /// How far a preview is scrolled, expressed in that view's **own scroll unit**.
 ///
@@ -1587,6 +1561,9 @@ pub struct App {
     /// the on-screen preview position; None = open at the top). The run loop takes it, suspends the TUI, and
     /// launches (because entering/leaving the terminal must happen on the render thread, here we only raise the "request").
     pending_edit: Option<(PathBuf, Option<usize>)>,
+    /// A launch chain that takes the terminal over (`Launch::Terminal`): the attempts (with `{line}`
+    /// filled in) and the directory they start in. The run loop hands the terminal over and walks them.
+    pending_terminal: Option<(Vec<konoma_plugin::launch::Attempt>, PathBuf)>,
 
     /// Flag requesting launch of an external git tool (lazygit, etc.) via `O`. The run loop takes it, suspends the TUI, and launches.
     pending_git_tool: bool,
@@ -1770,6 +1747,10 @@ pub struct App {
     /// The read scope of the plugin document on screen, built once and reused between frames
     /// (see `App::with_scope_memo`); rebuilt when its inputs change.
     read_scope_memo: std::cell::RefCell<Option<md_media::ScopeMemo>>,
+    /// The plugin that takes the file `e` / `o` / the footer ask about, decided once by the full
+    /// resolution (rules, content sniff, text probe) and reused until the file or the settings
+    /// change (see `App::verb_plugin_id`).
+    verb_plugin_memo: std::cell::RefCell<Option<open_app::VerbPluginMemo>>,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
@@ -2814,6 +2795,7 @@ impl App {
             hl_warming: false,
             spinner_frame: 0,
             pending_edit: None,
+            pending_terminal: None,
             pending_git_tool: false,
             md_cache: None,
             diff_cache: None,
@@ -2871,6 +2853,7 @@ impl App {
             scope_flashed: std::collections::HashSet::new(),
             md_scope_refusals: std::cell::RefCell::new(Vec::new()),
             read_scope_memo: std::cell::RefCell::new(None),
+            verb_plugin_memo: std::cell::RefCell::new(None),
             draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
@@ -3077,10 +3060,7 @@ impl App {
         notices.extend(self.cfg.plugin_report(self.lang));
         let plugin_notes = self.plugin_keys.report(self.lang);
         if !plugin_notes.is_empty() {
-            let head = match self.lang {
-                crate::i18n::Lang::Jp => "プラグイン",
-                crate::i18n::Lang::En => "plugins",
-            };
+            let head = konoma_host_core::help_msg::CoreMsg::PluginsHead.tr(self.lang);
             notices.push(format!("{head}: {}", plugin_notes.join(" / ")));
         }
         if !key_guidance.is_empty() {
@@ -4178,7 +4158,14 @@ impl App {
         };
         match target {
             Some(p) if self.try_open_in_office(&p) => {}
-            Some(p) => self.pending_edit = Some((p, self.preview_edit_line())),
+            Some(p) => {
+                // The declaration says whether the editor is asked for a line.
+                let line = konoma_plugin::host::launch::edit_line(
+                    &self.edit_launch(&p),
+                    self.preview_edit_line(),
+                );
+                self.pending_edit = Some((p, line));
+            }
             None => self.flash = Some(tr(self.lang, crate::i18n::Msg::NoFileToEdit).into()),
         }
     }
@@ -4219,7 +4206,9 @@ impl App {
             return None;
         }
         if self.is_windowed() {
-            return Some(self.tab.preview_cursor_line + 1);
+            return Some(konoma_widgets::caret::text_edit_line(
+                self.tab.preview_cursor_line,
+            ));
         }
         // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Anchor on a
         // logical line (a Tab-focused item if one is visible, else the top of the view), estimate its
@@ -4232,21 +4221,44 @@ impl App {
         {
             if let Some(c) = &self.md_cache {
                 let same = self.tab.preview_path.as_ref().is_some_and(|p| *p == c.path);
-                if same && c.src_lines > 0 && self.md_view_rows > 0 {
+                if same {
                     // Prefer the on-screen Tab focus (the visible "cursor"); otherwise the top of view.
-                    let (logical, row) = match self.md_focused_visible_line() {
-                        Some(hit) => hit,
-                        None => (
-                            self.md_top_logical_line().unwrap_or(0),
-                            self.tab.preview_scroll as usize,
-                        ),
+                    let focus = self.md_focused_visible_line();
+                    let view = konoma_widgets::caret::MdView {
+                        scroll: self.tab.preview_scroll as usize,
+                        view_rows: self.md_view_rows,
+                        src_lines: c.src_lines,
+                        lines: &c.lines,
+                        row_prefix: &c.row_prefix,
+                        wrap: self.cfg.ui.wrap,
+                        width_known: c.width != 0,
+                        focus,
                     };
-                    let est = (row * c.src_lines / self.md_view_rows).min(c.src_lines - 1);
-                    return Some(self.md_content_anchor_line(logical, est).unwrap_or(est) + 1);
+                    // Re-reads the file so it matches what the editor will open (an agent may have
+                    // edited it since the preview was built).
+                    return konoma_widgets::caret::md_edit_line(&view, &|| {
+                        let content = crate::preview::text::load(c.path.as_path()).ok()?;
+                        Some(content.lines.iter().map(|l| l.to_string()).collect())
+                    });
                 }
             }
         }
         None
+    }
+
+    /// The 0-based decorated (logical) line at the top of the current Markdown view.
+    fn md_top_logical_line(&self) -> Option<usize> {
+        let c = self.md_cache.as_ref()?;
+        konoma_widgets::caret::md_top_logical_line(&konoma_widgets::caret::MdView {
+            scroll: self.tab.preview_scroll as usize,
+            view_rows: self.md_view_rows,
+            src_lines: c.src_lines,
+            lines: &c.lines,
+            row_prefix: &c.row_prefix,
+            wrap: self.cfg.ui.wrap,
+            width_known: c.width != 0,
+            focus: None,
+        })
     }
 
     /// The (decorated logical line, top display row) of the Tab-focused Markdown item, but only when it
@@ -4260,64 +4272,16 @@ impl App {
         (row < scroll + vh && row + h > scroll).then_some((item.line, row))
     }
 
-    /// The 0-based decorated (logical) line at the top of the current Markdown view, resolving wrapping
-    /// so it matches what the renderer draws (`preview_scroll` is in post-wrap display rows).
-    fn md_top_logical_line(&self) -> Option<usize> {
-        let c = self.md_cache.as_ref()?;
-        if c.lines.is_empty() {
-            return None;
-        }
-        let scroll = self.tab.preview_scroll as usize;
-        if !self.cfg.ui.wrap || c.width == 0 || c.row_prefix.len() != c.lines.len() + 1 {
-            return Some(scroll.min(c.lines.len() - 1));
-        }
-        // prefix is each line's starting display row (monotonically increasing). The line
-        // containing scroll = pp(p <= scroll) - 1.
-        let i = c
-            .row_prefix
-            .partition_point(|&p| p <= scroll)
-            .saturating_sub(1);
-        Some(i.min(c.lines.len() - 1))
-    }
-
-    /// Refine the proportional editor-open estimate for rendered Markdown by content: take the longest
-    /// visible span of decorated logical line `logical` (a single span carries no Markdown markers, so its
-    /// text is a verbatim substring of the source) and find the source line containing it, closest to
-    /// `est`. Returns a 0-based source line, or None to fall back to `est`. Re-reads the file so it
-    /// matches what the editor will open (an agent may have edited it since the preview was built).
-    fn md_content_anchor_line(&self, logical: usize, est: usize) -> Option<usize> {
-        use ratatui::style::Modifier;
-        let c = self.md_cache.as_ref()?;
-        let line = c.lines.get(logical)?;
-        // Longest non-hidden, non-blank span (hidden spans carry link/URL targets, not on-screen text).
-        let key = line
-            .spans
-            .iter()
-            .filter(|s| !s.style.add_modifier.contains(Modifier::HIDDEN))
-            .map(|s| s.content.trim())
-            .filter(|t| !t.is_empty())
-            .max_by_key(|t| t.chars().count())?;
-        if key.chars().count() < 4 {
-            return None;
-        }
-        let content = crate::preview::text::load(c.path.as_path()).ok()?;
-        let mut best: Option<usize> = None;
-        let mut best_d = usize::MAX;
-        for (i, sl) in content.lines.iter().enumerate() {
-            if sl.contains(key) {
-                let d = i.abs_diff(est);
-                if d < best_d {
-                    best_d = d;
-                    best = Some(i);
-                }
-            }
-        }
-        best
-    }
-
     /// Taken by the run loop: if set, return the editor-launch target path (+ line) and clear it.
     pub fn take_pending_edit(&mut self) -> Option<(PathBuf, Option<usize>)> {
         self.pending_edit.take()
+    }
+
+    /// The terminal chain `e` / `o` asked for (see `pending_terminal`), if any.
+    pub fn take_pending_terminal(
+        &mut self,
+    ) -> Option<(Vec<konoma_plugin::launch::Attempt>, PathBuf)> {
+        self.pending_terminal.take()
     }
 
     /// `!`: request launching the backend's own external tool (lazygit for git, `[jj] tool` --
@@ -4360,10 +4324,13 @@ impl App {
             self.reload_media_if_changed();
             // A plugin's file (CSV/TSV, an archive listing) can change from an external edit. Open
             // it again (the old table stays on screen until the new one lands) and clamp the
-            // cursor within range (preserving its position).
+            // cursor within range (preserving its position). The picture plugins were handled
+            // just above (`reload_media_if_changed`, with its mtime guard); `reload_plugin` reads a
+            // picture's file again unconditionally, so it must not be reached from here for them.
             // (The `code` plugin has nothing to read again: its styler works on the lines the
             // window reader has just reopened.)
             if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
+                && !self.shows_media_plugin()
                 && !self.shows_file_text_plugin()
             {
                 if !self.plugin_file_unchanged(named) {
@@ -4437,9 +4404,14 @@ impl App {
         if file_mtime(&path) == self.preview_media_mtime {
             return; // the target file is unchanged → avoid a wasted re-decode / external-tool run
         }
-        // Preserve the display state (zoom/center/page) and reload. The page count is the
-        // plugin's to report again (the file may have gained or lost pages); until it lands the
-        // page asked for is the one the user was on.
+        self.restart_media_load_keeping_view(&kind, &path);
+    }
+
+    /// Load the media again from scratch, keeping the display state (zoom/center/page). The page
+    /// count is the plugin's to report again (the file may have gained or lost pages); until it
+    /// lands the page asked for is the one the user was on. Shared by the file-change reload and a
+    /// picture plugin's `Outcome::Reload`, so both read the file again the same way.
+    pub(crate) fn restart_media_load_keeping_view(&mut self, kind: &PreviewKind, path: &Path) {
         let (zoom, center, page) = (
             self.tab.image_view.zoom,
             self.tab.image_view.center,
@@ -4447,7 +4419,7 @@ impl App {
         );
         self.clear_image(); // reset zoom/center/page/media generation
         self.tab.page = page.max(1);
-        self.start_media_load(&kind, &path); // also updates preview_media_mtime
+        self.start_media_load(kind, path); // also updates preview_media_mtime
         self.tab.image_view.zoom = zoom;
         self.tab.image_view.center = center;
     }
@@ -4945,26 +4917,41 @@ impl App {
     /// and the last page) and reposition the caret at the row it occupied before the move, so the
     /// caret and the window always move together on a page/half-page step.
     fn windowed_page_scroll(&mut self, delta: i32) {
-        let row_in_view = self
-            .tab
-            .preview_cursor_line
-            .saturating_sub(self.tab.preview_top_line);
-        self.win_scroll_lines(delta);
+        // The total is counted (and cached) first so the window stops at the last page.
         let total = self.win_total().unwrap_or(usize::MAX);
-        let maxl = total.saturating_sub(1);
-        self.tab.preview_cursor_line = self
-            .tab
-            .preview_top_line
-            .saturating_add(row_in_view)
-            .min(maxl);
+        let mut c = self.caret();
+        c.page(delta, total, self.tab.preview_viewport as usize);
+        self.apply_caret(c);
+    }
+
+    /// The caret and the window as the pure [`konoma_widgets::caret::Caret`] sees them.
+    fn caret(&self) -> konoma_widgets::caret::Caret {
+        konoma_widgets::caret::Caret {
+            top: self.tab.preview_top_line,
+            line: self.tab.preview_cursor_line,
+            col: self.tab.preview_cursor_col,
+        }
+    }
+
+    /// Take the caret `c` the pure moves computed: the window follows by the lines its top moved
+    /// (the byte position is found from the line starts), then the caret is written.
+    fn apply_caret(&mut self, c: konoma_widgets::caret::Caret) {
+        let moved = c.top as i64 - self.tab.preview_top_line as i64;
+        if moved != 0 {
+            self.win_scroll_lines(moved.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+        }
+        self.tab.preview_cursor_line = c.line;
+        self.tab.preview_cursor_col = c.col;
     }
 
     /// To the top of the preview.
     pub fn preview_to_top(&mut self) {
         if self.is_windowed() {
-            self.tab.preview_cursor_line = 0;
+            let mut c = self.caret();
+            c.to_top();
             self.tab.preview_byte_top = 0;
-            self.tab.preview_top_line = 0;
+            self.tab.preview_top_line = c.top;
+            self.tab.preview_cursor_line = c.line;
         } else {
             self.tab.preview_scroll = 0;
         }
@@ -4981,17 +4968,18 @@ impl App {
         let vh = self.tab.preview_viewport.max(1) as usize;
         // Always fetch the total line count (it's cached) since clamping the line cursor to the end needs it.
         let total = self.win_total();
-        let cur = self.tab.preview_top_line;
         if let Some(b) = self
             .preview_win
             .as_mut()
             .map(|w| w.last_page_top(vh).unwrap_or(0))
         {
             self.tab.preview_byte_top = b;
-            self.tab.preview_top_line = total.map(|t| t.saturating_sub(vh)).unwrap_or(cur);
         }
         if let Some(t) = total {
-            self.tab.preview_cursor_line = t.saturating_sub(1);
+            let mut c = self.caret();
+            c.to_bottom(t, vh);
+            self.tab.preview_top_line = c.top;
+            self.tab.preview_cursor_line = c.line;
         }
     }
 
@@ -5028,23 +5016,9 @@ impl App {
     /// In visual mode the anchor stays fixed, so moving the cursor extends the selection.
     fn preview_cursor_move(&mut self, delta: i32) {
         let total = self.win_total().unwrap_or(usize::MAX);
-        let maxl = total.saturating_sub(1) as i64;
-        let next =
-            (self.tab.preview_cursor_line as i64 + delta as i64).clamp(0, maxl.max(0)) as usize;
-        self.tab.preview_cursor_line = next;
-        self.follow_cursor();
-    }
-
-    /// Scroll the window (byte-based) just enough that the line cursor is on screen.
-    fn follow_cursor(&mut self) {
-        let vh = self.tab.preview_viewport.max(1) as usize;
-        let top = self.tab.preview_top_line;
-        let cur = self.tab.preview_cursor_line;
-        if cur < top {
-            self.win_scroll_lines(-((top - cur) as i32));
-        } else if cur >= top + vh {
-            self.win_scroll_lines((cur + 1 - (top + vh)) as i32);
-        }
+        let mut c = self.caret();
+        c.step(delta, total, self.tab.preview_viewport as usize);
+        self.apply_caret(c);
     }
 
     /// Windowed scroll (delta lines). Computes the surrounding line-head bytes each time to move preview_byte_top, and
@@ -5232,18 +5206,16 @@ impl App {
                 .collect();
         }
         let top_line = self.tab.preview_top_line;
-        // Clamp the 2D caret column to the visible cursor line's actual length and write it back (correcting `l`/`$` overrun).
-        // Since the caret line is always visible via viewport follow, its actual length can be obtained from content here.
-        if self.tab.preview_cursor_line >= top_line
-            && self.tab.preview_cursor_line < top_line + content.len()
-        {
-            let ln = &content[self.tab.preview_cursor_line - top_line];
-            let len: usize = ln.spans.iter().map(|s| s.content.chars().count()).sum();
-            // The read-only caret always sits on an actual character (0 for an empty line). `$` goes to the last character.
-            self.tab.preview_cursor_col = self.tab.preview_cursor_col.min(len.saturating_sub(1));
-        }
+        // Clamp the 2D caret column to the visible cursor line's actual length and write it back.
+        self.tab.preview_cursor_col = konoma_widgets::caret::settled_col(
+            &content,
+            top_line,
+            h,
+            self.tab.preview_cursor_line,
+            self.tab.preview_cursor_col,
+        );
         // Highlight the line cursor/selection range (before the gutter = column index is aligned to the body's start at 0).
-        let content = apply_preview_caret(
+        let content = konoma_widgets::caret::apply_caret(
             content,
             top_line,
             self.tab.preview_cursor_line,
@@ -5326,18 +5298,31 @@ impl App {
     }
 
     pub fn cycle_path_style(&mut self) {
-        self.path_style = self.path_style.next();
+        self.apply_view_option(konoma_host_core::keymap::CoreAction::CyclePathStyle);
+    }
+
+    /// Applies a `,` item through the core both hosts share, and does what it asks to redo.
+    fn apply_view_option(&mut self, action: konoma_host_core::keymap::CoreAction) {
+        let mut o = konoma_host_core::view_options::ViewOptions {
+            wrap: self.cfg.ui.wrap,
+            path_style: self.path_style,
+        };
+        let effect = o.apply(action);
+        self.cfg.ui.wrap = o.wrap;
+        self.path_style = o.path_style;
+        if effect.relayout {
+            self.md_cache = None;
+        }
+        if effect.hscroll_home {
+            self.tab.preview_hscroll = 0;
+        }
     }
 
     /// Toggle line wrapping of the text and document preview for this session (`,` then `w`;
     /// `[ui] wrap` is the value it starts with). The decorated document caches its line breaks,
     /// so the cache is dropped; a horizontal offset means nothing once the lines wrap.
     pub fn toggle_wrap(&mut self) {
-        self.cfg.ui.wrap = !self.cfg.ui.wrap;
-        self.md_cache = None;
-        if self.cfg.ui.wrap {
-            self.tab.preview_hscroll = 0;
-        }
+        self.apply_view_option(konoma_host_core::keymap::CoreAction::ToggleWrap);
     }
 
     /// Toggle the `?` help. When opening, reset scroll to the top.
@@ -5379,11 +5364,7 @@ impl App {
 
     /// Format a path into a display string using the current path_style (shared by the tree/preview title).
     pub fn format_path(&self, path: &Path) -> String {
-        match self.path_style {
-            PathStyle::Full => path.display().to_string(),
-            PathStyle::Home => home_relative(path),
-            PathStyle::Relative => rel_to_open(&self.tab.open_dir, path),
-        }
+        self.path_style.format(&self.tab.open_dir, path)
     }
 }
 
@@ -5893,89 +5874,16 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
     })
 }
 
-/// Assemble the copy string (a pure function; does not touch the clipboard).
-/// `open_dir` is the base for relative paths (the launch directory).
+/// Assemble the copy string (a pure function; does not touch the clipboard). The shared
+/// implementation lives in `konoma_host_core::copy`.
 fn copy_text(path: &Path, open_dir: &Path, kind: CopyKind) -> String {
-    match kind {
-        CopyKind::Name => path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        CopyKind::Full => path.display().to_string(),
-        CopyKind::Parent => path
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        // Use exactly the same basis as the top-left title display (format_path's Relative).
-        CopyKind::Relative => rel_to_open(open_dir, path),
-        CopyKind::AtRef => at_ref_text(open_dir, path),
-    }
+    konoma_host_core::copy::path_text(path, open_dir, kind)
 }
 
-/// `@path` reference for AI agents (Claude Code's `@file` context syntax). Under `open_dir` the path is
-/// strictly relative to it (`src/app.rs` — no leading dir name, unlike `rel_to_open`); outside it is
-/// `..`-relative; if neither works, absolute. Prefixed with `@`.
-fn at_ref_text(open_dir: &Path, path: &Path) -> String {
-    let rel = match path.strip_prefix(open_dir) {
-        Ok(r) if !r.as_os_str().is_empty() => r.display().to_string(),
-        _ => match rel_from(open_dir, path) {
-            Some(r) if !r.as_os_str().is_empty() => r.display().to_string(),
-            _ => path.display().to_string(),
-        },
-    };
-    format!("@{rel}")
-}
-
-/// Write to the clipboard. Returns Err on environments where arboard is unavailable (the caller shows a flash).
-///
-/// Test builds never touch arboard: see `test_support::set_test_clipboard` and the module doc there
-/// for why (`cargo test` was overwriting the developer's real system clipboard on every copy key).
-/// The arboard-calling body below is entirely absent from a `#[cfg(test)]` build.
-///
-/// Why the old (pre-seam) tests happened to pass on headless Linux CI without ever visibly
-/// clobbering anything: `arboard`'s Linux backend opens an X11 connection in `Clipboard::new()`
-/// (`RustConnection::connect(None)`), which fails fast to `Err` with no `DISPLAY` — GitHub Actions'
-/// `ubuntu-latest` runner has none, so every copy in that job hit this function's `Err` branch and
-/// touched no real clipboard at all (there wasn't one to touch). macOS is different: `NSPasteboard`
-/// is a system service reachable from any logged-in session, headless CI included, so `cargo test`
-/// on macOS (the developer's own machine, and the macOS CI job) really did write through to a real
-/// pasteboard every time — CI's is just a throwaway VM nobody minds, whereas the developer's is the
-/// one this bug report was about. The seam above makes both platforms behave identically under
-/// `cargo test`: neither ever calls arboard, so this asymmetry can no longer matter.
-#[cfg(not(test))]
+/// Write to the clipboard (the shared part lives in `konoma_host_core::clipboard`, which also holds
+/// the Linux selection owner and the test-build sink). Err where the clipboard is unavailable.
 fn set_clipboard(text: &str) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux the clipboard content is owned by the process holding the X11/Wayland
-        // selection: dropping the Clipboard releases it and the copied text is lost unless a
-        // clipboard manager grabbed it. Probe on the main thread first so the caller still gets
-        // an Err (and shows its flash) on headless/unavailable environments, then hold the
-        // selection in a detached thread via SetExtLinux::wait() so paste works. wait() returns
-        // (and the thread exits) as soon as another app — or the next copy — takes ownership, so
-        // at most one holder thread is alive at a time. Not unit-tested (requires an X11/Wayland
-        // display); verified in a Linux VM.
-        use arboard::SetExtLinux;
-        let _ = arboard::Clipboard::new()?;
-        let owned = text.to_string();
-        std::thread::spawn(move || {
-            if let Ok(mut cb) = arboard::Clipboard::new() {
-                let _ = cb.set().wait().text(owned);
-            }
-        });
-        Ok(())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let mut cb = arboard::Clipboard::new()?;
-        cb.set_text(text.to_string())?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-fn set_clipboard(text: &str) -> Result<()> {
-    crate::test_support::set_test_clipboard(text);
-    Ok(())
+    konoma_host_core::clipboard::set_text(text)
 }
 
 /// Resolve a dropped (=pasted) string into a list of **existing paths**. Terminals (Ghostty, etc.) pass a drop

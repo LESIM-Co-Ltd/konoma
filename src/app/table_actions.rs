@@ -792,59 +792,25 @@ impl App {
     /// Column = the column's header + every cell value, one per line.
     pub(super) fn table_copy_text(&self, kind: TableCopyKind) -> Option<String> {
         let t = self.grid()?;
-        let (r, c) = (self.tab.table_cur_row, self.tab.table_cur_col);
-        // A sheet copies the text Excel shows (never the raw value, never the row-number gutter or
-        // the column letters — those are not data).
-        if self.table_addressed() {
-            return Some(match kind {
-                TableCopyKind::Cell => t.cell(r, c).to_string(),
-                // Tab-separated, up to the last cell that shows something (no trailing tabs).
-                TableCopyKind::Row => (0..t.row_len(r))
-                    .map(|c| t.cell(r, c))
-                    .collect::<Vec<_>>()
-                    .join("\t"),
-                TableCopyKind::Column => (0..t.nrows())
-                    .map(|r| t.cell(r, c))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            });
-        }
-        // A table with no data rows (a header-only file) copies its header; a ragged row copies
-        // the cells it has, no padding.
-        let sep = (self.table_delimiter() as char).to_string();
-        Some(match kind {
-            TableCopyKind::Cell => {
-                if t.nrows() == 0 {
-                    t.header(c).to_string()
-                } else {
-                    t.cell(r, c).to_string()
-                }
-            }
-            TableCopyKind::Row => {
-                if t.nrows() == 0 {
-                    (0..t.ncols())
-                        .map(|c| t.header(c))
-                        .collect::<Vec<_>>()
-                        .join(&sep)
-                } else {
-                    (0..t.row_len(r))
-                        .map(|c| t.cell(r, c))
-                        .collect::<Vec<_>>()
-                        .join(&sep)
-                }
-            }
-            TableCopyKind::Column => {
-                let mut vals = vec![t.header(c).to_string()];
-                vals.extend((0..t.nrows()).map(|r| t.cell(r, c).into_owned()));
-                vals.join("\n")
-            }
-        })
+        let sep = if self.table_addressed() {
+            // A spreadsheet never reads the delimiter: its row is tab-joined.
+            String::new()
+        } else {
+            (self.table_delimiter() as char).to_string()
+        };
+        Some(konoma_host_core::copy::table_text(
+            &t,
+            kind,
+            (self.tab.table_cur_row, self.tab.table_cur_col),
+            self.table_addressed(),
+            &sep,
+        ))
     }
 
     /// Copy the current cell / row / column to the clipboard and flash the result.
     pub fn table_copy(&mut self, kind: TableCopyKind) {
         let Some(text) = self.table_copy_text(kind) else {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
+            self.flash = Some(konoma_host_core::copy::no_target_notice(self.lang).into());
             return;
         };
         self.set_clipboard_flash(&text);
