@@ -2789,10 +2789,9 @@ fn link_style_with_multiple_indices_reaches_every_named_edge() {
          linkStyle 0,1,2 stroke:#1f6feb",
     );
     assert_eq!(d.edges.len(), 4);
-    for i in 0..3 {
+    for (i, edge) in d.edges.iter().enumerate().take(3) {
         assert_eq!(
-            d.edges[i]
-                .style
+            edge.style
                 .as_ref()
                 .unwrap_or_else(|| panic!("edge {i} has a style"))
                 .stroke
@@ -4168,9 +4167,9 @@ fn link_style_interpolate_with_multiple_indices_reaches_every_named_edge() {
         "basis",
     );
     assert_eq!(d.edges.len(), 4);
-    for i in 0..3 {
+    for (i, edge) in d.edges.iter().enumerate().take(3) {
         assert_eq!(
-            d.edges[i].curve,
+            edge.curve,
             Curve::Linear,
             "edge {i} is named by `linkStyle 0,1,2 interpolate linear`"
         );
