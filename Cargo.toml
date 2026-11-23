@@ -80,7 +80,7 @@ re_mp4 = "0.5"
 symphonia-core = "0.6"
 symphonia-format-mkv = "0.6"
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
-pulldown-cmark = { version = "0.13.5", default-features = false }
+pulldown-cmark = { version = "0.13.6", default-features = false }
 mermaid-text = "0.57"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
@@ -102,7 +102,7 @@ infer = "0.22"
 csv = "1"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 tar = { version = "0.4.45", default-features = false }
-calamine = { version = "0.37", default-features = false }
+calamine = { version = "0.38", default-features = false }
 encoding_rs = "0.8"
 cfb = "0.15"
 quick-xml = "0.42"
