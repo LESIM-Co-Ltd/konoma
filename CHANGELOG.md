@@ -44,7 +44,7 @@ All notable changes to konoma are documented in this file. The format is based o
   The host draws a plugin by what it declares (`Manifest::shows`, `converts`, `file_text`, `unavailable`) and by the type of view
   it returns, not by its id, so another plugin can stand in for a standard one (a text view a plugin makes is read in windows
   like a file; what the host shows when a plugin cannot show a file is the plugin's own `Manifest::unavailable`); how to add a
-  plugin of your own comes in a later stage. Only the standard `mermaid` and `math` plugins' own SVG is trusted: any other
+  plugin of your own is described in the "Write a plugin" guide. Only the standard `mermaid` and `math` plugins' own SVG is trusted: any other
   plugin's SVG is drawn by the supervised child process, and an SVG that names no directory reads no file. `[plugins.math] color`
   is checked inside the `math` plugin as well. A plugin that reads heavily (one that names a work group) is read again only when
   its file changed (its modification time, size, inode or change time), or when an event names the file itself and the file was
