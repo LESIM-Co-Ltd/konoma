@@ -975,8 +975,8 @@ impl Sb<'_> {
         // Direct border properties of every slot's `tc`.
         let mut explicit: Vec<[EdgeSpec; 6]> = Vec::with_capacity(nr * nc);
         let mut fills: Vec<Option<sd::Fill>> = vec![None; grid.cells.len()];
-        for s in 0..nr * nc {
-            let pr = grid.slots[s].and_then(|tc| tc.child("tcPr"));
+        for slot in grid.slots.iter().take(nr * nc) {
+            let pr = slot.and_then(|tc| tc.child("tcPr"));
             explicit.push(pr.map_or_else(Default::default, |p| self.explicit_edges(p)));
         }
         let rels = self.rels[self.cur.min(2)];
