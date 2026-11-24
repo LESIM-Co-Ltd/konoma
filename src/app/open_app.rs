@@ -90,6 +90,12 @@ impl App {
     /// takes the target is `verb_plugin_id`'s question, which stats the file and reads it only
     /// when it changed.
     pub(crate) fn verb_target(&self) -> VerbTarget {
+        if self.project_active() {
+            return self
+                .project_row_target()
+                .map(VerbTarget::File)
+                .unwrap_or(VerbTarget::None);
+        }
         if self.is_git_view() {
             return match self.git_view_entries().get(self.git_view_sel()) {
                 Some(e) if e.status != crate::git::FileStatus::Deleted => {

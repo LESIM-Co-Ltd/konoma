@@ -48,11 +48,11 @@ pub fn action_enabled(app: &App, ctx: Context, a: Action) -> bool {
 /// See the module comment.
 pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
     use Action as A;
-    // A backend that only reads is asked politely and answers here, once, rather than each write
-    // discovering it separately and failing in its own way.
-    #[cfg(feature = "git")]
-    if a.writes_repository() && !crate::vcs::caps(&app.tab.root).write {
-        return Gate::Off(Some(Msg::VcsReadOnly));
+    if let Some(plugin) = super::decl::decl(a).writes {
+        let verdict = super::write_guard::write_guard(app, plugin, true, plugin == "git");
+        if !verdict.is_on() {
+            return verdict;
+        }
     }
     match a {
         // --- A plugin's own action: the session's word, the same one the footer and the help read ---
@@ -259,16 +259,13 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
 /// works (`PluginShow::enabled`), and a writing action is refused for a plugin set to
 /// `read_only = true` (one guard for every plugin's writes, with the reason).
 fn gate_plugin(app: &App, ctx: Context, p: crate::plugins::PluginAct) -> Gate {
-    use konoma_plugin::host::acts::{gate, ActGate};
-    match gate(
-        app.plugin_binding_in(ctx, p),
-        app.plugin_act_enabled(p),
-        app.plugin_is_read_only(p.plugin()),
-    ) {
-        ActGate::On => Gate::On,
-        ActGate::Off => Gate::Off(None),
-        ActGate::ReadOnly => Gate::Off(Some(Msg::PluginReadOnly)),
+    let Some(binding) = app.plugin_binding_in(ctx, p) else {
+        return Gate::Off(None);
+    };
+    if !app.plugin_act_enabled(p) {
+        return Gate::Off(None);
     }
+    super::write_guard::write_guard(app, p.plugin(), binding.writes, false)
 }
 
 /// `e`: the target and whether opening it is possible (mirrors `App::request_edit`).
@@ -314,6 +311,9 @@ fn gate_open_external(app: &App) -> Gate {
 
 /// `o`: the hub opens only in a repository the backend can show (mirrors `App::open_git_view`).
 fn gate_open_git_view(app: &App) -> Gate {
+    if !app.tab.projects.projects.is_empty() || app.tab.projects.pending() {
+        return Gate::On;
+    }
     let backend_is_git = app.git_vcs == crate::vcs::VcsKind::Git;
     if backend_is_git && !app.cfg.external.git {
         return Gate::Off(Some(Msg::ExternalGitDisabled));

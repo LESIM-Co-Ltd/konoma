@@ -176,6 +176,9 @@ const LOG_GRAPH: &[Action] = &[Action::GitOpenLog, Action::GitOpenGraph];
 
 /// The context the help describes: the screen the help was opened over.
 pub fn help_context(app: &App) -> Context {
+    if app.project_active() {
+        return Context::Canvas;
+    }
     #[cfg(feature = "git")]
     {
         let backend = crate::ops::backend(app);
@@ -783,9 +786,11 @@ fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<R
 /// The section of the open plugin's keys (`None` when there is none to list).
 fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
     let lang = app.plugin_lang();
-    let rows = konoma_plugin::host::acts::help_rows(&app.plugin_acts_in(ctx), lang, |b| {
-        action_enabled(app, ctx, Action::Plugin(b.act))
-    });
+    let bindings = app.plugin_context_bindings(ctx);
+    let rows =
+        konoma_plugin::host::acts::help_rows(&bindings.iter().collect::<Vec<_>>(), lang, |b| {
+            action_enabled(app, ctx, Action::Plugin(b.act))
+        });
     let plugin = rows.first().map(|(_, _, b)| b.act.plugin())?;
     let mut sec = HelpSection::new(
         app.plugin_keys
@@ -816,6 +821,47 @@ pub fn sections(app: &App) -> Vec<HelpSection> {
 }
 
 pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
+    if app.project_active() {
+        let mut sections: Vec<_> = plugin_section(app, ctx).into_iter().collect();
+        let mut navigation = HelpSection::new(tr(app.lang, Msg::ProjectTitle));
+        navigation.rows.push((
+            "Tab / Shift-Tab".into(),
+            tr(app.lang, Msg::ProjectCycle).into(),
+        ));
+        navigation
+            .rows
+            .push(("q / Esc".into(), tr(app.lang, Msg::ProjectBack).into()));
+        navigation
+            .rows
+            .push(("j/k / ↑/↓".into(), tr(app.lang, Msg::Scroll).into()));
+        if app.project_content().is_some_and(|view| {
+            matches!(
+                view.as_ref(),
+                crate::app::project_screens::ProjectContent::List(_)
+            )
+        }) {
+            navigation
+                .rows
+                .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
+        }
+        if let Some(nav) = &app.tab.project_navigation {
+            if let Some(runtime) = app.project_runtimes.get(&nav.project) {
+                for screen in &runtime.project.declaration.screens {
+                    if let Some(key) = screen.key {
+                        navigation
+                            .rows
+                            .push((key.to_string(), screen.title.get(app.plugin_lang()).into()));
+                    }
+                }
+            }
+        }
+        sections.push(navigation);
+        if let Some(section) = crate::ui::help::leader_section(app, ctx, LeaderId::Actions, "Space")
+        {
+            sections.push(section);
+        }
+        return sections;
+    }
     let (view_title, mut rows) = view_rows(app, ctx);
     rows.extend(global_rows());
     let facts = core_help::facts_for(app, ctx);

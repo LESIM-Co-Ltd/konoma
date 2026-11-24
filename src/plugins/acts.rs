@@ -65,6 +65,17 @@ impl PluginAct {
 /// An action as the host binds it (the shared binding, with konoma's `Copy` handle).
 pub type ActBinding = konoma_plugin::host::acts::ActBinding<PluginAct>;
 
+fn tree_key_allowed(issue: &KeyIssue) -> bool {
+    matches!(issue.kind, konoma_plugin::keys::KeyIssueKind::TreeKey)
+        && issue.key.as_ref().is_some_and(|key| {
+            konoma_plugin::keys::parse_key(key).is_ok_and(|spec| {
+                !konoma_plugin::keys::reserved("tree")
+                    .iter()
+                    .any(|(reserved, _)| *reserved == spec)
+            })
+        })
+}
+
 /// Something worth telling the user at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginNote {
@@ -101,6 +112,7 @@ pub struct PluginKeys {
 struct PluginEntry {
     name: Tr,
     acts: Vec<ActBinding>,
+    declarations: Vec<konoma_plugin::Act>,
 }
 
 #[cfg(test)]
@@ -116,6 +128,11 @@ impl PluginKeys {
     ) -> PluginKeys {
         let mut out = PluginKeys::default();
         for note in registry.notes() {
+            if let NoteKind::Key(issue) = &note.kind {
+                if tree_key_allowed(issue) {
+                    continue;
+                }
+            }
             out.notes.push(match note.kind {
                 NoteKind::Key(issue) => PluginNote::Key {
                     plugin: note.plugin,
@@ -139,6 +156,32 @@ impl PluginKeys {
             let Some(manifest) = registry.manifest(id) else {
                 continue;
             };
+            let mut manifest = manifest.clone();
+            // The SDK retains the original key in its TreeKey diagnostic. This host supports
+            // safe tree shortcuts; it still reserves the host's layers and rejects duplicates.
+            let mut tree_keys = Vec::new();
+            for note in registry
+                .notes()
+                .into_iter()
+                .filter(|note| note.plugin == id)
+            {
+                if let NoteKind::Key(issue) = note.kind {
+                    if tree_key_allowed(&issue) {
+                        if let Some(action) = manifest.actions.iter_mut().find(|act| {
+                            act.id == issue.act
+                                && matches!(
+                                    act.project_context,
+                                    Some(konoma_plugin::project::ActContext::TreeSelection)
+                                )
+                        }) {
+                            if let Some(key) = issue.key.filter(|key| !tree_keys.contains(key)) {
+                                tree_keys.push(key.clone());
+                                action.key = Some(key);
+                            }
+                        }
+                    }
+                }
+            }
             // A plugin whose id is also the name of a host context (`text`) keeps that table for
             // the host.
             let user = if crate::keymap::is_host_key_table(id) {
@@ -147,7 +190,7 @@ impl PluginKeys {
                 tables.remove(id)
             };
             let (acts, key_notes) =
-                bind_actions(id, manifest, user.as_ref(), |a| PluginAct::new(id, a));
+                bind_actions(id, &manifest, user.as_ref(), |a| PluginAct::new(id, a));
             out.notes.extend(key_notes.into_iter().map(|n| match n {
                 KeyNote::UnknownAction { plugin, action } => {
                     PluginNote::UnknownAction { plugin, action }
@@ -162,6 +205,7 @@ impl PluginKeys {
                 PluginEntry {
                     name: manifest.name.clone(),
                     acts,
+                    declarations: manifest.actions.clone(),
                 },
             );
         }
@@ -171,6 +215,14 @@ impl PluginKeys {
     /// The actions of plugin `id`, in declaration order.
     pub fn acts_of(&self, id: &str) -> &[ActBinding] {
         self.by_plugin.get(id).map_or(&[], |e| e.acts.as_slice())
+    }
+
+    pub fn declaration(&self, action: PluginAct) -> Option<&konoma_plugin::Act> {
+        self.by_plugin
+            .get(action.plugin())?
+            .declarations
+            .iter()
+            .find(|a| a.id == action.act())
     }
 
     /// The display name of a plugin.

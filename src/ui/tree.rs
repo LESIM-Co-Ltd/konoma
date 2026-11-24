@@ -317,6 +317,16 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         },
         (None, None) => format!(" {} ", app.format_path(&root)),
     };
+    let mut title = Line::raw(title);
+    for chip in app.project_chips() {
+        title.spans.push(Span::raw(" · "));
+        // Apply the line style to its spans before merging it into the title.
+        title.spans.extend(chip.spans.into_iter().map(|span| {
+            let style = chip.style.patch(span.style);
+            span.style(style)
+        }));
+        title.spans.push(Span::raw(" "));
+    }
 
     // Only `[offset..end]` has already been turned into Lines, so Paragraph's vertical scroll is 0
     // (rather than skipping past offset rows without drawing them, they were never created in the first place).
