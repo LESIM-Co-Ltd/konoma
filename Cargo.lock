@@ -2065,6 +2065,7 @@ dependencies = [
 name = "konoma-vcs"
 version = "0.1.0"
 dependencies = [
+ "konoma-base",
  "konoma-plugin",
  "konoma-test-support",
  "konoma-vcs-core",

@@ -535,6 +535,10 @@ pub struct ListView {
 /// ```
 #[non_exhaustive]
 pub struct ListRow {
+    /// Optional styled suffix aligned to the body's right edge by the host.
+    pub right: Option<Line>,
+    /// Filter matching text; absent means the displayed cells and optional right suffix.
+    pub filter_text: Option<String>,
     /// Short name used in action prompts, falling back to the opaque value when absent.
     pub name: Option<String>,
     /// False for a message or heading: the host never selects, marks or acts on this row.
@@ -553,6 +557,36 @@ pub struct ListRow {
 }
 
 impl ListRow {
+    pub fn right(mut self, right: Line) -> Self {
+        self.right = Some(right);
+        self
+    }
+
+    pub fn filter_text(mut self, text: impl Into<String>) -> Self {
+        self.filter_text = Some(text.into());
+        self
+    }
+
+    /// Case-insensitive substring matching, independent of display alignment.
+    pub fn matches_filter(&self, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        let displayed;
+        let text = if let Some(text) = &self.filter_text {
+            text
+        } else {
+            displayed = self
+                .cells
+                .iter()
+                .chain(self.right.iter())
+                .map(Line::plain)
+                .collect::<String>();
+            &displayed
+        };
+        text.to_lowercase().contains(&query.to_lowercase())
+    }
+
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
@@ -582,6 +616,8 @@ impl ListRow {
 
     pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
         Self {
+            right: None,
+            filter_text: None,
             name: None,
             selectable: true,
             cells,

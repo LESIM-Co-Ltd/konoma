@@ -29,7 +29,12 @@ impl Session for Project {
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
         assert_eq!(req.project, Some(context()));
         Ok(View::List(ListView {
-            rows: vec![ListRow::new("empty", vec![Line::raw("empty")]).selectable(false)],
+            rows: vec![
+                ListRow::new("empty", vec![Line::raw("empty")]).selectable(false),
+                ListRow::new("commit", vec![Line::raw("subject")])
+                    .right(Line::raw("author · date"))
+                    .filter_text("short subject author date"),
+            ],
         }))
     }
     fn watch_paths(&mut self, cx: &ViewCx) -> Result<Option<Vec<std::path::PathBuf>>, Failure> {
@@ -67,6 +72,20 @@ fn project_presentation_defaults_are_explicit_and_empty_rows_are_not_selectable(
         }
     }
     assert_eq!(DefaultSession.watch_paths(&ViewCx::bare()).unwrap(), None);
+}
+
+#[test]
+fn project_list_filter_override_and_display_fallback() {
+    let row = ListRow::new("commit", vec![Line::raw("Subject")]).right(Line::raw("作者"));
+    assert!(row.matches_filter("subject"));
+    assert!(row.matches_filter("作者"));
+    let row = row.filter_text("hash subject author date");
+    assert!(row.matches_filter("SUBJECT AUTHOR"));
+    assert!(!row.matches_filter("作者"));
+    assert!(!row.matches_filter("·"));
+    let row = row.filter_text("");
+    assert!(row.matches_filter(""));
+    assert!(!row.matches_filter("subject"));
 }
 
 #[cfg(feature = "proc")]
@@ -108,6 +127,13 @@ mod transport {
             panic!("list required")
         };
         assert!(!list.rows[0].selectable);
+        assert_eq!(list.rows[0].right, None);
+        assert_eq!(list.rows[0].filter_text, None);
+        assert_eq!(list.rows[1].right, Some(Line::raw("author · date")));
+        assert_eq!(
+            list.rows[1].filter_text.as_deref(),
+            Some("short subject author date")
+        );
         session.act("switch", &ActCx::bare()).unwrap();
         assert_eq!(
             session.watch_paths(&cx).unwrap(),
@@ -155,6 +181,36 @@ mod transport {
             frame::decode::<Reply>(&frame::encode(&reply).unwrap()).unwrap(),
             reply
         );
+    }
+
+    #[test]
+    fn project_list_right_and_filter_text_round_trip_with_legacy_defaults() {
+        let dir = konoma_test_support::unique_tmp("project_list_meta");
+        let side = Side::new(dir.as_path(), 'h');
+        for row in [
+            ListRow::new("commit", vec![Line::raw("subject")])
+                .right(Line::from(vec![Span::styled(
+                    "author · date",
+                    Style::new().fg(Color::DarkGray),
+                )]))
+                .filter_text("short subject author date"),
+            ListRow::new("file", vec![Line::raw("legacy")]),
+        ] {
+            let mut view = View::List(ListView {
+                rows: vec![row.clone()],
+            });
+            let wire = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap();
+            let json = serde_json::to_value(wire).unwrap();
+            if row.right.is_none() {
+                assert!(json["List"][0].get("right").is_none());
+                assert!(json["List"][0].get("filter_text").is_none());
+            }
+            let wire = serde_json::from_value(json).unwrap();
+            let View::List(list) = view_from_wire(wire, &mut Dec::new(&side)).unwrap() else {
+                panic!("list required")
+            };
+            assert_eq!(list.rows, [row]);
+        }
     }
 
     #[test]
