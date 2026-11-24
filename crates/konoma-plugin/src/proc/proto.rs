@@ -54,6 +54,8 @@ pub struct WState {
 /// id (chosen by the host, unique over the connection).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToChild {
+    /// Protocol 2, only after the child advertises `session_watch`.
+    WatchPaths { sid: u64, rid: u64, cx: WCx },
     /// Protocol 2, only after the child's manifest advertised `session_chip`.
     Chip { sid: u64, rid: u64, cx: WCx },
     Open {
@@ -90,6 +92,10 @@ pub enum ToChild {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Reply {
+    WatchPaths {
+        paths: Option<Vec<WPath>>,
+        state: WState,
+    },
     Chip {
         chip: Option<WChip>,
         state: WState,

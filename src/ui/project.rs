@@ -1,7 +1,7 @@
 //! A project's declared tabs and its existing list, text, diff or document widget.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Stylize};
+use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
@@ -13,7 +13,8 @@ use crate::i18n::{tr, Msg};
 pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let body = Rect {
         y: area.y.saturating_add(1),
-        height: area.height.saturating_sub(1),
+        height: area.height.saturating_sub(2),
+        width: area.width.saturating_sub(2),
         ..area
     };
     app.resize_project(body.width, body.height);
@@ -26,6 +27,14 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(active) = nav.stack.last() else {
         return;
     };
+    let screen = runtime
+        .project
+        .declaration
+        .screens
+        .iter()
+        .find(|s| s.id == active.key.screen);
+    let marks = screen.is_some_and(|s| s.marks);
+    let checks = screen.is_some_and(|s| s.checks);
     let mut tabs = Vec::new();
     for screen in &runtime.project.declaration.screens {
         let label = match screen.key {
@@ -69,12 +78,15 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 let check = match row.checked {
                     Some(true) => "[x] ",
                     Some(false) => "[ ] ",
-                    None => "",
+                    None => "    ",
                 };
-                let mut spans = vec![
-                    Span::raw(format!("{mark} {check}")),
-                    Span::raw(format!("{} ", row.kind)).fg(Color::DarkGray),
-                ];
+                let mut spans = Vec::new();
+                if marks {
+                    spans.push(Span::raw(format!("{mark} ")));
+                }
+                if checks {
+                    spans.push(Span::raw(check));
+                }
                 for (cell, text) in row.cells.iter().enumerate() {
                     if cell != 0 {
                         spans.push(Span::raw("  "));
@@ -86,7 +98,7 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     }));
                 }
                 let line = Line::from(spans);
-                lines.push(if cursor == active.cursor {
+                lines.push(if row.selectable && cursor == active.cursor {
                     line.reversed()
                 } else {
                     line
@@ -96,10 +108,11 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         ProjectContent::Lines(text) | ProjectContent::Diff(text) => lines.clone_from(text),
     }
     let cursor = active.cursor.min(lines.len().saturating_sub(1));
-    let scroll = active
-        .scroll
-        .min(cursor)
-        .max(cursor.saturating_sub(usize::from(body.height.saturating_sub(1))));
+    let scroll = if body.height == 0 {
+        0
+    } else {
+        cursor.saturating_sub(usize::from(body.height - 1))
+    };
     if let Some(frame) = app
         .tab
         .project_navigation
@@ -107,7 +120,6 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .and_then(|nav| nav.stack.last_mut())
     {
         frame.cursor = cursor;
-        frame.scroll = scroll;
     }
     super::list::render(
         frame,

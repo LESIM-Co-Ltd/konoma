@@ -8,6 +8,7 @@ All notable changes to konoma are documented in this file. The format is based o
 
 - Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
 - `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
+- Internal: begin moving Git and jj changes screens into `konoma-vcs`, exercised alongside the legacy hub in tests; there is no user-visible change.
 
 ### Added
 - **Project host API data.** Project view requests carry the screen and pushed selection; action contexts carry row values, marked rows and dialog answers. Plugins can declare static read-only mode and typed refresh targets. These fields require protocol 2, preserve legacy bytes when absent, and validate named refresh screens.
@@ -161,6 +162,7 @@ All notable changes to konoma are documented in this file. The format is based o
 - **A demo plugin that is a program of its own.** `crates/konoma-demo-clock` (not published) shows `*.konoma-demo` files as a canvas drawn with ratatui widgets (a clock with a gauge, a picture and a line editor): `cargo build -p konoma-demo-clock`, then `konoma --plugin target/debug/konoma-demo-clock samples/demo.konoma-demo`. It replaces the temporary `demo-canvas` build feature and its `KONOMA_CANVAS_TRACE` log, which are gone.
 
 ### Changed
+- Internal: the git/jj reading core (`konoma-vcs-core`) no longer depends on ratatui; it describes graph colors with its own small types and the host converts them when drawing. No user-visible change.
 - **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
   name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
   new tab right of the current one (it was `I`; appending at the end, `tab_new`, and `I` have no default key); the diff switches

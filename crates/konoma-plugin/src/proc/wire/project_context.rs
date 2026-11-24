@@ -8,12 +8,21 @@ use crate::project::{ProjectAct, ProjectRow, ProjectView, RefreshTarget};
 pub struct WProjectView {
     pub screen: String,
     pub selection: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_root: Option<WPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_dir: Option<WPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_dir: Option<WPath>,
 }
 impl WProjectView {
     pub fn new(screen: impl Into<String>) -> Self {
         Self {
             screen: screen.into(),
             selection: None,
+            tree_root: None,
+            open_dir: None,
+            home_dir: None,
         }
     }
     pub fn selection(mut self, selection: impl Into<String>) -> Self {
@@ -98,13 +107,28 @@ pub fn project_view_to_wire(p: &ProjectView) -> WProjectView {
     WProjectView {
         screen: p.screen.clone(),
         selection: p.selection.clone(),
+        tree_root: p.tree_root.as_deref().map(path_to_wire),
+        open_dir: p.open_dir.as_deref().map(path_to_wire),
+        home_dir: p.home_dir.as_deref().map(path_to_wire),
     }
 }
-pub fn project_view_from_wire(p: WProjectView) -> ProjectView {
-    ProjectView {
+pub fn project_view_from_wire(p: WProjectView) -> Result<ProjectView, WireError> {
+    Ok(ProjectView {
         screen: p.screen,
         selection: p.selection,
-    }
+        tree_root: p
+            .tree_root
+            .map(|p| abs_path_from_wire(p, "tree root"))
+            .transpose()?,
+        open_dir: p
+            .open_dir
+            .map(|p| abs_path_from_wire(p, "open directory"))
+            .transpose()?,
+        home_dir: p
+            .home_dir
+            .map(|p| abs_path_from_wire(p, "home directory"))
+            .transpose()?,
+    })
 }
 pub fn project_row_to_wire(p: &ProjectRow) -> WProjectRow {
     WProjectRow {

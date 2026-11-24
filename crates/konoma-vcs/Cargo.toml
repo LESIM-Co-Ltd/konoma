@@ -1,0 +1,19 @@
+[package]
+name = "konoma-vcs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's Git and Jujutsu project screens"
+
+[dependencies]
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
+konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0" }
+
+[features]
+default = ["git"]
+git = ["konoma-vcs-core/git"]
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }

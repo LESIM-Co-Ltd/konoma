@@ -172,6 +172,7 @@ where
     };
     let action_ids: Vec<String> = manifest.actions.iter().map(|a| a.id.clone()).collect();
     wm.session_chip = version >= 2 && manifest.project.is_some();
+    wm.session_watch = version >= 2 && manifest.project.is_some();
     frame::send(
         &mut output,
         &HelloReply::Ack {
@@ -337,6 +338,7 @@ fn call_rid(m: &ToChild) -> Option<u64> {
     match m {
         ToChild::Open { rid, .. }
         | ToChild::Chip { rid, .. }
+        | ToChild::WatchPaths { rid, .. }
         | ToChild::View { rid, .. }
         | ToChild::Act { rid, .. }
         | ToChild::Key { rid, .. } => Some(*rid),
@@ -454,6 +456,37 @@ impl Worker {
             Ok(cx_from_wire(c)?)
         };
         match msg {
+            ToChild::WatchPaths { sid, cx, .. } => {
+                wire::require_protocol(self.version, 2)?;
+                let cx = cx_of(cx)?;
+                let vcx = ViewCx::new(&cx.settings, &cx.lang)
+                    .with_cancel(cancel_of(flag))
+                    .with_term(cx.term)
+                    .with_external(cx.external)
+                    .with_read_scope(cx.read_scope);
+                let session = self
+                    .sessions
+                    .get_mut(&sid)
+                    .ok_or_else(|| unknown_session(sid))?;
+                let paths = catch_unwind(AssertUnwindSafe(|| session.watch_paths(&vcx)))
+                    .map_err(|p| panic_failure("watch_paths", p))??;
+                let paths = paths
+                    .map(|paths| {
+                        paths
+                            .iter()
+                            .map(|p| wire::path_required_absolute(p, "watch path"))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()?;
+                let session = self
+                    .sessions
+                    .get(&sid)
+                    .ok_or_else(|| unknown_session(sid))?;
+                Ok(Reply::WatchPaths {
+                    paths,
+                    state: self.state(&**session)?,
+                })
+            }
             ToChild::Chip { sid, cx, .. } => {
                 wire::require_protocol(self.version, 2)?;
                 let cx = cx_of(cx)?;

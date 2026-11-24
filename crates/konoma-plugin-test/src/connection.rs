@@ -303,6 +303,7 @@ impl Connection {
             ToChild::View { req, cx, .. } => wire::req_protocol(req).max(wire::cx_protocol(cx)),
             ToChild::Act { cx, .. } | ToChild::Key { cx, .. } => wire::cx_protocol(cx),
             ToChild::Chip { cx, .. } => 2.max(wire::cx_protocol(cx)),
+            ToChild::WatchPaths { cx, .. } => 2.max(wire::cx_protocol(cx)),
             _ => 1,
         };
         wire::require_protocol(version, required).map_err(|e| e.to_string())?;
@@ -319,7 +320,7 @@ impl Connection {
             return Err(format!("answer rid {}, requested {rid}", answer.rid));
         }
         match &answer.answer {
-            Answer::Ok(Reply::Chip { .. }) => {
+            Answer::Ok(Reply::Chip { .. }) | Answer::Ok(Reply::WatchPaths { .. }) => {
                 wire::require_protocol(self.version.get(), 2).map_err(|e| e.to_string())?;
             }
             Answer::Ok(Reply::Acted { outcome, .. }) => {
@@ -516,6 +517,51 @@ mod tests {
         );
         let packet = Connection::request_packet(2, &msg).unwrap();
         assert_eq!(frame::decode::<ToChild>(&packet[4..]).unwrap(), msg);
+    }
+
+    #[test]
+    fn watch_paths_request_packets_require_protocol_two() {
+        let msg = ToChild::WatchPaths {
+            sid: 1,
+            rid: 2,
+            cx: cx(),
+        };
+        assert_eq!(
+            Connection::request_packet(1, &msg).unwrap_err(),
+            "project data requires protocol 2, negotiated 1"
+        );
+        let packet = Connection::request_packet(2, &msg).unwrap();
+        assert_eq!(frame::decode::<ToChild>(&packet[4..]).unwrap(), msg);
+    }
+
+    #[test]
+    fn watch_paths_replies_require_protocol_two() {
+        let c = blocked();
+        let reply = FromChild {
+            rid: 2,
+            answer: Answer::Ok(Reply::WatchPaths {
+                paths: None,
+                state: WState {
+                    layout: wire::layout_to_wire(&konoma_plugin::view::Layout::single()),
+                    enabled: vec![],
+                },
+            }),
+        };
+        for version in [1, 2] {
+            c.version.set(version);
+            let until = Instant::now() + Limits::default().open_view;
+            c.write(Connection::packet(frame::encode(&reply).unwrap()), until)
+                .unwrap();
+            let result = c.answer(2, until);
+            if version == 1 {
+                assert_eq!(
+                    result.unwrap_err(),
+                    "project data requires protocol 2, negotiated 1"
+                );
+            } else {
+                assert_eq!(result.unwrap(), reply.answer);
+            }
+        }
     }
 
     #[test]
