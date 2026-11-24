@@ -16,6 +16,9 @@ use super::project_screens::{
 use super::PathStyle;
 
 pub(super) enum ProjectJob {
+    TabsClosed {
+        tabs: Vec<u64>,
+    },
     Watch,
     Chip,
     View {
@@ -62,6 +65,7 @@ impl ProjectReply {
 }
 
 pub(crate) struct ProjectRuntime {
+    pub(super) closed_tabs: std::collections::BTreeSet<u64>,
     pub(super) watch_paths: Option<Vec<PathBuf>>,
     pub(super) refresh_watch: bool,
     pub(crate) project: crate::plugins::projects::MatchedProject,
@@ -186,6 +190,11 @@ impl ProjectRuntime {
                         .with_read_scope(scope.clone());
                     let mut reply = ProjectReply::empty();
                     match job {
+                        ProjectJob::TabsClosed { tabs } => {
+                            for tab in tabs {
+                                session.tab_closed(tab);
+                            }
+                        }
                         ProjectJob::Watch => {
                             reply.watch_paths = Some(resolved_watch_paths(
                                 session.watch_paths(&cx)?,
@@ -310,6 +319,7 @@ impl ProjectRuntime {
         });
         Self {
             watch_paths: None,
+            closed_tabs: Default::default(),
             refresh_watch: false,
             project,
             views: HashMap::new(),
@@ -506,19 +516,29 @@ fn content(
 
 impl super::App {
     pub(super) fn project_request(&self, key: &ScreenKey) -> ViewReq {
+        let tab = if self.tab.id == key.tab {
+            &self.tab
+        } else {
+            self.tabs
+                .iter()
+                .find(|tab| tab.id == key.tab)
+                .unwrap_or(&self.tab)
+        };
         let mut project = ProjectView::new(&key.screen)
-            .paths(&self.tab.root, &self.tab.open_dir)
+            .tab(key.tab)
+            .icons(self.cfg.ui.icons)
+            .paths(&tab.root, &tab.open_dir)
             .home_dir(crate::plugins::read_scope::home_dir());
         if let Some(selection) = &key.selection {
             project = project.selection(selection);
         }
         ViewReq::new(
-            if self.tab.preview_cols == 0 {
+            if tab.preview_cols == 0 {
                 80
             } else {
-                self.tab.preview_cols
+                tab.preview_cols
             },
-            self.tab.preview_viewport.max(1),
+            tab.preview_viewport.max(1),
         )
         .project(project)
     }

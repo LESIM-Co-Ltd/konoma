@@ -36,13 +36,15 @@ impl From<&crate::plugins::projects::MatchedProject> for ProjectKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ScreenKey {
+    pub tab: u64,
     pub screen: String,
     pub selection: Option<String>,
 }
 
 impl ScreenKey {
-    fn new(screen: impl Into<String>) -> Self {
+    fn new(screen: impl Into<String>, tab: u64) -> Self {
         Self {
+            tab,
             screen: screen.into(),
             selection: None,
         }
@@ -293,6 +295,7 @@ pub(crate) struct ProjectFrame {
     pub marked: BTreeSet<usize>,
     pub query: String,
     pub filtering: bool,
+    filter_anchor: usize,
     initialized: bool,
     pending: std::collections::VecDeque<ProjectInput>,
 }
@@ -313,6 +316,7 @@ impl ProjectFrame {
             marked: BTreeSet::new(),
             query: String::new(),
             filtering: false,
+            filter_anchor: 0,
             initialized: false,
             pending: Default::default(),
         }
@@ -610,6 +614,93 @@ impl App {
         true
     }
 
+    fn handle_project_list_motion(&mut self, key: KeyEvent) -> bool {
+        use crate::keymap::{Action, KeyPress, Motion, Resolution};
+        let Some(content) = self.project_content() else {
+            return false;
+        };
+        let ProjectContent::List(list) = content.as_ref() else {
+            return false;
+        };
+        let action = crate::ops::keys::fixed_action(Context::Text, key.code).or_else(|| match self
+            .keymaps
+            .resolve(Context::Text, None, KeyPress::norm(&key))
+        {
+            Resolution::Action(action) => Some(action),
+            _ => None,
+        });
+        let Some(Action::Navigate(motion)) = action else {
+            return false;
+        };
+        if motion == Motion::Right {
+            return false;
+        }
+        if motion == Motion::Left {
+            if self.project_graph_jj().is_some() {
+                self.project_back();
+                return true;
+            }
+            return false;
+        }
+        let visible = self.project_visible_rows();
+        let selectable: Vec<_> = visible
+            .iter()
+            .enumerate()
+            .filter(|(_, index)| list.rows[**index].selectable)
+            .map(|(cursor, _)| cursor)
+            .collect();
+        let Some(frame) = self.project_frame_mut() else {
+            return false;
+        };
+        let at = selectable
+            .iter()
+            .position(|cursor| *cursor == frame.cursor)
+            .unwrap_or(0);
+        let last = selectable.len().saturating_sub(1);
+        let next = match motion {
+            Motion::Up => at.saturating_sub(1),
+            Motion::Down => at.saturating_add(1).min(last),
+            Motion::HalfUp => at.saturating_sub(10),
+            Motion::HalfDown => at.saturating_add(10).min(last),
+            Motion::PageUp => at.saturating_sub(if key.code == KeyCode::PageUp { 10 } else { 20 }),
+            Motion::PageDown => at
+                .saturating_add(if key.code == KeyCode::PageDown {
+                    10
+                } else {
+                    20
+                })
+                .min(last),
+            Motion::Top => 0,
+            Motion::Bottom => last,
+            _ => at,
+        };
+        frame.cursor = selectable.get(next).copied().unwrap_or(0);
+        true
+    }
+
+    fn project_filter_anchor(&self) -> usize {
+        self.project_frame()
+            .map(|frame| {
+                self.project_visible_rows()
+                    .get(frame.cursor)
+                    .copied()
+                    .unwrap_or(frame.filter_anchor)
+            })
+            .unwrap_or(0)
+    }
+
+    fn project_filter_changed(&mut self, anchor: usize) {
+        let visible = self.project_visible_rows();
+        let cursor = visible
+            .iter()
+            .position(|index| *index >= anchor)
+            .unwrap_or(visible.len().saturating_sub(1));
+        if let Some(frame) = self.project_frame_mut() {
+            frame.cursor = cursor;
+            frame.filter_anchor = visible.get(cursor).copied().unwrap_or(anchor);
+        }
+    }
+
     pub(crate) fn project_active(&self) -> bool {
         self.tab.project_navigation.is_some()
     }
@@ -865,7 +956,7 @@ impl App {
 
     pub(crate) fn project_act_context(&self) -> ProjectAct {
         if let Some(frame) = self.project_frame() {
-            let mut context = ProjectAct::new().screen(&frame.key.screen);
+            let mut context = ProjectAct::new().screen(&frame.key.screen).tab(self.tab.id);
             if let Some(content) = self.project_content() {
                 if let ProjectContent::List(list) = content.as_ref() {
                     if let Some(row) = self.project_selected_index().and_then(|i| list.rows.get(i))
@@ -1027,7 +1118,7 @@ impl App {
         else {
             return;
         };
-        let screen = ScreenKey::new(&screen.id);
+        let screen = ScreenKey::new(&screen.id, self.tab.id);
         self.show_project_screen(key, screen);
     }
 
@@ -1194,6 +1285,7 @@ impl App {
             return false;
         }
         if self.project_frame().is_some_and(|f| f.filtering) {
+            let anchor = self.project_filter_anchor();
             let frame = self
                 .tab
                 .project_navigation
@@ -1210,20 +1302,19 @@ impl App {
                 KeyCode::Enter => frame.filtering = false,
                 KeyCode::Backspace => {
                     frame.query.pop();
-                    frame.cursor = 0;
                 }
                 KeyCode::Char(c)
                     if key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
                         && !c.is_control() =>
                 {
                     frame.query.push(c);
-                    frame.cursor = 0;
                 }
                 _ => {}
             }
+            self.project_filter_changed(anchor);
             return true;
         }
-        if self.handle_project_text_key(key) {
+        if self.handle_project_text_key(key) || self.handle_project_list_motion(key) {
             return true;
         }
         if self.project_list_right(key) {
@@ -1254,6 +1345,18 @@ impl App {
                     runtime.error = None;
                 }
                 self.ensure_project_view();
+                return true;
+            }
+            KeyCode::Esc
+                if self
+                    .project_frame()
+                    .is_some_and(|frame| !frame.query.is_empty()) =>
+            {
+                let anchor = self.project_filter_anchor();
+                if let Some(frame) = self.project_frame_mut() {
+                    frame.query.clear();
+                }
+                self.project_filter_changed(anchor);
                 return true;
             }
             KeyCode::Char('q') | KeyCode::Esc => {
@@ -1287,7 +1390,7 @@ impl App {
                 } else {
                     (at + 1) % screens.len()
                 };
-                *frame = ProjectFrame::new(ScreenKey::new(&screens[next].id));
+                *frame = ProjectFrame::new(ScreenKey::new(&screens[next].id, self.tab.id));
                 self.ensure_project_view();
                 return true;
             }
@@ -1296,6 +1399,7 @@ impl App {
                     .project_content()
                     .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) =>
             {
+                let anchor = self.project_filter_anchor();
                 self.tab
                     .project_navigation
                     .as_mut()
@@ -1304,6 +1408,10 @@ impl App {
                     .last_mut()
                     .unwrap()
                     .filtering = true;
+                if let Some(frame) = self.project_frame_mut() {
+                    frame.query.clear();
+                }
+                self.project_filter_changed(anchor);
                 return true;
             }
             KeyCode::Char('V')
@@ -1330,39 +1438,6 @@ impl App {
                 }
                 return true;
             }
-            KeyCode::Char('j')
-            | KeyCode::Down
-            | KeyCode::Char('k')
-            | KeyCode::Up
-            | KeyCode::Char('g')
-            | KeyCode::Home
-            | KeyCode::Char('G')
-            | KeyCode::End
-            | KeyCode::PageDown
-            | KeyCode::PageUp
-                if self
-                    .project_content()
-                    .is_some_and(|v| matches!(v.as_ref(), ProjectContent::List(_))) =>
-            {
-                let len = self.project_visible_rows().len();
-                let frame = self
-                    .tab
-                    .project_navigation
-                    .as_mut()
-                    .unwrap()
-                    .stack
-                    .last_mut()
-                    .unwrap();
-                frame.cursor = match key.code {
-                    KeyCode::Char('g') | KeyCode::Home => 0,
-                    KeyCode::Char('G') | KeyCode::End => len.saturating_sub(1),
-                    KeyCode::Char('k') | KeyCode::Up => frame.cursor.saturating_sub(1),
-                    KeyCode::PageUp => frame.cursor.saturating_sub(10),
-                    KeyCode::PageDown => frame.cursor.saturating_add(10).min(len.saturating_sub(1)),
-                    _ => frame.cursor.saturating_add(1).min(len.saturating_sub(1)),
-                };
-                return true;
-            }
             KeyCode::Char(c) => {
                 let nav = self.tab.project_navigation.as_mut().unwrap();
                 if let Some(screen) = self.project_runtimes[&nav.project]
@@ -1372,7 +1447,8 @@ impl App {
                     .iter()
                     .find(|s| s.key == Some(c))
                 {
-                    *nav.stack.last_mut().unwrap() = ProjectFrame::new(ScreenKey::new(&screen.id));
+                    *nav.stack.last_mut().unwrap() =
+                        ProjectFrame::new(ScreenKey::new(&screen.id, self.tab.id));
                     self.ensure_project_view();
                     return true;
                 }
@@ -1543,7 +1619,7 @@ impl App {
                         .cloned()
                         .collect();
                     if cached.is_empty() {
-                        targets.insert(ScreenKey::new(screen));
+                        targets.insert(ScreenKey::new(screen, invocation.effect.tab));
                     } else {
                         targets.extend(cached);
                     }
@@ -1552,7 +1628,7 @@ impl App {
                     targets.extend(runtime.views.keys().cloned());
                     for screen in &runtime.project.declaration.screens {
                         if !targets.iter().any(|key| key.screen == screen.id) {
-                            targets.insert(ScreenKey::new(&screen.id));
+                            targets.insert(ScreenKey::new(&screen.id, invocation.effect.tab));
                         }
                     }
                 }
@@ -1633,6 +1709,10 @@ impl App {
     }
 
     pub(crate) fn poll_project_jobs(&mut self) -> bool {
+        let live_tabs: std::collections::HashSet<_> = std::iter::once(&self.tab)
+            .chain(self.tabs.iter())
+            .map(|tab| tab.id)
+            .collect();
         let retained: std::collections::HashSet<_> = std::iter::once(&self.tab)
             .chain(self.tabs.iter())
             .flat_map(|tab| tab.projects.projects.iter().map(ProjectKey::from))
@@ -1674,8 +1754,17 @@ impl App {
                     runtime.enabled = reply.enabled;
                 }
                 if !runtime.invalidated {
-                    runtime.contexts.extend(reply.contexts);
-                    for (screen, view) in reply.views {
+                    runtime.contexts.extend(
+                        reply
+                            .contexts
+                            .into_iter()
+                            .filter(|(screen, _)| live_tabs.contains(&screen.tab)),
+                    );
+                    for (screen, view) in reply
+                        .views
+                        .into_iter()
+                        .filter(|(screen, _)| live_tabs.contains(&screen.tab))
+                    {
                         let old = runtime.views.get(&screen).map(Arc::as_ref);
                         remap_project_rows(&mut self.tab, key, &screen, old, &view);
                         for tab in &mut self.tabs {
@@ -1709,6 +1798,21 @@ impl App {
                     {
                         errors.push(error.clone());
                     }
+                }
+            }
+            if !runtime.busy && !runtime.closed_tabs.is_empty() {
+                match runtime.tx.try_send(ProjectJob::TabsClosed {
+                    tabs: runtime.closed_tabs.iter().copied().collect(),
+                }) {
+                    Ok(()) => {
+                        runtime.closed_tabs.clear();
+                        runtime.busy = true;
+                    }
+                    // A failed open has no session left to notify.
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                        runtime.closed_tabs.clear()
+                    }
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
                 }
             }
             if let Some(paths) = &runtime.watch_paths {
@@ -1825,7 +1929,7 @@ impl App {
     }
 
     fn apply_project_effect(&mut self, effect: ProjectEffect) {
-        if self.tab.root != effect.tree_root {
+        if self.tab.root != effect.tree_root || matches!(effect.outcome, Some(Outcome::Unhandled)) {
             return;
         }
         if effect.tree_status {
@@ -1870,7 +1974,11 @@ impl App {
                     self.flash = Some(tr(self.lang, Msg::ProjectUnknownScreen).into());
                     return;
                 }
-                let target = ScreenKey { screen, selection };
+                let target = ScreenKey {
+                    screen,
+                    selection,
+                    tab: effect.tab,
+                };
                 if self.tab.project_navigation.is_none() && effect.view.is_none() {
                     self.show_project_screen(effect.project, target);
                     return;
@@ -2019,6 +2127,19 @@ impl App {
             );
         }
         Some(controls)
+    }
+
+    /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
+    pub(crate) fn project_graph_jj(&self) -> Option<bool> {
+        let nav = self.tab.project_navigation.as_ref()?;
+        if nav.stack.last()?.key.screen != "graph" {
+            return None;
+        }
+        match nav.project.plugin.as_str() {
+            "git" => Some(false),
+            "jj" => Some(true),
+            _ => None,
+        }
     }
 
     pub(crate) fn project_pushed(&self) -> bool {
@@ -2176,7 +2297,40 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn project_jobs_pending(&self) -> bool {
-        self.project_runtimes.values().any(|r| r.busy)
+        self.project_runtimes
+            .values()
+            .any(|r| r.busy || !r.closed_tabs.is_empty())
+    }
+
+    pub(super) fn project_tab_closed(&mut self, tab: u64) {
+        for runtime in self.project_runtimes.values_mut() {
+            runtime.views.retain(|key, _| key.tab != tab);
+            runtime.contexts.retain(|key, _| key.tab != tab);
+            runtime.dirty.retain(|key| key.tab != tab);
+            runtime.closed_tabs.insert(tab);
+            if runtime
+                .pending_retry
+                .as_ref()
+                .is_some_and(|act| act.effect.tab == tab)
+            {
+                runtime.pending_retry = None;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_cached_tabs_for_test(&self) -> BTreeSet<u64> {
+        self.project_runtimes
+            .values()
+            .flat_map(|runtime| {
+                runtime
+                    .views
+                    .keys()
+                    .chain(runtime.contexts.keys())
+                    .chain(runtime.dirty.iter())
+                    .map(|key| key.tab)
+            })
+            .collect()
     }
 
     #[cfg(test)]

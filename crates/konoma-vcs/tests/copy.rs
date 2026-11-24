@@ -7,7 +7,7 @@ fn vcs_copy_manifest_has_six_ordered_localized_items_on_log_and_detail_including
         (&konoma_vcs::Jj, true),
     ] {
         let manifest = plugin.manifest();
-        for screen in ["log", "detail"] {
+        for screen in ["log", "graph", "detail"] {
             let acts: Vec<_> = manifest
                 .actions
                 .iter()
@@ -47,7 +47,7 @@ fn vcs_copy_manifest_has_six_ordered_localized_items_on_log_and_detail_including
                 };
                 assert_eq!(
                     row_kinds,
-                    &if screen == "log" {
+                    &if screen != "detail" {
                         vec!["commit".to_string()]
                     } else {
                         vec![]

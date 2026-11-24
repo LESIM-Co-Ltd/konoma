@@ -523,6 +523,28 @@ pub enum ImageData {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListView {
     pub rows: Vec<ListRow>,
+    /// Optional styled title beside the host's project tabs.
+    pub title: Option<Line>,
+    /// A divider and one or two wrapped chip lines below the scrolling rows.
+    pub bottom: Option<ListStrip>,
+}
+
+/// A non-scrolling list legend. Chips are separated by two spaces. The host reserves
+/// one chip line when `estimated_width` fits, otherwise two, if at least two list rows remain.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ListStrip {
+    pub chips: Vec<Line>,
+    pub estimated_width: usize,
+}
+
+impl ListStrip {
+    pub fn new(chips: Vec<Line>, estimated_width: usize) -> Self {
+        Self {
+            chips,
+            estimated_width,
+        }
+    }
 }
 
 impl ListView {

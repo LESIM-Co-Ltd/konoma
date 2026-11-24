@@ -56,6 +56,10 @@ impl Chip {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ProjectView {
+    /// Opaque host tab identity; zero for hosts without tab contexts.
+    pub tab: u64,
+    /// Whether the host enables decorative icons. Defaults to true.
+    pub icons: bool,
     pub screen: String,
     pub selection: Option<String>,
     /// The tab's current tree root, which may be below the detected project root.
@@ -70,6 +74,8 @@ impl ProjectView {
     pub fn new(screen: impl Into<String>) -> Self {
         Self {
             screen: screen.into(),
+            tab: 0,
+            icons: true,
             selection: None,
             tree_root: None,
             open_dir: None,
@@ -78,6 +84,14 @@ impl ProjectView {
     }
     pub fn selection(mut self, selection: impl Into<String>) -> Self {
         self.selection = Some(selection.into());
+        self
+    }
+    pub fn tab(mut self, tab: u64) -> Self {
+        self.tab = tab;
+        self
+    }
+    pub fn icons(mut self, icons: bool) -> Self {
+        self.icons = icons;
         self
     }
     pub fn paths(mut self, tree_root: impl Into<PathBuf>, open_dir: impl Into<PathBuf>) -> Self {
@@ -129,6 +143,8 @@ impl From<&crate::view::ListRow> for ProjectRow {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ProjectAct {
+    /// The same opaque tab identity as `ProjectView::tab`.
+    pub tab: u64,
     pub screen: Option<String>,
     pub selected: Option<ProjectRow>,
     pub marked: Vec<ProjectRow>,
@@ -140,6 +156,10 @@ pub struct ProjectAct {
 impl ProjectAct {
     pub fn new() -> Self {
         Self::default()
+    }
+    pub fn tab(mut self, tab: u64) -> Self {
+        self.tab = tab;
+        self
     }
     pub fn screen(mut self, screen: impl Into<String>) -> Self {
         self.screen = Some(screen.into());

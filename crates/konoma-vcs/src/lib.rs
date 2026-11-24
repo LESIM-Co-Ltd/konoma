@@ -8,6 +8,9 @@ use std::path::PathBuf;
 mod actions;
 mod branches;
 mod detail;
+mod graph;
+#[cfg(test)]
+mod graph_cleanup_tests;
 mod log;
 mod paths;
 mod worktrees;
@@ -29,6 +32,8 @@ macro_rules! plugin {
                                 .key('p').row_kind("file").row_kind("empty"))
                             .screen(ProjectScreen::new("log", t!(en: "Log", ja: "ログ"))
                                 .row_kind("commit").row_kind("empty"))
+                            .screen(ProjectScreen::new("graph", t!(en: "Graph", ja: "グラフ"))
+                                .row_kind("commit").row_kind("worktree").row_kind("connector").row_kind("empty"))
                             .screen(ProjectScreen::new("branches", if $id == "git" {
                                 t!(en: "Branches", ja: "ブランチ")
                             } else { t!(en: "Bookmarks", ja: "ブックマーク") })
@@ -49,13 +54,13 @@ macro_rules! plugin {
                     .action(Act::new("detail").key("Enter")
                         .label(t!(en: "detail", ja: "詳細"))
                         .project_context(ActContext::screen("log", ["commit"])));
-                branches::declare(log::copy_declarations(manifest, $id == "jj"), $id == "git")
+                branches::declare(log::copy_declarations(graph::declare(manifest, $id == "jj"), $id == "jj"), $id == "git")
             }
             fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
                 let Input::Project { root, .. } = input else {
                     return Err(Failure::unsupported(t!(en: "Project required", ja: "プロジェクトが必要です")));
                 };
-                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), worktree_home: None, worktree_diff: None, detail_meta: Default::default() }))
+                Ok(Box::new(Changes { root, backend: Backend::$plugin, files: Vec::new(), worktree_home: None, worktree_diff: None, detail_meta: Default::default(), graphs: Default::default() }))
             }
         }
     };
@@ -132,6 +137,7 @@ impl Backend {
 }
 
 struct Changes {
+    graphs: std::collections::HashMap<u64, graph::Graph>,
     // The host can reopen cached detail views without calling view(), so each cached header
     // needs its original metadata when that older detail becomes active again.
     detail_meta: std::collections::HashMap<String, konoma_vcs_core::git::CommitMeta>,
@@ -149,6 +155,9 @@ struct DisplayedFile {
 }
 
 impl Session for Changes {
+    fn tab_closed(&mut self, tab: u64) {
+        self.graphs.remove(&tab);
+    }
     fn watch_paths(&mut self, _: &ViewCx) -> Result<Option<Vec<PathBuf>>, Failure> {
         let mut paths: Vec<_> = declaration(match self.backend {
             Backend::Git => "git",
@@ -172,6 +181,14 @@ impl Session for Changes {
         Ok(Some(paths))
     }
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        if let Some(project) = req.project.as_ref().filter(|p| p.screen == "graph") {
+            return Ok(self.graphs.entry(project.tab).or_default().view(
+                &self.backend,
+                &self.root,
+                project.icons,
+                cx,
+            ));
+        }
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktree_diff") {
             if matches!(self.backend, Backend::Git) {
                 return Ok(worktrees::diff_view(
@@ -255,9 +272,14 @@ impl Session for Changes {
                         .target(entry.path)
                 })
                 .collect();
-            return Ok(View::List(ListView { rows }));
+            return Ok(View::List(ListView {
+                rows,
+                ..Default::default()
+            }));
         }
         Ok(View::List(ListView {
+            title: None,
+            bottom: None,
             rows: vec![ListRow::new(
                 "empty",
                 vec![Line {
@@ -272,6 +294,22 @@ impl Session for Changes {
     }
 
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
+        if self.enabled(action)
+            && matches!(action, "graph_set_base" | "graph_clear_base" | "graph_all")
+        {
+            if let Some(project) = cx
+                .project
+                .as_ref()
+                .filter(|p| p.screen.as_deref() == Some("graph"))
+            {
+                return Ok(self
+                    .graphs
+                    .entry(project.tab)
+                    .or_default()
+                    .act(action, project));
+            }
+            return Ok(Outcome::Unhandled);
+        }
         if self.enabled(action) {
             if let Some(context) = cx
                 .project
@@ -317,13 +355,15 @@ impl Session for Changes {
             };
             return Ok(Outcome::Copy { text });
         }
-        if action == "detail" {
+        if action == "detail" || action == "graph_detail" {
             return Ok(cx
                 .project
                 .as_ref()
-                .filter(|p| p.screen.as_deref() == Some("log"))
+                .filter(|p| {
+                    p.screen.as_deref() == Some(if action == "detail" { "log" } else { "graph" })
+                })
                 .and_then(|p| p.selected.as_ref())
-                .filter(|r| r.kind == "commit")
+                .filter(|r| r.kind == "commit" || action == "graph_detail" && r.kind == "worktree")
                 .map(|r| Outcome::PushScreen {
                     screen: "detail".into(),
                     selection: Some(r.value.clone()),
@@ -442,6 +482,9 @@ impl Session for Changes {
             return true;
         }
         match action {
+            "graph_set_base" | "graph_clear_base" => matches!(self.backend, Backend::Git),
+            "graph_all" => matches!(self.backend, Backend::Jj),
+            "detail" | "graph_detail" => true,
             "branch_copy_name" => true,
             "checkout"
             | "create_branch"
@@ -452,7 +495,6 @@ impl Session for Changes {
             | "worktree_changes" => {
                 matches!(self.backend, Backend::Git)
             }
-            "detail" => true,
             "diff" => !self.files.is_empty(),
             "stage" | "unstage" | "discard" => {
                 matches!(self.backend, Backend::Git) && !self.files.is_empty()
@@ -466,7 +508,7 @@ impl Session for Changes {
 
 fn copy_action(action: &str) -> Option<(&str, &str)> {
     let (screen, field) = action.split_once("_copy_")?;
-    (matches!(screen, "log" | "detail")
+    (matches!(screen, "log" | "graph" | "detail")
         && matches!(
             field,
             "short_hash" | "full_hash" | "subject" | "message" | "author" | "date"

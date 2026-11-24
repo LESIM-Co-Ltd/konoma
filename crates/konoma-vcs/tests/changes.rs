@@ -250,7 +250,7 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
         let project = manifest.project.expect("VCS project declaration");
         assert_eq!(project.markers, [DetectionMarker::new(marker, kind)]);
         assert!(project.version_control);
-        assert_eq!(project.screens.len(), if id == "git" { 6 } else { 4 });
+        assert_eq!(project.screens.len(), if id == "git" { 7 } else { 5 });
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));
@@ -258,14 +258,14 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
             manifest.actions.len(),
             if !cfg!(feature = "git") {
                 if id == "git" {
-                    16
+                    25
                 } else {
-                    15
+                    23
                 }
             } else if id == "git" {
-                28
+                37
             } else {
-                16
+                24
             }
         );
         let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();
@@ -313,16 +313,33 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
         }
         assert_eq!(session.enabled("sync"), !git && cfg!(feature = "git"));
         let copies: Vec<_> = manifest.actions.iter().filter(|a| a.copy).collect();
-        assert_eq!(copies.len(), 13);
+        assert_eq!(copies.len(), 19);
         for a in copies {
             assert!(
                 a.id.starts_with("log_copy_")
                     || a.id.starts_with("detail_copy_")
+                    || a.id.starts_with("graph_copy_")
                     || a.id == "branch_copy_name"
             );
             assert!(!a.writes && !a.destructive);
             assert!(a.refresh.is_empty());
             assert_eq!(session.enabled(&a.id), cfg!(feature = "git"));
+        }
+        for a in manifest
+            .actions
+            .iter()
+            .filter(|a| a.id.starts_with("graph_") && !a.copy)
+        {
+            assert!(!a.writes && !a.destructive);
+            assert_eq!(
+                session.enabled(&a.id),
+                cfg!(feature = "git")
+                    && match a.id.as_str() {
+                        "graph_set_base" | "graph_clear_base" => git,
+                        "graph_all" => !git,
+                        _ => true,
+                    }
+            );
         }
         let writes: Vec<_> = manifest
             .actions

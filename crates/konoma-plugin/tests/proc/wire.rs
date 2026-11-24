@@ -238,6 +238,8 @@ fn every_other_path_a_child_sends_must_be_absolute_too() {
     }
     // A list row's target, and the origin of a document.
     let mut list = View::List(ListView {
+        title: None,
+        bottom: None,
         rows: vec![ListRow::new("", vec![]).target("rel/t")],
     });
     let r = view_to_wire(&mut list, &mut Enc::new(&side));
@@ -680,6 +682,8 @@ fn rgba_with_a_wrong_pixel_count_is_refused() {
 #[test]
 fn list_diff_message_reopen_round_trip() {
     let list = View::List(ListView {
+        title: None,
+        bottom: None,
         rows: vec![
             ListRow::new("file", lines()).target("/a/b").checked(true),
             ListRow::new("", vec![]),

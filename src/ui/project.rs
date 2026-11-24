@@ -11,7 +11,7 @@ use crate::app::App;
 use crate::i18n::{tr, Msg};
 
 pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    let body = Rect {
+    let mut body = Rect {
         y: area.y.saturating_add(1),
         height: area.height.saturating_sub(2),
         width: area.width.saturating_sub(2),
@@ -54,6 +54,11 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             span.dim()
         });
     }
+    let tab_width = tabs
+        .iter()
+        .map(Span::width)
+        .sum::<usize>()
+        .min(area.width as usize) as u16;
     frame.render_widget(
         Paragraph::new(Line::from(tabs)),
         Rect {
@@ -70,6 +75,59 @@ pub(super) fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         frame.render_widget(Paragraph::new(message), body);
         return;
     };
+    if let ProjectContent::List(list) = content.as_ref() {
+        if let Some(title) = &list.title {
+            frame.render_widget(
+                Paragraph::new(konoma_plugin::ratatui_draw::into_line(title.clone())),
+                Rect {
+                    x: area.x + tab_width,
+                    width: area.width.saturating_sub(tab_width),
+                    height: area.height.min(1),
+                    ..area
+                },
+            );
+        }
+        if let Some(strip) = &list.bottom {
+            let chip_lines = if strip.estimated_width <= usize::from(body.width.max(1)) {
+                1
+            } else {
+                2
+            };
+            if !strip.chips.is_empty() && body.height >= 3 + chip_lines {
+                body.height -= 1 + chip_lines;
+                let divider = Rect {
+                    y: body.y + body.height,
+                    height: 1,
+                    ..body
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(
+                        Span::raw("─".repeat(body.width as usize)).dark_gray(),
+                    )),
+                    divider,
+                );
+                let mut spans = Vec::new();
+                for chip in &strip.chips {
+                    if !spans.is_empty() {
+                        spans.push(Span::raw("  "));
+                    }
+                    let line = konoma_plugin::ratatui_draw::into_line(chip.clone());
+                    spans.extend(line.spans.into_iter().map(|mut span| {
+                        span.style = line.style.patch(span.style);
+                        span
+                    }));
+                }
+                frame.render_widget(
+                    Paragraph::new(Line::from(spans)).wrap(ratatui::widgets::Wrap { trim: true }),
+                    Rect {
+                        y: divider.y + 1,
+                        height: chip_lines,
+                        ..body
+                    },
+                );
+            }
+        }
+    }
     let mut lines = Vec::new();
     let mut horizontal = active.hscroll;
     let mut kept_hscroll = horizontal;

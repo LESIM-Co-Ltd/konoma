@@ -14,6 +14,12 @@ pub(super) fn read(
     let Some(id) = id else {
         return (DiffView::default(), None);
     };
+    if id == "worktree" && matches!(backend, super::Backend::Git) {
+        return (
+            build(None, konoma_vcs_core::git::worktree_diff(root), false),
+            None,
+        );
+    }
     let vcs: &dyn Vcs = match backend {
         super::Backend::Git => &konoma_vcs_core::vcs::Git,
         #[cfg(feature = "git")]
