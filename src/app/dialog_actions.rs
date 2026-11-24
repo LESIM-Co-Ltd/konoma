@@ -7,10 +7,15 @@ impl App {
         let Some(dialog) = self.project_dialog.take() else {
             return;
         };
+        if matches!(&dialog, ProjectDialog::Act { prompts, stage, .. } if prompts.get(*stage).is_none())
+        {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Canceled).into());
+            return;
+        }
         if matches!(
             &dialog,
             ProjectDialog::Act { prompts, stage, .. }
-                if matches!(prompts[*stage], ProjectPrompt::Confirmation(_))
+                if matches!(prompts.get(*stage), Some(ProjectPrompt::Confirmation(_)))
         ) && matches!(key.code, KeyCode::Char('n' | 'N') | KeyCode::Esc)
         {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Canceled).into());
@@ -50,7 +55,10 @@ impl App {
                 mut selected,
             } => {
                 let mut answer = None;
-                match &prompts[stage] {
+                let Some(prompt) = prompts.get(stage) else {
+                    return;
+                };
+                match prompt {
                     ProjectPrompt::Confirmation(prompt) => {
                         let choice = match key.code {
                             KeyCode::Char(c) => prompt
@@ -124,8 +132,8 @@ impl App {
                         self.execute_project_act(*invocation);
                         return;
                     }
-                    buffer = match &prompts[stage] {
-                        ProjectPrompt::Text(input) => input.initial.clone(),
+                    buffer = match prompts.get(stage) {
+                        Some(ProjectPrompt::Text(input)) => input.initial.clone(),
                         _ => String::new(),
                     };
                     cursor = buffer.chars().count();

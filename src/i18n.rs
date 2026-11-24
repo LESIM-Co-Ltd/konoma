@@ -657,6 +657,7 @@ pub enum Msg {
     ProjectChoose,
     ProjectDialogKeys,
     ProjectConfirmCancel,
+    ProjectConfirmCancelStatus,
     PluginsHead,
     PluginKeyUnknownAction,
     PluginKeyBad,
@@ -1708,6 +1709,7 @@ fn en(msg: Msg) -> &'static str {
         ProjectChoose => "Choose a project",
         ProjectDialogKeys => "Enter:choose  Esc:cancel",
         ProjectConfirmCancel => "n / Esc = cancel",
+        ProjectConfirmCancelStatus => "n/Esc:cancel",
         PluginsHead => CoreMsg::PluginsHead.en(),
         PluginKeyUnknownAction => CoreMsg::PluginKeyUnknownAction.en(),
         PluginKeyBad => CoreMsg::PluginKeyBad.en(),
@@ -2562,6 +2564,7 @@ fn jp(msg: Msg) -> &'static str {
         ProjectChoose => "プロジェクトを選択",
         ProjectDialogKeys => "Enter:選択  Esc:キャンセル",
         ProjectConfirmCancel => "n / Esc = 取消",
+        ProjectConfirmCancelStatus => "n/Esc:取消",
         PluginsHead => CoreMsg::PluginsHead.ja(),
         PluginKeyUnknownAction => CoreMsg::PluginKeyUnknownAction.ja(),
         PluginKeyBad => CoreMsg::PluginKeyBad.ja(),
@@ -3208,11 +3211,16 @@ mod tests {
     #[test]
     fn project_confirmation_cancel_hint_en() {
         assert_eq!(tr(Lang::En, Msg::ProjectConfirmCancel), "n / Esc = cancel");
+        assert_eq!(
+            tr(Lang::En, Msg::ProjectConfirmCancelStatus),
+            "n/Esc:cancel"
+        );
     }
 
     #[test]
     fn project_confirmation_cancel_hint_ja() {
         assert_eq!(tr(Lang::Jp, Msg::ProjectConfirmCancel), "n / Esc = 取消");
+        assert_eq!(tr(Lang::Jp, Msg::ProjectConfirmCancelStatus), "n/Esc:取消");
     }
 
     #[test]
@@ -3776,6 +3784,7 @@ mod tests {
         Msg::ProjectChoose,
         Msg::ProjectDialogKeys,
         Msg::ProjectConfirmCancel,
+        Msg::ProjectConfirmCancelStatus,
         Msg::PluginsHead,
         Msg::PluginKeyUnknownAction,
         Msg::PluginKeyBad,

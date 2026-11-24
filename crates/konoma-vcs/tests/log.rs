@@ -8,9 +8,16 @@ fn log_declaration_follows_changes_with_enter_and_pushed_detail() {
         assert_eq!(
             screens.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
             if manifest.id == "git" {
-                vec!["changes", "log", "worktrees", "detail", "worktree_diff"]
+                vec![
+                    "changes",
+                    "log",
+                    "branches",
+                    "worktrees",
+                    "detail",
+                    "worktree_diff",
+                ]
             } else {
-                vec!["changes", "log", "detail"]
+                vec!["changes", "log", "branches", "detail"]
             }
         );
         let log = &screens[1];

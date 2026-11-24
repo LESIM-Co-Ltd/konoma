@@ -106,6 +106,11 @@ pub(super) fn problem(m: &Manifest) -> Option<ManifestReason> {
                 if let Some(reason) = choice_problem(&c.choice, &action.id) {
                     return Some(reason);
                 }
+                if let Some(status) = &c.status {
+                    if let Some(reason) = choice_label_problem(status, &action.id) {
+                        return Some(reason);
+                    }
+                }
             }
         }
         if let Some(c) = &action.choice_input {
@@ -133,8 +138,12 @@ fn choice_problem(c: &Choice, action: &str) -> Option<ManifestReason> {
             limit: MAX_CHOICE_VALUE_BYTES,
         });
     }
-    if std::iter::once(c.label.en())
-        .chain(c.label.translations().map(|(_, t)| t))
+    choice_label_problem(&c.label, action)
+}
+
+fn choice_label_problem(label: &crate::Tr, action: &str) -> Option<ManifestReason> {
+    if std::iter::once(label.en())
+        .chain(label.translations().map(|(_, t)| t))
         .any(|t| t.chars().count() > crate::text::MAX_TEXT_CHARS)
     {
         return Some(ManifestReason::ChoiceLabelTooLong {
