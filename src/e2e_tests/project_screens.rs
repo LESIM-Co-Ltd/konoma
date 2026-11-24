@@ -6,6 +6,34 @@ mod scroll;
 #[path = "project_confirmations.rs"]
 mod confirmations;
 
+#[path = "project_left.rs"]
+mod left;
+
+#[test]
+fn e2e_project_tab_closed_discards_inflight_view_before_owner_cleanup() {
+    let mut f = fixture("project_close_inflight", false, 1, None, None, None);
+    open(&mut f);
+    let a = f.sim.app.tab.id;
+    f.sim.app.tab_new().unwrap();
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    f.sim.key('p');
+    drain(&mut f.sim);
+    let b = f.sim.app.tab.id;
+    let hold = ViewHold::new("items");
+    f.log.lock().unwrap().view_hold = Some(hold.clone());
+    f.sim.key('r');
+    f.sim.app.wait_project_view_request("items");
+    hold.entered.wait();
+    f.sim.app.tab_close();
+    assert!(!f.sim.app.project_cached_tabs_for_test().contains(&b));
+    hold.release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().closed_tabs, [b]);
+    assert!(f.sim.app.project_cached_tabs_for_test().contains(&a));
+    assert!(!f.sim.app.project_cached_tabs_for_test().contains(&b));
+}
+
 #[test]
 fn e2e_project_filter_shows_all_fallback_rows_without_action_selection() {
     use konoma_plugin::{view::ListRow, Line};
@@ -1168,6 +1196,8 @@ fn last_act(f: &Fixture) -> (String, ProjectAct) {
 
 fn view_context(f: &Fixture, screen: &str) -> ProjectView {
     ProjectView::new(screen)
+        .tab(f.sim.app.tab.id)
+        .icons(f.sim.app.cfg.ui.icons)
         .paths(&f.sim.app.tab.root, &f.sim.app.tab.open_dir)
         .home_dir(crate::plugins::read_scope::home_dir())
 }
@@ -2446,7 +2476,11 @@ fn e2e_project_no_implicit_refresh_and_one_owner_per_project_across_tabs() {
     drain(&mut f.sim);
     let log = f.log.lock().unwrap();
     assert_eq!(log.opens, 1);
-    assert!(log.views.is_empty(), "Flash must not refresh a view");
+    assert_eq!(
+        log.views,
+        [view_context(&f, "items")],
+        "only the new tab's initial view is fetched; Flash must not refresh it"
+    );
 }
 
 #[test]

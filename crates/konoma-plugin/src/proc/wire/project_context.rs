@@ -6,6 +6,13 @@ use crate::project::{ProjectAct, ProjectRow, ProjectView, RefreshTarget};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct WProjectView {
+    #[serde(default, skip_serializing_if = "is_zero_tab")]
+    pub tab: u64,
+    #[serde(
+        default = "super::is_true_default",
+        skip_serializing_if = "super::is_true"
+    )]
+    pub icons: bool,
     pub screen: String,
     pub selection: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -19,6 +26,8 @@ impl WProjectView {
     pub fn new(screen: impl Into<String>) -> Self {
         Self {
             screen: screen.into(),
+            tab: 0,
+            icons: true,
             selection: None,
             tree_root: None,
             open_dir: None,
@@ -52,6 +61,8 @@ impl WProjectRow {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct WProjectAct {
+    #[serde(default, skip_serializing_if = "is_zero_tab")]
+    pub tab: u64,
     pub screen: Option<String>,
     pub selected: Option<WProjectRow>,
     pub marked: Vec<WProjectRow>,
@@ -108,6 +119,8 @@ impl WRefreshTarget {
 
 pub fn project_view_to_wire(p: &ProjectView) -> WProjectView {
     WProjectView {
+        tab: p.tab,
+        icons: p.icons,
         screen: p.screen.clone(),
         selection: p.selection.clone(),
         tree_root: p.tree_root.as_deref().map(path_to_wire),
@@ -117,6 +130,8 @@ pub fn project_view_to_wire(p: &ProjectView) -> WProjectView {
 }
 pub fn project_view_from_wire(p: WProjectView) -> Result<ProjectView, WireError> {
     Ok(ProjectView {
+        tab: p.tab,
+        icons: p.icons,
         screen: p.screen,
         selection: p.selection,
         tree_root: p
@@ -149,6 +164,7 @@ pub fn project_row_from_wire(p: WProjectRow) -> ProjectRow {
 }
 pub fn project_act_to_wire(p: &ProjectAct) -> WProjectAct {
     WProjectAct {
+        tab: p.tab,
         screen: p.screen.clone(),
         selected: p.selected.as_ref().map(project_row_to_wire),
         marked: p.marked.iter().map(project_row_to_wire).collect(),
@@ -159,6 +175,7 @@ pub fn project_act_to_wire(p: &ProjectAct) -> WProjectAct {
 }
 pub fn project_act_from_wire(p: WProjectAct) -> ProjectAct {
     ProjectAct {
+        tab: p.tab,
         screen: p.screen,
         selected: p.selected.map(project_row_from_wire),
         marked: p.marked.into_iter().map(project_row_from_wire).collect(),
@@ -166,6 +183,10 @@ pub fn project_act_from_wire(p: WProjectAct) -> ProjectAct {
         text: p.text,
         choice: p.choice,
     }
+}
+
+fn is_zero_tab(tab: &u64) -> bool {
+    *tab == 0
 }
 pub fn refresh_target_to_wire(t: &RefreshTarget) -> WRefreshTarget {
     match t {

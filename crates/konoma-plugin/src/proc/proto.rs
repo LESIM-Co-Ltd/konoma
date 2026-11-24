@@ -88,6 +88,8 @@ pub enum ToChild {
     Cancel { rid: u64 },
     /// Finish and exit. No answer.
     Shutdown,
+    /// Protocol 2 notice, only after the child advertises `session_tab_closed`. No answer.
+    TabClosed { sid: u64, tab: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -100,7 +100,10 @@ fn project_v2_input_outcomes_and_list_vectors() {
     row.marked = true;
     row.checked = Some(false);
     row.target = Some("/p".into());
-    let expected = ListView { rows: vec![row] };
+    let expected = ListView {
+        rows: vec![row],
+        ..Default::default()
+    };
     let w = view_to_wire(&mut View::List(expected.clone()), &mut Enc::new(&side)).unwrap();
     assert_eq!(view_protocol(&w), 2);
     let back = view_from_wire(

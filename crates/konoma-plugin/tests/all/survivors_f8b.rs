@@ -283,7 +283,7 @@ mod views {
             ),
             (
                 "list",
-                View::List(ListView { rows: Vec::new() }),
+                View::List(ListView::default()),
                 Some(ViewKind::List),
             ),
             (
