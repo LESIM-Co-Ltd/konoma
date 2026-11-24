@@ -628,14 +628,20 @@ impl ProjectDetection {
             .as_ref()
             .and_then(|worker| worker.events.as_ref())
             .expect("project tests must use injected events");
+        // The queue holds one message. A path-change wake still waiting there would make this
+        // event overflow into a full rescan, so first wait until the worker has consumed it.
+        let fence = || {
+            let (tx, rx) = mpsc::sync_channel(1);
+            events
+                .tx
+                .send(WatchMessage::Settled(tx))
+                .expect("project event worker");
+            rx.recv_timeout(Duration::from_secs(30))
+                .expect("project event processed");
+        };
+        fence();
         enqueue_event(&events.tx, &events.overflow, &events.failed, event);
-        let (tx, rx) = mpsc::sync_channel(1);
-        events
-            .tx
-            .send(WatchMessage::Settled(tx))
-            .expect("project event worker");
-        rx.recv_timeout(Duration::from_secs(30))
-            .expect("project event processed");
+        fence();
     }
 
     #[cfg(test)]
