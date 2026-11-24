@@ -100,13 +100,8 @@ impl Host {
 
     fn view_req(&mut self, sid: u64, repr: &str) -> u64 {
         let rid = self.rid();
-        let req = WViewReq {
-            repr: Some(repr.into()),
-            page: None,
-            cols: 10,
-            rows: 4,
-            cell_px: None,
-        };
+        let mut req = WViewReq::new(10, 4);
+        req.repr = Some(repr.into());
         self.send(&ToChild::View {
             sid,
             rid,
@@ -133,11 +128,11 @@ fn err_kind(a: &FromChild) -> WFailureKind {
 fn a_host_that_speaks_no_known_version_is_refused_and_the_child_ends_cleanly() {
     let dir = unique_tmp("kp_srv_ver");
     std::fs::create_dir_all(dir.as_path()).unwrap();
-    for versions in [vec![2], vec![0], vec![], vec![99, 100]] {
+    for versions in [vec![3], vec![0], vec![], vec![99, 100]] {
         let mut h = Host::start(ServeOptions::default());
         match h.hello(versions.clone(), dir.as_path()) {
             HelloReply::Refused { supported, reason } => {
-                assert_eq!(supported, vec![PROTOCOL_VERSION]);
+                assert_eq!(supported, vec![1, PROTOCOL_VERSION]);
                 assert!(!reason.is_empty());
             }
             other => panic!("{versions:?}: {other:?}"),
@@ -153,7 +148,7 @@ fn a_host_that_speaks_the_version_among_others_gets_the_manifest() {
     let mut h = Host::start(ServeOptions::default());
     match h.hello(vec![0, 1, 99], dir.as_path()) {
         HelloReply::Ack { version, manifest } => {
-            assert_eq!(version, PROTOCOL_VERSION);
+            assert_eq!(version, 1);
             assert_eq!(manifest_from_wire(manifest).unwrap().id, "test");
         }
         other => panic!("{other:?}"),
@@ -450,13 +445,9 @@ fn hostile_requests_fail_the_call_and_not_the_child() {
     // A view request with a zero-size window and one with a huge page.
     assert!(matches!(h.open(1, "/a.t").answer, Answer::Ok(_)));
     let rid = h.rid();
-    let req = WViewReq {
-        repr: None,
-        page: Some(u64::MAX),
-        cols: 0,
-        rows: 0,
-        cell_px: Some((0, 0)),
-    };
+    let mut req = WViewReq::new(0, 0);
+    req.page = Some(u64::MAX);
+    req.cell_px = Some((0, 0));
     h.send(&ToChild::View {
         sid: 1,
         rid,

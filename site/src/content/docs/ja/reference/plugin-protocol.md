@@ -52,7 +52,7 @@ HelloReply = Ack {version:u32, manifest:Manifest}
            | Refused {supported:[u32], reason:S}
 ```
 
-`versions` は現在 `[1]`。ホストは現在の通信版とその1つ前を受け付けます（1より前の版はありません）。`host_version` は参考情報のプログラム版で、通信版ではありません。`side_dir` は受け渡し用の絶対ディレクトリパス、`lang` は最初の言語です。後続呼び出しにも個別の言語が含まれます。
+`versions` は現在 `[1, 2]`。ホストは現在の通信版とその1つ前を提示します。プロジェクト・入力ダイアログ・読み取り専用・再取得対象を宣言するプラグインは版2だけに対応します。画面要求・操作情報の新フィールドと空でない行の値も版2が必要です。同じ変更内の未公開の版2を拡張するため、版3には上げません。`host_version` は参考情報のプログラム版で、通信版ではありません。`side_dir` は受け渡し用の絶対ディレクトリパス、`lang` は最初の言語です。後続呼び出しにも個別の言語が含まれます。
 
 提示された版から選んで `Ack` を返します。対応する版がなければ対応版一覧と理由を付けた `Refused` を返します。提示されていない版、読めない manifest、設定の `id` と異なる manifest `id` はホストが拒否します。拒否すると起動は失敗し、ホストはその接続を閉じてプロセスグループを終了させ、通常の呼び出しを送りません。SDK は `Refused` を flush して正常終了します。検査ツールは正常終了または拒否後も生存しているプロセスを認めますが、クラッシュは拒否します。同じ接続での再 handshake を要求しません。SDK server は `Hello.host_version` と `Hello.lang` を検証しません。API の互換検査は別で、major 一致、major 0 では minor も完全一致、それ以外ではプラグインの minor がホスト以下であることが必要です。konoma はプラグインの登録時に API 版を比較し、互換でなければプラグインを無効にして起動時に知らせます。
 
@@ -191,6 +191,134 @@ Bin = Inline(B) | File {name:S, len:u64}
 ```
 
 ホストが新しい受け渡しディレクトリ（0700）を作り、`Hello.side_dir` で伝えます。SDK は1 MiB 以下を inline、それより大きいバイト列を side file にします。これは送信側の閾値で、受信側が大きな inline を禁じるわけではありません（フレーム上限は適用）。0600 の通常ファイルを排他的に新規作成し、書き終えてからメッセージを送ります。SDK の名前はホストが `h-0`、`h-1`、…、子が `c-0`、`c-1`、…で接続内で一意です。受信側は prefix を要求せず、1〜64バイトの単一名、`.`・`..` 以外、`/`・NUL なしを要求します。`len` は実ファイル長と厳密一致。link と通常ファイル以外を拒否し、link を辿らず読み、短い読み込みも含め読み取り後に削除します。1ファイル最大256 MiB、ホストの1メッセージの side-file 合計最大512 MiB、子の1応答は256 MiB。inline はこの合計に数えません。resource はデコード時に最大100,000項目。変換失敗の未読ファイルは破棄し、接続終了時にディレクトリも削除します。これらは resource・画像・canvas style のバイト列用で、大きな text/table 文字列が自動的に side file になるわけではありません。なおフレーム上限を超える応答は参照 server が `Err(TooLarge)` にします。
+
+### プロジェクトの画面要求と操作（版2）
+
+`View.req.project` はファイルプレビューでは省略します。プロジェクトでは
+`{ screen: string, selection: string | null }` です。`selection` は `PushScreen` の
+不透明な値です。同じプロジェクトセッション内で画面が変わるため、入力ではなく
+画面要求に載せます。SDKでは `ViewReq::new(cols, rows).project(ProjectView::new(screen).selection(value))` と組み立てます。
+
+`Act.cx.project`・`Key.cx.project` はプロジェクト操作以外では省略し、次の形を取ります。
+
+```text
+ProjectAct {
+  screen: string | null,
+  selected: { kind: string, value: string } | null,
+  marked: [{ kind: string, value: string }],
+  confirmation: string | null,
+  text: string | null,
+  choice: string | null
+}
+```
+
+ツリー・diffへの操作では画面IDを省略できます。選択行と印付き行は、表示セルや
+行番号ではなく、一覧で宣言した `ListRow.kind`・`ListRow.value` をそのまま渡します。
+確認と一覧選択の回答は宣言された `Choice.value`、文字入力の回答は入力した文字列です。
+空文字の回答と未回答は区別します。SDKでは `ActCx::with_project(ProjectAct::new()...)` を使います。
+
+## プロジェクト宣言（版2）
+
+任意の `Manifest.project` を、従来のファイル関連付けや `screens: string[]` の
+キー文脈とは独立して追加できます。
+
+```text
+ProjectDecl {
+  markers: [{ name: string, kind: "Any" | "File" | "Directory" }],
+  screens: [{ id: string, title: Tr, key: character | null, row_kinds: string[] }],
+  chip: Tr | null,
+  watch_paths: Path[],
+  version_control: boolean
+}
+```
+
+目印は大小文字を区別するファイル名の glob です。ツリーのルートから祖先へ探し、
+複数の目印・プラグインが当たって構いません。辿るパスではなく項目名を表します。
+`Any` は `.git` がファイルでもディレクトリでも当たります。
+画面の順番はタブの順番、任意のキーは単一文字です。行の種類は画面ごとに宣言します。
+chip はツリーの題の短い要約、監視パスはプロジェクトの根からの相対パスです。
+変化するとプロジェクトのデータを取り直します。`version_control` は能力の有無だけを
+表します。**能力の呼び出しは静的リンク専用**で、通信の RPC は追加しません。
+
+入力は `{"Project":{"root":Path,"marker":string}}` です。
+検出した根の絶対パスと、当たった実際の項目名を渡します。
+たとえば `*.xcworkspace` ではなく `MyApp.xcworkspace` です。
+ファイルのバイト列を読む入力ではありません。
+
+`Manifest.read_only` は静的な真偽値の宣言です。既定はfalseで、falseなら送信時に省略します。
+ホストは `[plugins.<id>] read_only` とのOR条件で `writes` 操作を止めます。
+このAPIには実行中の読み取り専用状態を上書きする仕組みを設けません。
+
+## 操作とダイアログ（版2）
+
+既存の `id`、`key`、`label`、`help`、`footer`、`screen`、`writes`、`destructive` の
+意味は同じです。次の任意フィールドを追加します。
+
+```text
+project_context:
+  { "Screen": { screen: string, row_kinds: string[] } }
+  | "TreeSelection" | "Diff" | null
+confirmation: { text: Tr, choices: [{ key: character, choice: Choice }] } | null
+text_input: { label: Tr, initial: string } | null
+choice_input: { label: Tr, choices: Choice[] } | null
+refresh: RefreshTarget[]
+Choice = { value: string, label: Tr }
+```
+
+空の `row_kinds` はその画面全体、`TreeSelection` はツリー選択のメニュー操作です。
+`Enter` は `key: "Enter"` と、行の種類を1つ以上指定した画面の文脈で宣言します。
+通常の操作と同じ宣言・検査の経路を通り、行の種類が異なれば別の Enter 操作を持てます。
+確認の選択肢は `y` → `-d`、`!` → `-D` のように値を分けられます。
+
+`RefreshTarget` は `"CurrentScreen"`・`{"Screen":{"screen":string}}`・`"AllScreens"`・
+`"TreeStatus"`・`"Chip"` のいずれかです。操作の `refresh` は既定で空、空なら送信時に省略します。
+実行後は結果を通知し、宣言した対象を取り直します。指定する画面名は
+同じプラグインのプロジェクト宣言に存在する必要があり、再取得対象は操作ごとに最大64件です。
+
+登録時には、空でない確認の選択肢を持たない破壊的操作、画面 id の重複（従来の
+画面名との衝突を含む）、画面キーの重複、新しい型付き文脈の未宣言の画面・行の種類、
+検出目印のないプロジェクトを拒否します。従来の `screen` キー文脈は従来どおりです。
+SDK の型付き理由をホストが英語・日本語に翻訳します。名前と宣言数の上限は、
+プロジェクトの画面・行の名前、目印と行の種類の数にも適用します。
+
+監視パスは空でない相対パスで、親・ルート・接頭辞の要素を含めず、最大512件です。
+検出目印は `.`・`..` 以外の空でない単一のファイル名要素で、最大1024バイトです。
+画面キーには既存の一覧用予約表を使います。確認キーにはそのGlobal層と `q`・Escを
+予約し、`y`・`!` は使えます。両方とも制御文字と同じ集合内の重複キーを拒否します。
+確認の選択肢は1〜64件、一覧入力の選択肢も最大64件です。選択肢の値は最大1024バイト、
+ラベルは翻訳ごとに最大512文字です。画面IDが `tree` などでも、キー文脈は専用の名前空間です。
+単体アプリがプロジェクト遷移に対応するまでは、5種類の結果に未対応の通知を表示します。
+版の不一致ではmanifestから決まる実際の対応版を返し、manifest取得中のpanicも拒否応答にします。
+
+
+## 一覧と遷移（版2）
+
+一覧は従来どおり `{"List":[row, …]}` です。各行は `cells: Line[]`、`kind: string`、
+`target: Path | null`、`checked: boolean | null` と、新しい `marked: boolean` を持ちます。
+従来の行の種類・行き先・プラグインのチェック状態の意味を保ち、`marked` は独立した
+ホストの複数選択の印です。不透明な行の値 `value: string` も持ち、SDKの `ListRow::value` で指定します。
+既定の空文字は送信時に省略し、従来の行のバイト表現を保ちます。セルは既に
+`Line { spans: [[text, Style], …], style: Style }` で、グラフの罫線もこの span で表せます。
+通信上の各 span は2要素の配列です。`Style` は `fg`、`bg`、`add`、`sub` を持ち、
+後ろの2つは文字修飾のビットマスクです。
+差分の hunk と行の符号化は変わりません。
+
+従来の `Unhandled`、`Redraw`、`Flash(Tr)`、`Reload` に、次の結果を追加します。
+
+| 結果 | データ | ホストの動作 |
+|---|---|---|
+| `PushScreen` | `{ screen, selection: string \| null }` | 不透明な行識別子を渡し、同じプラグインの画面を重ねる |
+| `OpenFile` | `{ path: Path, line: integer \| null }` | プレビューを開く。行番号は1始まり |
+| `OpenDiff` | `{ path: Path }` | ホストの全画面 diff を開く |
+| `SwitchRoot` | `{ root: Path }` | ツリーのルートを切り替える |
+| `OpenTab` | `{ path: Path }` | ホストの新しいタブで開く |
+
+遷移先は絶対パス、NUL バイトなし、従来のパス長上限内とします。
+**`q` で画面を1つ戻すのはホストの動作**です。新しい結果やガードを迂回する操作には
+しません。
+
+検査する例は `crates/konoma-plugin-test/tests/vectors/project-v2.json`・`project-calls-v2.msgpack.hex` と
+`tests/project_vectors.rs`、各新型と各結果の往復テストは SDK にあります。
 
 ## 期限と失敗
 

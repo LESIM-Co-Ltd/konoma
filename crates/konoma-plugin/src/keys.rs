@@ -304,6 +304,19 @@ pub fn forbidden_defaults() -> Vec<KeySpec> {
     "jmih[sq".chars().map(KeySpec::ctrl).collect()
 }
 
+/// Modal confirmations retain the existing global layer and cancellation keys. The base
+/// motion and verb layers do not run in a confirmation, leaving `y` and `!` for its choices.
+pub fn confirmation_reserved() -> Vec<(KeySpec, Layer)> {
+    reserved("global")
+        .into_iter()
+        .filter(|(key, layer)| {
+            *layer == Layer::Global
+                || *key == KeySpec::ch('q')
+                || *key == KeySpec::key(KeyName::Esc)
+        })
+        .collect()
+}
+
 /// What happened to an action because of an issue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
@@ -324,7 +337,8 @@ pub enum KeyIssueKind {
     Duplicate { other: String, context: String },
     /// The key is on the forbidden list.
     Forbidden,
-    /// A destructive action cannot be registered until a confirmation can be declared.
+    /// A destructive action has no nonempty confirmation declaration. Public `validate` and
+    /// `sanitize` can check an unregistered manifest; registration refuses the whole manifest.
     DestructiveWithoutConfirm,
     /// Another action has the same id.
     DuplicateActId,
@@ -362,7 +376,7 @@ impl fmt::Display for KeyIssue {
             }
             KeyIssueKind::DestructiveWithoutConfirm => write!(
                 f,
-                "action `{}` is destructive and there is no way to declare a confirmation yet",
+                "action `{}` is destructive but has no confirmation choices",
                 self.act
             )?,
             KeyIssueKind::DuplicateActId => {
@@ -408,7 +422,7 @@ pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
     let forbidden = forbidden_defaults();
     let mut seen_ids: Vec<&str> = Vec::new();
     // (context, key, act id) of keys already taken.
-    let mut taken: Vec<(String, KeySpec, &str)> = Vec::new();
+    let mut taken: Vec<(String, KeySpec, &Act)> = Vec::new();
     for act in &manifest.actions {
         if seen_ids.contains(&act.id.as_str()) {
             issues.push(KeyIssue {
@@ -420,7 +434,12 @@ pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
             continue;
         }
         seen_ids.push(&act.id);
-        if act.destructive {
+        if act.destructive
+            && act
+                .confirmation
+                .as_ref()
+                .is_none_or(|c| c.choices.is_empty())
+        {
             issues.push(KeyIssue {
                 act: act.id.clone(),
                 key: act.key.clone(),
@@ -433,7 +452,7 @@ pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
             issues.push(issue);
         } else if let Some(key) = &act.key {
             if let Ok(spec) = parse_key(key) {
-                taken.push((context_of(act).to_string(), spec, &act.id));
+                taken.push((context_of(act).to_string(), spec, act));
             }
         }
     }
@@ -446,8 +465,8 @@ pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
 pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
     let issues = validate(manifest);
     let mut out = manifest.clone();
-    // `validate` reports the later of two declarations with one id, and a destructive action,
-    // as rejected: replay its order.
+    // `validate` rejects a later declaration with the same id, and a destructive action
+    // without confirmation: replay its order.
     let mut seen: Vec<&str> = Vec::new();
     let mut kept = Vec::new();
     for act in &manifest.actions {
@@ -456,7 +475,12 @@ pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
         }
         seen.push(&act.id);
         let mut act = act.clone();
-        if act.destructive {
+        if act.destructive
+            && act
+                .confirmation
+                .as_ref()
+                .is_none_or(|c| c.choices.is_empty())
+        {
             continue;
         }
         if issues
@@ -467,11 +491,32 @@ pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
         }
         act.label = act.label.clipped();
         act.help = act.help.clipped();
+        if let Some(c) = &mut act.confirmation {
+            c.text = c.text.clipped();
+            for c in &mut c.choices {
+                c.choice.label = c.choice.label.clipped();
+            }
+        }
+        if let Some(i) = &mut act.text_input {
+            i.label = i.label.clipped();
+        }
+        if let Some(i) = &mut act.choice_input {
+            i.label = i.label.clipped();
+            for c in &mut i.choices {
+                c.label = c.label.clipped();
+            }
+        }
         kept.push(act);
     }
     out.actions = kept;
     // The texts of the rest of the manifest reach the interface as well.
     out.name = out.name.clipped();
+    if let Some(p) = &mut out.project {
+        p.chip = p.chip.as_ref().map(|c| c.clipped());
+        for s in &mut p.screens {
+            s.title = s.title.clipped();
+        }
+    }
     for v in &mut out.verbs {
         v.label = v.label.as_ref().map(|l| l.clipped());
     }
@@ -484,15 +529,22 @@ pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
     (out, issues)
 }
 
-fn context_of(act: &Act) -> &str {
-    act.screen.as_deref().unwrap_or("")
+fn context_of(act: &Act) -> String {
+    if let Some(c) = &act.project_context {
+        return match c {
+            crate::project::ActContext::Screen { screen, .. } => format!("project:{screen}"),
+            crate::project::ActContext::TreeSelection => "tree".into(),
+            crate::project::ActContext::Diff => "diff".into(),
+        };
+    }
+    act.screen.clone().unwrap_or_default()
 }
 
 fn check_key(
     manifest: &Manifest,
     act: &Act,
     forbidden: &[KeySpec],
-    taken: &[(String, KeySpec, &str)],
+    taken: &[(String, KeySpec, &Act)],
 ) -> Option<KeyIssue> {
     let key = act.key.as_ref()?;
     let issue = |kind| {
@@ -517,19 +569,30 @@ fn check_key(
     let table = if ctx.is_empty() {
         reserved_for_main_view(manifest)
     } else {
-        reserved(ctx)
+        reserved(&ctx)
     };
-    if let Some((_, layer)) = table.iter().find(|(k, _)| *k == spec) {
-        let context = if ctx.is_empty() { "any" } else { ctx };
+    let row_enter = spec == KeySpec::key(KeyName::Enter)
+        && matches!(&act.project_context, Some(crate::project::ActContext::Screen { row_kinds, .. }) if !row_kinds.is_empty());
+    if let Some((_, layer)) = table.iter().find(|(k, _)| *k == spec && !row_enter) {
+        let context = if ctx.is_empty() { "any" } else { &ctx };
         return issue(KeyIssueKind::Reserved {
             layer: *layer,
             context: context.to_string(),
         });
     }
-    if let Some((_, _, other)) = taken.iter().find(|(c, k, _)| c == ctx && *k == spec) {
-        let context = if ctx.is_empty() { "main" } else { ctx };
+    if let Some((_, _, other)) = taken.iter().find(|(c, k, other)| {
+        let overlaps = match (&act.project_context, &other.project_context) {
+            (
+                Some(crate::project::ActContext::Screen { row_kinds: a, .. }),
+                Some(crate::project::ActContext::Screen { row_kinds: b, .. }),
+            ) => a.is_empty() || b.is_empty() || a.iter().any(|r| b.contains(r)),
+            _ => true,
+        };
+        c == &ctx && *k == spec && overlaps
+    }) {
+        let context = if ctx.is_empty() { "main" } else { &ctx };
         return issue(KeyIssueKind::Duplicate {
-            other: other.to_string(),
+            other: other.id.clone(),
             context: context.to_string(),
         });
     }

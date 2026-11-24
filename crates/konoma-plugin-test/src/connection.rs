@@ -50,6 +50,8 @@ pub(crate) fn install_signal_cleanup() -> std::io::Result<()> {
 }
 
 pub(crate) struct Connection {
+    version: std::cell::Cell<u32>,
+    session_chip: std::cell::Cell<bool>,
     pub side: wire::Side,
     pid: i32,
     writer: Option<mpsc::SyncSender<WriteJob>>,
@@ -136,6 +138,8 @@ impl Connection {
         // Establish ownership before pipes or workers can fail. Drop cancels and joins every
         // worker already started, stops the child and removes the handoff directory.
         let mut connection = Self {
+            version: std::cell::Cell::new(1),
+            session_chip: std::cell::Cell::new(false),
             side: wire::Side::new(dir, 'h'),
             pid,
             writer: Some(writer),
@@ -273,6 +277,10 @@ impl Connection {
                 if !versions.contains(&version) {
                     return Err(format!("Ack version {version}, offered {versions:?}"));
                 }
+                wire::require_protocol(version, wire::manifest_protocol(&manifest))
+                    .map_err(|e| e.to_string())?;
+                self.version.set(version);
+                self.session_chip.set(chip_supported(version, &manifest));
                 let manifest = wire::manifest_from_wire(manifest)
                     .map_err(|e| format!("unreadable manifest: {e}"))?;
                 if selected.is_some_and(|id| id != manifest.id) {
@@ -287,17 +295,43 @@ impl Connection {
         }
     }
 
+    fn request_packet(version: u32, msg: &ToChild) -> Result<Vec<u8>, String> {
+        let required = match msg {
+            ToChild::Open { input, cx, .. } => {
+                wire::input_protocol(input).max(wire::cx_protocol(cx))
+            }
+            ToChild::View { req, cx, .. } => wire::req_protocol(req).max(wire::cx_protocol(cx)),
+            ToChild::Act { cx, .. } | ToChild::Key { cx, .. } => wire::cx_protocol(cx),
+            ToChild::Chip { cx, .. } => 2.max(wire::cx_protocol(cx)),
+            _ => 1,
+        };
+        wire::require_protocol(version, required).map_err(|e| e.to_string())?;
+        Ok(Self::packet(frame::encode(msg).map_err(|e| e.to_string())?))
+    }
+
     pub fn send(&self, msg: &ToChild, until: Instant) -> Result<(), String> {
-        self.write(
-            Self::packet(frame::encode(msg).map_err(|e| e.to_string())?),
-            until,
-        )
+        self.write(Self::request_packet(self.version.get(), msg)?, until)
     }
 
     pub fn answer(&self, rid: u64, until: Instant) -> Result<Answer, String> {
         let answer: FromChild = frame::decode(&self.receive(until)?).map_err(|e| e.to_string())?;
         if answer.rid != rid {
             return Err(format!("answer rid {}, requested {rid}", answer.rid));
+        }
+        match &answer.answer {
+            Answer::Ok(Reply::Chip { .. }) => {
+                wire::require_protocol(self.version.get(), 2).map_err(|e| e.to_string())?;
+            }
+            Answer::Ok(Reply::Acted { outcome, .. }) => {
+                wire::require_protocol(self.version.get(), wire::outcome_protocol(outcome))
+                    .map_err(|e| e.to_string())?;
+                wire::outcome_from_wire_checked(outcome.clone()).map_err(|e| e.to_string())?;
+            }
+            Answer::Ok(Reply::Viewed { view, .. }) => {
+                wire::require_protocol(self.version.get(), wire::view_protocol(view))
+                    .map_err(|e| e.to_string())?;
+            }
+            _ => {}
         }
         Ok(answer.answer)
     }
@@ -318,6 +352,26 @@ impl Connection {
             &mut wire::Enc::new(&self.side),
         )
         .map_err(|e| e.to_string())?;
+        self.open_input(input, limits)
+    }
+
+    pub fn open_project(
+        &self,
+        root: &std::path::Path,
+        marker: &str,
+        limits: &Limits,
+    ) -> Result<WState, String> {
+        let root = std::path::absolute(root).map_err(|e| e.to_string())?;
+        self.open_input(
+            wire::WInput::Project {
+                root: wire::path_to_wire(&root),
+                marker: marker.into(),
+            },
+            limits,
+        )
+    }
+
+    fn open_input(&self, input: wire::WInput, limits: &Limits) -> Result<WState, String> {
         match self.call(
             &ToChild::Open {
                 sid: 1,
@@ -340,6 +394,22 @@ impl Connection {
             req: wire::req_to_wire(&ViewReq::new(80, 24)),
             cx: cx(),
         }
+    }
+
+    pub fn chip_supported(&self) -> bool {
+        self.session_chip.get()
+    }
+
+    pub fn chip(sid: u64, rid: u64, cx: &konoma_plugin::ViewCx<'_>) -> Result<ToChild, String> {
+        let cx = wire::cx_to_wire(&wire::CxSource {
+            settings: cx.settings,
+            lang: cx.lang,
+            term: cx.term,
+            external: cx.external,
+            read_scope: &cx.read_scope,
+        })
+        .map_err(|e| e.to_string())?;
+        Ok(ToChild::Chip { sid, rid, cx })
     }
 
     /// A second reply proves the child can still service requests after an Err/act/key.
@@ -406,19 +476,101 @@ impl Drop for Connection {
 }
 
 pub(crate) fn cx() -> wire::WCx {
-    wire::WCx {
-        settings: Vec::new(),
-        lang: "en".into(),
-        pixels: false,
-        colors: 0,
-        external: false,
-        read_dirs: None,
-    }
+    wire::WCx::new("en")
+}
+
+fn chip_supported(version: u32, manifest: &wire::WManifest) -> bool {
+    version >= 2 && manifest.session_chip && manifest.project.is_some()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chip_capability_requires_project_flag_and_protocol_two() {
+        let mut manifest = wire::manifest_to_wire(&Manifest::new("p", "1")).unwrap();
+        for version in [1, 2] {
+            for project in [false, true] {
+                for flag in [false, true] {
+                    manifest.project =
+                        project.then(|| wire::project_to_wire(&konoma_plugin::ProjectDecl::new()));
+                    manifest.session_chip = flag;
+                    assert_eq!(
+                        chip_supported(version, &manifest),
+                        version == 2 && project && flag
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn chip_request_packets_require_protocol_two() {
+        let msg = ToChild::Chip {
+            sid: 1,
+            rid: 2,
+            cx: cx(),
+        };
+        assert_eq!(
+            Connection::request_packet(1, &msg).unwrap_err(),
+            "project data requires protocol 2, negotiated 1"
+        );
+        let packet = Connection::request_packet(2, &msg).unwrap();
+        assert_eq!(frame::decode::<ToChild>(&packet[4..]).unwrap(), msg);
+    }
+
+    #[test]
+    fn chip_replies_require_protocol_two() {
+        let c = blocked();
+        let reply = FromChild {
+            rid: 2,
+            answer: Answer::Ok(Reply::Chip {
+                chip: None,
+                state: WState {
+                    layout: wire::layout_to_wire(&konoma_plugin::view::Layout::single()),
+                    enabled: vec![],
+                },
+            }),
+        };
+        let until = Instant::now() + Limits::default().open_view;
+        c.write(Connection::packet(frame::encode(&reply).unwrap()), until)
+            .unwrap();
+        c.version.set(1);
+        assert_eq!(
+            c.answer(2, until).unwrap_err(),
+            "project data requires protocol 2, negotiated 1"
+        );
+    }
+    #[test]
+    fn project_request_packets_are_never_encoded_for_version_one() {
+        let cx = wire::WCx::new("en").project(wire::WProjectAct::new());
+        for msg in [
+            ToChild::View {
+                sid: 1,
+                rid: 1,
+                req: wire::WViewReq::new(80, 24).project(wire::WProjectView::new("log")),
+                cx: wire::WCx::new("en"),
+            },
+            ToChild::Act {
+                sid: 1,
+                rid: 2,
+                action: "write".into(),
+                cx: cx.clone(),
+            },
+            ToChild::Key {
+                sid: 1,
+                rid: 3,
+                key: wire::key_to_wire(&konoma_plugin::Key::char('x')),
+                cx,
+            },
+        ] {
+            assert_eq!(
+                Connection::request_packet(1, &msg).unwrap_err(),
+                "project data requires protocol 2, negotiated 1"
+            );
+            let packet = Connection::request_packet(2, &msg).unwrap();
+            assert_eq!(frame::decode::<ToChild>(&packet[4..]).unwrap(), msg);
+        }
+    }
     use std::os::unix::process::ExitStatusExt;
 
     #[test]

@@ -67,6 +67,109 @@ fn all_pass(report: Report) {
     );
 }
 
+fn project_protocol() {
+    failed(
+        "manifest-destructive",
+        "manifest",
+        "DestructiveWithoutConfirmation",
+    );
+    failed("project-markers", "manifest", "NoDetectionMarkers");
+    failed("project-v1", "handshake", "requires protocol 2");
+    failed("outcome-v1", "act", "requires protocol 2");
+    failed("outcome-relative", "act", "not an absolute path");
+    for mode in [
+        "outcome-push",
+        "outcome-file",
+        "outcome-diff",
+        "outcome-root",
+        "outcome-tab",
+    ] {
+        all_pass(run(&options(mode), failure_limits(mode)));
+    }
+}
+
+fn chip_values() {
+    use konoma_plugin::{Color, Style, ViewCx};
+    let cx = ViewCx::new(konoma_plugin::Settings::empty(), "ja");
+    let fetch = |mode| {
+        konoma_plugin_test::project_chip(
+            &options(mode),
+            std::path::Path::new("/project"),
+            ".git",
+            &cx,
+            Limits::default(),
+        )
+        .unwrap()
+    };
+    let chip = fetch("chip").unwrap();
+    assert_eq!(chip.text.plain(), "⎇ main");
+    assert_eq!(
+        chip.text.spans[0].style,
+        Style::new().fg(Color::Green).bold()
+    );
+    assert_eq!(fetch("chip-none"), None);
+    assert_eq!(fetch("chip-empty"), Some(konoma_plugin::Chip::default()));
+}
+
+fn chip_failures() {
+    for (mode, expected) in [
+        ("chip-error", "fixture error"),
+        ("chip-wrong", "Opened"),
+        ("chip-rid", "answer rid"),
+        ("chip-frame", "malformed frame"),
+        ("chip-timeout", "deadline"),
+        ("chip-eof", "EOF"),
+        ("chip-exit-after-reply", "EOF"),
+    ] {
+        let mut limits = Limits::default();
+        if mode == "chip-timeout" {
+            limits.open_view = Duration::from_millis(250);
+        }
+        let error = konoma_plugin_test::project_chip(
+            &options(mode),
+            std::path::Path::new("/project"),
+            ".git",
+            &konoma_plugin::ViewCx::bare(),
+            limits,
+        )
+        .unwrap_err();
+        assert!(error.contains(expected), "{mode}: {error}");
+        assert!(error.contains("fixture diagnostic"), "{mode}: {error}");
+        assert!(!error.contains('\n'), "{mode}: {error}");
+    }
+}
+
+fn chip_fallback() {
+    for mode in ["chip-legacy", "chip-no-project", "chip-v1"] {
+        assert_eq!(
+            konoma_plugin_test::project_chip(
+                &options(mode),
+                std::path::Path::new("/project"),
+                ".git",
+                &konoma_plugin::ViewCx::bare(),
+                Limits::default(),
+            )
+            .unwrap(),
+            None,
+            "{mode}"
+        );
+    }
+}
+
+fn chip_clipping() {
+    let chip = konoma_plugin_test::project_chip(
+        &options("chip-dirty"),
+        std::path::Path::new("/project"),
+        ".git",
+        &konoma_plugin::ViewCx::bare(),
+        Limits::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(chip.text.plain(), format!("{}…", "界".repeat(511)));
+    assert!(chip.text.spans.len() <= konoma_plugin::project::MAX_CHIP_SPANS);
+}
+
 fn handshake() {
     failed("handshake", "handshake", "deadline");
 }
@@ -459,6 +562,11 @@ fn main() -> ExitCode {
         return support::fixture(&args[1], &args[2..]);
     }
     let tests: &[(&str, fn())] = &[
+        ("chip_values", chip_values),
+        ("chip_failures", chip_failures),
+        ("chip_fallback", chip_fallback),
+        ("chip_clipping", chip_clipping),
+        ("project_protocol", project_protocol),
         ("handshake", handshake),
         ("handshake_version", handshake_version),
         ("handshake_manifest", handshake_manifest),

@@ -47,6 +47,12 @@ fn manifest(mode: &str) -> Manifest {
             m.actions[0].help = "".into();
             m.actions[0].label = "".into();
         }
+        "manifest-destructive" => m.actions[0].destructive = true,
+        "project-markers" => m.project = Some(ProjectDecl::new()),
+        "project-v1" => {
+            m.project =
+                Some(ProjectDecl::new().marker(DetectionMarker::new(".git", MarkerKind::Any)))
+        }
         _ => {}
     }
     m
@@ -118,6 +124,18 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let mut wm = manifest_to_wire(&manifest(mode)).unwrap();
+    if mode.starts_with("chip") {
+        wm.project = Some(project_to_wire(
+            &ProjectDecl::new().marker(DetectionMarker::new(".git", MarkerKind::Any)),
+        ));
+        wm.session_chip = true;
+        if mode == "chip-legacy" {
+            wm.session_chip = false;
+        }
+        if mode == "chip-no-project" || mode == "chip-v1" {
+            wm.project = None;
+        }
+    }
     if mode == "handshake-manifest" {
         let mut value = WValue::Bool(true);
         for _ in 0..34 {
@@ -134,6 +152,8 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
         &HelloReply::Ack {
             version: if mode == "handshake-version" {
                 u32::MAX
+            } else if mode == "project-v1" || mode == "outcome-v1" || mode == "chip-v1" {
+                1
             } else {
                 PROTOCOL_VERSION
             },
@@ -159,12 +179,102 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
             }
         };
         let (rid, answer) = match msg {
-            ToChild::Open { rid, .. } => {
+            ToChild::Open { rid, input, .. } => {
+                if mode.starts_with("chip") {
+                    assert!(
+                        !matches!(mode, "chip-legacy" | "chip-no-project" | "chip-v1"),
+                        "unsupported chip must not be opened"
+                    );
+                    assert!(
+                        matches!(input, WInput::Project { root, marker } if root == path_to_wire(std::path::Path::new("/project")) && marker == ".git")
+                    );
+                }
                 if mode == "open" {
                     park();
                 }
                 opened = true;
                 (rid, Answer::Ok(Reply::Opened { state: state(mode) }))
+            }
+            ToChild::Chip { sid, rid, cx } => {
+                assert!(opened && sid == 1);
+                assert_eq!(
+                    cx.lang,
+                    if matches!(mode, "chip" | "chip-none" | "chip-empty") {
+                        "ja"
+                    } else {
+                        "en"
+                    }
+                );
+                match mode {
+                    "chip-timeout" => park(),
+                    "chip-eof" => return ExitCode::FAILURE,
+                    "chip-frame" => {
+                        frame::write_frame(&mut output, &[0xc1]).unwrap();
+                        continue;
+                    }
+                    "chip-rid" => {
+                        frame::send(
+                            &mut output,
+                            &FromChild {
+                                rid: rid + 1,
+                                answer: err(),
+                            },
+                        )
+                        .unwrap();
+                        continue;
+                    }
+                    "chip-error" => {
+                        frame::send(&mut output, &FromChild { rid, answer: err() }).unwrap();
+                        continue;
+                    }
+                    "chip-wrong" => {
+                        frame::send(
+                            &mut output,
+                            &FromChild {
+                                rid,
+                                answer: Answer::Ok(Reply::Opened { state: state(mode) }),
+                            },
+                        )
+                        .unwrap();
+                        continue;
+                    }
+                    "chip-dirty" => {
+                        let chip = WChip::new(line_to_wire(&Line::from(vec![
+                            Span::raw(
+                                "\n\x1b".to_string() + &"界".repeat(600)
+                            );
+                            65
+                        ])));
+                        frame::send(
+                            &mut output,
+                            &FromChild {
+                                rid,
+                                answer: Answer::Ok(Reply::Chip {
+                                    chip: Some(chip),
+                                    state: state(mode),
+                                }),
+                            },
+                        )
+                        .unwrap();
+                        continue;
+                    }
+                    _ => {}
+                }
+                let chip = match mode {
+                    "chip-none" => None,
+                    "chip-empty" => Some(Chip::default()),
+                    _ => Some(Chip::new(vec![Span::styled(
+                        "⎇ main",
+                        Style::new().fg(Color::Green).bold(),
+                    )])),
+                };
+                (
+                    rid,
+                    Answer::Ok(Reply::Chip {
+                        chip: chip.as_ref().map(chip_to_wire),
+                        state: state(mode),
+                    }),
+                )
             }
             ToChild::View { sid, rid, .. } => {
                 if !opened || sid != 1 {
@@ -258,7 +368,31 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
                         err()
                     } else {
                         Answer::Ok(Reply::Acted {
-                            outcome: WOutcome::Unhandled,
+                            outcome: match mode {
+                                "outcome-push" => outcome_to_wire(&Outcome::PushScreen {
+                                    screen: "detail".into(),
+                                    selection: Some("row".into()),
+                                }),
+                                "outcome-file" => outcome_to_wire(&Outcome::OpenFile {
+                                    path: "/project/file".into(),
+                                    line: Some(3),
+                                }),
+                                "outcome-diff" => outcome_to_wire(&Outcome::OpenDiff {
+                                    path: "/project/file".into(),
+                                }),
+                                "outcome-root" => outcome_to_wire(&Outcome::SwitchRoot {
+                                    root: "/project".into(),
+                                }),
+                                "outcome-tab" | "outcome-v1" => {
+                                    outcome_to_wire(&Outcome::OpenTab {
+                                        path: "/project".into(),
+                                    })
+                                }
+                                "outcome-relative" => outcome_to_wire(&Outcome::OpenTab {
+                                    path: "relative".into(),
+                                }),
+                                _ => WOutcome::Unhandled,
+                            },
                             state: state(mode),
                         })
                     },
@@ -277,7 +411,9 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
         };
         frame::send(&mut output, &FromChild { rid, answer }).unwrap();
         output.flush().unwrap();
-        if mode == "act-exit-after-reply" && rid == 4 || mode == "key-exit-after-reply" && rid == 5
+        if mode == "act-exit-after-reply" && rid == 4
+            || mode == "key-exit-after-reply" && rid == 5
+            || mode == "chip-exit-after-reply" && rid == 2
         {
             // A protocol barrier makes death visible on the subsequent read, without a race
             // between EOF and a broken write or any sleep to schedule the parent/child.

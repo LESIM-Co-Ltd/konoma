@@ -220,6 +220,71 @@ impl HostBuilder {
 fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: Lang) -> String {
     use konoma_plugin::registry::{ManifestCount as C, ManifestName as N, ManifestReason as R};
     match reason {
+        R::UnknownRefreshScreen { action, screen } => tr_format(
+            lang,
+            Msg::PluginReasonRefreshScreen,
+            &[("action", action), ("screen", screen)],
+        ),
+        R::InvalidWatchPath { index } => tr_format(
+            lang,
+            Msg::PluginReasonWatchPath,
+            &[("index", &index.to_string())],
+        ),
+        R::InvalidMarker { index, limit } => tr_format(
+            lang,
+            Msg::PluginReasonMarker,
+            &[("index", &index.to_string()), ("max", &limit.to_string())],
+        ),
+        R::InvalidScreenKey { key } => tr_format(lang, Msg::PluginReasonScreenKey, &[("key", key)]),
+        R::InvalidConfirmationKey { action, key } => tr_format(
+            lang,
+            Msg::PluginReasonConfirmKey,
+            &[("action", action), ("key", key)],
+        ),
+        R::DuplicateConfirmationKey { action, key } => tr_format(
+            lang,
+            Msg::PluginReasonConfirmDuplicate,
+            &[("action", action), ("key", key)],
+        ),
+        R::EmptyConfirmation { action } => {
+            tr_format(lang, Msg::PluginReasonConfirmEmpty, &[("action", action)])
+        }
+        R::ChoiceValueTooLong { action, limit } => tr_format(
+            lang,
+            Msg::PluginReasonChoiceValue,
+            &[("action", action), ("max", &limit.to_string())],
+        ),
+        R::ChoiceLabelTooLong { action, limit } => tr_format(
+            lang,
+            Msg::PluginReasonChoiceLabel,
+            &[("action", action), ("max", &limit.to_string())],
+        ),
+        R::DestructiveWithoutConfirmation { action } => {
+            tr_format(lang, Msg::PluginReasonDestructive, &[("action", action)])
+        }
+        R::DuplicateScreen { screen } => tr_format(
+            lang,
+            Msg::PluginReasonDuplicateScreen,
+            &[("screen", screen)],
+        ),
+        R::DuplicateScreenKey { key } => {
+            tr_format(lang, Msg::PluginReasonDuplicateScreenKey, &[("key", key)])
+        }
+        R::UnknownScreen { action, screen } => tr_format(
+            lang,
+            Msg::PluginReasonUnknownScreen,
+            &[("action", action), ("screen", screen)],
+        ),
+        R::UnknownRowKind {
+            action,
+            screen,
+            kind,
+        } => tr_format(
+            lang,
+            Msg::PluginReasonUnknownRowKind,
+            &[("action", action), ("screen", screen), ("kind", kind)],
+        ),
+        R::NoDetectionMarkers => tr(lang, Msg::PluginReasonNoMarkers).into(),
         R::InvalidName { kind, name, limit } => {
             let kind = tr(
                 lang,
@@ -230,6 +295,7 @@ fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: 
                     N::SettingName => Msg::PluginNameSetting,
                     N::ScreenName => Msg::PluginNameScreen,
                     N::WorkGroup => Msg::PluginNameWorkGroup,
+                    N::RowKind => Msg::PluginNameRowKind,
                     _ => Msg::PluginNameUnknown,
                 },
             );
@@ -248,6 +314,11 @@ fn manifest_reason_text(reason: &konoma_plugin::registry::ManifestReason, lang: 
                     C::Binds => Msg::PluginCountBinds,
                     C::Screens => Msg::PluginCountScreens,
                     C::Targets => Msg::PluginCountTargets,
+                    C::Markers => Msg::PluginCountMarkers,
+                    C::RowKinds => Msg::PluginCountRowKinds,
+                    C::WatchPaths => Msg::PluginCountWatchPaths,
+                    C::Choices => Msg::PluginCountChoices,
+                    C::RefreshTargets => Msg::PluginCountRefreshTargets,
                     _ => Msg::PluginCountUnknown,
                 },
             );
@@ -453,6 +524,191 @@ mod tests {
     }
 
     struct Fake(&'static str);
+
+    #[test]
+    fn project_manifest_reasons_are_translated_in_both_languages() {
+        use konoma_plugin::registry::{PluginOrigin, Registry, RegistryError};
+        struct Decl(Manifest);
+        impl Plugin for Decl {
+            fn manifest(&self) -> Manifest {
+                self.0.clone()
+            }
+            fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+                Err(Failure::unsupported("fixture"))
+            }
+        }
+        let project = || {
+            ProjectDecl::new()
+                .marker(DetectionMarker::new(".git", MarkerKind::Any))
+                .screen(ProjectScreen::new("log", "Log").key('z').row_kind("commit"))
+        };
+        let m = || Manifest::new("p", "1").project(project());
+        let cases = [
+            (
+                m().action(Act::new("delete").destructive()),
+                "操作 `delete` は破壊的ですが確認の選択肢がありません",
+            ),
+            (
+                m().action(
+                    Act::new("delete")
+                        .destructive()
+                        .confirmation(Confirmation::new("Delete?", vec![])),
+                ),
+                "操作 `delete` は破壊的ですが確認の選択肢がありません",
+            ),
+            (m().screen("log"), "画面 `log` が重複しています"),
+            (
+                Manifest::new("p", "1")
+                    .project(project().screen(ProjectScreen::new("log", "Other log"))),
+                "画面 `log` が重複しています",
+            ),
+            (
+                Manifest::new("p", "1")
+                    .project(project().screen(ProjectScreen::new("other", "Other").key('z'))),
+                "画面のキー `z` が重複しています",
+            ),
+            (
+                m().action(
+                    Act::new("go").project_context(ActContext::screen("absent", ["commit"])),
+                ),
+                "操作 `go` が未宣言の画面 `absent` を指定しています",
+            ),
+            (
+                Manifest::new("p", "1")
+                    .action(Act::new("go").project_context(ActContext::screen("log", ["commit"]))),
+                "操作 `go` が未宣言の画面 `log` を指定しています",
+            ),
+            (
+                m().action(Act::new("go").project_context(ActContext::screen("log", ["file"]))),
+                "操作 `go` が画面 `log` の未宣言の行の種類 `file` を指定しています",
+            ),
+            (
+                Manifest::new("p", "1").project(ProjectDecl::new()),
+                "プロジェクトには検出目印を1つ以上宣言してください",
+            ),
+            (
+                Manifest::new("p", "1")
+                    .project(project().screen(ProjectScreen::new("bad", "Bad").row_kind("Bad ID"))),
+                "行の種類 `?ad???` は名前として使えません（`[a-z0-9._-]`、1〜64文字）",
+            ),
+            (
+                Manifest::new("p", "1")
+                    .project(project().screen(ProjectScreen::new("Bad ID", "Bad screen"))),
+                "画面名 `?ad???` は名前として使えません（`[a-z0-9._-]`、1〜64文字）",
+            ),
+            (
+                {
+                    let mut p = project();
+                    p.screens = (0..64)
+                        .map(|i| ProjectScreen::new(format!("s{i}"), "Screen"))
+                        .collect();
+                    Manifest::new("p", "1").screen("legacy").project(p)
+                },
+                "画面が 65 件あります（最大 64 件）",
+            ),
+            (
+                {
+                    let mut p = project();
+                    p.markers = vec![DetectionMarker::new(".git", MarkerKind::Any); 513];
+                    Manifest::new("p", "1").project(p)
+                },
+                "プロジェクトの検出目印が 513 件あります（最大 512 件）",
+            ),
+            (
+                {
+                    let mut p = project();
+                    p.screens[0].row_kinds = vec!["commit".into(); 513];
+                    Manifest::new("p", "1").project(p)
+                },
+                "画面内の行の種類が 513 件あります（最大 512 件）",
+            ),
+        ];
+        for (manifest, japanese) in cases {
+            let plugin: Arc<dyn Plugin> = Arc::new(Decl(manifest));
+            let RegistryError::InvalidManifest { reason, why, .. } = Registry::new()
+                .register(plugin.clone(), PluginOrigin::User)
+                .unwrap_err()
+            else {
+                panic!("expected refusal")
+            };
+            assert_eq!(manifest_reason_text(&reason, Lang::En), why);
+            assert_eq!(manifest_reason_text(&reason, Lang::Jp), japanese);
+            for (lang, expected) in [(Lang::En, why.as_str()), (Lang::Jp, japanese)] {
+                let error = format!("{:#}", HostBuilder::checked_id(&plugin, lang).unwrap_err());
+                assert!(error.ends_with(expected), "{error}");
+            }
+        }
+
+        let confirm = |choices| {
+            Manifest::new("p", "1")
+                .action(Act::new("go").confirmation(Confirmation::new("Go?", choices)))
+        };
+        let pick = |choice| {
+            Manifest::new("p", "1")
+                .action(Act::new("go").choice_input(ChoiceInput::new("Pick", vec![choice])))
+        };
+        let extra = [
+            (m().action(Act::new("go").refresh(RefreshTarget::screen("missing"))),
+             "action `go` refreshes unknown screen `missing`",
+             "操作 `go` が未宣言の画面 `missing` を再取得しようとしています"),
+            ({
+                let mut act = Act::new("go");
+                act.refresh = vec![RefreshTarget::TreeStatus; 65];
+                m().action(act)
+             },
+             "65 refresh targets in an action (at most 64)",
+             "操作の再取得対象が 65 件あります（最大 64 件）"),
+            (Manifest::new("p", "1").project(project().watch("../out")),
+             "project watch path 0 must be nonempty and relative without parent components",
+             "プロジェクトの監視パス 0 は空でなく、親要素を含まない相対パスにしてください"),
+            (Manifest::new("p", "1").project(ProjectDecl::new().marker(DetectionMarker::new("../out", MarkerKind::Any))),
+             "project detection marker 0 must be one nonempty file name other than . or .. (at most 1024 bytes)",
+             "プロジェクトの検出目印 0 は . と .. 以外の空でない単一のファイル名にしてください（最大 1024 バイト）"),
+            (Manifest::new("p", "1").project(project().screen(ProjectScreen::new("other", "Other").key('q'))),
+             "screen key `q` is a control character or reserved by the host",
+             "画面のキー `q` は制御文字かホストの予約キーです"),
+            (confirm(vec![ConfirmChoice::new('\n', "v", "V")]),
+             "confirmation key `\\n` of action `go` is a control character or reserved by the host",
+             "操作 `go` の確認キー `\\n` は制御文字かホストの予約キーです"),
+            (confirm(vec![ConfirmChoice::new('y', "a", "A"), ConfirmChoice::new('y', "b", "B")]),
+             "confirmation key `y` of action `go` is declared twice",
+             "操作 `go` の確認キー `y` が重複しています"),
+            (confirm(vec![]),
+             "confirmation of action `go` must declare at least one choice",
+             "操作 `go` の確認には選択肢を1つ以上宣言してください"),
+            (pick(Choice::new("x".repeat(1025), "V")),
+             "a choice value of action `go` exceeds 1024 bytes",
+             "操作 `go` の選択肢の値が 1024 バイトを超えています"),
+            (pick(Choice::new("v", Tr::new("V").ja("界".repeat(513)))),
+             "a choice label of action `go` exceeds 512 characters",
+             "操作 `go` の選択肢のラベルが 512 文字を超えています"),
+            ({
+                let mut p = project(); p.watch_paths = vec![".git/HEAD".into(); 513];
+                Manifest::new("p", "1").project(p)
+             },
+             "513 project watch paths (at most 512)",
+             "プロジェクトの監視パスが 513 件あります（最大 512 件）"),
+            (Manifest::new("p", "1").action(Act::new("go").choice_input(ChoiceInput::new("Pick", vec![Choice::new("v", "V"); 65]))),
+             "65 choices in a prompt (at most 64)",
+             "入力画面の選択肢が 65 件あります（最大 64 件）"),
+        ];
+        for (manifest, english, japanese) in extra {
+            let plugin: Arc<dyn Plugin> = Arc::new(Decl(manifest));
+            let RegistryError::InvalidManifest { reason, why, .. } = Registry::new()
+                .register(plugin.clone(), PluginOrigin::User)
+                .unwrap_err()
+            else {
+                panic!("expected refusal")
+            };
+            assert_eq!(why, english);
+            assert_eq!(manifest_reason_text(&reason, Lang::En), english);
+            assert_eq!(manifest_reason_text(&reason, Lang::Jp), japanese);
+            for (lang, expected) in [(Lang::En, english), (Lang::Jp, japanese)] {
+                let error = format!("{:#}", HostBuilder::checked_id(&plugin, lang).unwrap_err());
+                assert!(error.ends_with(expected), "{error}");
+            }
+        }
+    }
 
     impl Plugin for Fake {
         fn manifest(&self) -> Manifest {

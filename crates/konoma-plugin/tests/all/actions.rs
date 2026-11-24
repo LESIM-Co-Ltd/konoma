@@ -167,8 +167,7 @@ fn a_rejected_action_is_not_registered() {
     let mut r = Registry::new();
     let m = Manifest::new("p", "1")
         .action(act("a", "w"))
-        .action(act("a", "x"))
-        .action(act("d", "z").destructive());
+        .action(act("a", "x"));
     r.register(Arc::new(Stub(m)), PluginOrigin::Standard)
         .unwrap();
     let ids: Vec<_> = r
@@ -181,11 +180,24 @@ fn a_rejected_action_is_not_registered() {
     assert_eq!(
         ids,
         ["a"],
-        "the first `a` stays, the second and the destructive one go"
+        "the first `a` stays and the duplicate is rejected"
     );
     assert_eq!(
         r.manifest("p").unwrap().actions[0].key.as_deref(),
         Some("w")
+    );
+    let mut r = Registry::new();
+    let m = Manifest::new("destructive", "1").action(act("d", "z").destructive());
+    assert!(matches!(
+        r.register(Arc::new(Stub(m)), PluginOrigin::Standard),
+        Err(konoma_plugin::registry::RegistryError::InvalidManifest {
+            reason: konoma_plugin::registry::ManifestReason::DestructiveWithoutConfirmation { .. },
+            ..
+        })
+    ));
+    assert!(
+        r.ids().is_empty(),
+        "the whole destructive manifest is refused"
     );
 }
 
