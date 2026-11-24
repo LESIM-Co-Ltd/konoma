@@ -6,6 +6,40 @@ mod scroll;
 #[path = "project_confirmations.rs"]
 mod confirmations;
 
+#[test]
+fn e2e_project_list_right_uses_enter_row_action_and_disabled_gate() {
+    for disabled in [false, true] {
+        let mut f = fixture_with_log(
+            &format!("project_right_enter_gate_{disabled}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                disabled: if disabled {
+                    vec!["push".into()]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            },
+        );
+        f.sim.key('p');
+        drain(&mut f.sim);
+        let hints = f.sim.app.project_controls().unwrap();
+        assert_eq!(hints.contains("/l/"), !disabled, "{hints}");
+        f.sim.key('l');
+        drain(&mut f.sim);
+        assert_eq!(f.log.lock().unwrap().acts.len(), usize::from(!disabled));
+        if !disabled {
+            let (action, context) = f.log.lock().unwrap().acts[0].clone();
+            assert_eq!(action, "push");
+            assert_eq!(context.selected.unwrap().value, "opaque-alpha");
+        }
+    }
+}
+
 use super::*;
 use crate::plugins::test_plugins::{self, Latch};
 use crate::plugins::test_projects::{ProjectLog, Screens, ViewHold};
@@ -811,9 +845,9 @@ fn e2e_project_session_watch_paths_replace_declaration_and_reread_after_invalida
             .app
             .tab
             .projects
-            .inject_event(Ok(notify::Event::new(notify::EventKind::Modify(
-                notify::event::ModifyKind::Any,
-            ))
+            .inject_event_with_pending_watch_update(Ok(notify::Event::new(
+                notify::EventKind::Modify(notify::event::ModifyKind::Any),
+            )
             .add_path(path)));
         f.sim.app.poll_projects();
         drain(&mut f.sim);
@@ -1188,7 +1222,6 @@ fn e2e_project_hints_help_menu_match_screen_row_tree_and_diff_contexts() {
     assert!(!advertised(&f, "diff-act"));
 }
 
-#[cfg(feature = "git")]
 #[test]
 fn e2e_project_host_diff_context_has_hints_help_menu_and_real_file_selection() {
     let mut f = navigate("project_host_diff_context", |root| Outcome::OpenDiff {

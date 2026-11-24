@@ -288,7 +288,7 @@ mod views {
             ),
             (
                 "diff",
-                View::Diff(DiffView { hunks: Vec::new() }),
+                View::Diff(DiffView::default()),
                 Some(ViewKind::Diff),
             ),
             ("message", View::Message(MessageView::default()), None),

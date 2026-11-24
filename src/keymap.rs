@@ -318,7 +318,6 @@ pub enum Action {
     // --- Preview: gitdiff / GitDetail shared ---
     #[cfg(feature = "git")]
     GitDiffDiscard,
-    #[cfg(feature = "git")]
     CycleDiffLayout,
     /// `R` in `Surface::PreviewGitDiff`: cycles the diff's three presentations (source/rendered/
     /// preview) — `docs/FEATURE-MD-RENDERED-DIFF.md` §4.
@@ -582,7 +581,6 @@ pub enum Surface {
     /// A plugin's canvas that asked for text input (`CanvasView::text_input`): every key but
     /// `Esc` (and every paste) goes to the plugin, none is looked up in the keymap.
     PluginInput,
-    #[cfg(feature = "git")]
     PreviewGitDiff,
 }
 
@@ -643,12 +641,10 @@ impl Surface {
     /// resolve does not use this; it is kept to spell out the spec and as a test invariant.
     #[allow(dead_code)]
     pub fn inherits_copy_leader(self) -> bool {
-        match self {
-            Surface::Tree | Surface::PreviewText | Surface::PreviewImage => true,
-            #[cfg(feature = "git")]
-            Surface::PreviewGitDiff => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Surface::Tree | Surface::PreviewText | Surface::PreviewImage | Surface::PreviewGitDiff
+        )
     }
 }
 
@@ -949,8 +945,7 @@ pub enum Context {
     Outline,
     Info,
     Help,
-    /// The file-diff preview (full-screen diff of one file).
-    #[cfg(feature = "git")]
+    /// A diff view, including project screens and the file-diff preview.
     Diff,
     /// One screen of the version-control views for one backend.
     #[cfg(feature = "git")]
@@ -966,7 +961,6 @@ pub enum ViewType {
     Document,
     Table,
     Image,
-    #[cfg(feature = "git")]
     Diff,
     /// The version-control list screens.
     #[cfg(feature = "git")]
@@ -982,10 +976,10 @@ impl ViewType {
             ViewType::Document,
             ViewType::Table,
             ViewType::Image,
+            ViewType::Diff,
         ];
         #[cfg(feature = "git")]
         {
-            v.push(ViewType::Diff);
             v.push(ViewType::List);
         }
         v
@@ -1011,10 +1005,10 @@ impl Context {
             Context::Outline,
             Context::Info,
             Context::Help,
+            Context::Diff,
         ];
         #[cfg(feature = "git")]
         {
-            v.push(Context::Diff);
             for b in Backend::ALL {
                 for s in Screen::ALL {
                     v.push(Context::Screen(b, s));
@@ -1042,7 +1036,6 @@ impl Context {
             Context::Outline => "outline".into(),
             Context::Info => "info".into(),
             Context::Help => "help".into(),
-            #[cfg(feature = "git")]
             Context::Diff => "diff".into(),
             #[cfg(feature = "git")]
             Context::Screen(b, s) => format!("{}.{}", b.id(), s.name()),
@@ -1081,7 +1074,6 @@ impl Context {
             | Context::Outline
             | Context::Info
             | Context::Help => &[],
-            #[cfg(feature = "git")]
             Context::Diff => &[ViewType::Diff],
             #[cfg(feature = "git")]
             Context::Screen(_, Screen::Detail) => &[ViewType::Text],
@@ -1113,7 +1105,6 @@ impl Context {
             Context::Outline => Surface::Outline,
             Context::Info => Surface::Info,
             Context::Help => Surface::Help,
-            #[cfg(feature = "git")]
             Context::Diff => Surface::PreviewGitDiff,
             #[cfg(feature = "git")]
             Context::Screen(_, s) => match s {
@@ -1185,7 +1176,6 @@ impl Context {
             Surface::PreviewImage => Context::Image,
             Surface::PreviewTable => Context::Table,
             Surface::PreviewCanvas => Context::Canvas,
-            #[cfg(feature = "git")]
             Surface::PreviewGitDiff => Context::Diff,
         })
     }
@@ -1209,7 +1199,6 @@ fn old_surface_contexts(name: &str) -> Option<Vec<Context>> {
         "preview_text_visual" => return Some(vec![Context::TextVisual]),
         "preview_image" => return Some(vec![Context::Image]),
         "preview_table" => return Some(vec![Context::Table]),
-        #[cfg(feature = "git")]
         "preview_git_diff" => return Some(vec![Context::Diff]),
         _ => {}
     }
@@ -1263,7 +1252,6 @@ impl KeyMap {
         let run = |a: Action| Binding::Run(a);
 
         // The movement every scrolling view shares (text, table, diff). Paging follows `ui.keys`.
-        #[cfg(feature = "git")]
         let scroll =
             || -> ContextMap { host_table(konoma_host_core::keymap::scroll_table(scheme)) };
 
@@ -1300,11 +1288,11 @@ impl KeyMap {
             host_table(type_table(CoreViewType::Image, scheme)),
         );
 
+        // Every diff view shares scrolling and the layout switch.
+        let mut diff = scroll();
+        diff.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
         #[cfg(feature = "git")]
         {
-            // Diff: scrolling, the layout / representation switches, and the media page turn.
-            let mut diff = scroll();
-            diff.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
             diff.insert(KeyPress::ch('R'), run(Action::CycleDiffView));
             // J/K: turn a media diff's PDF page (both sides at once). No-op outside a multi-page
             // PDF side-by-side view (`App::media_diff_page_turn`'s own gate) — PageDown/PageUp are
@@ -1312,8 +1300,10 @@ impl KeyMap {
             // same handler only while the media diff is active, and keeps their ordinary scroll
             // meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
             diff.extend(host_table(konoma_host_core::keymap::page_turn_table()));
-            types.insert(ViewType::Diff, diff);
-
+        }
+        types.insert(ViewType::Diff, diff);
+        #[cfg(feature = "git")]
+        {
             // List screens: jump to the first / last row.
             let mut list: ContextMap = HashMap::new();
             list.insert(KeyPress::ch('g'), nav(Motion::Top));
@@ -1436,32 +1426,33 @@ impl KeyMap {
         let pcvs: ContextMap = host_table(own_table(CoreContext::Canvas));
         contexts.insert(Context::Canvas, pcvs);
 
-        // --- Version-control contexts (feature gate) ---
+        // The file diff is shared with project plugins in every build. Only native VCS
+        // operations depend on the git feature; leaving, reloading and file verbs do not.
+        let mut pgit: ContextMap = host_table(verbs_table());
+        pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
+        pgit.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+        pgit.insert(KeyPress::ch('r'), run(Action::Refresh));
+        // The follow scope has no default key: it lives in the `,` menu when git is enabled.
+        pgit.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
+        pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         #[cfg(feature = "git")]
         {
-            // Preview: gitdiff
-            let mut pgit: ContextMap = host_table(verbs_table());
-            pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
-            // `e` opens the editor at the change block on screen; `o` opens the file in another
-            // app; `p` / `!` reach the project's screen and tool; `r` reads the diff again.
-            pgit.insert(KeyPress::ch('p'), run(Action::OpenGitView));
             pgit.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-            pgit.insert(KeyPress::ch('r'), run(Action::Refresh));
             // `n` / `N` = the next / previous change block of this file (layer 1).
             pgit.insert(KeyPress::ch('n'), run(Action::DiffNextChange));
             pgit.insert(KeyPress::ch('N'), run(Action::DiffPrevChange));
-            // The follow scope (`toggle_follow_diff_scope`) has no default key: it lives in the
-            // `,` menu (its old `f` was the less-style page key).
-            pgit.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
             // Ctrl-n / Ctrl-p = switch to the next/previous changed file's diff (cycle through
             // changes without leaving the view; layer 1's "next/previous file"). `n` / `N` are
             // the next / previous change block within the file.
             pgit.insert(KeyPress::ctrl_ch('n'), run(Action::JumpNextChange));
             pgit.insert(KeyPress::ctrl_ch('p'), run(Action::JumpPrevChange));
-            pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
-            contexts.insert(Context::Diff, pgit);
+        }
+        contexts.insert(Context::Diff, pgit);
 
+        // --- Version-control contexts (feature gate) ---
+        #[cfg(feature = "git")]
+        {
             // The version-control screens: git and jj start with the same tables.
             for backend in Backend::ALL {
                 // Changes hub. Enter→GitOpenSelectedDiff fires as a fixed key.
@@ -2401,7 +2392,6 @@ fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
         )
     };
     let path = || item('p', Action::CyclePathStyle);
-    #[cfg_attr(not(feature = "git"), allow(unused_mut))]
     let mut v = vec![menu(
         Context::Tree,
         vec![
@@ -2415,10 +2405,13 @@ fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
             item('h', Action::ToggleHidden),
         ],
     )];
-    #[cfg(feature = "git")]
     v.push(menu(
         Context::Diff,
-        vec![item('f', Action::ToggleFollowDiffScope), path()],
+        vec![
+            #[cfg(feature = "git")]
+            item('f', Action::ToggleFollowDiffScope),
+            path(),
+        ],
     ));
     v
 }
@@ -2595,7 +2588,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         // Git (feature gate)
         #[cfg(feature = "git")]
         "git_diff_discard" => Action::GitDiffDiscard,
-        #[cfg(feature = "git")]
         "cycle_diff_layout" => Action::CycleDiffLayout,
         #[cfg(feature = "git")]
         "cycle_diff_view" => Action::CycleDiffView,
@@ -2800,7 +2792,6 @@ pub fn action_name(a: Action) -> String {
         Action::Plugin(p) => return format!("plugin:{}.{}", p.plugin(), p.act()),
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => "git_diff_discard",
-        #[cfg(feature = "git")]
         Action::CycleDiffLayout => "cycle_diff_layout",
         #[cfg(feature = "git")]
         Action::CycleDiffView => "cycle_diff_view",

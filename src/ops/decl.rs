@@ -147,7 +147,6 @@ pub fn decl(a: Action) -> Decl {
         // Preview: diff
         #[cfg(feature = "git")]
         A::GitDiffDiscard => d(Some(M::FtDiscard), Some(M::DiscardWholeFile)).writes("git"),
-        #[cfg(feature = "git")]
         A::CycleDiffLayout => d(Some(M::FtDiffLayout), Some(M::GitLayout)),
         #[cfg(feature = "git")]
         A::CycleDiffView => d(None, Some(M::DiffViewCycleHelp)),
@@ -399,7 +398,6 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
         A::OpenLinkNewTab if app.md_focused_kind() != Some(MdFocus::LocalLink) => {
             t.label = None;
         }
-        #[cfg(feature = "git")]
         A::CycleDiffLayout => {
             if app.media_diff_showing_pictures() {
                 t.label = Some(app.media_diff_layout_next_msg());
@@ -411,7 +409,6 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
             t.label = app.diff_view_cycle_hint();
             t.help = app.diff_view_help_hint();
         }
-        #[cfg(feature = "git")]
         A::JumpNextChange | A::JumpPrevChange if ctx == Context::Diff => {
             t.label = Some(M::HintNextPrevFile);
         }
@@ -427,8 +424,6 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
 /// footer label is shared with another operation of the same screen are listed here; a test pins
 /// that no two items of any menu read the same.
 pub fn menu_label(app: &App, ctx: Context, a: Action) -> Option<Msg> {
-    #[cfg(not(feature = "git"))]
-    let _ = ctx;
     use Action as A;
     use Msg as M;
     Some(match a {
@@ -473,9 +468,7 @@ pub fn menu_label(app: &App, ctx: Context, a: Action) -> Option<Msg> {
         A::PreviewFilePrev => M::MenuPrevFile,
         // In a diff `Ctrl-n` / `Ctrl-p` move between the changed files; elsewhere `n` / `N`
         // with nothing searched move between the changes.
-        #[cfg(feature = "git")]
         A::JumpNextChange if ctx == Context::Diff => M::MenuNextChangedFile,
-        #[cfg(feature = "git")]
         A::JumpPrevChange if ctx == Context::Diff => M::MenuPrevChangedFile,
         A::JumpNextChange => M::MenuNextChange,
         A::JumpPrevChange => M::MenuPrevChange,

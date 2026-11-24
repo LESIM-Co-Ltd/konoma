@@ -200,9 +200,9 @@ pub fn help_context(app: &App) -> Context {
         if let Some(s) = screen {
             return Context::Screen(backend, s);
         }
-        if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
-            return Context::Diff;
-        }
+    }
+    if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
+        return Context::Diff;
     }
     match app.tab.mode {
         crate::app::Mode::Tree => Context::Tree,
@@ -249,7 +249,6 @@ fn view_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
         Context::Image => (Msg::PreviewImage, image_rows()),
         Context::Table => (Msg::PreviewTable, table_rows()),
         Context::Canvas => (Msg::PreviewCanvas, canvas_rows()),
-        #[cfg(feature = "git")]
         Context::Diff => (Msg::PreviewGitDiff, diff_rows(app)),
         #[cfg(feature = "git")]
         Context::Screen(b, s) => screen_rows(b, s),
@@ -444,7 +443,6 @@ fn table_rows() -> Vec<Row> {
     ]
 }
 
-#[cfg(feature = "git")]
 fn diff_rows(app: &App) -> Vec<Row> {
     // The media diff's side-by-side view and the binary-summary body have nothing to scroll.
     let media_or_summary = app.diff_footer_is_media_or_summary();
@@ -456,9 +454,12 @@ fn diff_rows(app: &App) -> Vec<Row> {
     }
     v.push(r(&[Action::CycleDiffLayout]));
     v.push(r(PAGE_TURN));
+    #[cfg(feature = "git")]
     v.push(r(&[Action::CycleDiffView]));
     v.push(r(CHANGES));
+    #[cfg(feature = "git")]
     v.push(r(DIFF_CHANGES));
+    #[cfg(feature = "git")]
     v.push(r(&[Action::ToggleFollowDiffScope]));
     v.push(r(&[Action::RequestEdit]));
     v.push(r(&[Action::OpenExternal]));
@@ -470,6 +471,7 @@ fn diff_rows(app: &App) -> Vec<Row> {
         v.push(r(PAGE_KEYS));
         v.push(r(HALF_KEYS));
     }
+    #[cfg(feature = "git")]
     v.push(r(&[Action::GitDiffDiscard]));
     v.push(r(BACK_PREVIEW).d(Msg::BackToGitView));
     v
@@ -830,16 +832,25 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     if app.project_active() {
         let mut sections: Vec<_> = plugin_section(app, ctx).into_iter().collect();
         let mut navigation = HelpSection::new(tr(app.lang, Msg::ProjectTitle));
-        navigation.rows.push((
-            "Tab / Shift-Tab".into(),
-            tr(app.lang, Msg::ProjectCycle).into(),
-        ));
-        navigation
-            .rows
-            .push(("q / Esc".into(), tr(app.lang, Msg::ProjectBack).into()));
-        navigation
-            .rows
-            .push(("j/k / ↑/↓".into(), tr(app.lang, Msg::Scroll).into()));
+        if let Some(hints) = app.project_text_help() {
+            navigation.rows.extend(hints);
+        } else {
+            if let Some(hint) = app.project_open_hint() {
+                navigation.rows.push(hint);
+            }
+            if !app.project_pushed() {
+                navigation.rows.push((
+                    "Tab / Shift-Tab".into(),
+                    tr(app.lang, Msg::ProjectCycle).into(),
+                ));
+            }
+            navigation
+                .rows
+                .push(("q / Esc".into(), tr(app.lang, Msg::ProjectBack).into()));
+            navigation
+                .rows
+                .push(("j/k / ↑/↓".into(), tr(app.lang, Msg::Scroll).into()));
+        }
         if app.project_content().is_some_and(|view| {
             matches!(
                 view.as_ref(),

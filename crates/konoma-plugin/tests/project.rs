@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 #[path = "project/chip.rs"]
 mod chip;
+#[path = "project/detail.rs"]
+mod detail;
 #[path = "project/host_api.rs"]
 mod host_api;
 #[path = "project/presentation.rs"]
@@ -180,6 +182,19 @@ fn project_duplicate_screen_key_is_refused() {
         ManifestReason::DuplicateScreenKey { key: "z".into() }
     );
     check(manifest()).ok().unwrap();
+}
+
+#[test]
+fn project_pushed_screen_rejects_jump_key_and_names_screen() {
+    let screen = ProjectScreen::new("detail", "Detail").pushed();
+    check(Manifest::new("p", "1").project(project().screen(screen.clone()))).unwrap();
+    for key in ['d', 'q', '\n'] {
+        assert_eq!(
+            reason(Manifest::new("p", "1").project(project().screen(screen.clone().key(key))))
+                .to_string(),
+            "pushed screen `detail` cannot declare a jump key"
+        );
+    }
 }
 
 #[test]

@@ -6,6 +6,7 @@ use konoma_vcs_core::style::VcsColor;
 use konoma_vcs_core::vcs::Vcs;
 use std::path::PathBuf;
 mod actions;
+mod detail;
 mod log;
 mod paths;
 
@@ -25,7 +26,8 @@ macro_rules! plugin {
                             .screen(ProjectScreen::new("changes", t!(en: "Changes", ja: "変更"))
                                 .key('p').row_kind("file").row_kind("empty"))
                             .screen(ProjectScreen::new("log", t!(en: "Log", ja: "ログ"))
-                                .row_kind("commit").row_kind("empty")),
+                                .row_kind("commit").row_kind("empty"))
+                            .screen(ProjectScreen::new("detail", t!(en: "Detail", ja: "詳細")).pushed()),
                     )
                     .shows(ViewKind::List)
                     .setting(SettingDecl::new("path_style", Value::Str("relative".into()),
@@ -38,6 +40,9 @@ macro_rules! plugin {
                         .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
                         .footer(4)
                         .project_context(ActContext::screen("changes", ["file"])))
+                    .action(Act::new("detail").key("Enter")
+                        .label(t!(en: "detail", ja: "詳細"))
+                        .project_context(ActContext::screen("log", ["commit"])))
             }
             fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
                 let Input::Project { root, .. } = input else {
@@ -142,6 +147,13 @@ impl Session for Changes {
         Ok(Some(paths))
     }
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        if let Some(project) = req.project.as_ref().filter(|p| p.screen == "detail") {
+            return Ok(View::Diff(detail::read(
+                &self.backend,
+                &self.root,
+                project.selection.as_deref(),
+            )));
+        }
         if req.project.as_ref().is_some_and(|p| p.screen == "log") {
             return Ok(log::view(self.backend.log(&self.root), cx));
         }
@@ -211,6 +223,19 @@ impl Session for Changes {
     }
 
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
+        if action == "detail" {
+            return Ok(cx
+                .project
+                .as_ref()
+                .filter(|p| p.screen.as_deref() == Some("log"))
+                .and_then(|p| p.selected.as_ref())
+                .filter(|r| r.kind == "commit")
+                .map(|r| Outcome::PushScreen {
+                    screen: "detail".into(),
+                    selection: Some(r.value.clone()),
+                })
+                .unwrap_or(Outcome::Unhandled));
+        }
         if !self.enabled(action) {
             return Ok(Outcome::Unhandled);
         }
@@ -311,6 +336,7 @@ impl Session for Changes {
             return false;
         }
         match action {
+            "detail" => true,
             "diff" => !self.files.is_empty(),
             "stage" | "unstage" | "discard" => {
                 matches!(self.backend, Backend::Git) && !self.files.is_empty()

@@ -634,11 +634,43 @@ impl ListRow {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiffView {
     pub hunks: Vec<DiffHunk>,
+    /// Styled lines above the diff. When nonempty, the host follows them with a dim,
+    /// full-width `─` divider.
+    pub header: Vec<Line>,
+}
+
+impl DiffView {
+    pub fn new(hunks: Vec<DiffHunk>) -> Self {
+        Self {
+            hunks,
+            ..Self::default()
+        }
+    }
+    pub fn header(mut self, header: Vec<Line>) -> Self {
+        self.header = header;
+        self
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiffHunk {
     pub lines: Vec<DiffLine>,
+    /// The file this hunk belongs to. The host draws a file header when the path differs
+    /// from the previous hunk's and colours its lines by the path's extension.
+    pub path: Option<String>,
+}
+
+impl DiffHunk {
+    pub fn new(lines: Vec<DiffLine>) -> Self {
+        Self {
+            lines,
+            ..Self::default()
+        }
+    }
+    pub fn path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
