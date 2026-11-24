@@ -14,6 +14,8 @@ mod host_api;
 mod presentation;
 #[path = "project/review.rs"]
 mod review;
+#[path = "project/worktrees.rs"]
+mod worktrees;
 
 struct Decl(Manifest);
 impl Plugin for Decl {
@@ -734,6 +736,7 @@ mod wire {
     fn project_switch_root_round_trip() {
         outcome(Outcome::SwitchRoot {
             root: "/project/worktree".into(),
+            message: None,
         });
     }
     #[test]
@@ -756,6 +759,7 @@ mod wire {
                 },
                 WOutcome::SwitchRoot {
                     root: path_to_wire(Path::new(path)),
+                    message: None,
                 },
                 WOutcome::OpenTab {
                     path: path_to_wire(Path::new(path)),
@@ -978,6 +982,7 @@ mod wire {
                 },
                 "root" => Outcome::SwitchRoot {
                     root: "/project/next".into(),
+                    message: None,
                 },
                 "tab" => Outcome::OpenTab {
                     path: "/project/next".into(),

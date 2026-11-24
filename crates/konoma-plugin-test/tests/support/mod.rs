@@ -385,6 +385,7 @@ pub fn fixture(mode: &str, args: &[String]) -> ExitCode {
                                 }),
                                 "outcome-root" => outcome_to_wire(&Outcome::SwitchRoot {
                                     root: "/project".into(),
+                                    message: None,
                                 }),
                                 "outcome-tab" | "outcome-v1" => {
                                     outcome_to_wire(&Outcome::OpenTab {

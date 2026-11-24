@@ -69,6 +69,7 @@ fn plan_actions(plan: &[Foot]) -> Vec<Action> {
                 v.extend(acts.iter().copied())
             }
             Foot::Plugin(p) => v.push(Action::Plugin(*p)),
+            Foot::Project(token) => v.extend(token.actions.iter().copied()),
             Foot::Core(c) => v.extend(
                 c.ops()
                     .into_iter()
