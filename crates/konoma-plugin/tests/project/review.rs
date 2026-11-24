@@ -271,6 +271,19 @@ fn project_prompt_counts_values_and_all_label_languages_are_bounded() {
         .map(|i| ConfirmChoice::new(char::from_u32(0x400 + i as u32).unwrap(), "v", "V"))
         .collect::<Vec<_>>();
     check(confirmation(c.clone())).unwrap();
+    for lang in ["en", "ja", "fr"] {
+        assert_eq!(
+            reason(confirmation(vec![ConfirmChoice::new('y', "yes", "Yes")
+                .status(Tr::new("Yes").with(
+                    lang,
+                    "界".repeat(konoma_plugin::text::MAX_TEXT_CHARS + 1)
+                ))])),
+            ManifestReason::ChoiceLabelTooLong {
+                action: "go".into(),
+                limit: konoma_plugin::text::MAX_TEXT_CHARS
+            }
+        );
+    }
     c.push(ConfirmChoice::new('z', "v", "V"));
     assert_eq!(
         reason(confirmation(c)),

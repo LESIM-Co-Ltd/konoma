@@ -76,6 +76,7 @@ impl Session for ObservedVcsSession {
 
 #[derive(Default)]
 pub(crate) struct ProjectLog {
+    pub list_rows: Option<Vec<ListRow>>,
     pub open_label: Option<Tr>,
     pub push_help_alias: bool,
     pub hint_groups: bool,
@@ -475,10 +476,16 @@ impl Session for ScreenSession {
         let reverse = log.reverse_rows;
         let omit = log.omit_row.clone();
         let row_name = log.row_name.clone();
+        let list_rows = log.list_rows.clone();
         drop(log);
         if let Some(hold) = &hold {
             hold.entered.open();
             hold.release.wait();
+        }
+        if project.screen == "items" {
+            if let Some(rows) = list_rows {
+                return Ok(View::List(ListView { rows }));
+            }
         }
         let mut view = match project.screen.as_str() {
             "items" => {

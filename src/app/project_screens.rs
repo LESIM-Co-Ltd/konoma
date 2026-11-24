@@ -353,6 +353,10 @@ pub(crate) struct ProjectInvocation {
 }
 
 impl ProjectInvocation {
+    pub(crate) fn destructive(&self) -> bool {
+        self.declaration.destructive
+    }
+
     pub(crate) fn confirmation_text(&self, prompt: &Confirmation, lang: &str) -> String {
         let row = self.context.selected.as_ref();
         let name = row

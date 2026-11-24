@@ -5,7 +5,7 @@ fn worktrees_git_declaration_settings_and_actions_jj_has_no_screen_or_jump() {
     let manifest = konoma_vcs::Git.manifest();
     let screens = &manifest.project.as_ref().unwrap().screens;
     let position = screens.iter().position(|s| s.id == "worktrees").unwrap();
-    assert_eq!(screens[position - 1].id, "log");
+    assert_eq!(screens[position - 1].id, "branches");
     let screen = &screens[position];
     assert_eq!(screen.key, Some('w'));
     assert_eq!(screen.title.get("en"), "Worktrees");
@@ -25,8 +25,12 @@ fn worktrees_git_declaration_settings_and_actions_jj_has_no_screen_or_jump() {
         assert_ne!(setting.help.get("en"), setting.help.get("ja"));
     }
     let acts: Vec<_> = manifest.actions.iter().filter(|a| matches!(&a.project_context, Some(ActContext::Screen { screen, .. }) if screen == "worktrees")).collect();
-    assert_eq!(acts.len(), 3);
-    for key in ["Enter", "c", "d"] {
+    assert_eq!(acts.len(), if cfg!(feature = "git") { 3 } else { 1 });
+    for key in if cfg!(feature = "git") {
+        vec!["Enter", "c", "d"]
+    } else {
+        vec!["Enter"]
+    } {
         let action = acts.iter().find(|a| a.key.as_deref() == Some(key)).unwrap();
         assert_ne!(action.label.get("en"), action.label.get("ja"));
         assert_ne!(action.help.get("en"), action.help.get("ja"));
