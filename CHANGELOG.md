@@ -8,6 +8,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 - Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
 - `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
+- Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
+
 - Internal: move Git and jj commit detail into a pushed `konoma-vcs` screen alongside the legacy hub in tests; project diff views gain styled headers, file paths and cached unified/split drawing, with shared text scrolling and host-owned list opening through `l` / Right.
 
 - Internal: add Git and jj log screens alongside the legacy hub in tests, with no user-visible change; plugin list rows gain optional styled `ListRow::right` suffixes and `ListRow::filter_text` matching text, preserved by the child-process protocol.

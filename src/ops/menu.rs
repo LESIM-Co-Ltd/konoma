@@ -68,6 +68,13 @@ pub fn menu(app: &App, ctx: Context, id: LeaderId, view: View) -> Option<Menu> {
 
 /// The operation key `kp` runs in the open menu `id` of `ctx` (`None` = the key is not in it).
 pub fn find(app: &App, ctx: Context, id: LeaderId, kp: KeyPress) -> Option<Action> {
+    if app.project_active()
+        && ctx == Context::Canvas
+        && id == LeaderId::Copy
+        && konoma_plugin::keys::parse_key(&kp.label()).is_ok_and(konoma_plugin::keys::closes_menu)
+    {
+        return None;
+    }
     menu(app, ctx, id, View::Open)?
         .items
         .into_iter()
@@ -83,6 +90,26 @@ pub fn opens(app: &App, ctx: Context, id: LeaderId) -> bool {
 
 /// A menu kept in the keymap (`y`, `,`, the tree's `Space`).
 fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu> {
+    if app.project_active() && ctx == Context::Canvas && id == LeaderId::Copy {
+        let items = app
+            .plugin_context_bindings(ctx)
+            .iter()
+            .filter_map(|binding| {
+                let key = binding.copy_key?;
+                let action = Action::Plugin(binding.act);
+                action_enabled(app, ctx, action).then(|| MenuItem {
+                    key,
+                    action,
+                    label: binding.label.get(app.plugin_lang()).to_string(),
+                })
+            })
+            .collect();
+        return Some(Menu {
+            id,
+            title: tr(app.lang, Msg::CopyHint).into(),
+            items,
+        });
+    }
     let m = app.keymaps.menu(ctx, id)?;
     // `,` offers what acts here; the copy and file menus list all their items (the code-block
     // copy only while a code block is focused: the menu, the footer and the help alike).

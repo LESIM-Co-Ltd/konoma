@@ -329,6 +329,8 @@ pub enum Effect {
 /// What is wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyIssueKind {
+    /// A copy menu key must be one plain character.
+    InvalidCopyKey,
     /// The key string does not parse (or is a chord).
     Unparseable(KeyError),
     /// The key is reserved by a layer in a context.
@@ -360,6 +362,11 @@ impl fmt::Display for KeyIssue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let key = self.key.as_deref().unwrap_or("-");
         match &self.kind {
+            KeyIssueKind::InvalidCopyKey => write!(
+                f,
+                "copy action `{}` must have one plain character as its key",
+                self.act
+            )?,
             KeyIssueKind::Unparseable(e) => write!(f, "action `{}`: key `{key}`: {e}", self.act)?,
             KeyIssueKind::Reserved { layer, context } => write!(
                 f,
@@ -415,8 +422,43 @@ fn reserved_for_main_view(manifest: &Manifest) -> Vec<(KeySpec, Layer)> {
     all
 }
 
-/// Check the keys of a manifest. An action without a context is checked against the keys of the
-/// display types the manifest [`shows`](Manifest::shows) (every display type when it does not say).
+/// Keys reserved for closing a menu, shared by declaration checks and host menu resolution.
+pub fn closes_menu(key: KeySpec) -> bool {
+    !key.ctrl && matches!(key.code, KeyName::Char('q') | KeyName::Esc)
+}
+
+pub(crate) fn copy_key_valid(key: Option<&str>) -> bool {
+    key.is_some_and(|key| {
+        let mut chars = key.chars();
+        chars
+            .next()
+            .is_some_and(|c| !c.is_control() && !c.is_whitespace() && !closes_menu(KeySpec::ch(c)))
+            && chars.next().is_none()
+    })
+}
+
+pub(crate) fn copy_contexts_overlap(manifest: &Manifest, a: &Act, b: &Act) -> bool {
+    use crate::project::ActContext;
+    match (&a.project_context, &b.project_context) {
+        (
+            Some(ActContext::Screen { screen: a, .. }),
+            Some(ActContext::Screen { screen: b, .. }),
+        ) => a == b,
+        (Some(a), Some(b)) => a == b,
+        (None, None) => match (&a.screen, &b.screen) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => true,
+            (Some(context), None) | (None, Some(context)) => {
+                manifest.shows.is_empty()
+                    || manifest.shows.iter().any(|kind| kind.context() == context)
+            }
+        },
+        _ => false,
+    }
+}
+
+/// Check direct keys against the declared view contexts and copy keys as menu characters.
+/// An action without a context uses the kinds the manifest shows (every kind if undeclared).
 pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
     let mut issues = Vec::new();
     let forbidden = forbidden_defaults();
@@ -446,6 +488,17 @@ pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
                 kind: KeyIssueKind::DestructiveWithoutConfirm,
                 effect: Effect::Rejected,
             });
+            continue;
+        }
+        if act.copy {
+            if !copy_key_valid(act.key.as_deref()) {
+                issues.push(KeyIssue {
+                    act: act.id.clone(),
+                    key: act.key.clone(),
+                    kind: KeyIssueKind::InvalidCopyKey,
+                    effect: Effect::KeyDropped,
+                });
+            }
             continue;
         }
         if let Some(issue) = check_key(manifest, act, &forbidden, &taken) {

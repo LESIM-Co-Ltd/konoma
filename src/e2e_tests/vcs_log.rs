@@ -138,6 +138,335 @@ fn detail_repo() -> TmpDir {
 }
 
 #[test]
+fn e2e_vcs_copy_log_and_detail_clipboard_and_flash_match_old_hub_for_all_six_items() {
+    use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
+    let dir = detail_repo();
+    for lang in ["en", "ja"] {
+        let (mut old, mut new) = pair(&dir, "git", lang, "right", 180, 14);
+        // The second commit has a multiline message with CJK text.
+        old.key('j');
+        new.key('j');
+        drain(&mut new);
+        for detail in [false, true] {
+            if detail {
+                old.enter();
+                new.enter();
+                drain(&mut new);
+            }
+            for key in ['s', 'h', 't', 'm', 'a', 'd'] {
+                clear_test_clipboard();
+                old.key('y');
+                old.key(key);
+                let text = get_test_clipboard().expect("legacy copy must reach the sink");
+                if key == 'm' {
+                    assert!(text.contains('\n') && text.contains("日本語"));
+                }
+                let flash = old.app.flash.clone();
+                clear_test_clipboard();
+                new.key('y');
+                assert_eq!(new.app.pending_leader, Some(crate::keymap::LeaderId::Copy));
+                new.key(key);
+                drain(&mut new);
+                assert_eq!(get_test_clipboard(), Some(text), "{lang} {detail} {key}");
+                assert_eq!(new.app.flash, flash, "{lang} {detail} {key}");
+            }
+        }
+    }
+}
+
+#[test]
+fn e2e_vcs_copy_menu_cells_help_footer_and_space_membership_match_the_declaration() {
+    use crate::keymap::{Context, LeaderId};
+    use crate::ops::menu::{menu, View};
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        text::Line,
+        widgets::{Paragraph, Widget},
+    };
+    let dir = detail_repo();
+    for lang in ["en", "ja"] {
+        let (mut old, mut new) = pair(&dir, "git", lang, "right", 180, 14);
+        for detail in [false, true] {
+            if detail {
+                old.enter();
+                new.enter();
+                drain(&mut new);
+            }
+            let legacy_context = old.app.key_context().unwrap();
+            let legacy = menu(&old.app, legacy_context, LeaderId::GitCopy, View::Open).unwrap();
+            let actual = menu(&new.app, Context::Canvas, LeaderId::Copy, View::Open).unwrap();
+            let pairs = |m: &crate::ops::menu::Menu| {
+                m.items
+                    .iter()
+                    .map(|it| (it.key, it.label.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(pairs(&actual), pairs(&legacy));
+            assert_eq!(
+                actual.title,
+                crate::i18n::tr(new.app.lang, crate::i18n::Msg::CopyHint)
+            );
+            let expected_help =
+                crate::ui::help::leader_section(&new.app, Context::Canvas, LeaderId::Copy, "y")
+                    .unwrap();
+            assert!(crate::ops::help::sections_for(&new.app, Context::Canvas)
+                .iter()
+                .any(|s| s.title == expected_help.title && s.rows == expected_help.rows));
+            assert!(crate::ops::footer::tokens(&new.app, Context::Canvas)
+                .join(" ")
+                .contains(&format!(
+                    "y:{}",
+                    crate::i18n::tr(new.app.lang, crate::i18n::Msg::CopyHint)
+                )));
+            let space = menu(&new.app, Context::Canvas, LeaderId::Actions, View::Open).unwrap();
+            assert!(space
+                .items
+                .iter()
+                .all(|it| !actual.items.iter().any(|copy| copy.action == it.action)));
+            let footer = crate::ops::footer::render_tokens(
+                &new.app,
+                Context::Canvas,
+                &crate::ops::footer::plan(&new.app, Context::Canvas),
+            );
+            assert!(footer.iter().all(|token| token
+                .actions
+                .iter()
+                .all(|a| !actual.items.iter().any(|copy| &copy.action == a))));
+            // The host uses its generic title; normalize only that permitted difference.
+            old.app
+                .keymaps
+                .leaders
+                .get_mut(&LeaderId::GitCopy)
+                .unwrap()
+                .title = crate::i18n::Msg::CopyHint;
+            old.key('y');
+            new.key('y');
+            let cells = |app: &App| {
+                let area = Rect::new(0, 0, 180, 1);
+                let mut buffer = Buffer::empty(area);
+                Paragraph::new(Line::from(crate::ui::status::footer_spans(app, 180)))
+                    .render(area, &mut buffer);
+                buffer
+            };
+            assert_eq!(cells(&new.app), cells(&old.app), "{lang} {detail}");
+            old.esc();
+            new.esc();
+        }
+    }
+}
+
+#[test]
+fn e2e_vcs_copy_empty_log_and_screen_without_copy_acts_do_nothing_without_hints() {
+    use crate::keymap::{Context, LeaderId};
+    use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
+    let dir = repo(0);
+    let cfg = plugin_config("git", "vcs_copy_empty", "en");
+    let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
+    new.press(KeyCode::Tab, KeyModifiers::NONE);
+    drain(&mut new);
+    assert_eq!(new.app.project_frame().unwrap().key.screen, "log");
+    for changes in [false, true] {
+        if changes {
+            new.press(KeyCode::BackTab, KeyModifiers::NONE);
+            drain(&mut new);
+        }
+        clear_test_clipboard();
+        assert!(!crate::ops::menu::opens(
+            &new.app,
+            Context::Canvas,
+            LeaderId::Copy
+        ));
+        assert!(!crate::ops::footer::tokens(&new.app, Context::Canvas)
+            .join(" ")
+            .contains("y:"));
+        assert!(
+            crate::ui::help::leader_section(&new.app, Context::Canvas, LeaderId::Copy, "y")
+                .is_none()
+        );
+        new.key('y');
+        assert_eq!(new.app.pending_leader, None);
+        assert_eq!(new.app.flash, None);
+        assert_eq!(get_test_clipboard(), None);
+    }
+}
+
+#[test]
+fn e2e_vcs_copy_hints_disappear_when_the_menu_prefix_is_unbound() {
+    use crate::keymap::{Context, LeaderId};
+    let dir = repo(1);
+    let mut cfg = plugin_config("git", "vcs_copy_unbound", "en");
+    cfg.keys
+        .surfaces
+        .insert("canvas".into(), [("y".into(), "noop".into())].into());
+    let (_, mut new) = pair_config(&dir, "git", cfg, 100, 12);
+    new.press(KeyCode::Tab, KeyModifiers::NONE);
+    drain(&mut new);
+    assert!(crate::ops::menu::opens(
+        &new.app,
+        Context::Canvas,
+        LeaderId::Copy
+    ));
+    new.key('y');
+    assert_eq!(new.app.pending_leader, None);
+    assert!(!crate::ops::footer::tokens(&new.app, Context::Canvas)
+        .join(" ")
+        .contains("y:"));
+    let title = crate::i18n::tr(new.app.lang, crate::i18n::Msg::CopyHint);
+    assert!(crate::ops::help::sections_for(&new.app, Context::Canvas)
+        .iter()
+        .all(|s| s.title != title));
+}
+
+#[test]
+fn e2e_vcs_copy_clipboard_failure_matches_old_hub_without_writing() {
+    use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
+    let dir = repo(1);
+    let (mut old, mut new) = pair(&dir, "git", "en", "right", 100, 12);
+    clear_test_clipboard();
+    App::with_clipboard_failure_for_test(|| {
+        old.key('y');
+        old.key('m');
+        new.key('y');
+        new.key('m');
+        drain(&mut new);
+    });
+    assert_eq!(get_test_clipboard(), None);
+    assert_eq!(new.app.flash, old.app.flash);
+    assert_eq!(
+        new.app.flash,
+        Some(konoma_host_core::copy::copy_failed_notice(
+            new.app.lang,
+            &anyhow::anyhow!("test clipboard failure")
+        ))
+    );
+    assert!(new
+        .app
+        .flash
+        .as_deref()
+        .unwrap()
+        .contains("test clipboard failure"));
+}
+
+#[test]
+fn e2e_vcs_copy_empty_subject_is_written_on_log_and_detail() {
+    use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
+    let dir = repo(1);
+    let repository = git2::Repository::open(&dir).unwrap();
+    let parent = repository.head().unwrap().peel_to_commit().unwrap();
+    let signature = parent.author();
+    repository
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "",
+            &parent.tree().unwrap(),
+            &[&parent],
+        )
+        .unwrap();
+    let (mut old, mut new) = pair(&dir, "git", "en", "right", 100, 12);
+    for detail in [false, true] {
+        if detail {
+            old.enter();
+            new.enter();
+            drain(&mut new);
+        }
+        clear_test_clipboard();
+        old.key('y');
+        old.key('t');
+        assert_eq!(get_test_clipboard(), Some(String::new()));
+        let flash = old.app.flash.clone();
+        clear_test_clipboard();
+        new.key('y');
+        new.key('t');
+        drain(&mut new);
+        assert_eq!(get_test_clipboard(), Some(String::new()));
+        assert_eq!(new.app.flash, flash);
+    }
+}
+
+#[test]
+fn e2e_vcs_copy_detail_uses_the_metadata_it_shows_and_log_missing_commit_flashes() {
+    use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
+    for detail in [true, false] {
+        let dir = repo(1);
+        let (mut old, mut new) = pair(&dir, "git", "en", "right", 100, 12);
+        if detail {
+            old.enter();
+            new.enter();
+            drain(&mut new);
+        }
+        let id = git2::Repository::open(&dir)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string();
+        std::fs::remove_file(dir.join(".git/objects").join(&id[..2]).join(&id[2..])).unwrap();
+        clear_test_clipboard();
+        old.key('y');
+        old.key('m');
+        let text = get_test_clipboard();
+        let flash = old.app.flash.clone();
+        assert_eq!(text.is_some(), detail);
+        clear_test_clipboard();
+        new.key('y');
+        new.key('m');
+        drain(&mut new);
+        assert_eq!(get_test_clipboard(), text);
+        assert_eq!(new.app.flash, flash);
+    }
+}
+
+#[test]
+fn e2e_vcs_copy_reopened_cached_details_keep_each_displayed_commit() {
+    use konoma_host_core::clipboard::{clear_test_clipboard, get_test_clipboard};
+    let dir = repo(2);
+    let (mut old, mut new) = pair(&dir, "git", "en", "right", 120, 14);
+    let ids = rows(&new);
+    let mut first_view = None;
+    for (step, index) in [0, 1, 0].into_iter().enumerate() {
+        if step > 0 {
+            old.esc();
+            new.esc();
+            let key = if index == 1 { 'j' } else { 'k' };
+            old.key(key);
+            new.key(key);
+            drain(&mut new);
+        }
+        old.enter();
+        new.enter();
+        drain(&mut new);
+        let view = new.app.project_content().unwrap();
+        if step == 0 {
+            first_view = Some(view);
+        } else if step == 2 {
+            assert!(
+                std::sync::Arc::ptr_eq(first_view.as_ref().unwrap(), &view),
+                "reopening A uses the host's cached view without calling the plugin"
+            );
+        }
+        clear_test_clipboard();
+        old.key('y');
+        old.key('h');
+        assert_eq!(get_test_clipboard().as_deref(), Some(ids[index].as_str()));
+        let flash = old.app.flash.clone();
+        clear_test_clipboard();
+        new.key('y');
+        new.key('h');
+        drain(&mut new);
+        assert_eq!(
+            get_test_clipboard().as_deref(),
+            Some(ids[index].as_str()),
+            "step {step}"
+        );
+        assert_eq!(new.app.flash, flash);
+    }
+}
+
+#[test]
 fn e2e_vcs_detail_cells_motions_layout_empty_and_less_match_legacy() {
     let dir = detail_repo();
     for width in [80, 180] {

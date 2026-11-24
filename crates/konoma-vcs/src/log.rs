@@ -4,6 +4,51 @@ use konoma_plugin::prelude::*;
 use konoma_plugin::view::{ListRow, ListView};
 use konoma_vcs_core::git::CommitInfo;
 
+pub(super) fn copy_declarations(mut manifest: Manifest, jj: bool) -> Manifest {
+    for screen in ["log", "detail"] {
+        for (field, key, label) in [
+            (
+                "short_hash",
+                "s",
+                if jj {
+                    t!(en: "change id", ja: "change id")
+                } else {
+                    t!(en: "short hash", ja: "短ハッシュ")
+                },
+            ),
+            (
+                "full_hash",
+                "h",
+                if jj {
+                    t!(en: "commit id", ja: "commit id")
+                } else {
+                    t!(en: "full hash", ja: "完全ハッシュ")
+                },
+            ),
+            ("subject", "t", t!(en: "subject", ja: "件名")),
+            ("message", "m", t!(en: "message", ja: "メッセージ")),
+            ("author", "a", t!(en: "author", ja: "著者")),
+            ("date", "d", t!(en: "date", ja: "日付")),
+        ] {
+            manifest = manifest.action(
+                Act::new(format!("{screen}_copy_{field}"))
+                    .copy()
+                    .key(key)
+                    .label(label)
+                    .project_context(ActContext::screen(
+                        screen,
+                        if screen == "log" {
+                            vec!["commit"]
+                        } else {
+                            vec![]
+                        },
+                    )),
+            );
+        }
+    }
+    manifest
+}
+
 pub(super) fn view(commits: Vec<CommitInfo>, cx: &ViewCx) -> View {
     if commits.is_empty() {
         return View::List(ListView {

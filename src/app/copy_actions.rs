@@ -1,6 +1,30 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static COPY_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn write_copy_clipboard(text: &str) -> Result<()> {
+    #[cfg(test)]
+    if COPY_FAILURE.with(|fail| fail.get()) {
+        anyhow::bail!("test clipboard failure");
+    }
+    set_clipboard(text)
+}
+
 impl App {
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn with_clipboard_failure_for_test(f: impl FnOnce()) {
+        struct Reset(bool);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                COPY_FAILURE.with(|fail| fail.set(self.0));
+            }
+        }
+        let _reset = Reset(COPY_FAILURE.with(|fail| fail.replace(true)));
+        f();
+    }
     /// The path to copy. In Preview it is the preview target; in Tree it is the entry selected in the tree.
     pub(super) fn copy_target(&self) -> Option<PathBuf> {
         // While the Git changes hub is shown, the copy target is the **changed file** path, not the
@@ -102,7 +126,7 @@ impl App {
     /// Write to the clipboard and flash success/failure (common processing for copy operations). On success, shows a one-line preview
     /// (multi-line content such as a full message is rounded to the first line + `…` so the footer does not overflow).
     pub(super) fn set_clipboard_flash(&mut self, text: &str) {
-        match set_clipboard(text) {
+        match write_copy_clipboard(text) {
             Ok(()) => {
                 self.flash = Some(konoma_host_core::copy::copied_preview_notice(
                     self.lang, text,
