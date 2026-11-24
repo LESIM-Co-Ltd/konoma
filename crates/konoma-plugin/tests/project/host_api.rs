@@ -136,7 +136,10 @@ mod wire {
             ProjectView::new("branches"),
             ProjectView::new("branches").selection("branch-2"),
         ] {
-            assert_eq!(project_view_from_wire(bytes(&project_view_to_wire(&p))), p);
+            assert_eq!(
+                project_view_from_wire(bytes(&project_view_to_wire(&p))).unwrap(),
+                p
+            );
             let req = ViewReq::new(101, 37)
                 .repr("graph")
                 .page(2)

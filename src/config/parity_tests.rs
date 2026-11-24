@@ -88,6 +88,11 @@ fn vcs_host_quick_scan_of_qualified_git_calls_and_function_imports() {
                 {
                     continue;
                 }
+                // The tree title draws the plugin's chip with this colour mapping; it reads no
+                // repository state.
+                if path.ends_with("ui/tree.rs") && function == "vcs_color" {
+                    continue;
+                }
                 violations.push(format!(
                     "{}: git::{function}",
                     path.strip_prefix(env!("CARGO_MANIFEST_DIR"))

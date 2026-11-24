@@ -9,7 +9,6 @@ description = "konoma's version-control reading: git (libgit2 and the git CLI) a
 
 [dependencies]
 konoma-base = { path = "../konoma-base", version = "0.1.0" }
-ratatui.workspace = true
 anyhow.workspace = true
 similar.workspace = true
 # git (任意機能。MVP は git2 を試す。コマンド委譲でも可)

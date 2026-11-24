@@ -535,6 +535,8 @@ pub struct ListView {
 /// ```
 #[non_exhaustive]
 pub struct ListRow {
+    /// False for a message or heading: the host never selects, marks or acts on this row.
+    pub selectable: bool,
     /// Opaque stable identity for action selection. Empty for legacy rows.
     pub value: String,
     pub cells: Vec<Line>,
@@ -549,6 +551,10 @@ pub struct ListRow {
 }
 
 impl ListRow {
+    pub fn selectable(mut self, selectable: bool) -> Self {
+        self.selectable = selectable;
+        self
+    }
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
         self
@@ -570,6 +576,7 @@ impl ListRow {
 
     pub fn new(kind: impl Into<String>, cells: Vec<Line>) -> Self {
         Self {
+            selectable: true,
             cells,
             value: String::new(),
             kind: kind.into(),

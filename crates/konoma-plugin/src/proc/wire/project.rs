@@ -39,7 +39,8 @@ pub fn outcome_protocol(o: &WOutcome) -> u32 {
     }
 }
 pub fn view_protocol(v: &WView) -> u32 {
-    if matches!(v, WView::List(rows) if rows.iter().any(|r| r.marked || !r.value.is_empty())) {
+    if matches!(v, WView::List(rows) if rows.iter().any(|r| !r.selectable || r.marked || !r.value.is_empty()))
+    {
         2
     } else {
         1
@@ -78,6 +79,10 @@ pub struct WProjectScreen {
     pub title: WTr,
     pub key: Option<char>,
     pub row_kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub marks: bool,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub checks: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +177,8 @@ pub fn project_screen_to_wire(screen: &ProjectScreen) -> WProjectScreen {
         title: tr_to_wire(&screen.title),
         key: screen.key,
         row_kinds: screen.row_kinds.clone(),
+        marks: screen.marks,
+        checks: screen.checks,
     }
 }
 
@@ -181,6 +188,8 @@ pub fn project_screen_from_wire(screen: WProjectScreen) -> ProjectScreen {
         title: tr_from_wire(screen.title),
         key: screen.key,
         row_kinds: screen.row_kinds,
+        marks: screen.marks,
+        checks: screen.checks,
     }
 }
 

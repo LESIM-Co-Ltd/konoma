@@ -1,5 +1,9 @@
 //! Static project discovery and watching. All directory reads and watch setup run on a worker.
 
+#[cfg(test)]
+#[path = "vcs_detection_tests.rs"]
+mod vcs_detection_tests;
+
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -18,6 +22,40 @@ pub(crate) struct MatchedProject {
     /// The actual entry name, not the declaration's glob.
     pub marker: String,
     pub declaration: ProjectDecl,
+    pub session_watch_paths: Option<Vec<PathBuf>>,
+}
+
+impl MatchedProject {
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        self.session_watch_paths.clone().unwrap_or_else(|| {
+            self.declaration
+                .watch_paths
+                .iter()
+                .map(|p| self.root.join(p))
+                .collect()
+        })
+    }
+}
+
+type WatchKey = (String, PathBuf, String);
+struct SessionWatches {
+    paths: Mutex<std::collections::BTreeMap<WatchKey, Vec<PathBuf>>>,
+    dirty: AtomicBool,
+    wake: mpsc::SyncSender<WatchMessage>,
+}
+impl SessionWatches {
+    fn apply(&self, projects: &mut [MatchedProject]) {
+        let paths = self.paths.lock().unwrap_or_else(|e| e.into_inner());
+        for project in projects {
+            project.session_watch_paths = paths
+                .get(&(
+                    project.plugin.clone(),
+                    project.root.clone(),
+                    project.marker.clone(),
+                ))
+                .cloned();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -107,6 +145,7 @@ fn detect_directories<'a>(
                         continue;
                     }
                     out.push(MatchedProject {
+                        session_watch_paths: None,
                         plugin: decl.plugin.clone(),
                         root: directory.into(),
                         marker: name.into(),
@@ -128,10 +167,9 @@ fn affected(
     paths.is_empty()
         || paths.iter().any(|path| {
             projects.iter().any(|p| {
-                p.declaration.watch_paths.iter().any(|watch| {
-                    let watch = p.root.join(watch);
-                    path.starts_with(&watch) || watch.starts_with(path)
-                })
+                p.watch_paths()
+                    .iter()
+                    .any(|watch| path.starts_with(watch) || watch.starts_with(path))
             }) || (path.parent().is_some_and(|parent| root.starts_with(parent))
                 && declarations.iter().any(|d| {
                     d.project.markers.iter().any(|m| {
@@ -152,8 +190,8 @@ fn watch_directory(path: &Path) -> Option<PathBuf> {
 fn watch_targets(root: &Path, projects: &[MatchedProject]) -> BTreeSet<(PathBuf, bool)> {
     let mut out: BTreeSet<_> = root.ancestors().map(|p| (p.to_path_buf(), false)).collect();
     for project in projects {
-        for path in &project.declaration.watch_paths {
-            if let Some(dir) = watch_directory(&project.root.join(path)) {
+        for path in project.watch_paths() {
+            if let Some(dir) = watch_directory(&path) {
                 // Declared directories may have nested changes. Missing paths are covered by
                 // their nearest existing ancestor, which also catches their later creation.
                 out.insert((dir, true));
@@ -201,6 +239,7 @@ impl Slot {
 }
 
 struct Worker {
+    watches: Arc<SessionWatches>,
     slot: Arc<Slot>,
     cancelled: Arc<AtomicBool>,
     #[cfg(test)]
@@ -214,6 +253,7 @@ impl Drop for Worker {
 }
 
 enum WatchMessage {
+    PathsChanged,
     Event(notify::Result<notify::Event>),
     /// Acknowledge only after preceding events and any resulting scan have completed.
     #[cfg(test)]
@@ -308,6 +348,7 @@ pub(super) fn assert_native_watch_delivery(directory: &Path) {
             .recv_timeout(Duration::from_secs(30))
             .expect("native watcher did not deliver the newly created path")
         {
+            WatchMessage::PathsChanged => panic!("native watch has no project session"),
             WatchMessage::Event(event) => {
                 if event
                     .expect("native notification error")
@@ -328,9 +369,10 @@ fn run(
     slot: Arc<Slot>,
     cancelled: Arc<AtomicBool>,
     events: EventSender,
-    rx: mpsc::Receiver<WatchMessage>,
+    channel: (mpsc::Receiver<WatchMessage>, Arc<SessionWatches>),
     #[cfg(test)] native: bool,
 ) {
+    let (rx, watches) = channel;
     let overflow = events.overflow.clone();
     let watch_failed = events.failed.clone();
     let mut watcher = match ProjectWatcher::new(
@@ -354,13 +396,14 @@ fn run(
         if cancelled.load(Ordering::Relaxed) {
             return;
         }
-        let projects = match detect(&root, &declarations, &cancelled) {
+        let mut projects = match detect(&root, &declarations, &cancelled) {
             Ok(found) => found,
             Err(_) => {
                 slot.publish(None, true);
                 return;
             }
         };
+        watches.apply(&mut projects);
         let desired = watch_targets(&root, &projects);
         let added_watches = desired.difference(&watched).next().is_some();
         for (path, _) in watched.difference(&desired) {
@@ -385,6 +428,30 @@ fn run(
         }
         slot.publish(Some(projects.clone()), false);
         loop {
+            if watches.dirty.swap(false, Ordering::AcqRel) {
+                watches.apply(&mut projects);
+                let desired = watch_targets(&root, &projects);
+                for (path, _) in watched.difference(&desired) {
+                    let _ = watcher.unwatch(path);
+                }
+                for (path, recursive) in desired.difference(&watched) {
+                    if watcher
+                        .watch(
+                            path,
+                            if *recursive {
+                                RecursiveMode::Recursive
+                            } else {
+                                RecursiveMode::NonRecursive
+                            },
+                        )
+                        .is_err()
+                    {
+                        slot.publish(Some(projects), true);
+                        return;
+                    }
+                }
+                watched = desired;
+            }
             if cancelled.load(Ordering::Relaxed) {
                 return;
             }
@@ -396,6 +463,7 @@ fn run(
                 break;
             }
             match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(WatchMessage::PathsChanged) => {}
                 Ok(WatchMessage::Event(Ok(event))) => {
                     if !matches!(event.kind, notify::EventKind::Access(_))
                         && affected(&root, &declarations, &projects, &event.paths)
@@ -457,7 +525,13 @@ impl ProjectDetection {
             overflow: Arc::new(AtomicBool::new(false)),
             failed: Arc::new(AtomicBool::new(false)),
         };
+        let watches = Arc::new(SessionWatches {
+            paths: Mutex::default(),
+            dirty: AtomicBool::new(false),
+            wake: events.tx.clone(),
+        });
         self.worker = Some(Arc::new(Worker {
+            watches: watches.clone(),
             slot: slot.clone(),
             cancelled: cancelled.clone(),
             #[cfg(test)]
@@ -473,7 +547,7 @@ impl ProjectDetection {
                 slot,
                 cancelled,
                 events,
-                rx,
+                (rx, watches),
                 #[cfg(test)]
                 native,
             )
@@ -499,6 +573,43 @@ impl ProjectDetection {
 
     pub fn pending(&self) -> bool {
         self.worker.is_some() && !self.ready
+    }
+
+    pub(crate) fn set_watch_paths(
+        &mut self,
+        plugin: &str,
+        root: &Path,
+        marker: &str,
+        paths: Vec<PathBuf>,
+    ) {
+        let Some(worker) = &self.worker else {
+            return;
+        };
+        if !self
+            .projects
+            .iter()
+            .any(|p| p.plugin == plugin && p.root == root && p.marker == marker)
+        {
+            return;
+        }
+        let key = (plugin.to_string(), root.to_path_buf(), marker.to_string());
+        let mut current = worker
+            .watches
+            .paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if current.get(&key) == Some(&paths) {
+            return;
+        }
+        current.insert(key, paths.clone());
+        drop(current);
+        for project in &mut self.projects {
+            if project.plugin == plugin && project.root == root && project.marker == marker {
+                project.session_watch_paths = Some(paths.clone());
+            }
+        }
+        worker.watches.dirty.store(true, Ordering::Release);
+        let _ = worker.watches.wake.try_send(WatchMessage::PathsChanged);
     }
 
     #[cfg(test)]
@@ -644,6 +755,7 @@ mod tests {
         let root = Path::new("/fixture/tree/subdir");
         let decl = declaration("watched", "*.project", MarkerKind::Any);
         let project = MatchedProject {
+            session_watch_paths: None,
             plugin: decl.plugin.clone(),
             root: PathBuf::from("/fixture/tree"),
             marker: "one.project".into(),
@@ -695,6 +807,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("metadata")).unwrap();
         let decl = declaration("watched", "project.marker", MarkerKind::Any);
         let project = MatchedProject {
+            session_watch_paths: None,
             plugin: decl.plugin,
             root: dir.to_path_buf(),
             marker: "project.marker".into(),
@@ -752,6 +865,7 @@ mod tests {
         let slot = Slot::default();
         let decl = declaration("latest", "project.marker", MarkerKind::Any);
         let project = MatchedProject {
+            session_watch_paths: None,
             plugin: decl.plugin,
             root: "/fixture".into(),
             marker: "project.marker".into(),
