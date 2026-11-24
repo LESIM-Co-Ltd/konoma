@@ -10,7 +10,9 @@ use konoma_plugin::{
     ActCx, Failure, Input, OpenCx, Plugin, ReadScope, Session, Settings, TermCaps, Tr, ViewCx,
 };
 
-use super::project_screens::{ProjectContent, ProjectEffect, ProjectKey, ScreenKey};
+use super::project_screens::{
+    ProjectContent, ProjectEffect, ProjectInvocation, ProjectKey, ScreenKey,
+};
 use super::PathStyle;
 
 pub(super) enum ProjectJob {
@@ -38,6 +40,8 @@ pub(super) struct ProjectReply {
     pub chip_error: Option<Failure>,
     pub effect: Option<ProjectEffect>,
     pub error: Option<Failure>,
+    /// Only an error or panic from `act` sets this; follow-up failures never do.
+    pub act_failed: bool,
     pub contexts: HashMap<ScreenKey, ProjectView>,
 }
 
@@ -51,6 +55,7 @@ impl ProjectReply {
             chip_error: None,
             effect: None,
             error: None,
+            act_failed: false,
             contexts: HashMap::new(),
         }
     }
@@ -67,6 +72,7 @@ pub(crate) struct ProjectRuntime {
     pub(super) chip_dirty: bool,
     pub(super) busy: bool,
     pub(super) acting: bool,
+    pub(super) pending_retry: Option<Box<ProjectInvocation>>,
     #[cfg(test)]
     pub(super) view_request: Option<ScreenKey>,
     pub(super) dirty: std::collections::HashSet<ScreenKey>,
@@ -230,11 +236,25 @@ impl ProjectRuntime {
                                 .with_term(term)
                                 .with_read_scope(scope.clone())
                                 .with_project(context);
-                            let outcome = super::plugin_host::act_session(
-                                session.as_mut(),
-                                &action,
-                                &cx_act,
-                            )?;
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    super::plugin_host::act_session(
+                                        session.as_mut(),
+                                        &action,
+                                        &cx_act,
+                                    )
+                                }));
+                            let outcome = match result {
+                                Ok(Ok(outcome)) => outcome,
+                                error => {
+                                    reply.act_failed = true;
+                                    reply.error = Some(match error {
+                                        Ok(Err(error)) => error,
+                                        _ => Failure::external(Tr::new(panic_message.clone())),
+                                    });
+                                    return Ok(reply);
+                                }
+                            };
                             effect.outcome = Some(outcome);
                             reply.effect = Some(*effect);
                             if watch {
@@ -299,6 +319,7 @@ impl ProjectRuntime {
             chip_dirty: false,
             busy: true,
             acting: false,
+            pending_retry: None,
             #[cfg(test)]
             view_request: None,
             dirty: Default::default(),

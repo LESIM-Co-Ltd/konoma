@@ -119,6 +119,16 @@ pub(crate) struct ProjectInvocation {
     origin_path: Option<PathBuf>,
 }
 
+impl ProjectInvocation {
+    pub(crate) fn confirmation_text(&self, prompt: &Confirmation, lang: &str) -> String {
+        let row = self.context.selected.as_ref();
+        let name = row
+            .map(|row| row.name.as_deref().unwrap_or(&row.value))
+            .unwrap_or("");
+        prompt.text.get(lang).replace("{row}", name)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum ProjectPrompt {
     Confirmation(Confirmation),
@@ -931,6 +941,23 @@ impl App {
         false
     }
 
+    fn project_confirmation_enabled(&self, plugin: &str, prompt: &Confirmation) -> bool {
+        let Some(key) = &prompt.setting else {
+            return true;
+        };
+        let settings = crate::plugins::effective_settings(&self.cfg, plugin);
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        let value = settings.get(key).or_else(|| {
+            registry
+                .manifest(plugin)?
+                .settings
+                .iter()
+                .find(|setting| &setting.name == key)
+                .map(|setting| &setting.default)
+        });
+        !matches!(value, Some(konoma_plugin::Value::Bool(false)))
+    }
+
     pub(crate) fn request_project_act(&mut self, action: PluginAct) -> bool {
         let Some(decl) = self.plugin_keys.declaration(action).cloned() else {
             return false;
@@ -958,7 +985,11 @@ impl App {
             label: decl.label.get(self.plugin_lang()).into(),
         };
         let mut prompts = Vec::new();
-        if let Some(prompt) = &decl.confirmation {
+        if let Some(prompt) = decl
+            .confirmation
+            .as_ref()
+            .filter(|prompt| self.project_confirmation_enabled(action.plugin(), prompt))
+        {
             prompts.push(ProjectPrompt::Confirmation(prompt.clone()));
         }
         if let Some(prompt) = &decl.text_input {
@@ -1088,6 +1119,12 @@ impl App {
                 (key, req)
             })
             .collect();
+        let retry = invocation
+            .declaration
+            .text_input
+            .as_ref()
+            .filter(|input| input.keep_on_failure)
+            .map(|_| Box::new(invocation.clone()));
         let runtime = self.project_runtimes.get_mut(&invocation.project).unwrap();
         let job = ProjectJob::Act {
             action: invocation.action.act().into(),
@@ -1100,6 +1137,7 @@ impl App {
         if runtime.tx.try_send(job).is_ok() {
             runtime.busy = true;
             runtime.acting = true;
+            runtime.pending_retry = retry;
             if let Some(frame) = self
                 .tab
                 .project_navigation
@@ -1109,6 +1147,40 @@ impl App {
                 frame.pending.clear();
             }
         }
+    }
+
+    fn reopen_project_input(&mut self, invocation: ProjectInvocation) {
+        if invocation.effect.tab != self.tab.id
+            || invocation.effect.tree_root != self.tab.root
+            || !self.tab.project_navigation.as_ref().is_some_and(|nav| {
+                nav.project == invocation.project
+                    && nav
+                        .stack
+                        .last()
+                        .is_some_and(|frame| Some(&frame.key) == invocation.effect.view.as_ref())
+            })
+            || self.dialog.is_some()
+            || self.project_dialog.is_some()
+            || self.is_text_input_active()
+            || self.project_frame().is_some_and(|frame| frame.filtering)
+        {
+            return;
+        }
+        let Some(prompt) = invocation.declaration.text_input.clone() else {
+            return;
+        };
+        let Some(buffer) = invocation.context.text.clone() else {
+            return;
+        };
+        let cursor = buffer.chars().count();
+        self.project_dialog = Some(ProjectDialog::Act {
+            invocation: Box::new(invocation),
+            prompts: vec![ProjectPrompt::Text(prompt)],
+            stage: 0,
+            buffer,
+            cursor,
+            selected: 0,
+        });
     }
 
     pub(crate) fn poll_project_jobs(&mut self) -> bool {
@@ -1125,6 +1197,8 @@ impl App {
         let mut effects = Vec::new();
         let mut watches = Vec::new();
         let mut chip_errors = Vec::new();
+        let mut errors = Vec::new();
+        let mut retries = Vec::new();
         for (key, runtime) in &mut self.project_runtimes {
             while let Some(reply) = runtime
                 .pending
@@ -1134,6 +1208,10 @@ impl App {
                 changed = true;
                 runtime.busy = false;
                 runtime.acting = false;
+                if let Some(invocation) = runtime.pending_retry.take().filter(|_| reply.act_failed)
+                {
+                    retries.push(*invocation);
+                }
                 #[cfg(test)]
                 {
                     runtime.view_request = None;
@@ -1180,15 +1258,7 @@ impl App {
                         .as_ref()
                         .is_some_and(|nav| &nav.project == key)
                     {
-                        self.flash = Some(
-                            error
-                                .message
-                                .get(match self.lang {
-                                    crate::i18n::Lang::Jp => "ja",
-                                    _ => "en",
-                                })
-                                .into(),
-                        );
+                        errors.push(error.clone());
                     }
                 }
             }
@@ -1241,6 +1311,9 @@ impl App {
             changed = true;
         }
         self.ensure_project_view();
+        for error in errors {
+            self.flash = Some(error.message.get(self.plugin_lang()).into());
+        }
         for (key, error) in chip_errors {
             if self
                 .tab
@@ -1251,6 +1324,9 @@ impl App {
             {
                 self.flash = Some(error.message.get(self.plugin_lang()).into());
             }
+        }
+        for invocation in retries {
+            self.reopen_project_input(invocation);
         }
         changed
     }

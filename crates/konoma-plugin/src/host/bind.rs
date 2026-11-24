@@ -108,6 +108,11 @@ pub fn bind_actions<H>(
         .actions
         .iter()
         .map(|a| ActBinding {
+            hint_group: a
+                .hint_group
+                .as_ref()
+                .and_then(|id| manifest.hint_groups.iter().find(|g| g.id == *id))
+                .map(|group| (id.to_string(), group.clone())),
             act: handle(&a.id),
             key: keys
                 .iter()

@@ -125,6 +125,8 @@ pub struct WConfirmChoice {
 pub struct WConfirmation {
     pub text: WTr,
     pub choices: Vec<WConfirmChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setting: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +134,8 @@ pub struct WConfirmation {
 pub struct WTextInput {
     pub label: WTr,
     pub initial: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep_on_failure: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,12 +277,14 @@ pub fn confirm_choice_from_wire(choice: WConfirmChoice) -> ConfirmChoice {
 
 pub fn confirmation_to_wire(c: &Confirmation) -> WConfirmation {
     WConfirmation {
+        setting: c.setting.clone(),
         text: tr_to_wire(&c.text),
         choices: c.choices.iter().map(confirm_choice_to_wire).collect(),
     }
 }
 pub fn confirmation_from_wire(c: WConfirmation) -> Confirmation {
     Confirmation {
+        setting: c.setting,
         text: tr_from_wire(c.text),
         choices: c
             .choices
@@ -289,12 +295,14 @@ pub fn confirmation_from_wire(c: WConfirmation) -> Confirmation {
 }
 pub fn text_input_to_wire(i: &TextInput) -> WTextInput {
     WTextInput {
+        keep_on_failure: i.keep_on_failure,
         label: tr_to_wire(&i.label),
         initial: i.initial.clone(),
     }
 }
 pub fn text_input_from_wire(i: WTextInput) -> TextInput {
     TextInput {
+        keep_on_failure: i.keep_on_failure,
         label: tr_from_wire(i.label),
         initial: i.initial,
     }

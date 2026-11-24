@@ -465,6 +465,10 @@ pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
 pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
     let issues = validate(manifest);
     let mut out = manifest.clone();
+    for group in &mut out.hint_groups {
+        group.label = group.label.clipped();
+        group.help = group.help.clipped();
+    }
     // `validate` rejects a later declaration with the same id, and a destructive action
     // without confirmation: replay its order.
     let mut seen: Vec<&str> = Vec::new();

@@ -119,6 +119,8 @@ pub struct Manifest {
     pub name: Tr,
     pub binds: Vec<Bind>,
     pub actions: Vec<Act>,
+    /// Groups of actions shown as one footer token and one help row.
+    pub hint_groups: Vec<HintGroup>,
     pub verbs: Vec<VerbDecl>,
     pub settings: Vec<SettingDecl>,
     /// Names of the plugin's own screens (each is a key **context** of its own: `<id>.<screen>`).
@@ -153,6 +155,7 @@ impl Manifest {
             api: ApiVersion::CURRENT,
             binds: Vec::new(),
             actions: Vec::new(),
+            hint_groups: Vec::new(),
             verbs: Vec::new(),
             settings: Vec::new(),
             screens: Vec::new(),
@@ -256,6 +259,11 @@ impl Manifest {
 
     pub fn action(mut self, act: Act) -> Manifest {
         self.actions.push(act);
+        self
+    }
+
+    pub fn hint_group(mut self, group: HintGroup) -> Manifest {
+        self.hint_groups.push(group);
         self
     }
 
@@ -374,6 +382,32 @@ impl Bind {
     }
 }
 
+/// Several actions offered as one footer token and one help row. Menu entries stay separate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HintGroup {
+    pub id: String,
+    /// The footer text.
+    pub label: Tr,
+    /// The help description; empty means the label in the selected language.
+    pub help: Tr,
+}
+
+impl HintGroup {
+    pub fn new(id: impl Into<String>, label: impl Into<Tr>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            help: Tr::new(""),
+        }
+    }
+
+    pub fn help(mut self, help: impl Into<Tr>) -> Self {
+        self.help = help.into();
+        self
+    }
+}
+
 /// An action the plugin handles, with its key, help and footer entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Construct through the SDK and leave room for future fields or variants.
@@ -394,6 +428,8 @@ pub struct Act {
     pub help: Tr,
     /// Footer priority (smaller shows first). `None` keeps it out of the footer.
     pub footer: Option<u8>,
+    /// A declared [`HintGroup`] for the footer and help; the menu still lists this action.
+    pub hint_group: Option<String>,
     /// The **context** of the key: a host context (`text`, `table`, ...) or one of the plugin's own
     /// screens. `None` means the plugin's main view (the kinds in [`Manifest::shows`]). Set it
     /// with [`Act::context`]; [`Act::screen`] is the older name of the same thing.
@@ -422,6 +458,7 @@ impl Act {
             id,
             key: None,
             footer: None,
+            hint_group: None,
             screen: None,
             writes: false,
             destructive: false,
@@ -457,6 +494,11 @@ impl Act {
 
     pub fn footer(mut self, priority: u8) -> Act {
         self.footer = Some(priority);
+        self
+    }
+
+    pub fn hint_group(mut self, id: impl Into<String>) -> Act {
+        self.hint_group = Some(id.into());
         self
     }
 

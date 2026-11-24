@@ -3432,6 +3432,7 @@ mod reopen_state_tests {
             bindings: ids
                 .iter()
                 .map(|id| ActBinding {
+                    hint_group: None,
                     act: id.to_string(),
                     key: None,
                     context: None,

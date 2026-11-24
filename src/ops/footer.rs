@@ -36,7 +36,7 @@ pub enum Foot {
     Leader(LeaderId, Msg),
     /// A token worked out from the state (the search status).
     Dyn(fn(&App, Context) -> Option<String>),
-    /// The key of an action the open plugin declared, under the plugin's own short label.
+    /// The plugin hint represented by its first footer-declaring member.
     Plugin(PluginAct),
     /// An entry of the shared layers 1 to 3: the shared builder (`konoma_host_core::help`) writes
     /// it, so the standalone app prints the same token. Only the contexts of `core_ctx` use it.
@@ -97,9 +97,12 @@ pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
     // order of the priority the plugin declared (a stable sort: declaration order within one
     // priority). Only actions that asked for a footer entry are planned here; the others are in
     // the `?` help and the `Space` menu.
-    let acts = konoma_plugin::host::acts::footer_order(&app.plugin_acts_in(ctx));
+    let acts = konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(ctx));
     let at = konoma_host_core::preview_plan::PLUGIN_AT.min(v.len());
-    v.splice(at..at, acts.into_iter().map(|b| Foot::Plugin(b.act)));
+    v.splice(
+        at..at,
+        acts.into_iter().map(|h| Foot::Plugin(h.members[0].act)),
+    );
     v
 }
 
@@ -540,6 +543,8 @@ fn join_keys(app: &App, ctx: Context, acts: &[Action]) -> String {
 /// Render a plan into tokens, dropping what does not act or is unbound.
 pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
     let lang = app.lang;
+    let bindings = app.plugin_context_bindings(ctx);
+    let hints = konoma_plugin::host::acts::footer_hints(&bindings.iter().collect::<Vec<_>>());
     let tok = |keys: Vec<KeyPress>, label: Msg, actions: &[Action]| -> Option<Token> {
         (!keys.is_empty()).then(|| Token {
             text: format!("{}:{}", write_keys(&keys, ctx), tr(lang, label)),
@@ -636,27 +641,21 @@ pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
                 );
                 continue;
             }
-            Foot::Plugin(p) => {
-                let action = Action::Plugin(*p);
-                match app.plugin_binding_in(ctx, *p) {
-                    Some(b) => konoma_plugin::host::acts::footer_token(
-                        &{
-                            let mut binding = b.clone();
-                            binding.key = app.plugin_key_of(ctx, *p);
-                            binding
-                        },
-                        action_enabled(app, ctx, action),
-                        app.plugin_lang(),
-                        |key| write_keys(&[key], ctx),
-                    )
-                    .map(|(text, key)| Token {
-                        text,
-                        keys: vec![key],
-                        actions: vec![action],
-                    }),
-                    None => None,
-                }
-            }
+            Foot::Plugin(p) => hints
+                .iter()
+                .find(|h| h.members[0].act == *p)
+                .and_then(|hint| {
+                    let keys = hint.keys(|b| action_enabled(app, ctx, Action::Plugin(b.act)));
+                    (!keys.is_empty()).then(|| Token {
+                        text: format!(
+                            "{}:{}",
+                            write_keys(&keys, ctx),
+                            hint.label(app.plugin_lang())
+                        ),
+                        keys,
+                        actions: hint.members.iter().map(|b| Action::Plugin(b.act)).collect(),
+                    })
+                }),
         };
         out.extend(t);
     }
