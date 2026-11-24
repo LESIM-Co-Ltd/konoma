@@ -225,7 +225,7 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
     for path in files {
         let text = std::fs::read_to_string(&path).unwrap();
         for name in names {
-            let call = format!("git::{name}(");
+            let call = format!("Git::{name}(");
             if text.contains(&call) {
                 git_calls += text.matches(&call).count();
                 assert_eq!(
