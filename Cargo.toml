@@ -1,6 +1,6 @@
 [package]
 name = "konoma"
-version = "0.31.2"
+version = "0.32.0"
 edition = "2021"
 # 依存 mermaid-text 0.57 が edition2024 / MSRV 1.92 を要求するため、実効 MSRV は 1.92。
 rust-version = "1.92"
@@ -73,7 +73,7 @@ svgtypes = "0.16"
 skrifa = "0.44"
 hayro-syntax = { version = "0.8", default-features = false, features = ["std"] }
 hayro = { version = "0.8", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
-rust_h264 = "0.4"
+rust_h264 = "0.6"
 rust_h265 = "0.1"
 re_mp4 = "0.5"
 symphonia-core = "0.6"
@@ -83,7 +83,10 @@ pulldown-cmark = { version = "0.13.6", default-features = false }
 mermaid-text = "0.58"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
-unicode-width = "0.2"
+# Capped below 0.2.3: that release counts the halfwidth voiced marks (U+FF9E, U+FF9F) as one column,
+# and ratatui-core 0.1.2 still adds one for each of them on top, so ratatui measures "ｶﾞ" as three
+# columns. Lift the cap when ratatui-core stops adding it.
+unicode-width = ">=0.2, <0.2.3"
 unicode-segmentation = "1"
 emojis = "0.9"
 serde = { version = "1", features = ["derive"] }

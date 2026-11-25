@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (390)
+- MIT License (397)
 - Apache License 2.0 (13)
 - BSD 3-Clause "New" or "Revised" License (11)
 - Unicode License v3 (6)
@@ -1792,7 +1792,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- libz-sys 1.1.29
+- libz-sys 1.1.33
 
 ```
 Copyright (c) 2014 Alex Crichton
@@ -4223,6 +4223,7 @@ Used by:
 - serde_spanned 1.1.2
 - toml 1.1.8+spec-1.1.0
 - toml_datetime 1.1.2+spec-1.1.0
+- toml_edit 0.25.17+spec-1.1.0
 - toml_parser 1.1.5+spec-1.1.0
 - toml_writer 1.1.3+spec-1.1.0
 
@@ -4617,7 +4618,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- ureq-proto 0.6.4
+- ureq-proto 0.6.5
 
 ```
 Copyright 2022 Martin Algesten
@@ -4786,6 +4787,37 @@ Used by:
 MIT License
 
 Copyright (c) 2017 Elliot Linder <darfink@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+- rmp-serde 1.3.1
+- rmp 0.8.15
+
+```
+MIT License
+
+Copyright (c) 2017 Evgeny Safronov
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -5193,7 +5225,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- ureq 3.4.2
+- ureq 3.5.0
 
 ```
 MIT License
@@ -5645,7 +5677,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- arboard 3.6.1
+- arboard 3.7.0
 
 ```
 MIT License
@@ -5982,11 +6014,15 @@ SOFTWARE.
 ## MIT License
 
 Used by:
+- konoma-file-plugins 0.1.0
+- konoma-host-core 0.1.0
+- konoma-vcs 0.1.0
 - base64-simd 0.8.0
 - brotli-decompressor 5.0.3
 - chrono 0.4.45
 - icy_sixel 0.5.1
 - libm 0.2.16
+- mermaid-text 0.58.0
 - objc2-app-kit 0.3.2
 - objc2-core-foundation 0.3.2
 - objc2-core-graphics 0.3.2
@@ -5999,13 +6035,13 @@ Used by:
 - pulp-wasm-simd-flag 0.1.1
 - quantette 0.6.0
 - ratex-font-loader 0.1.14
-- ratex-font 0.1.14
+- ratex-font 0.1.15
 - ratex-katex-fonts 0.1.15
-- ratex-layout 0.1.14
-- ratex-lexer 0.1.14
-- ratex-parser 0.1.14
+- ratex-layout 0.1.15
+- ratex-lexer 0.1.15
+- ratex-parser 0.1.15
 - ratex-svg 0.1.14
-- ratex-types 0.1.14
+- ratex-types 0.1.15
 - ratex-unicode-font 0.1.14
 - simd_helpers 0.1.0
 - siphasher 1.0.3
@@ -6461,6 +6497,7 @@ Used by:
 - rustix 0.38.44
 - rustix 1.1.4
 - rustversion 1.0.23
+- semver 1.0.28
 - serde 1.0.229
 - serde_core 1.0.229
 - serde_derive 1.0.229
@@ -6605,7 +6642,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## MIT License
 
 Used by:
-- pulldown-cmark 0.13.4
+- pulldown-cmark 0.13.6
 
 ```
 The MIT License
@@ -7137,7 +7174,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- calamine 0.37.0
+- calamine 0.38.0
 - quick-xml 0.42.0
 
 ```
@@ -7787,43 +7824,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-```
-
-## MIT License
-
-Used by:
-- mermaid-text 0.57.0
-
-```
-This is a vendored copy of the third-party crate `mermaid-text`, taken from its
-upstream project markdown-reader (https://github.com/leboiko/markdown-reader,
-crate path: crates/mermaid-text) and redistributed here under its original MIT
-license. konoma applies small local patches (UTF-8 char-boundary guards in the
-keyword-prefix parsers) on top of this copy; those patches are likewise covered
-by the MIT terms below. See konoma's `[patch.crates-io]` note in Cargo.toml.
-
-MIT License
-
-Copyright (c) leboiko and the mermaid-text contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 ```
 

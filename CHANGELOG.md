@@ -6,6 +6,13 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-11-25
+
+- Plugin architecture, stage 5: the standard feature crates are published on crates.io (`konoma-base`, `konoma-svg`, `konoma-plugin`, `konoma-widgets` and the `*-core` / plugin crates). Eight of them (table, code, markdown, mermaid, math, media, office, vcs) also live in their own repositories under LESIM-Co-Ltd, split with their history.
+- `mermaid-text` moves to upstream 0.58 and the vendored fork is removed (the CJK class-diagram guard is now upstream).
+- `konoma-test-support` resolves sample files and the repository root from the run-time package directory, so tests in a split repository no longer skip silently.
+- `THIRD-PARTY-LICENSES.md` is regenerated and now lists `rmp-serde`, `semver` and `toml_edit`.
+
 - Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
 - `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
 - Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
@@ -298,6 +305,7 @@ New API, by gate:
 
 ### Fixed
 - A dialog or popup (the input and confirm dialogs, the batch rename preview, the tab list, the bookmark list, the outline, the file info, the table cell popup and the `?` help) drawn over a wide character (CJK) that its left edge cut in two showed half of that character where its left border should be, in a real terminal. The character is now blanked before the overlay is drawn.
+- In a jj repository, a file moved into place with an old modification time was missed until some jj command took a new snapshot: after `mv a b` the tree showed `a` as deleted and no `b` at all (the same for `cp -p`, `tar x`, `rsync -t` and files restored from a backup). konoma decided whether a file was newer than the last snapshot from its modification time alone, which the writer can set back, and a directory moved with `mv dirA dirB` leaves every file inside with its old times. A path that is on disk but absent from the parent commit and from jj's own diff is now always shown as added, whatever its times; for a path the parent commit already tracks, konoma now reads the inode change time as well (which a rename, a write or a chmod sets) and uses the later of the two times.
 - With `[ui] wrap` on, a preview drawn as one block of plain text (not the line-windowed text view) scrolled two rows past its end on `G` and left a blank gap under the last line: the scroll limit counted the frame's top and bottom border as rows of text. It now counts only the wrapped rows of the text at the width inside the frame.
 - BIFF5 `.xls` text in multibyte code pages (including Japanese Shift-JIS) no longer acquires stray NUL or replacement characters. Formula string literals without a BIFF8 flags byte are read and charged to the formula budget correctly.
 - `.xlsx` previews now combine escaped UTF-16 surrogate pairs into one character and replace an unpaired surrogate with U+FFFD, matching `calamine` 0.38. Workbooks whose main part is named somewhere other than `xl/workbook.xml` now open with the sheets, date system, styles and shared strings of the part selected by `_rels/.rels`.
@@ -3050,7 +3058,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.2...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.2...v0.32.0
 [0.31.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.1...v0.31.2
 [0.31.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...v0.31.0
