@@ -83,7 +83,10 @@ pulldown-cmark = { version = "0.13.6", default-features = false }
 mermaid-text = "0.58"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
-unicode-width = "0.2"
+# Capped below 0.2.3: that release counts the halfwidth voiced marks (U+FF9E, U+FF9F) as one column,
+# and ratatui-core 0.1.2 still adds one for each of them on top, so ratatui measures "ｶﾞ" as three
+# columns. Lift the cap when ratatui-core stops adding it.
+unicode-width = ">=0.2, <0.2.3"
 unicode-segmentation = "1"
 emojis = "0.9"
 serde = { version = "1", features = ["derive"] }
