@@ -10,8 +10,7 @@
 //!
 //! konoma's own mermaid renderer needs a layout engine it can *fix*. A crates.io
 //! dependency cannot be patched in a published crate (`[patch.crates-io]` is stripped
-//! by `cargo publish`, which is why `vendor/mermaid-text` only works for local
-//! development), so the source is carried here and ships inside the konoma crate.
+//! by `cargo publish`, so a fix to upstream has to be sent upstream), so the source is carried here and ships inside the konoma crate.
 //! See `docs/FEATURE-MERMAID-RENDERER.md` §0-3 for the decision record.
 //!
 //! # Why it is not rewritten

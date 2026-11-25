@@ -1,0 +1,53 @@
+name: Release
+
+# Template for a split-out plugin repository (stage 5). Replace {{BIN}} with the standalone
+# program's name. Archive names match cargo-binstall's defaults (`cargo binstall {{BIN}}`).
+# Publishing to crates.io stays a manual step after the binaries are checked.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" \
+                 --notes "Prebuilt {{BIN}} for ${GITHUB_REF_NAME} (macOS arm64/x86_64, Linux x86_64)."
+
+  upload:
+    name: ${{ matrix.target }}
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, target: aarch64-apple-darwin }
+          - { os: macos-15, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+    steps:
+      - uses: actions/checkout@v7
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config cmake libssl-dev zlib1g-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: {{BIN}}
+          target: ${{ matrix.target }}
+          features: app
+          archive: $bin-$target
+          tar: unix
+          include: README.md,LICENSE
+          token: ${{ secrets.GITHUB_TOKEN }}

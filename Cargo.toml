@@ -10,9 +10,7 @@ repository = "https://github.com/LESIM-Co-Ltd/konoma"
 keywords = ["tui", "file-manager", "preview", "ai", "agent"]
 categories = ["command-line-utilities", "filesystem"]
 # 公開 crate から開発・内部物を除外。samples は全て自作(下記 samples/README)で同梱=テスト fixture 兼デモ。
-# vendor は [patch] が公開時に剥がれ参照されないため不要。
 exclude = [
-    "/vendor",
     "/docs",
     "/git-demo",
     "/git-sandbox",
@@ -82,7 +80,7 @@ symphonia-core = "0.6"
 symphonia-format-mkv = "0.6"
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
-mermaid-text = "0.57"
+mermaid-text = "0.58"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 unicode-width = "0.2"
@@ -338,25 +336,3 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.tiny-skia]
 opt-level = 3
-
-# mermaid-text のローカルフォーク（vendor/mermaid-text）。
-# upstream 0.56.0 は CJK(全角)入力で panic していた: strip_keyword_prefix 系が
-# `line[..keyword.len()]` をバイト境界無視でスライスし、全角文字の途中で切ると
-# `byte index N is not a char boundary` で落ちる(parser の common/timeline/gantt/
-# journey/class の5箇所)。
-#
-# **2026-08-24: upstream 0.57.0 で 5箇所中4箇所が直った**（common/timeline/gantt/journey は
-# `common::strip_keyword_prefix` を共有する形にリファクタされ、`str::get` を使う安全な実装になった
-# ＝upstream の GitHub の mermaid-text-0.57.0 タグを直接読んで確認済み）。**`class.rs` の
-# `strip_keyword_prefix_ci` だけは未移行で同じ形の panic が残る**（同じくタグを直接読んで確認）。
-# vendor をまるごと 0.57.0 の実体に差し替え、`class.rs` にだけ同じ修正（upstream 自身の
-# `common::strip_keyword_prefix` と同じ `str::get` の流儀）を再適用した。
-# 箱の右枠ズレ(Grid の 1セル=1列 前提に起因)は別問題で未対応＝今回のスコープ外。
-#
-# 注意: [patch] は `cargo publish` 時に剥がれ公開 crate には効かない。公開版は upstream 0.57 を
-# 引くため、**class 図に CJK を含む場合だけ**描画されず生ソースへ劣化フォールバックする
-# (render_mermaid_safe の catch_unwind でクラッシュはしない)。0.56 時代は全種類の図がこの制約を
-# 受けていたが、0.57 化で対象が class 図だけに縮小した。この残り分は許容する方針を維持
-# (2026-06-27・docs/AUDIT-2026-06-27.md A1)。ローカル開発ではこの patch が効くため class 図の CJK も描画される。
-[patch.crates-io]
-mermaid-text = { path = "vendor/mermaid-text" }
