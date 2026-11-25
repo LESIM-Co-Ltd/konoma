@@ -6,14 +6,13 @@
 pub mod bookmarks;
 pub mod canvas;
 pub mod dialog;
-pub mod git;
 pub mod help;
 pub mod icons;
 pub mod info;
 mod list;
 pub mod outline;
 pub mod preview;
-mod project;
+pub(crate) mod project;
 pub mod status;
 pub mod tab_list;
 pub mod tabbar;
@@ -25,6 +24,25 @@ use ratatui::style::Style;
 use ratatui::Frame;
 
 use crate::app::{App, Mode, StatusbarLayout};
+
+/// Convert the core's small color vocabulary at the host's drawing boundary.
+pub(crate) fn vcs_color(color: konoma_vcs_core::style::VcsColor) -> ratatui::style::Color {
+    use konoma_vcs_core::style::VcsColor;
+    use ratatui::style::Color;
+    match color {
+        VcsColor::Reset => Color::Reset,
+        VcsColor::Red => Color::Red,
+        VcsColor::Green => Color::Green,
+        VcsColor::Yellow => Color::Yellow,
+        VcsColor::Blue => Color::Blue,
+        VcsColor::Magenta => Color::Magenta,
+        VcsColor::Cyan => Color::Cyan,
+        VcsColor::White => Color::White,
+        VcsColor::LightRed => Color::LightRed,
+        VcsColor::LightGreen => Color::LightGreen,
+        VcsColor::LightYellow => Color::LightYellow,
+    }
+}
 
 /// Space for a notice in a full-width status row, shared by startup and rendering.
 pub(crate) fn notice_footer_width(app: &App, columns: usize) -> usize {
@@ -92,24 +110,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     idx += 1;
     let bottom = areas[idx];
 
-    // Git-related full-screen views go into content in place of tree/preview.
-    // Priority: commit detail > git log > changes hub (detail overlays on top of log).
+    // The content area holds the VCS project screens when one is open, else the tree or preview.
     if app.project_active() {
         project::render(frame, app, content);
-    } else if app.is_git_detail() {
-        git::render_detail(frame, app, content);
-    } else if app.is_git_graph_picker() {
-        git::render_graph_picker(frame, app, content);
-    } else if app.is_git_graph() {
-        git::render_graph(frame, app, content);
-    } else if app.is_git_log() {
-        git::render_log(frame, app, content);
-    } else if app.is_git_branches() {
-        git::render_branches(frame, app, content);
-    } else if app.is_git_worktrees() {
-        git::render_worktrees(frame, app, content);
-    } else if app.is_git_view() {
-        git::render_changes(frame, app, content);
     } else {
         match app.tab.mode {
             Mode::Tree => tree::render(frame, app, content),
@@ -141,10 +144,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // The vertical layout preserves the frame's width; use the actual row for later resizes.
     let footer_width = notice_footer_width(app, usize::from(bottom.width));
     app.refit_notice_flash(footer_width);
+    let project_dialog = dialog::project_presentation(app);
     if split {
-        status::render_footer(frame, app, bottom);
+        status::render_footer_with_project_dialog(frame, app, bottom, project_dialog.as_ref());
     } else {
-        status::render_combined(frame, app, bottom);
+        status::render_combined_with_project_dialog(frame, app, bottom, project_dialog.as_ref());
     }
 
     // The bookmark list overlay also sits on top.
@@ -156,7 +160,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         tab_list::render(frame, app, frame.area());
     }
     // The heading outline overlay (`o`).
-    if app.is_outline() {
+    // A project screen covers the screen under it, so a state left open there is not drawn.
+    if app.is_outline() && !app.project_screen_covers() {
         outline::render(frame, app, frame.area());
     }
     // The file info popup.
@@ -164,7 +169,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         info::render(frame, app, frame.area());
     }
     // The table cell full-text popup (`Enter`).
-    if app.is_table_cell_open() {
+    if app.is_table_cell_open() && !app.project_screen_covers() {
         table::render_cell_popup(frame, app, frame.area());
     }
     // `?` help sits above every other overlay (bookmarks, tab list, outline, info, cell popup),
@@ -174,11 +179,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     // A confirm/input dialog has top priority (it also intercepts keys), so it sits on top of everything.
     if app.is_dialog() || app.project_dialog.is_some() {
-        dialog::render(frame, app, frame.area());
+        dialog::render_with_project_dialog(frame, app, frame.area(), project_dialog.as_ref());
     }
     // If an inline image moved/disappeared since the previous frame, the run loop fully redraws the
     // terminal once to clean up kitty placeholder debris (the old ID's colored row).
     app.finish_md_overlay_frame();
+    // Last of all, after every widget: `Paragraph` does not blank the cell a wide character covers,
+    // and the buffer diff relies on those cells being blank.
+    konoma_plugin::ratatui_draw::clear_cells_hidden_by_wide_symbols(frame.buffer_mut());
 }
 
 #[cfg(test)]
@@ -190,110 +198,6 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
-
-    #[cfg(feature = "git")]
-    #[test]
-    fn git_graph_renders_lanes_refs_and_detail() {
-        use std::process::Command;
-        let dir = unique_tmp("konoma_graph_render_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let git = |args: &[&str]| {
-            Command::new("git")
-                .current_dir(&dir)
-                .args(args)
-                .output()
-                .unwrap();
-        };
-        git(&["init", "-q"]);
-        git(&["config", "user.email", "t@t.t"]);
-        git(&["config", "user.name", "t"]);
-        std::fs::write(dir.join("a.txt"), b"a").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-q", "-m", "A init"]);
-        git(&["checkout", "-q", "-b", "feature"]);
-        std::fs::write(dir.join("c.txt"), b"c").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-q", "-m", "C feature work"]);
-        git(&["checkout", "-q", "-"]);
-        std::fs::write(dir.join("b.txt"), b"b").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-q", "-m", "B main work"]);
-
-        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-        app.open_git_graph();
-        assert!(app.is_git_graph());
-
-        let mut term = Terminal::new(TestBackend::new(72, 12)).unwrap();
-        term.draw(|f| render(f, &mut app)).unwrap();
-        let buf = term.backend().buffer();
-        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
-        // The 3 commits' subjects, ref labels, and the graph's node/branch characters appear.
-        assert!(
-            text.contains("C feature work"),
-            "feature の subject: {text}"
-        );
-        assert!(text.contains("B main work"));
-        assert!(text.contains("feature"), "ref ラベル feature");
-        // The custom renderer's angular node (normal = ●). Angular connectors (├/┘/─) appear.
-        // (That the graph cells have no diagonal lines is verified by
-        // git::tests::lay_out_lanes_draws_angular_fork_and_merge.)
-        assert!(text.contains('●'), "グラフのノード ●");
-        assert!(
-            text.contains('├') || text.contains('┘') || text.contains('┐'),
-            "角ばった連結文字が出ない: {text}"
-        );
-        // The graph section's cells are colored (a per-lane rotating palette color).
-        let has_color = buf
-            .content()
-            .iter()
-            .any(|c| !matches!(c.fg, Color::Reset | Color::White | Color::Black));
-        assert!(has_color, "グラフレーンに色が付いていない");
-        // Move only among commit rows, and Enter opens the detail (commit_diff).
-        app.git_graph_move(1);
-        app.open_git_graph_detail();
-        assert!(app.is_git_detail(), "Enter でコミット詳細が開く");
-        assert!(!app.git_detail_lines().is_empty(), "詳細に diff 行がある");
-
-        // --- Uncommitted working-tree changes appear at the top as an "Uncommitted changes" row ---
-        app.close_git_detail();
-        std::fs::write(dir.join("a.txt"), b"a changed").unwrap(); // change a tracked file (unstaged)
-        std::fs::write(dir.join("untracked.txt"), b"new").unwrap(); // untracked
-        git(&["add", "b.txt"]); // re-stage an existing tracked file (1 staged)
-        std::fs::write(dir.join("b.txt"), b"b staged change").unwrap();
-        git(&["add", "b.txt"]);
-        app.open_git_graph();
-        // The top row (cursor) is the working-tree row, sitting at index 0.
-        let row0 = app.git_graph_selected_row().expect("先頭行");
-        assert!(row0.worktree, "先頭が作業ツリー行");
-        assert_eq!(app.git_graph_sel(), 0, "カーソルが作業ツリー行に乗る");
-        let mut term2 = Terminal::new(TestBackend::new(88, 14)).unwrap();
-        term2.draw(|f| render(f, &mut app)).unwrap();
-        let buf2 = term2.backend().buffer();
-        let text2: String = buf2.content().iter().map(|c| c.symbol()).collect();
-        assert!(
-            text2.contains("Uncommitted changes"),
-            "作業ツリー行の見出し: {text2}"
-        );
-        assert!(text2.contains('●'), "作業ツリーノード ●: {text2}");
-        // Enter opens worktree_diff (multiple files) as a full-screen diff.
-        app.open_git_graph_detail();
-        assert!(app.is_git_detail(), "Enter で作業ツリー詳細が開く");
-        // A file-boundary header = Context and both line numbers are None.
-        let headers = app
-            .git_detail_lines()
-            .iter()
-            .filter(|l| {
-                matches!(l.kind, crate::git::DiffLineKind::Context)
-                    && l.old_no.is_none()
-                    && l.new_no.is_none()
-            })
-            .count();
-        assert!(
-            headers >= 2,
-            "作業ツリー diff が複数ファイル: headers={headers}"
-        );
-    }
 
     #[test]
     fn preview_line_start_end_horizontal_jump() {

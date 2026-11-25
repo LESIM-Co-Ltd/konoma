@@ -137,6 +137,30 @@ pub struct Still {
     spinner: usize,
     /// A resize came back as a failure: the protocol is gone for good, so none is waited for.
     resize_failed: bool,
+    /// The pose a view opened again is put back to: taken by the next new picture, in place of
+    /// the fit (`Pictures::restore_still_pose`).
+    pose_back: Option<ImageViewState>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times an animation of a still picture stepped to its next frame on this thread
+    /// (the project loop's thread in a test).
+    static GIF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many decodes of a still picture were started on this thread.
+    static DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The decodes of still pictures started on this thread so far.
+#[cfg(test)]
+pub(in crate::app) fn decodes_for_test() -> usize {
+    DECODES.with(std::cell::Cell::get)
+}
+
+/// The frame steps of still-picture animations made on this thread so far.
+#[cfg(test)]
+pub(in crate::app) fn gif_steps_for_test() -> usize {
+    GIF_STEPS.with(std::cell::Cell::get)
 }
 
 impl Still {
@@ -181,6 +205,7 @@ impl Still {
             gif: GifPlayer::new(),
             spinner: 0,
             resize_failed: false,
+            pose_back: None,
         }
     }
 
@@ -200,7 +225,10 @@ impl Still {
             // to fit, [`Still::turn_page`], and the keys move it from there as on the host).
             self.held = true;
         } else {
-            self.pose.reset();
+            match self.pose_back.take() {
+                Some(pose) => self.pose = pose,
+                None => self.pose.reset(),
+            }
             self.held = false;
             self.state = State::Loading;
             self.gif.clear();
@@ -216,6 +244,8 @@ impl Still {
         let (iv, path, raster_px) = (iv.clone(), self.path.clone(), self.raster_px);
         let svg = Arc::clone(&self.svg);
         let tx = self.done_tx.clone();
+        #[cfg(test)]
+        DECODES.with(|decodes| decodes.set(decodes.get() + 1));
         std::thread::spawn(move || {
             let cancelled = || cancel.load(Ordering::Relaxed);
             let view = konoma_base::panic::catch_silent(move || {
@@ -236,14 +266,78 @@ impl Still {
         self.state = State::Loading;
         self.gif.clear();
         self.pose.reset();
+        self.pose_back = None;
         self.viewer.clear();
         self.resize_failed = false;
+    }
+
+    /// The pose of the picture held, if one is, or the pose the next picture is to be shown in
+    /// (`pose_back`): the user's view, which a left view keeps for its return.
+    pub(super) fn pose_held(&self) -> Option<ImageViewState> {
+        self.key.as_ref().map(|_| self.pose).or(self.pose_back)
+    }
+
+    /// The next new picture is shown in `pose` (a left view opened again), not at fit.
+    pub(super) fn pose_back(&mut self, pose: ImageViewState) {
+        self.pose_back = Some(pose);
+    }
+
+    /// The view that shows the picture is left (a project screen covers it): the picture, its
+    /// decode and its animation go, as in a konoma tab that is left; the return decodes it again.
+    /// Every field is named, so a new one is decided here.
+    pub(super) fn leave(&mut self) {
+        let Self {
+            // The terminal and the file: the return shows the same file in the same terminal.
+            picker: _,
+            use_kitty: _,
+            is_tmux: _,
+            render_scale: _,
+            plugin_id: _,
+            path: _,
+            raster_px: _,
+            svg: _,
+            // The workers' channels: an answer in them is refused by `gen` (bumped by `forget`)
+            // or by the viewer it was made for (cleared by `forget`).
+            resize: _,
+            kitty_tx: _,
+            kitty_rx: _,
+            done_tx: _,
+            done_rx: _,
+            sharp_tx: _,
+            sharp_rx: _,
+            // The spinner's phase: drawn only while a picture loads.
+            spinner: _,
+            // Left by `forget`: the job and its redraw, the picture, its pose and its animation.
+            gen: _,
+            cancel: _,
+            vector: _,
+            sharp_inflight: _,
+            sharp_cancel: _,
+            key: _,
+            state: _,
+            held: _,
+            pose: _,
+            viewer: _,
+            gif: _,
+            resize_failed: _,
+            pose_back: _,
+        } = self;
+        self.forget();
+    }
+
+    pub(super) fn begin_file(&mut self, plugin_id: &str, path: &Path) {
+        self.forget();
+        self.plugin_id = plugin_id.into();
+        self.path = path.into();
     }
 
     fn cancel_job(&mut self) {
         if let Some(c) = self.cancel.take() {
             c.store(true, Ordering::Relaxed);
         }
+        // The answer of a cancelled job is stale: a decode that lands after `forget` must not
+        // make the picture (and its animation) come back.
+        self.gen += 1;
         // A redraw of the picture that is going away is dropped with it (its answer is stale by
         // `gen` as well).
         if let Some(c) = self.sharp_cancel.take() {
@@ -335,6 +429,17 @@ impl Still {
     /// The zoom (1.0 = the whole picture fits).
     pub fn zoom(&self) -> f64 {
         self.pose.zoom
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_decode_for_test(&mut self) {
+        let done = self
+            .done_rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("decode completed");
+        self.done_tx.send(done).expect("decode receiver lives");
+        self.poll_at(Instant::now());
+        assert_eq!(self.shape(), StillShape::Ready);
     }
 
     /// The centre of the visible window, each axis in 0..=1.
@@ -474,6 +579,8 @@ impl Still {
         }
         // The frame that is due, once per call (a late tick advances one frame, as konoma's).
         if matches!(self.state, State::Gif) && self.gif.advance_if_due(now) {
+            #[cfg(test)]
+            GIF_STEPS.with(|steps| steps.set(steps.get() + 1));
             changed = true;
         }
         if self.loading() {
@@ -503,6 +610,51 @@ impl Still {
         // failed one is answered too, and is not waited for).
         let resizing = !self.resize_failed && self.viewer.resize_pending();
         (loading || self.viewer.kitty_build_pending() || resizing).then_some(BUSY_POLL)
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn settled_for_test(&self) -> bool {
+        self.busy_wake().is_none() && !self.sharp_inflight
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_resizes_for_test(&mut self) -> (Sender<()>, Receiver<()>) {
+        let (mut resize, go) = ResizeChannel::spawn_held();
+        let (waiting, waits) = channel();
+        resize.notify_waits_for_test(waiting);
+        self.resize = resize;
+        (go, waits)
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn settle_for_test(&mut self) {
+        while self.loading() {
+            let done = self
+                .done_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: still picture decode");
+            self.done_tx.send(done).expect("still decode receiver");
+            self.poll_at(Instant::now());
+        }
+        while self.sharp_inflight {
+            let done = self
+                .sharp_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: still picture sharp decode");
+            self.sharp_tx.send(done).expect("sharp receiver");
+            self.poll_at(Instant::now());
+        }
+        while self.viewer.kitty_build_pending() {
+            let result = self
+                .kitty_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: still picture kitty encode");
+            self.viewer.apply_kitty(result);
+        }
+        while !self.resize_failed && self.viewer.resize_pending() {
+            self.resize.wait_for_publication_for_test();
+            self.poll_at(Instant::now());
+        }
     }
 
     /// Draw into `inner` (the inside of the frame's border): the spinner while it loads, the
@@ -1000,6 +1152,37 @@ mod tests {
         assert_eq!((s.zoom(), s.center()), (1.0, (0.5, 0.5)));
     }
 
+    /// A pose waiting for the next picture (`pose_back`, kept over a hand-off of the terminal)
+    /// is the user's view while no picture is held: a reopen or a cover that comes before the
+    /// picture is shown again takes that pose, not none.
+    #[test]
+    fn a_pose_waiting_for_its_picture_is_the_pose_held() {
+        let dir = unique_tmp("still_pose_waiting");
+        let f = png_file(&dir, "a.png");
+        let t0 = Instant::now();
+        let mut s = new_still(false, &f);
+        land(&mut s, &f, false, t0);
+        drawn(&mut s);
+        s.zoom_steps(1);
+        s.zoom_steps(1);
+        s.pan(1.0, 1.0);
+        drawn(&mut s);
+        let posed = (s.zoom(), s.center());
+        assert_ne!(posed, (1.0, (0.5, 0.5)), "the picture is zoomed and panned");
+        let pose = s.pose_held().expect("a picture is held");
+        // The hand-off: what was drawn goes, the pose waits for the picture.
+        s.forget();
+        assert!(s.pose_held().is_none(), "nothing is held or waiting");
+        s.pose_back(pose);
+        let waiting = s.pose_held().expect("the waiting pose is the user's view");
+        // The view opened again is put in that pose.
+        let mut again = new_still(false, &f);
+        again.pose_back(waiting);
+        land(&mut again, &f, false, t0);
+        drawn(&mut again);
+        assert_eq!((again.zoom(), again.center()), posed);
+    }
+
     #[test]
     fn leaving_an_animation_stops_it_and_leaves_no_frame_behind() {
         let dir = unique_tmp("still_gif_leave");
@@ -1041,6 +1224,43 @@ mod tests {
         assert!(!s.holds() && !s.gif.has_frames());
         assert!(!s.poll_at(t0 + ms(50_000)));
         assert_eq!(s.wake_in_at(t0 + ms(50_000)), None);
+    }
+
+    /// The decode of an animation is held back (its answer taken off the worker channel), the view
+    /// is left, and the answer is let go afterwards: it is stale (`cancel_job` bumps `gen`), so the
+    /// picture and its animation do not come back behind the cover. The return decodes it again.
+    #[test]
+    fn a_decode_answering_after_the_leave_is_refused_and_the_return_decodes_again() {
+        let dir = unique_tmp("still_late_answer_after_leave");
+        let g = gif_file(&dir, "a.gif", 40, &[(RED, 100), (BLUE, 100)]);
+        let t0 = Instant::now();
+        let mut s = new_still(false, &g);
+        let iv = ImageView::new(ImageData::File(g.clone()));
+        s.submit(&iv, false);
+        assert_eq!(s.shape(), StillShape::Loading);
+        // Hold the decode back: its answer waits here, not in the loop's channel.
+        let late = s
+            .done_rx
+            .recv_timeout(TMO)
+            .expect("the worker always answers");
+        assert_eq!(late.gen, s.gen, "the answer is for the submitted picture");
+        // The cover leaves the view; the cancelled job's answer lands afterwards.
+        s.leave();
+        s.done_tx.send(late).unwrap();
+        assert!(!s.poll_at(t0), "the stale answer changes nothing");
+        assert!(!s.holds(), "no picture is adopted behind the cover");
+        assert!(!s.gif.has_frames(), "no frames of the animation");
+        assert!(!s.poll_at(t0 + ms(50_000)), "nothing advances");
+        assert_eq!(
+            s.wake_in_at(t0 + ms(50_000)),
+            None,
+            "nothing wakes the loop"
+        );
+        // The return asks for the file again and it is shown from its first frame.
+        land(&mut s, &g, false, t0);
+        assert!(s.holds() && s.gif.has_frames());
+        assert_eq!(s.gif.frame_index(), 0);
+        assert!(has_rgb(&drawn(&mut s), RED));
     }
 
     #[test]

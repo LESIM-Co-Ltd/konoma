@@ -102,3 +102,110 @@ pub fn declared(app: &App, ctx: Context) -> Option<(Vec<Action>, Vec<Action>)> {
         |v: Vec<PreviewOp>| -> Vec<Action> { v.into_iter().filter_map(action_of).collect() };
     Some((lower(help_order(cctx, &st)), lower(help_everywhere())))
 }
+
+pub fn values(
+    app: &App,
+    ctx: Context,
+) -> Option<konoma_plugin::host::project::preview_presentation::PreviewValues> {
+    use konoma_host_core::preview_plan::{footer_plan, PvFoot};
+    use konoma_plugin::host::project::preview_presentation::{PreviewBinding, PreviewValues};
+    let context = core_of(ctx)?;
+    let state = state(app, ctx);
+    let mut ops = help_order(context, &state);
+    ops.extend(help_everywhere());
+    for entry in footer_plan(context, &state) {
+        match entry {
+            PvFoot::Op(op) | PvFoot::As(op, _) => ops.push(op),
+            PvFoot::Group(g, _) | PvFoot::GroupOp(g) | PvFoot::Union(g, _) => ops.extend(g.ops()),
+            _ => {}
+        }
+    }
+    let mut bindings: Vec<PreviewBinding> = Vec::new();
+    for op in ops {
+        if bindings.iter().any(|b| b.op == op) {
+            continue;
+        }
+        let Some(action) = action_of(op) else {
+            continue;
+        };
+        bindings.push(PreviewBinding {
+            op,
+            keys: crate::ops::keys::keys_of(app, ctx, action),
+            enabled: crate::ops::gate::action_enabled(app, ctx, action),
+            provided: true,
+            label: repr_label(app, action).or_else(|| {
+                text(app, ctx, action)
+                    .label
+                    .map(|m| crate::i18n::tr(app.lang, m).into())
+            }),
+            help: text(app, ctx, action)
+                .help
+                .map(|m| crate::i18n::tr(app.lang, m).into()),
+            launch: crate::ops::decl::decl(action).launch,
+            layers: crate::ops::keys::keys_of(app, ctx, action)
+                .into_iter()
+                .filter_map(|key| {
+                    app.keymaps
+                        .layer_of_key_on(ctx, app.screen_keys_for(ctx), key)
+                        .map(|layer| (key, layer))
+                })
+                .collect(),
+        });
+    }
+    Some(PreviewValues {
+        context,
+        state,
+        bindings,
+        core: crate::ops::core_help::facts_for(app, ctx),
+        search_status: crate::ops::footer::search_status(app, ctx),
+        change_status: crate::ops::footer::change_status(app, ctx),
+        copy_code: crate::ops::footer::copy_code_token(app, ctx),
+    })
+}
+
+/// Help and menus describe their underlying screen; other overlays keep their own plans.
+/// In particular a project opened over Preview is a new front screen, not a Preview surface.
+pub fn front_values(
+    app: &App,
+    ctx: Context,
+) -> Option<konoma_plugin::host::project::preview_presentation::PreviewValues> {
+    if app.project_active()
+        || app.dialog_is_input()
+        || app.dialog_is_confirm()
+        || app.dialog_is_preview()
+        || app.is_bookmark_list()
+        || app.is_tab_list()
+        || app.is_info()
+        || app.is_outline()
+        || app.is_table_cell_open()
+        || app.is_visual()
+        || app.is_filtering()
+        || app.is_searching()
+        || app.is_marking()
+        || app.is_plugin_input()
+        || !app.preview_is_diff_representation()
+        || app.tab.project_return.is_none()
+        || ctx != app.base_context()
+    {
+        return None;
+    }
+    values(app, ctx)
+}
+
+pub fn help_words(
+    app: &App,
+) -> konoma_plugin::host::project::preview_presentation::PreviewHelpWords {
+    use crate::i18n::{tr, Msg};
+    use konoma_plugin::host::project::preview_presentation::PreviewHelpWords;
+    let word = |msg| tr(app.lang, msg).into();
+    PreviewHelpWords {
+        search: word(Msg::SearchHint),
+        table_search: word(Msg::TableSearchHelp),
+        bookmarks: word(Msg::PreviewBookmarkHint),
+        zoom: word(Msg::MermaidZoomHelp),
+        tasks: word(Msg::MdTaskToggleHelp),
+        details: word(Msg::HintDetailsToggle),
+        tool: word(Msg::GitExternalTool),
+        tabs: word(Msg::HelpTabs),
+    }
+}

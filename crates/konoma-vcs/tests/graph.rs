@@ -234,18 +234,21 @@ mod reading {
                 flash.get(lang),
                 format!("{}{label}", if lang == "en" { "base: " } else { "基準: " })
             );
-            assert!(pinned
-                .title
-                .unwrap()
-                .plain()
-                .contains(&format!("base: {label}")));
+            let heading = pinned.heading.as_ref().expect("the graph's heading");
+            assert!(
+                format!("{}{}", heading.before.plain(), heading.after.plain())
+                    .contains(&format!("base: {label}"))
+            );
             let second = view(
                 session.as_mut(),
                 2,
                 &Settings::new().with("graph_max_branches", Value::Int(0)),
                 lang,
             );
-            assert!(!second.title.unwrap().plain().contains("base:"));
+            let heading = second.heading.as_ref().expect("the graph's heading");
+            assert!(
+                !format!("{}{}", heading.before.plain(), heading.after.plain()).contains("base:")
+            );
             assert!(second
                 .bottom
                 .unwrap()

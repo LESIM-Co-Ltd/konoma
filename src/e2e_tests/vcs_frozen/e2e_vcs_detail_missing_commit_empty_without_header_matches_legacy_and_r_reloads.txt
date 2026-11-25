@@ -1,0 +1,837 @@
+# frozen vcs frames: e2e_vcs_detail_missing_commit_empty_without_header_matches_legacy_and_r_reloads
+case w=80 layout=unified open
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key0
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key1
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key2
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key3
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key4
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key5
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key6
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key7
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key8
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=unified key9
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto open
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key0
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key1
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key2
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key3
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key4
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key5
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key6
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key7
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key8
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=80 layout=auto key9
+region x=0..78 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                              |
+row 2 S|a78|
+row 3 T|                                                                              |
+row 3 S|a78|
+row 4 T|                                                                              |
+row 4 S|a78|
+row 5 T|                                                                              |
+row 5 S|a78|
+row 6 T|                                 (no changes)                                 |
+row 6 S|a78|
+row 7 T|                                                                              |
+row 7 S|a78|
+row 8 T|                                                                              |
+row 8 S|a78|
+row 9 T|                                                                              |
+row 9 S|a78|
+case w=180 layout=unified open
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key0
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key1
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key2
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key3
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key4
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key5
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key6
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key7
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key8
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=unified key9
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto open
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key0
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key1
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key2
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key3
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key4
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key5
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key6
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key7
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key8
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|
+case w=180 layout=auto key9
+region x=0..178 y=2..10
+style a	Reset	Reset	NONE
+row 2 T|                                                                                                                                                                                  |
+row 2 S|a178|
+row 3 T|                                                                                                                                                                                  |
+row 3 S|a178|
+row 4 T|                                                                                                                                                                                  |
+row 4 S|a178|
+row 5 T|                                                                                                                                                                                  |
+row 5 S|a178|
+row 6 T|                                                                                   (no changes)                                                                                   |
+row 6 S|a178|
+row 7 T|                                                                                                                                                                                  |
+row 7 S|a178|
+row 8 T|                                                                                                                                                                                  |
+row 8 S|a178|
+row 9 T|                                                                                                                                                                                  |
+row 9 S|a178|

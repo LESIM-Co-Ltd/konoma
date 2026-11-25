@@ -8,14 +8,16 @@
 //! cursor, the sheets as pages, the full-cell popup) and [`View::Image`](crate::View) (a still
 //! picture decoded off the loop and drawn through the `Pictures`, with zoom and pan; with no
 //! `Pictures` the line that names the terminal) and [`View::Document`](crate::View) (Markdown, laid
-//! out by the shared `document_render` and drawn in a bordered frame; every picture of it is shown
-//! as text). Any other view says it cannot be shown yet.
+//! out by the shared `document_render` and drawn in a bordered frame; with [`DocPics`] its pictures
+//! are reserved and drawn, without it they use the text fallback). Any other view says it cannot
+//! be shown yet.
 //!
 //! The loop ([`run_with`]) takes its terminal and its events from outside, so it runs on a
 //! ratatui `TestBackend` in tests; [`run`] is the thin entry that owns the real terminal.
 
 mod acts;
 mod copy;
+pub mod diff_screen;
 mod display;
 mod doc_pictures;
 mod document;
@@ -24,6 +26,9 @@ mod edit_line;
 mod launch;
 mod looping;
 mod pictures;
+#[cfg(test)]
+mod preview_gutter_tests;
+pub mod project;
 mod space;
 mod still;
 mod term;
@@ -33,20 +38,29 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::registry::{FileFacts, PluginOrigin, Registry, Resolution};
+use crate::registry::{PluginOrigin, Registry};
 use crate::reopen::ContentTarget;
 use crate::session::{ColorDepth, Failure, OpenCx, Plugin, Session, TermCaps};
 use crate::{Input, Manifest, Settings};
 
 pub use acts::AppActs;
 pub use display::Display;
-pub use doc_pictures::DocEnv;
+pub use doc_pictures::{DocEnv, DocPics, DocPictureFocus};
+pub use document::Laid;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use document::{draw_preview_document_for_test, draw_preview_lines_for_test};
 pub use edit_line::edit_line;
 pub use launch::{HandOff, LaunchCx, LaunchFacts};
 pub use looping::{
     run_with, run_with_pictures, AppCx, AppEvent, AppKeys, EventSource, ImageMode, Next, TableMode,
 };
 pub use pictures::{delete_placed_pictures, InProcessSvg, Pictures};
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use project::preview::run_preview_with_landed_gutter_for_test;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use project::preview::run_project_preview_with_landed_gutter_for_test;
 pub use still::{failure_line, StillShape};
 pub use term::{install_panic_hook_with, key_from_crossterm};
 
@@ -135,6 +149,16 @@ impl fmt::Debug for ReopenSource {
 /// Why the app did not run (or stopped). Every case has a plain message for standard error.
 #[derive(Debug)]
 pub enum AppError {
+    /// The directory does not exist.
+    NoDirectory(PathBuf),
+    /// The project argument is not a directory.
+    NotADirectory(PathBuf),
+    /// No enabled project plugin takes this directory or its ancestors.
+    NoProject(PathBuf),
+    /// The directory could not be read or project discovery failed.
+    ProjectDetection(String),
+    /// The backend is unavailable or the project owner could not open it.
+    ProjectOpen(String),
     /// The file does not exist.
     NoFile(PathBuf),
     /// The path is not a file (a directory, say).
@@ -154,16 +178,21 @@ pub enum AppError {
 }
 
 impl AppError {
-    /// The exit code of the program: 2 when the file argument is refused (it does not exist, is
-    /// not a file, cannot be read, or no plugin takes it: the same as the refusal of an unknown
-    /// option), 1 when the run fails (a plugin, the open, the terminal).
+    /// The exit code of the program: 2 when the file/directory argument is refused or no plugin
+    /// takes it (the same as an unknown option), 1 when preparation or the run fails (discovery,
+    /// backend availability, a plugin, the open, the terminal).
     pub fn exit_code(&self) -> u8 {
         match self {
             AppError::NoFile(_)
+            | AppError::NoDirectory(_)
+            | AppError::NotADirectory(_)
+            | AppError::NoProject(_)
             | AppError::NotAFile(_)
             | AppError::Unreadable(..)
             | AppError::NotHandled { .. } => 2,
             AppError::Plugin(_)
+            | AppError::ProjectDetection(_)
+            | AppError::ProjectOpen(_)
             | AppError::Open(_)
             | AppError::NoTerminal
             | AppError::Terminal(_) => 1,
@@ -179,6 +208,19 @@ fn clean(s: &str) -> String {
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            AppError::NoDirectory(p) => {
+                write!(f, "{}: no such directory", clean(&p.to_string_lossy()))
+            }
+            AppError::NotADirectory(p) => {
+                write!(f, "{}: not a directory", clean(&p.to_string_lossy()))
+            }
+            AppError::NoProject(p) => write!(
+                f,
+                "{}: this program does not show a project here",
+                clean(&p.to_string_lossy())
+            ),
+            AppError::ProjectDetection(s) => write!(f, "cannot detect the project: {}", clean(s)),
+            AppError::ProjectOpen(s) => write!(f, "cannot open the project: {}", clean(s)),
             AppError::NoFile(p) => write!(f, "{}: no such file", clean(&p.to_string_lossy())),
             AppError::NotAFile(p) => write!(f, "{}: not a file", clean(&p.to_string_lossy())),
             AppError::Unreadable(p, e) => {
@@ -253,27 +295,33 @@ fn register_all(
 /// read the way konoma reads them: the MIME type from the content
 /// ([`konoma_host_core::sniff`]) and the text judgment of `konoma-widgets`.
 fn pick_in(registry: &Registry, path: &Path) -> Result<(String, Option<String>), AppError> {
-    let sniff = || konoma_host_core::sniff::mime_of_path(path);
-    let is_text = || konoma_widgets::text::is_probably_text(path);
-    let facts = FileFacts {
-        path,
-        sniff_mime: &sniff,
-        is_text: &is_text,
-    };
-    match registry.resolve_file(&[], &facts) {
-        Resolution::Plugin { id, hint } => Ok((id, hint)),
-        Resolution::Text => Err(AppError::NotHandled {
+    use crate::host::file_preview::{preview_plan_of_path, FilePreviewPlan};
+    let (plan, selected_plugin) = preview_plan_of_path(registry, &[], true, path, None);
+    match plan {
+        FilePreviewPlan::Plugin { id, hint } => Ok((id, hint)),
+        FilePreviewPlan::Text => Err(AppError::NotHandled {
             path: path.to_path_buf(),
             why: "no plugin of this program takes it; it reads as text".to_string(),
         }),
-        Resolution::CanNotPreview { ext } => Err(AppError::NotHandled {
-            path: path.to_path_buf(),
-            why: if ext.is_empty() {
-                "no plugin of this program takes it".to_string()
-            } else {
-                format!("no plugin of this program takes `.{}`", clean(&ext))
-            },
-        }),
+        FilePreviewPlan::Unavailable | FilePreviewPlan::Command { .. } => {
+            // Stage 3 also opens a selected plugin without `shows`: its returned failure/message
+            // is part of the file program's contract. Text above remains NotHandled.
+            if let Some(id) = selected_plugin {
+                return Ok((id, None));
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
+            Err(AppError::NotHandled {
+                path: path.to_path_buf(),
+                why: if ext.is_empty() {
+                    "no plugin of this program takes it".to_string()
+                } else {
+                    format!("no plugin of this program takes `.{}`", clean(ext))
+                },
+            })
+        }
     }
 }
 

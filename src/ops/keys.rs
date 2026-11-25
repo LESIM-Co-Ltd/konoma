@@ -135,7 +135,9 @@ pub fn keys_of(app: &App, ctx: Context, action: Action) -> Vec<KeyPress> {
     if let Action::Plugin(p) = action {
         return app.plugin_key_of(ctx, p).into_iter().collect();
     }
-    let mut v = app.keymaps.keys_of(ctx, action);
+    let mut v = app
+        .keymaps
+        .keys_of_on(ctx, app.screen_keys_for(ctx), action);
     for f in fixed_bindings(ctx) {
         if f.action == action && !f.alias && !v.contains(&f.key) {
             v.push(f.key);

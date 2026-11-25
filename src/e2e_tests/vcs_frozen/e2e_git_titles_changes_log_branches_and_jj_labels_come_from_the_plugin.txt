@@ -1,0 +1,273 @@
+# frozen vcs frames: e2e_git_titles_changes_log_branches_and_jj_labels_come_from_the_plugin
+case icons=false lang=en changes title
+region x=0..23 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master  (7) ─|
+row 1 S|a23|
+case icons=false lang=en changes corner
+region x=79..80 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=false lang=en changes
+region x=0..78 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                         |
+row 2 S|a2b2a17c57|
+row 3 T|  M repo/b-unstaged.txt                                                       |
+row 3 S|c2d2c74|
+row 4 T|  D repo/c-deleted.txt                                                        |
+row 4 S|c2e2c74|
+row 5 T|● R repo/d-renamed.txt                                                        |
+row 5 S|c2f2c74|
+row 6 T|  U repo/e-untracked.txt                                                      |
+row 6 S|c2g2c74|
+row 7 T|● A repo/f-added.txt                                                          |
+row 7 S|c2h2c74|
+row 8 T|  M repo/日 本 語 .txt                                                           |
+row 8 S|c2d2c74|
+row 9 T|                                                                              |
+row 9 S|c78|
+case icons=false lang=en log title
+region x=0..27 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git log br: master  (1) ─|
+row 1 S|a27|
+case icons=false lang=en log corner
+region x=79..80 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=false lang=en log
+region x=0..78 y=2..10
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	Reset	Reset	NONE
+row 2 T|5fe9d2e seed                                           Test · 2020-01-01 00:00|
+row 2 S|a8b47c23|
+row 3 T|                                                                              |
+row 3 S|d78|
+row 4 T|                                                                              |
+row 4 S|d78|
+row 5 T|                                                                              |
+row 5 S|d78|
+row 6 T|                                                                              |
+row 6 S|d78|
+row 7 T|                                                                              |
+row 7 S|d78|
+row 8 T|                                                                              |
+row 8 S|d78|
+row 9 T|                                                                              |
+row 9 S|d78|
+case icons=false lang=ja changes title
+region x=0..23 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git br: master  (7) ─|
+row 1 S|a23|
+case icons=false lang=ja changes corner
+region x=79..80 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=false lang=ja changes
+region x=0..78 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                         |
+row 2 S|a2b2a17c57|
+row 3 T|  M repo/b-unstaged.txt                                                       |
+row 3 S|c2d2c74|
+row 4 T|  D repo/c-deleted.txt                                                        |
+row 4 S|c2e2c74|
+row 5 T|● R repo/d-renamed.txt                                                        |
+row 5 S|c2f2c74|
+row 6 T|  U repo/e-untracked.txt                                                      |
+row 6 S|c2g2c74|
+row 7 T|● A repo/f-added.txt                                                          |
+row 7 S|c2h2c74|
+row 8 T|  M repo/日 本 語 .txt                                                           |
+row 8 S|c2d2c74|
+row 9 T|                                                                              |
+row 9 S|c78|
+case icons=false lang=ja log title
+region x=0..27 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git log br: master  (1) ─|
+row 1 S|a27|
+case icons=false lang=ja log corner
+region x=79..80 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=false lang=ja log
+region x=0..78 y=2..10
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	Reset	Reset	NONE
+row 2 T|5fe9d2e seed                                           Test · 2020-01-01 00:00|
+row 2 S|a8b47c23|
+row 3 T|                                                                              |
+row 3 S|d78|
+row 4 T|                                                                              |
+row 4 S|d78|
+row 5 T|                                                                              |
+row 5 S|d78|
+row 6 T|                                                                              |
+row 6 S|d78|
+row 7 T|                                                                              |
+row 7 S|d78|
+row 8 T|                                                                              |
+row 8 S|d78|
+row 9 T|                                                                              |
+row 9 S|d78|
+case icons=true lang=en changes title
+region x=0..21 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master  (7) ─|
+row 1 S|a21|
+case icons=true lang=en changes corner
+region x=79..80 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=true lang=en changes
+region x=0..78 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                         |
+row 2 S|a2b2a17c57|
+row 3 T|  M repo/b-unstaged.txt                                                       |
+row 3 S|c2d2c74|
+row 4 T|  D repo/c-deleted.txt                                                        |
+row 4 S|c2e2c74|
+row 5 T|● R repo/d-renamed.txt                                                        |
+row 5 S|c2f2c74|
+row 6 T|  U repo/e-untracked.txt                                                      |
+row 6 S|c2g2c74|
+row 7 T|● A repo/f-added.txt                                                          |
+row 7 S|c2h2c74|
+row 8 T|  M repo/日 本 語 .txt                                                           |
+row 8 S|c2d2c74|
+row 9 T|                                                                              |
+row 9 S|c78|
+case icons=true lang=en log title
+region x=0..25 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git log ⎇ master  (1) ─|
+row 1 S|a25|
+case icons=true lang=en log corner
+region x=79..80 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=true lang=en log
+region x=0..78 y=2..10
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	Reset	Reset	NONE
+row 2 T|5fe9d2e seed                                           Test · 2020-01-01 00:00|
+row 2 S|a8b47c23|
+row 3 T|                                                                              |
+row 3 S|d78|
+row 4 T|                                                                              |
+row 4 S|d78|
+row 5 T|                                                                              |
+row 5 S|d78|
+row 6 T|                                                                              |
+row 6 S|d78|
+row 7 T|                                                                              |
+row 7 S|d78|
+row 8 T|                                                                              |
+row 8 S|d78|
+row 9 T|                                                                              |
+row 9 S|d78|
+case icons=true lang=ja changes title
+region x=0..21 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git ⎇ master  (7) ─|
+row 1 S|a21|
+case icons=true lang=ja changes corner
+region x=79..80 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=true lang=ja changes
+region x=0..78 y=2..10
+style a	Reset	Reset	REVERSED
+style b	Yellow	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Yellow	Reset	NONE
+style e	Red	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	LightGreen	Reset	NONE
+style h	Green	Reset	NONE
+row 2 T|● M repo/a-staged.txt                                                         |
+row 2 S|a2b2a17c57|
+row 3 T|  M repo/b-unstaged.txt                                                       |
+row 3 S|c2d2c74|
+row 4 T|  D repo/c-deleted.txt                                                        |
+row 4 S|c2e2c74|
+row 5 T|● R repo/d-renamed.txt                                                        |
+row 5 S|c2f2c74|
+row 6 T|  U repo/e-untracked.txt                                                      |
+row 6 S|c2g2c74|
+row 7 T|● A repo/f-added.txt                                                          |
+row 7 S|c2h2c74|
+row 8 T|  M repo/日 本 語 .txt                                                           |
+row 8 S|c2d2c74|
+row 9 T|                                                                              |
+row 9 S|c78|
+case icons=true lang=ja log title
+region x=0..25 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┌ Git log ⎇ master  (1) ─|
+row 1 S|a25|
+case icons=true lang=ja log corner
+region x=79..80 y=1..2
+style a	Reset	Reset	NONE
+row 1 T|┐|
+row 1 S|a1|
+case icons=true lang=ja log
+region x=0..78 y=2..10
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	Reset	Reset	NONE
+row 2 T|5fe9d2e seed                                           Test · 2020-01-01 00:00|
+row 2 S|a8b47c23|
+row 3 T|                                                                              |
+row 3 S|d78|
+row 4 T|                                                                              |
+row 4 S|d78|
+row 5 T|                                                                              |
+row 5 S|d78|
+row 6 T|                                                                              |
+row 6 S|d78|
+row 7 T|                                                                              |
+row 7 S|d78|
+row 8 T|                                                                              |
+row 8 S|d78|
+row 9 T|                                                                              |
+row 9 S|d78|

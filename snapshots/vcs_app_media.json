@@ -1,0 +1,21 @@
+{
+  "_footer_design": "fix-4: the footer selects hints; these complete Preview tokens retain the HEAD plan, including no horizontal hint for Document with wrap=false",
+  "_paged_preview_design": "FEATURE-PLUGIN-ARCHITECTURE.md:447 outline is host-only (same as vcs_app_preview_help); :1266 tabs and next/previous file are host-only",
+  "paged_preview": {
+    "en": {
+      "host": "+/-:zoom  =:fit  h/j/k/l:pan  J/K/PgDn/PgUp:page  O:pages  R:back to diff  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  [/]:tab  ,:view",
+      "app": "+/-:zoom  =:fit  h/j/k/l:pan  J/K/PgDn/PgUp:page  R:back to diff  q:back  ?:help  e:edit  o:open in app  ,:view"
+    },
+    "ja": {
+      "host": "+/-:ズーム  =:フィット  h/j/k/l:パン  J/K/PgDn/PgUp:ページ  O:ページ一覧  R:diff に戻る  C-n/C-p:次/前ファイル  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  [/]:タブ  ,:表示",
+      "app": "+/-:ズーム  =:フィット  h/j/k/l:パン  J/K/PgDn/PgUp:ページ  R:diff に戻る  q:戻る  ?:ヘルプ  e:編集  o:アプリで開く  ,:表示"
+    }
+  },
+  "source": "j/k:scroll  C-n/C-p:next/prev file  n/N:change  h/l:hscroll  s:unified/split/auto  q/Esc:back  R:rendered  ,:view  e:edit  o:open in app",
+  "rendered_wrap": "j/k:scroll  C-n/C-p:next/prev file  n/N:change  q/Esc:back  R:preview  ,:view  e:edit  o:open in app",
+  "rendered_nowrap": "j/k:scroll  C-n/C-p:next/prev file  n/N:change  h/l:hscroll  q/Esc:back  R:preview  ,:view  e:edit  o:open in app",
+  "plain_document": "j/k:scroll  Tab:focus  O:outline  R:raw source  /:search  n/N:change  F:FOLLOW  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  g/G:ends  [/]:tab  ,:view  C-f/C-b/PgDn/PgUp:page",
+  "diff_document": "j/k:scroll  Tab:focus  O:outline  R:back to diff  /:search  n/N:change  F:FOLLOW  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  g/G:ends  [/]:tab  ,:view  C-f/C-b/PgDn/PgUp:page",
+  "text": "j/k:scroll  /:search  n/N:change  v/V:select  Y:@ref  F:FOLLOW  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  g/G:ends  h/l:hscroll  0/$:line ends  [/]:tab  ,:view  C-f/C-b/PgDn/PgUp:page",
+  "code": "j/k:scroll  /:search  v/V:select  Y:@ref  F:FOLLOW  C-n/C-p:next/prev file  q:back  ?:help  e:edit  o:open in app  g/G:ends  h/l:hscroll  0/$:line ends  [/]:tab  ,:view  C-f/C-b/PgDn/PgUp:page"
+}

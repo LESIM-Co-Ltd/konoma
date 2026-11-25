@@ -299,8 +299,7 @@ impl App {
                 return;
             }
         }
-        self.enter_preview(path);
-        self.follow_scroll_to_first_change();
+        self.enter_preview_landing(path, super::Landing::FirstChange);
     }
 
     /// Whether `path` is a valid follow target: under root, an existing file, not gitignored, and not
@@ -416,20 +415,27 @@ impl App {
         let marks = if self.cfg.ui.git_gutter {
             self.git_gutter_marks()
         } else {
-            gutter_marks(&crate::vcs::file_diff(&self.tab.root, &path))
+            let diff = if self.tab.preview_from_diff {
+                self.compute_gitdiff_lines(&path, false)
+            } else {
+                crate::vcs::file_diff(&self.tab.root, &path)
+            };
+            gutter_marks(&diff)
         };
         let Some(first) = marks.keys().min().copied() else {
             return;
         };
-        let line0 = (first as usize).saturating_sub(1); // marks are 1-based
-        let top = line0.saturating_sub(3); // keep a few context lines above
+        let position = konoma_plugin::host::project::preview_gutter::first_change_position(
+            (first as usize).saturating_sub(1),
+        );
+        let top = position.top;
         let Some(win) = self.preview_win.as_mut() else {
             return;
         };
         if let Ok((off, _)) = win.advance(0, top) {
             self.tab.preview_byte_top = off;
             self.tab.preview_top_line = top;
-            self.tab.preview_cursor_line = line0;
+            self.tab.preview_cursor_line = position.caret;
         }
     }
 }

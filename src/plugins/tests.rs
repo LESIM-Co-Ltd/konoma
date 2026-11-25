@@ -682,6 +682,26 @@ fn other_keys_of_a_plugin_table_become_settings() {
 // ---- the declarations -----------------------------------------------------------------------
 
 #[test]
+fn standard_file_plugins_have_one_order_and_real_implementations() {
+    let plugins = konoma_file_plugins::plugins();
+    let expected: Vec<_> = plugins.iter().map(|p| p.manifest().id).collect();
+    let registry = build_registry(&[]);
+    let standard_ids: Vec<_> = registry
+        .ids()
+        .into_iter()
+        .filter(|id| expected.iter().any(|expected| expected == id))
+        .collect();
+    assert_eq!(
+        standard_ids, expected,
+        "host uses the shared file plugin order"
+    );
+    for plugin in plugins {
+        let id = plugin.manifest().id;
+        assert_eq!(registry.origin(&id), Some(PluginOrigin::Standard), "{id}");
+    }
+}
+
+#[test]
 fn the_standard_declarations_register_and_keep_the_expected_order() {
     let r = build_registry(&[]);
     assert_eq!(
@@ -700,6 +720,10 @@ fn the_standard_declarations_register_and_keep_the_expected_order() {
             "code",
             "video",
             "pdf",
+            #[cfg(feature = "git")]
+            "git",
+            #[cfg(feature = "git")]
+            "jj",
             "text",
             "command",
             "can-not-preview",
@@ -788,6 +812,11 @@ fn verbs_follow_the_decided_chains() {
     for m in standard_manifests() {
         let verb = |v: Verb| m.verbs.iter().find(|d| d.verb == v);
         match m.id.as_str() {
+            "git" | "jj" => {
+                assert!(verb(Verb::Edit).is_none());
+                assert!(verb(Verb::Open).is_none());
+                assert!(m.verbs.is_empty(), "{}", m.id);
+            }
             // Embedded only: no file to edit or open.
             "math" => assert!(m.verbs.is_empty()),
             "spreadsheet" | "document" | "presentation" => {

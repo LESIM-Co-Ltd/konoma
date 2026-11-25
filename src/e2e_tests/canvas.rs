@@ -388,6 +388,8 @@ fn e2e_canvas_draws_ascii_wide_characters_and_styles_cell_for_cell() {
     let s = &o.s;
     assert!(s.app.is_canvas_preview());
     assert_eq!(s.app.key_context(), Some(Context::Canvas));
+    // Only the version-control canvases report a plugin screen; this plugin's canvas does not.
+    assert_eq!(s.app.canvas_screen(), None);
 
     // Row 0: `ABC` in red and bold, then a space on a blue background.
     for (x, ch) in ["A", "B", "C"].iter().enumerate() {

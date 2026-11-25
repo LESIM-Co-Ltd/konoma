@@ -324,8 +324,6 @@ C-f/C-b/PgDn/PgUp:page
 [help]
 |Preview: text / Markdown|
 |  g / G           top / bottom|
-|  h / l / ← →     horizontal scroll|
-|  0 / $           line start / line end (horizontal)|
 |  /  n / N        search; next / prev match or change|
 |  Y               copy the @path reference|
 |  R               toggle rendered / raw source (raw is selectable)|
@@ -429,8 +427,6 @@ C-f/C-b/PgDn/PgUp:ページ
 [help]
 |プレビュー: テキスト/Markdown|
 |  g / G           先頭 / 末尾|
-|  h / l / ← →     横スクロール(非折返し時)|
-|  0 / $           行頭 / 行末へ(横)|
 |  /  n / N        検索; 次 / 前の一致、未検索なら変更箇所|
 |  Y               @パス参照をコピー|
 |  R               装飾表示 / ソース表示 を切替(ソースは選択可)|

@@ -1,0 +1,2165 @@
+# frozen vcs frames: e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy
+case lang=en icons=false key0=b
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4c154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|d4c154|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=false key1=x
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4c154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|d4c154|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=false key2=j
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Green	Reset	NONE
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32b120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=false key3=x
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Green	Reset	NONE
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32b120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=false key4=a
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|a4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|a4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=false key5=c
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b2f1b1f1b1f1b1f7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=false key6=J
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	REVERSED
+style e	Reset	Reset	REVERSED
+style f	Green	Reset	BOLD | REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 3 S|c4b2c1b1c1b1c1b1c7b139|
+row 4 T|[x] * master                                                                                                                                                  |
+row 4 S|d4e2f6b146|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|c4b2c30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=false key7=K
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b2f1b1f1b1f1b1f7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=false key8=G
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Reset	Reset	DIM
+style e	Reset	Reset	DIM | REVERSED
+style f	Reset	Reset	REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|a4b2c6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4b2d1b1d1b1d1b1d7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|e4f2e30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=false key9=k
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|a4b2c6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4e2d1b1d1b1d1b1d7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=false key10=g
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=false motion0
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=false motion1
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=false motion2
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=false motion3
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=false motion4
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=false motion5
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true key0=b
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4c154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|d4c154|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true key1=x
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4c154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|d4c154|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true key2=j
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Green	Reset	NONE
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32b120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=true key3=x
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Green	Reset	NONE
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32b120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=true key4=a
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|a4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|a4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=true key5=c
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b2f1b1f1b1f1b1f7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=true key6=J
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	REVERSED
+style e	Reset	Reset	REVERSED
+style f	Green	Reset	BOLD | REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 3 S|c4b2c1b1c1b1c1b1c7b139|
+row 4 T|[x] ⎇ master                                                                                                                                                  |
+row 4 S|d4e2f6b146|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|c4b2c30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=true key7=K
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b2f1b1f1b1f1b1f7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=true key8=G
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Reset	Reset	DIM
+style e	Reset	Reset	DIM | REVERSED
+style f	Reset	Reset	REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|a4b2c6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4b2d1b1d1b1d1b1d7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|e4f2e30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=true key9=k
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|a4b2c6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4e2d1b1d1b1d1b1d7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=en icons=true key10=g
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true motion0
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true motion1
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true motion2
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true motion3
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true motion4
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en icons=true motion5
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false key0=b
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4c154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|d4c154|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false key1=x
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4c154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|d4c154|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false key2=j
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Green	Reset	NONE
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32b120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=false key3=x
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Green	Reset	NONE
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32b120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=false key4=a
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|a4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|a4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=false key5=c
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b2f1b1f1b1f1b1f7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=false key6=J
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	REVERSED
+style e	Reset	Reset	REVERSED
+style f	Green	Reset	BOLD | REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 3 S|c4b2c1b1c1b1c1b1c7b139|
+row 4 T|[x] * master                                                                                                                                                  |
+row 4 S|d4e2f6b146|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|c4b2c30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=false key7=K
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b2f1b1f1b1f1b1f7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=false key8=G
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Reset	Reset	DIM
+style e	Reset	Reset	DIM | REVERSED
+style f	Reset	Reset	REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|a4b2c6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4b2d1b1d1b1d1b1d7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|e4f2e30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=false key9=k
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|a4b2c6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4e2d1b1d1b1d1b1d7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=false key10=g
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false motion0
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false motion1
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false motion2
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false motion3
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false motion4
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=false motion5
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] * master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true key0=b
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4c154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|d4c154|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true key1=x
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4c154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|d4c154|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true key2=j
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Green	Reset	NONE
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32b120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=true key3=x
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Green	Reset	NONE
+row 2 T|[ ]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b2a32b120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=true key4=a
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|a4b154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|a4b154|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=true key5=c
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b2f1b1f1b1f1b1f7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=true key6=J
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	REVERSED
+style e	Reset	Reset	REVERSED
+style f	Green	Reset	BOLD | REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 3 S|c4b2c1b1c1b1c1b1c7b139|
+row 4 T|[x] ⎇ master                                                                                                                                                  |
+row 4 S|d4e2f6b146|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|c4b2c30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=true key7=K
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Reset	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|c4d2e6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4b2f1b1f1b1f1b1f7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=true key8=G
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Reset	Reset	DIM
+style e	Reset	Reset	DIM | REVERSED
+style f	Reset	Reset	REVERSED
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|a4b2c6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4b2d1b1d1b1d1b1d7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|e4f2e30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=true key9=k
+region x=0..158 y=2..14
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b154|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|a4b2c6b146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|d4e2d1b1d1b1d1b1d7b139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4b2f30b122|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case lang=ja icons=true key10=g
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true motion0
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true motion1
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true motion2
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true motion3
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true motion4
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja icons=true motion5
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+style e	Green	Reset	BOLD
+style f	Reset	Reset	DIM
+row 2 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 2 S|a4b34c120|
+row 3 T|[x] ⎇ master                                                                                                                                                  |
+row 3 S|d4c2e6c146|
+row 4 T|[ ]   日 本 語 -branch                                                                                                                                           |
+row 4 S|f4c2f1c1f1c1f1c1f7c139|
+row 5 T|[ ]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|f4c2f30c122|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|

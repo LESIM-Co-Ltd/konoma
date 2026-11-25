@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 
-use konoma_plugin::host::bind::{bind_actions, KeyNote};
+use konoma_plugin::host::bind::{bind_actions, bind_jumps, JumpBinding, KeyNote};
 use konoma_plugin::keys::KeyIssue;
 use konoma_plugin::registry::{NoteKind, Registry};
 use konoma_plugin::{ApiVersion, Tr};
@@ -112,6 +112,7 @@ pub struct PluginKeys {
 struct PluginEntry {
     name: Tr,
     acts: Vec<ActBinding>,
+    jumps: Vec<JumpBinding>,
     declarations: Vec<konoma_plugin::Act>,
 }
 
@@ -197,7 +198,14 @@ impl PluginKeys {
                 }
                 KeyNote::BadKey { plugin, key, why } => PluginNote::BadKey { plugin, key, why },
             }));
-            if manifest.actions.is_empty() {
+            let (jumps, jump_notes) = bind_jumps(id, &manifest, user.as_ref());
+            out.notes.extend(jump_notes.into_iter().map(|n| match n {
+                KeyNote::UnknownAction { plugin, action } => {
+                    PluginNote::UnknownAction { plugin, action }
+                }
+                KeyNote::BadKey { plugin, key, why } => PluginNote::BadKey { plugin, key, why },
+            }));
+            if manifest.actions.is_empty() && jumps.is_empty() {
                 continue;
             }
             out.by_plugin.insert(
@@ -205,6 +213,7 @@ impl PluginKeys {
                 PluginEntry {
                     name: manifest.name.clone(),
                     acts,
+                    jumps,
                     declarations: manifest.actions.clone(),
                 },
             );
@@ -212,9 +221,32 @@ impl PluginKeys {
         out
     }
 
+    /// Test seam: the jump bindings of `manifest` as `bind_jumps` makes them, without the
+    /// registry's key checks (a golden fixture may declare a key the registry refuses).
+    #[cfg(test)]
+    pub fn from_unchecked_manifest(manifest: &konoma_plugin::Manifest) -> PluginKeys {
+        let (jumps, _) = bind_jumps(&manifest.id, manifest, None);
+        let mut out = PluginKeys::default();
+        out.by_plugin.insert(
+            manifest.id.to_string(),
+            PluginEntry {
+                name: manifest.name.clone(),
+                acts: Vec::new(),
+                jumps,
+                declarations: Vec::new(),
+            },
+        );
+        out
+    }
+
     /// The actions of plugin `id`, in declaration order.
     pub fn acts_of(&self, id: &str) -> &[ActBinding] {
         self.by_plugin.get(id).map_or(&[], |e| e.acts.as_slice())
+    }
+
+    /// The screen-jump operations of plugin `id` with the keys they have now.
+    pub fn jumps_of(&self, id: &str) -> &[JumpBinding] {
+        self.by_plugin.get(id).map_or(&[], |e| e.jumps.as_slice())
     }
 
     pub fn declaration(&self, action: PluginAct) -> Option<&konoma_plugin::Act> {
@@ -541,5 +573,142 @@ mod tests {
             assert!(!report[0].contains('\u{1b}'));
         }
         assert!(r.ids().is_empty());
+    }
+
+    /// A registry with one project plugin `proj`: `changes` (no key), `branches` on `b`, and
+    /// `worktrees` on `w`, plus the `write` action on `w` (the fixture's own).
+    fn project_registry() -> Registry {
+        use konoma_plugin::project::{ProjectDecl, ProjectScreen};
+        let mut r = Registry::new();
+        r.register(
+            Arc::new(crate::plugins::test_plugins::ProjectFixture {
+                id: "proj",
+                project: ProjectDecl::new()
+                    .marker(konoma_plugin::project::DetectionMarker::new(
+                        "project.marker",
+                        konoma_plugin::project::MarkerKind::Any,
+                    ))
+                    .screen(ProjectScreen::new("changes", "Changes"))
+                    .screen(ProjectScreen::new("branches", "Branches").key('b'))
+                    .screen(ProjectScreen::new("worktrees", "Worktrees").key('i')),
+                calls: Arc::default(),
+                navigation: None,
+            }),
+            PluginOrigin::User,
+        )
+        .unwrap();
+        r
+    }
+
+    fn proj_tables(entries: &[(&str, &str)]) -> HashMap<String, HashMap<String, String>> {
+        HashMap::from([(
+            "proj".to_string(),
+            entries
+                .iter()
+                .map(|(k, a)| (k.to_string(), a.to_string()))
+                .collect(),
+        )])
+    }
+
+    fn jump_keys(k: &PluginKeys) -> Vec<(String, String, Option<KeyPress>)> {
+        k.jumps_of("proj")
+            .iter()
+            .map(|j| (j.op.clone(), j.screen.clone(), j.key))
+            .collect()
+    }
+
+    /// The key of the jump with this operation name (`None` when it has no key). The jump is looked
+    /// up by name: its place in the list follows the screens' order, and every screen that is
+    /// not pushed has an entry, key or not.
+    #[track_caller]
+    fn jump_key_of(k: &PluginKeys, op: &str) -> Option<KeyPress> {
+        jump_keys(k)
+            .into_iter()
+            .find(|(name, _, _)| name == op)
+            .unwrap_or_else(|| panic!("no jump named {op}"))
+            .2
+    }
+
+    #[test]
+    fn the_declared_screen_keys_are_the_default_jumps() {
+        let k = PluginKeys::build(&project_registry(), &mut proj_tables(&[]));
+        assert_eq!(
+            jump_keys(&k),
+            vec![
+                // Every screen that is not pushed has a jump; one without a declared key has none.
+                ("goto_changes".to_string(), "changes".to_string(), None),
+                (
+                    "goto_branches".to_string(),
+                    "branches".to_string(),
+                    Some(KeyPress::ch('b'))
+                ),
+                (
+                    "goto_worktrees".to_string(),
+                    "worktrees".to_string(),
+                    Some(KeyPress::ch('i'))
+                ),
+            ]
+        );
+        assert!(k.notes().is_empty(), "{:?}", k.notes());
+        assert!(
+            k.jumps_of("hexdump").is_empty() && k.jumps_of("nobody").is_empty(),
+            "a plugin without a project has no jumps"
+        );
+    }
+
+    #[test]
+    fn a_rebound_jump_is_what_jumps_of_returns_and_the_old_key_is_gone() {
+        let k = PluginKeys::build(
+            &project_registry(),
+            &mut proj_tables(&[("B", "goto_branches")]),
+        );
+        assert_eq!(jump_key_of(&k, "goto_branches"), Some(KeyPress::ch('B')));
+        assert_eq!(jump_key_of(&k, "goto_worktrees"), Some(KeyPress::ch('i')));
+        assert!(k.notes().is_empty(), "{:?}", k.notes());
+        let k = PluginKeys::build(&project_registry(), &mut proj_tables(&[("b", "noop")]));
+        assert_eq!(jump_key_of(&k, "goto_branches"), None, "noop removes it");
+        assert_eq!(jump_key_of(&k, "goto_worktrees"), Some(KeyPress::ch('i')));
+    }
+
+    #[test]
+    fn a_jump_entry_is_not_an_unknown_action() {
+        let k = PluginKeys::build(
+            &project_registry(),
+            &mut proj_tables(&[("B", "goto_branches"), ("I", "goto_worktrees")]),
+        );
+        assert!(k.notes().is_empty(), "{:?}", k.notes());
+        assert!(k.report(crate::i18n::Lang::En).is_empty());
+    }
+
+    #[test]
+    fn a_refused_jump_key_is_a_bad_key_note_in_both_languages_and_the_default_stays() {
+        for key in ["j", "q", "ctrl-x", "enter"] {
+            let k = PluginKeys::build(
+                &project_registry(),
+                &mut proj_tables(&[(key, "goto_branches")]),
+            );
+            assert_eq!(
+                jump_key_of(&k, "goto_branches"),
+                Some(KeyPress::ch('b')),
+                "{key}"
+            );
+            assert!(
+                k.notes()
+                    .iter()
+                    .any(|n| matches!(n, PluginNote::BadKey { plugin, key: bad, .. }
+                        if plugin == "proj" && bad == key)),
+                "{key}: {:?}",
+                k.notes()
+            );
+            let en = k.report(crate::i18n::Lang::En);
+            assert_eq!(en.len(), 1, "{key}: {en:?}");
+            assert!(
+                en[0].contains("[keys.proj]") && en[0].contains(key),
+                "{en:?}"
+            );
+            let ja = k.report(crate::i18n::Lang::Jp);
+            assert_eq!(ja.len(), 1, "{key}: {ja:?}");
+            assert_ne!(en, ja, "{key}: the Japanese text is its own");
+        }
     }
 }

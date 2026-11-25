@@ -492,7 +492,11 @@ impl App {
     /// (a parsed spreadsheet's sheet can hold hundreds of MB) and the converted Word document are
     /// App-level state, so whenever the preview is not theirs (a git diff, the tree, a diagram,
     /// another file) they are released here, instead of each caller remembering to reset them.
+    ///
+    /// It also drops the tab's pending resolution: that belongs to the file preview being replaced
+    /// (the one that is left, or the next one's opener arms its own after this call).
     pub(super) fn set_preview_kind(&mut self, kind: Option<PreviewKind>) {
+        self.tab.pending = None;
         // The document (a Markdown file, a converted Word document or presentation): App-level,
         // only while the kind is one of the document plugins'.
         if !kind.as_ref().is_some_and(PreviewKind::is_document_kind) {

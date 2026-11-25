@@ -13918,11 +13918,11 @@ L0055 style=fg=-,bg=-,mod=- align=-
 L0056 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "このディレクトリが git リポジトリ内なら: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "p"
-  s02 fg=-,bg=-,mod=- " で変更ハブ（stage/unstage/コミット）、"
+  s02 fg=-,bg=-,mod=- " でプロジェクトの画面（変更から開く。stage/unstage/コミット）、"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=-,bg=-,mod=- "変更ファイル上の "
   s05 fg=white,bg=rgb(43,48,59),mod=- "d"
-  s06 fg=-,bg=-,mod=- " で全画面 diff、ハブ内の "
+  s06 fg=-,bg=-,mod=- " で全画面 diff、その画面内の "
   s07 fg=white,bg=rgb(43,48,59),mod=- "Tab"
   s08 fg=-,bg=-,mod=- " で log・コミットグラフへ。"
   s09 fg=-,bg=-,mod=- " "
@@ -14113,8 +14113,8 @@ L0095 style=fg=-,bg=-,mod=- align=-
   t00 state=' ' state_at=2381
   t01 state=' ' state_at=2420
   t02 state=' ' state_at=2490
-  t03 state=' ' state_at=6759
-  t04 state=' ' state_at=7173
+  t03 state=' ' state_at=6801
+  t04 state=' ' state_at=7215
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-チュートリアル--触りながら覚える"
@@ -14140,8 +14140,8 @@ L0095 style=fg=-,bg=-,mod=- align=-
   m09 line=0033 kind=Task{state=' ',state_at=Some(2420)}
   m10 line=0034 kind=Task{state=' ',state_at=Some(2490)}
   m11 line=0072 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
-  m12 line=0085 kind=Task{state=' ',state_at=Some(6759)}
-  m13 line=0095 kind=Task{state=' ',state_at=Some(7173)}
+  m12 line=0085 kind=Task{state=' ',state_at=Some(6801)}
+  m13 line=0095 kind=Task{state=' ',state_at=Some(7215)}
 
 === samples: tutorial.md ===
 -- LINES (96) --
@@ -14423,13 +14423,13 @@ L0055 style=fg=-,bg=-,mod=- align=-
 L0056 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "If this directory is inside a git repository: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "p"
-  s02 fg=-,bg=-,mod=- " opens the changes hub"
+  s02 fg=-,bg=-,mod=- " opens the project screens, on the changes"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=-,bg=-,mod=- "(stage/unstage/commit), "
   s05 fg=white,bg=rgb(43,48,59),mod=- "d"
   s06 fg=-,bg=-,mod=- " on a changed file shows its full-screen diff,"
   s07 fg=-,bg=-,mod=- " "
-  s08 fg=-,bg=-,mod=- "and inside the hub "
+  s08 fg=-,bg=-,mod=- "and on those screens "
   s09 fg=white,bg=rgb(43,48,59),mod=- "Tab"
   s10 fg=-,bg=-,mod=- " walks on to the log and the commit graph. Modified files"
   s11 fg=-,bg=-,mod=- " "
@@ -14635,8 +14635,8 @@ L0095 style=fg=-,bg=-,mod=- align=-
   t00 state=' ' state_at=1896
   t01 state=' ' state_at=1926
   t02 state=' ' state_at=1992
-  t03 state=' ' state_at=5534
-  t04 state=' ' state_at=5853
+  t03 state=' ' state_at=5556
+  t04 state=' ' state_at=5875
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-tutorial--learn-by-doing"
@@ -14662,8 +14662,8 @@ L0095 style=fg=-,bg=-,mod=- align=-
   m09 line=0033 kind=Task{state=' ',state_at=Some(1926)}
   m10 line=0034 kind=Task{state=' ',state_at=Some(1992)}
   m11 line=0072 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
-  m12 line=0085 kind=Task{state=' ',state_at=Some(5534)}
-  m13 line=0095 kind=Task{state=' ',state_at=Some(5853)}
+  m12 line=0085 kind=Task{state=' ',state_at=Some(5556)}
+  m13 line=0095 kind=Task{state=' ',state_at=Some(5875)}
 
 === task_corpus: a details nested inside an alert nested inside a closed details hides everything ===
 -- LINES (2) --

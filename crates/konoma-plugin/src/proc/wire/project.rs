@@ -41,7 +41,7 @@ pub fn outcome_protocol(o: &WOutcome) -> u32 {
 }
 pub fn view_protocol(v: &WView) -> u32 {
     if matches!(v, WView::ListDecorated { .. })
-        || matches!(v, WView::List(rows) if rows.iter().any(|r| !r.selectable || r.marked || r.initial_selection || r.filter_fallback || !r.value.is_empty()))
+        || matches!(v, WView::List(rows) if rows.iter().any(|r| !r.selectable || r.marked || r.initial_selection || r.filter_fallback || r.counted.is_some() || !r.value.is_empty()))
     {
         2
     } else {
@@ -96,6 +96,12 @@ pub struct WProjectScreen {
     pub checks: bool,
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub pushed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_footer: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_label: Option<WTr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_tab_footer: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +210,9 @@ pub fn project_screen_to_wire(screen: &ProjectScreen) -> WProjectScreen {
         marks: screen.marks,
         checks: screen.checks,
         pushed: screen.pushed,
+        jump_footer: screen.jump_hint.as_ref().map(|(p, _)| *p),
+        jump_label: screen.jump_hint.as_ref().map(|(_, l)| tr_to_wire(l)),
+        new_tab_footer: screen.new_tab_hint,
     }
 }
 
@@ -219,6 +228,11 @@ pub fn project_screen_from_wire(screen: WProjectScreen) -> ProjectScreen {
         marks: screen.marks,
         checks: screen.checks,
         pushed: screen.pushed,
+        jump_hint: screen
+            .jump_footer
+            .zip(screen.jump_label)
+            .map(|(p, l)| (p, tr_from_wire(l))),
+        new_tab_hint: screen.new_tab_footer,
     }
 }
 

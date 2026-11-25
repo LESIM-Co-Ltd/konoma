@@ -5,6 +5,9 @@
 
 use std::path::PathBuf;
 
+pub mod frozen_frame;
+pub mod top_edge;
+
 /// Owning guard for a path returned by [`unique_tmp`]: removes it (recursively, if it turned out to
 /// be a directory; as a single file otherwise) when dropped, so a fixture can never outlive the test
 /// that created it. Derefs to `Path`, so the overwhelming majority of call sites (`.join(...)`,
@@ -60,9 +63,8 @@ impl TmpDir {
     /// same name would make inherent-method lookup pick this by-value, `TmpDir`-returning version
     /// at *every* `some_tmp_dir.canonicalize()` call site in the whole crate — including the ~280
     /// that rely on the borrowing `Path` version and never meant to consume the guard.
-    // Its only two call sites (`app::tests::git_repo_with_one_change`, `git_view::tests::
-    // sandbox_with_worktree`) are both `#[cfg(feature = "git")]`, so this is unused — not
-    // unreachable — on a no-`git` test build.
+    // Its call sites (`app::tests::git_repo_with_one_change` and the VCS e2e fixtures) are
+    // `#[cfg(feature = "git")]`, so this is unused — not unreachable — on a no-`git` test build.
     pub fn into_canonical(self) -> std::io::Result<TmpDir> {
         let canon = self.path.canonicalize()?;
         std::mem::forget(self);
@@ -153,6 +155,27 @@ pub fn unique_tmp(prefix: &str) -> TmpDir {
     let n = N.fetch_add(1, Ordering::Relaxed);
     TmpDir {
         path: std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id())),
+    }
+}
+
+/// Restores the unix mode 0o755 on `path` when dropped, a panic included, so a temp directory
+/// that a test made unreadable can still be deleted. It does not set a mode: the test does that
+/// itself, after creating the guard.
+#[cfg(unix)]
+pub struct RestoreMode(PathBuf);
+
+#[cfg(unix)]
+impl RestoreMode {
+    pub fn new(path: &std::path::Path) -> Self {
+        Self(path.to_path_buf())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RestoreMode {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
     }
 }
 
@@ -437,7 +460,21 @@ pub fn run_program_without_terminal(
     args: &[&std::ffi::OsStr],
     home: &std::path::Path,
 ) -> std::process::Output {
-    std::process::Command::new(exe)
+    run_program_without_terminal_with_cwd(exe, args, home, None)
+}
+
+/// Like [`run_program_without_terminal`], with an optional child working directory.
+pub fn run_program_without_terminal_with_cwd(
+    exe: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    home: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+) -> std::process::Output {
+    let mut command = std::process::Command::new(exe);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command
         .args(args)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("xdg"))
@@ -540,6 +577,20 @@ impl ratatui::backend::Backend for TermScreen {
     }
     fn clear_region(&mut self, c: ratatui::backend::ClearType) -> Result<(), Self::Error> {
         self.0.clear_region(c)
+    }
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.0.scroll_region_up(region, line_count)
+    }
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.0.scroll_region_down(region, line_count)
     }
     fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
         self.0.size()

@@ -467,9 +467,9 @@ impl App {
 
     /// The file branch of following a link, also used by a plugin's OpenFile outcome.
     pub(super) fn open_file_at(&mut self, path: &Path, line: Option<usize>) {
-        self.enter_preview(path);
-        if let Some(line) = line {
-            self.preview_goto_line(line);
+        match line {
+            Some(line) => self.enter_preview_landing(path, super::Landing::GotoLine(line)),
+            None => self.enter_preview(path),
         }
     }
 

@@ -1,0 +1,77 @@
+# frozen vcs frames: e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints
+case lang=en
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+row 2 T|  alpha                                                                                                                                                       |
+row 2 S|a2b5c151|
+row 3 T|  日 本 語                                                                                                                                                       |
+row 3 S|d2c156|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case lang=ja
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Green	Reset	NONE
+row 2 T|  alpha                                                                                                                                                       |
+row 2 S|a2b5c151|
+row 3 T|  日 本 語                                                                                                                                                       |
+row 3 S|d2c156|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|

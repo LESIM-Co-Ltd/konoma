@@ -8,6 +8,78 @@ use konoma_plugin::*;
 
 pub const CHILD_ENV: &str = "KP_PROC_CHILD";
 
+#[cfg(feature = "app")]
+pub fn projects() -> std::process::ExitCode {
+    konoma_plugin::proc::cli_main_projects(
+        vec![
+            Box::new(ProjectPlugin("git")),
+            Box::new(ProjectPlugin("jj")),
+        ],
+        vec![std::sync::Arc::new(SecondPlugin)],
+        std::sync::Arc::new(ProjectServices),
+    )
+}
+
+#[cfg(feature = "app")]
+struct ProjectPlugin(&'static str);
+
+#[cfg(feature = "app")]
+impl Plugin for ProjectPlugin {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(self.0, "1.0.0").project(
+            ProjectDecl::new()
+                .marker(DetectionMarker::new("project.marker", MarkerKind::File))
+                .screen(ProjectScreen::new("items", "Items")),
+        )
+    }
+
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        if let Input::Project { root, .. } = input {
+            std::fs::write(root.join(format!("{}.opened", self.0)), "opened")
+                .map_err(|e| Failure::external(e.to_string()))?;
+        }
+        Ok(Box::new(ChildSession { mark: None }))
+    }
+}
+
+#[cfg(feature = "app")]
+struct ProjectServices;
+
+#[cfg(feature = "app")]
+impl konoma_plugin::app::project::ProjectServices for ProjectServices {
+    fn inspect(
+        &self,
+        project: &konoma_plugin::host::project::MatchedProject,
+        _: &konoma_plugin::app::project::ProjectSettings,
+    ) -> Result<konoma_plugin::app::project::ProjectServiceInfo, Failure> {
+        use konoma_plugin::app::project::{ProjectBackend, ProjectServiceInfo};
+        Ok(ProjectServiceInfo {
+            workdir: project.root.clone(),
+            backend: ProjectBackend::Git,
+        })
+    }
+    fn file_diff(
+        &self,
+        _: &konoma_plugin::app::project::ProjectServiceInfo,
+        _: &std::path::Path,
+    ) -> Vec<konoma_vcs_core::git::DiffLine> {
+        vec![]
+    }
+    fn changed_files(
+        &self,
+        _: &konoma_plugin::app::project::ProjectServiceInfo,
+    ) -> Vec<konoma_vcs_core::git::ChangeEntry> {
+        vec![]
+    }
+    fn base_contents(
+        &self,
+        _: &konoma_plugin::app::project::ProjectServiceInfo,
+        _: &std::path::Path,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+}
+
 pub struct ChildPlugin;
 
 impl Plugin for ChildPlugin {

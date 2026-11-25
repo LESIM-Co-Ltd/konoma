@@ -851,6 +851,12 @@ impl OverlayMoved {
     pub fn take_moved(&mut self) -> bool {
         std::mem::take(&mut self.moved)
     }
+
+    /// The completed frame's signature, exposed only for adapter regression tests.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn last_signature_for_test(&self) -> Option<u64> {
+        self.last
+    }
 }
 
 /// Most decoded pixels the inline-image cache keeps resident across all pictures of a document, in
@@ -1376,6 +1382,25 @@ impl InlineImageCache {
         EncodeApplied::Applied
     }
 
+    /// The screen that drew these pictures is left (konoma's `leave_tab_view`, the standalone
+    /// program's diff screen leaving the front): drop every entry that animates or may yet
+    /// animate. An entry that holds frames keeps the run loop's animation timer running
+    /// ([`Self::advance_gifs_if_due`]), so it goes: an entry with two frames or more, and an entry
+    /// whose decode answer is still owed (the first decode, or a rebuild of pixels the cache
+    /// dropped), whose answer was asked for by the screen that is left and may bring the frames of
+    /// a GIF. The entry is what a decode answers to (`MdImgEntry::request`), so with it gone the
+    /// answer is stale when it lands ([`Self::file_decoded`] drops a result whose entry is
+    /// missing). A still picture that has its pixels stays: it costs no work while it is not
+    /// drawn. The kitty ids stay with their keys (they outlive entries by design). The screen that
+    /// shows the pictures again decodes what it draws and plays an animation from its first frame.
+    pub fn stop_animations(&mut self) {
+        self.cache.retain(|_, entry| {
+            let decode_owed =
+                (entry.decoded.is_none() && !entry.failed && !entry.evicted) || entry.rebuilding;
+            entry.frames.len() < 2 && !decode_owed
+        });
+    }
+
     /// Drive every animated inline GIF (the per-entry analog of the full-screen `GifPlayer`). Each
     /// cache entry with at least two frames advances independently once its current frame's
     /// display time has elapsed. Advancing swaps `decoded` to the new frame and marks every encoded
@@ -1385,7 +1410,11 @@ impl InlineImageCache {
     /// therefore costs only an index bump, never a re-encode. Returns true if any entry advanced
     /// (the caller re-renders). Whether to tick at all (the host's mode) is the caller's call.
     pub fn advance_gifs_if_due(&mut self) -> bool {
-        let now = std::time::Instant::now();
+        self.advance_gifs_at(std::time::Instant::now())
+    }
+
+    /// Advance with the caller's animation clock; production uses `Instant::now`.
+    pub fn advance_gifs_at(&mut self, now: std::time::Instant) -> bool {
         let mut advanced = false;
         for entry in self.cache.values_mut() {
             if entry.frames.len() < 2 {
@@ -1397,7 +1426,7 @@ impl InlineImageCache {
                 continue;
             };
             let delay = entry.frames[entry.idx].1;
-            if now.duration_since(shown_at) < delay {
+            if now.saturating_duration_since(shown_at) < delay {
                 continue;
             }
             entry.idx = (entry.idx + 1) % entry.frames.len();
@@ -1418,6 +1447,10 @@ impl InlineImageCache {
     /// timeout), clamped to 10-100 ms. `None` when nothing animates. Whether to tick at all (the
     /// host's mode) is the caller's call, as for [`Self::advance_gifs_if_due`].
     pub fn gif_poll_timeout(&self) -> Option<std::time::Duration> {
+        self.gif_poll_timeout_at(std::time::Instant::now())
+    }
+
+    pub fn gif_poll_timeout_at(&self, now: std::time::Instant) -> Option<std::time::Duration> {
         use std::time::Duration;
         let mut min: Option<Duration> = None;
         for entry in self.cache.values() {
@@ -1428,7 +1461,7 @@ impl InlineImageCache {
                 None => Duration::ZERO, // not timed yet: run the next tick right away to start timing
                 Some(t) => entry.frames[entry.idx]
                     .1
-                    .checked_sub(t.elapsed())
+                    .checked_sub(now.saturating_duration_since(t))
                     .unwrap_or(Duration::ZERO),
             };
             min = Some(min.map_or(remaining, |m| m.min(remaining)));

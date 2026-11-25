@@ -232,7 +232,13 @@ fn e2e_project_confirmation_status_is_generated_from_declared_choices() {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        assert_eq!(text, crate::i18n::tr(lang, crate::i18n::Msg::StDeleteForce));
+        assert_eq!(
+            text,
+            match lang {
+                Lang::En => "y:delete(-d)  !:force(-D)  n/Esc:cancel",
+                Lang::Jp => "y:削除(-d)  !:強制(-D)  n/Esc:取消",
+            }
+        );
     }
 }
 use crate::app::project_screens::{ProjectDialog, ProjectPrompt};
@@ -551,7 +557,7 @@ fn e2e_project_text_keeps_choose_line_ja() {
 }
 
 #[cfg(feature = "git")]
-fn cancel_matches_legacy(name: &str, key: KeyCode, lang: Lang) {
+fn cancel_leaves_the_file_alone(name: &str, key: KeyCode, lang: Lang) {
     let mut f = fixture(name, false, 1, None, None, None);
     f.sim.app.lang = lang;
     let root = f.sim.app.tab.root.clone();
@@ -591,32 +597,10 @@ fn cancel_matches_legacy(name: &str, key: KeyCode, lang: Lang) {
     std::fs::write(root.join("file.txt"), "modified\n").unwrap();
     let statuses = || git(&["status", "--porcelain=v1"]);
     let before = statuses();
-    let mut cfg = Config::default();
-    cfg.ui.lang = match lang {
-        Lang::En => "en",
-        Lang::Jp => "ja",
-    }
-    .into();
-    let mut old = Sim::with_config_sized(&root, cfg, 160, 24);
-    old.key('p');
-    assert!(old.app.is_git_view());
-    let selected = old
-        .app
-        .git_view_entries()
-        .iter()
-        .position(|entry| entry.path == root.join("file.txt"))
-        .expect("modified file in legacy Git view");
-    for _ in 0..selected {
-        old.key('j');
-    }
-    old.key('x');
-    assert!(old.app.dialog_is_confirm());
     confirmation_stage(&mut f, 0);
-    old.press(key, KeyModifiers::NONE);
     press(&mut f, key);
-    assert!(!old.app.is_dialog());
+    assert!(!f.sim.app.is_dialog());
     assert!(f.sim.app.project_dialog.is_none());
-    assert_eq!(f.sim.app.flash, old.app.flash);
     assert_eq!(
         f.sim.app.flash.as_deref(),
         Some(match lang {
@@ -637,7 +621,7 @@ macro_rules! legacy_cancellation {
         #[cfg(feature = "git")]
         #[test]
         fn $name() {
-            cancel_matches_legacy(stringify!($name), $key, $lang);
+            cancel_leaves_the_file_alone(stringify!($name), $key, $lang);
         }
     };
 }

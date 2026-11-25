@@ -1,0 +1,1569 @@
+# frozen vcs frames: e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy
+case lang=en w=80 worktree=linked title
+region x=0..23 y=0..1
+style a	Reset	Reset	NONE
+row 0 T|日 本 語  ← main  ~/linked|
+row 0 S|a23|
+case lang=en w=80 worktree=linked diff
+region x=0..78 y=2..16
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style d	DarkGray	Rgb(58, 24, 26)	NONE
+style e	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style f	Reset	Reset	NONE
+style g	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style h	DarkGray	Rgb(20, 48, 28)	NONE
+style i	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|┌─ file.txt ─────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b10a66|
+row 3 T|▌   1      base                                                               |
+row 3 S|c1d10e4f63|
+row 4 T|▌        1 line 0 日 本 語  long long long long long long long long long long lon|
+row 4 S|g1h10i8f1i1f1i1f1i54|
+row 5 T|▌        2 line 1 日 本 語  long long long long long long long long long long lon|
+row 5 S|g1h10i8f1i1f1i1f1i54|
+row 6 T|▌        3 line 2 日 本 語  long long long long long long long long long long lon|
+row 6 S|g1h10i8f1i1f1i1f1i54|
+row 7 T|▌        4 line 3 日 本 語  long long long long long long long long long long lon|
+row 7 S|g1h10i8f1i1f1i1f1i54|
+row 8 T|▌        5 line 4 日 本 語  long long long long long long long long long long lon|
+row 8 S|g1h10i8f1i1f1i1f1i54|
+row 9 T|▌        6 line 5 日 本 語  long long long long long long long long long long lon|
+row 9 S|g1h10i8f1i1f1i1f1i54|
+row 10 T|▌        7 line 6 日 本 語  long long long long long long long long long long lon|
+row 10 S|g1h10i8f1i1f1i1f1i54|
+row 11 T|▌        8 line 7 日 本 語  long long long long long long long long long long lon|
+row 11 S|g1h10i8f1i1f1i1f1i54|
+row 12 T|▌        9 line 8 日 本 語  long long long long long long long long long long lon|
+row 12 S|g1h10i8f1i1f1i1f1i54|
+row 13 T|▌       10 line 9 日 本 語  long long long long long long long long long long lon|
+row 13 S|g1h10i8f1i1f1i1f1i54|
+row 14 T|▌       11 line 10 日 本 語  long long long long long long long long long long lo|
+row 14 S|g1h10i9f1i1f1i1f1i53|
+row 15 T|▌       12 line 11 日 本 語  long long long long long long long long long long lo|
+row 15 S|g1h10i9f1i1f1i1f1i53|
+case lang=en w=80 worktree=linked diff key=j
+region x=0..78 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Reset	NONE
+style e	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style f	DarkGray	Rgb(20, 48, 28)	NONE
+style g	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|▌   1      base                                                               |
+row 2 S|a1b10c4d63|
+row 3 T|▌        1 line 0 日 本 語  long long long long long long long long long long lon|
+row 3 S|e1f10g8d1g1d1g1d1g54|
+row 4 T|▌        2 line 1 日 本 語  long long long long long long long long long long lon|
+row 4 S|e1f10g8d1g1d1g1d1g54|
+row 5 T|▌        3 line 2 日 本 語  long long long long long long long long long long lon|
+row 5 S|e1f10g8d1g1d1g1d1g54|
+row 6 T|▌        4 line 3 日 本 語  long long long long long long long long long long lon|
+row 6 S|e1f10g8d1g1d1g1d1g54|
+row 7 T|▌        5 line 4 日 本 語  long long long long long long long long long long lon|
+row 7 S|e1f10g8d1g1d1g1d1g54|
+row 8 T|▌        6 line 5 日 本 語  long long long long long long long long long long lon|
+row 8 S|e1f10g8d1g1d1g1d1g54|
+row 9 T|▌        7 line 6 日 本 語  long long long long long long long long long long lon|
+row 9 S|e1f10g8d1g1d1g1d1g54|
+row 10 T|▌        8 line 7 日 本 語  long long long long long long long long long long lon|
+row 10 S|e1f10g8d1g1d1g1d1g54|
+row 11 T|▌        9 line 8 日 本 語  long long long long long long long long long long lon|
+row 11 S|e1f10g8d1g1d1g1d1g54|
+row 12 T|▌       10 line 9 日 本 語  long long long long long long long long long long lon|
+row 12 S|e1f10g8d1g1d1g1d1g54|
+row 13 T|▌       11 line 10 日 本 語  long long long long long long long long long long lo|
+row 13 S|e1f10g9d1g1d1g1d1g53|
+row 14 T|▌       12 line 11 日 本 語  long long long long long long long long long long lo|
+row 14 S|e1f10g9d1g1d1g1d1g53|
+row 15 T|▌       13 line 12 日 本 語  long long long long long long long long long long lo|
+row 15 S|e1f10g9d1g1d1g1d1g53|
+case lang=en w=80 worktree=linked diff key=l
+region x=0..78 y=2..16
+style a	DarkGray	Rgb(58, 24, 26)	NONE
+style b	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style c	Reset	Reset	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|1      base                                                                   |
+row 2 S|a7b4c67|
+row 3 T|     1 line 0 日 本 語  long long long long long long long long long long long lo|
+row 3 S|d7e8c1e1c1e1c1e58|
+row 4 T|     2 line 1 日 本 語  long long long long long long long long long long long lo|
+row 4 S|d7e8c1e1c1e1c1e58|
+row 5 T|     3 line 2 日 本 語  long long long long long long long long long long long lo|
+row 5 S|d7e8c1e1c1e1c1e58|
+row 6 T|     4 line 3 日 本 語  long long long long long long long long long long long lo|
+row 6 S|d7e8c1e1c1e1c1e58|
+row 7 T|     5 line 4 日 本 語  long long long long long long long long long long long lo|
+row 7 S|d7e8c1e1c1e1c1e58|
+row 8 T|     6 line 5 日 本 語  long long long long long long long long long long long lo|
+row 8 S|d7e8c1e1c1e1c1e58|
+row 9 T|     7 line 6 日 本 語  long long long long long long long long long long long lo|
+row 9 S|d7e8c1e1c1e1c1e58|
+row 10 T|     8 line 7 日 本 語  long long long long long long long long long long long lo|
+row 10 S|d7e8c1e1c1e1c1e58|
+row 11 T|     9 line 8 日 本 語  long long long long long long long long long long long lo|
+row 11 S|d7e8c1e1c1e1c1e58|
+row 12 T|    10 line 9 日 本 語  long long long long long long long long long long long lo|
+row 12 S|d7e8c1e1c1e1c1e58|
+row 13 T|    11 line 10 日 本 語  long long long long long long long long long long long l|
+row 13 S|d7e9c1e1c1e1c1e57|
+row 14 T|    12 line 11 日 本 語  long long long long long long long long long long long l|
+row 14 S|d7e9c1e1c1e1c1e57|
+row 15 T|    13 line 12 日 本 語  long long long long long long long long long long long l|
+row 15 S|d7e9c1e1c1e1c1e57|
+case lang=en w=80 worktree=linked diff key=s
+region x=0..78 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Rgb(58, 24, 26)	NONE
+style e	DarkGray	Reset	NONE
+style f	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style g	DarkGray	Rgb(20, 48, 28)	NONE
+style h	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+style i	Reset	Reset	NONE
+row 2 T|▌   1 base                            │▌   1 line 0 日 本 語  long long long long|
+row 2 S|a1b5c4d28e1f1g5h8i1h1i1h1i1h20|
+row 3 T|                                      │▌   2 line 1 日 本 語  long long long long|
+row 3 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 4 T|                                      │▌   3 line 2 日 本 語  long long long long|
+row 4 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 5 T|                                      │▌   4 line 3 日 本 語  long long long long|
+row 5 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 6 T|                                      │▌   5 line 4 日 本 語  long long long long|
+row 6 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 7 T|                                      │▌   6 line 5 日 本 語  long long long long|
+row 7 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 8 T|                                      │▌   7 line 6 日 本 語  long long long long|
+row 8 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 9 T|                                      │▌   8 line 7 日 本 語  long long long long|
+row 9 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 10 T|                                      │▌   9 line 8 日 本 語  long long long long|
+row 10 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 11 T|                                      │▌  10 line 9 日 本 語  long long long long|
+row 11 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 12 T|                                      │▌  11 line 10 日 本 語  long long long lon|
+row 12 S|i38e1f1g5h9i1h1i1h1i1h19|
+row 13 T|                                      │▌  12 line 11 日 本 語  long long long lon|
+row 13 S|i38e1f1g5h9i1h1i1h1i1h19|
+row 14 T|                                      │▌  13 line 12 日 本 語  long long long lon|
+row 14 S|i38e1f1g5h9i1h1i1h1i1h19|
+row 15 T|                                      │▌  14 line 13 日 本 語  long long long lon|
+row 15 S|i38e1f1g5h9i1h1i1h1i1h19|
+case lang=en w=80 worktree=linked back
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Green	Reset	BOLD
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|* main  6270993  ~/main  main                                                 |
+row 2 S|a2b4c17d6c49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|a2c76|
+row 4 T|  日 本 語   9311cbd  ~/linked  locked: fixture lock                             |
+row 4 S|e2f1c1f1c1f1c1f19g22c29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|a2c28d10c38|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case lang=en w=80 worktree=main title
+region x=0..35 y=0..1
+style a	Reset	Reset	NONE
+row 0 T|main  ~/main  (Uncommitted changes)|
+row 0 S|a35|
+case lang=en w=80 worktree=main diff
+region x=0..78 y=2..16
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style d	DarkGray	Rgb(58, 24, 26)	NONE
+style e	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style f	Reset	Reset	NONE
+style g	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style h	DarkGray	Rgb(20, 48, 28)	NONE
+style i	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|┌─ file.txt ─────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b10a66|
+row 3 T|▌   1      base                                                               |
+row 3 S|c1d10e4f63|
+row 4 T|▌        1 uncommitted 0 long long long long long long long long long long lon|
+row 4 S|g1h10i67|
+row 5 T|▌        2 uncommitted 1 long long long long long long long long long long lon|
+row 5 S|g1h10i67|
+row 6 T|▌        3 uncommitted 2 long long long long long long long long long long lon|
+row 6 S|g1h10i67|
+row 7 T|▌        4 uncommitted 3 long long long long long long long long long long lon|
+row 7 S|g1h10i67|
+row 8 T|▌        5 uncommitted 4 long long long long long long long long long long lon|
+row 8 S|g1h10i67|
+row 9 T|▌        6 uncommitted 5 long long long long long long long long long long lon|
+row 9 S|g1h10i67|
+row 10 T|▌        7 uncommitted 6 long long long long long long long long long long lon|
+row 10 S|g1h10i67|
+row 11 T|▌        8 uncommitted 7 long long long long long long long long long long lon|
+row 11 S|g1h10i67|
+row 12 T|▌        9 uncommitted 8 long long long long long long long long long long lon|
+row 12 S|g1h10i67|
+row 13 T|▌       10 uncommitted 9 long long long long long long long long long long lon|
+row 13 S|g1h10i67|
+row 14 T|▌       11 uncommitted 10 long long long long long long long long long long lo|
+row 14 S|g1h10i67|
+row 15 T|▌       12 uncommitted 11 long long long long long long long long long long lo|
+row 15 S|g1h10i67|
+case lang=en w=80 worktree=main diff key=j
+region x=0..78 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Reset	NONE
+style e	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style f	DarkGray	Rgb(20, 48, 28)	NONE
+style g	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|▌   1      base                                                               |
+row 2 S|a1b10c4d63|
+row 3 T|▌        1 uncommitted 0 long long long long long long long long long long lon|
+row 3 S|e1f10g67|
+row 4 T|▌        2 uncommitted 1 long long long long long long long long long long lon|
+row 4 S|e1f10g67|
+row 5 T|▌        3 uncommitted 2 long long long long long long long long long long lon|
+row 5 S|e1f10g67|
+row 6 T|▌        4 uncommitted 3 long long long long long long long long long long lon|
+row 6 S|e1f10g67|
+row 7 T|▌        5 uncommitted 4 long long long long long long long long long long lon|
+row 7 S|e1f10g67|
+row 8 T|▌        6 uncommitted 5 long long long long long long long long long long lon|
+row 8 S|e1f10g67|
+row 9 T|▌        7 uncommitted 6 long long long long long long long long long long lon|
+row 9 S|e1f10g67|
+row 10 T|▌        8 uncommitted 7 long long long long long long long long long long lon|
+row 10 S|e1f10g67|
+row 11 T|▌        9 uncommitted 8 long long long long long long long long long long lon|
+row 11 S|e1f10g67|
+row 12 T|▌       10 uncommitted 9 long long long long long long long long long long lon|
+row 12 S|e1f10g67|
+row 13 T|▌       11 uncommitted 10 long long long long long long long long long long lo|
+row 13 S|e1f10g67|
+row 14 T|▌       12 uncommitted 11 long long long long long long long long long long lo|
+row 14 S|e1f10g67|
+row 15 T|▌       13 uncommitted 12 long long long long long long long long long long lo|
+row 15 S|e1f10g67|
+case lang=en w=80 worktree=main diff key=l
+region x=0..78 y=2..16
+style a	DarkGray	Rgb(58, 24, 26)	NONE
+style b	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style c	Reset	Reset	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|1      base                                                                   |
+row 2 S|a7b4c67|
+row 3 T|     1 uncommitted 0 long long long long long long long long long long long lo|
+row 3 S|d7e71|
+row 4 T|     2 uncommitted 1 long long long long long long long long long long long lo|
+row 4 S|d7e71|
+row 5 T|     3 uncommitted 2 long long long long long long long long long long long lo|
+row 5 S|d7e71|
+row 6 T|     4 uncommitted 3 long long long long long long long long long long long lo|
+row 6 S|d7e71|
+row 7 T|     5 uncommitted 4 long long long long long long long long long long long lo|
+row 7 S|d7e71|
+row 8 T|     6 uncommitted 5 long long long long long long long long long long long lo|
+row 8 S|d7e71|
+row 9 T|     7 uncommitted 6 long long long long long long long long long long long lo|
+row 9 S|d7e71|
+row 10 T|     8 uncommitted 7 long long long long long long long long long long long lo|
+row 10 S|d7e71|
+row 11 T|     9 uncommitted 8 long long long long long long long long long long long lo|
+row 11 S|d7e71|
+row 12 T|    10 uncommitted 9 long long long long long long long long long long long lo|
+row 12 S|d7e71|
+row 13 T|    11 uncommitted 10 long long long long long long long long long long long l|
+row 13 S|d7e71|
+row 14 T|    12 uncommitted 11 long long long long long long long long long long long l|
+row 14 S|d7e71|
+row 15 T|    13 uncommitted 12 long long long long long long long long long long long l|
+row 15 S|d7e71|
+case lang=en w=80 worktree=main diff key=s
+region x=0..78 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Rgb(58, 24, 26)	NONE
+style e	DarkGray	Reset	NONE
+style f	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style g	DarkGray	Rgb(20, 48, 28)	NONE
+style h	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+style i	Reset	Reset	NONE
+row 2 T|▌   1 base                            │▌   1 uncommitted 0 long long long long|
+row 2 S|a1b5c4d28e1f1g5h33|
+row 3 T|                                      │▌   2 uncommitted 1 long long long long|
+row 3 S|i38e1f1g5h33|
+row 4 T|                                      │▌   3 uncommitted 2 long long long long|
+row 4 S|i38e1f1g5h33|
+row 5 T|                                      │▌   4 uncommitted 3 long long long long|
+row 5 S|i38e1f1g5h33|
+row 6 T|                                      │▌   5 uncommitted 4 long long long long|
+row 6 S|i38e1f1g5h33|
+row 7 T|                                      │▌   6 uncommitted 5 long long long long|
+row 7 S|i38e1f1g5h33|
+row 8 T|                                      │▌   7 uncommitted 6 long long long long|
+row 8 S|i38e1f1g5h33|
+row 9 T|                                      │▌   8 uncommitted 7 long long long long|
+row 9 S|i38e1f1g5h33|
+row 10 T|                                      │▌   9 uncommitted 8 long long long long|
+row 10 S|i38e1f1g5h33|
+row 11 T|                                      │▌  10 uncommitted 9 long long long long|
+row 11 S|i38e1f1g5h33|
+row 12 T|                                      │▌  11 uncommitted 10 long long long lon|
+row 12 S|i38e1f1g5h33|
+row 13 T|                                      │▌  12 uncommitted 11 long long long lon|
+row 13 S|i38e1f1g5h33|
+row 14 T|                                      │▌  13 uncommitted 12 long long long lon|
+row 14 S|i38e1f1g5h33|
+row 15 T|                                      │▌  14 uncommitted 13 long long long lon|
+row 15 S|i38e1f1g5h33|
+case lang=en w=80 worktree=main back
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	REVERSED
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	DIM
+row 2 T|* main  6270993  ~/main  main                                                 |
+row 2 S|a2b4c17d6e49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|f2e76|
+row 4 T|  日 本 語   9311cbd  ~/linked  locked: fixture lock                             |
+row 4 S|f2e25g22e29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|f2e28g10e38|
+row 6 T|                                                                              |
+row 6 S|e78|
+row 7 T|                                                                              |
+row 7 S|e78|
+row 8 T|                                                                              |
+row 8 S|e78|
+row 9 T|                                                                              |
+row 9 S|e78|
+row 10 T|                                                                              |
+row 10 S|e78|
+row 11 T|                                                                              |
+row 11 S|e78|
+row 12 T|                                                                              |
+row 12 S|e78|
+row 13 T|                                                                              |
+row 13 S|e78|
+row 14 T|                                                                              |
+row 14 S|e78|
+row 15 T|                                                                              |
+row 15 S|e78|
+row 16 T|                                                                              |
+row 16 S|e78|
+row 17 T|                                                                              |
+row 17 S|e78|
+case lang=en w=160 worktree=linked title
+region x=0..23 y=0..1
+style a	Reset	Reset	NONE
+row 0 T|日 本 語  ← main  ~/linked|
+row 0 S|a23|
+case lang=en w=160 worktree=linked diff
+region x=0..158 y=2..16
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style d	DarkGray	Rgb(58, 24, 26)	NONE
+style e	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style f	Reset	Reset	NONE
+style g	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style h	DarkGray	Rgb(20, 48, 28)	NONE
+style i	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|┌─ file.txt ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b10a146|
+row 3 T|▌   1      base                                                                                                                                               |
+row 3 S|c1d10e4f143|
+row 4 T|▌        1 line 0 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 4 S|g1h10i8f1i1f1i1f1i134|
+row 5 T|▌        2 line 1 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 5 S|g1h10i8f1i1f1i1f1i134|
+row 6 T|▌        3 line 2 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 6 S|g1h10i8f1i1f1i1f1i134|
+row 7 T|▌        4 line 3 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 7 S|g1h10i8f1i1f1i1f1i134|
+row 8 T|▌        5 line 4 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 8 S|g1h10i8f1i1f1i1f1i134|
+row 9 T|▌        6 line 5 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 9 S|g1h10i8f1i1f1i1f1i134|
+row 10 T|▌        7 line 6 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 10 S|g1h10i8f1i1f1i1f1i134|
+row 11 T|▌        8 line 7 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 11 S|g1h10i8f1i1f1i1f1i134|
+row 12 T|▌        9 line 8 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 12 S|g1h10i8f1i1f1i1f1i134|
+row 13 T|▌       10 line 9 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 13 S|g1h10i8f1i1f1i1f1i134|
+row 14 T|▌       11 line 10 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 14 S|g1h10i9f1i1f1i1f1i133|
+row 15 T|▌       12 line 11 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 15 S|g1h10i9f1i1f1i1f1i133|
+case lang=en w=160 worktree=linked diff key=j
+region x=0..158 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Reset	NONE
+style e	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style f	DarkGray	Rgb(20, 48, 28)	NONE
+style g	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|▌   1      base                                                                                                                                               |
+row 2 S|a1b10c4d143|
+row 3 T|▌        1 line 0 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 3 S|e1f10g8d1g1d1g1d1g134|
+row 4 T|▌        2 line 1 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 4 S|e1f10g8d1g1d1g1d1g134|
+row 5 T|▌        3 line 2 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 5 S|e1f10g8d1g1d1g1d1g134|
+row 6 T|▌        4 line 3 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 6 S|e1f10g8d1g1d1g1d1g134|
+row 7 T|▌        5 line 4 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 7 S|e1f10g8d1g1d1g1d1g134|
+row 8 T|▌        6 line 5 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 8 S|e1f10g8d1g1d1g1d1g134|
+row 9 T|▌        7 line 6 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 9 S|e1f10g8d1g1d1g1d1g134|
+row 10 T|▌        8 line 7 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 10 S|e1f10g8d1g1d1g1d1g134|
+row 11 T|▌        9 line 8 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 11 S|e1f10g8d1g1d1g1d1g134|
+row 12 T|▌       10 line 9 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 12 S|e1f10g8d1g1d1g1d1g134|
+row 13 T|▌       11 line 10 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 13 S|e1f10g9d1g1d1g1d1g133|
+row 14 T|▌       12 line 11 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 14 S|e1f10g9d1g1d1g1d1g133|
+row 15 T|▌       13 line 12 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 15 S|e1f10g9d1g1d1g1d1g133|
+case lang=en w=160 worktree=linked diff key=l
+region x=0..158 y=2..16
+style a	DarkGray	Rgb(58, 24, 26)	NONE
+style b	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style c	Reset	Reset	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|1      base                                                                                                                                                   |
+row 2 S|a7b4c147|
+row 3 T|     1 line 0 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 3 S|d7e8c1e1c1e1c1e138|
+row 4 T|     2 line 1 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 4 S|d7e8c1e1c1e1c1e138|
+row 5 T|     3 line 2 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 5 S|d7e8c1e1c1e1c1e138|
+row 6 T|     4 line 3 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 6 S|d7e8c1e1c1e1c1e138|
+row 7 T|     5 line 4 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 7 S|d7e8c1e1c1e1c1e138|
+row 8 T|     6 line 5 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 8 S|d7e8c1e1c1e1c1e138|
+row 9 T|     7 line 6 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 9 S|d7e8c1e1c1e1c1e138|
+row 10 T|     8 line 7 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 10 S|d7e8c1e1c1e1c1e138|
+row 11 T|     9 line 8 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 11 S|d7e8c1e1c1e1c1e138|
+row 12 T|    10 line 9 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 12 S|d7e8c1e1c1e1c1e138|
+row 13 T|    11 line 10 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 13 S|d7e9c1e1c1e1c1e137|
+row 14 T|    12 line 11 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 14 S|d7e9c1e1c1e1c1e137|
+row 15 T|    13 line 12 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 15 S|d7e9c1e1c1e1c1e137|
+case lang=en w=160 worktree=linked diff key=s
+region x=0..158 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Rgb(58, 24, 26)	NONE
+style e	DarkGray	Reset	NONE
+style f	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style g	DarkGray	Rgb(20, 48, 28)	NONE
+style h	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+style i	Reset	Reset	NONE
+row 2 T|▌   1 base                                                                    │▌   1 line 0 日 本 語  long long long long long long long long long long long long|
+row 2 S|a1b5c4d68e1f1g5h8i1h1i1h1i1h60|
+row 3 T|                                                                              │▌   2 line 1 日 本 語  long long long long long long long long long long long long|
+row 3 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 4 T|                                                                              │▌   3 line 2 日 本 語  long long long long long long long long long long long long|
+row 4 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 5 T|                                                                              │▌   4 line 3 日 本 語  long long long long long long long long long long long long|
+row 5 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 6 T|                                                                              │▌   5 line 4 日 本 語  long long long long long long long long long long long long|
+row 6 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 7 T|                                                                              │▌   6 line 5 日 本 語  long long long long long long long long long long long long|
+row 7 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 8 T|                                                                              │▌   7 line 6 日 本 語  long long long long long long long long long long long long|
+row 8 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 9 T|                                                                              │▌   8 line 7 日 本 語  long long long long long long long long long long long long|
+row 9 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 10 T|                                                                              │▌   9 line 8 日 本 語  long long long long long long long long long long long long|
+row 10 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 11 T|                                                                              │▌  10 line 9 日 本 語  long long long long long long long long long long long long|
+row 11 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 12 T|                                                                              │▌  11 line 10 日 本 語  long long long long long long long long long long long lon|
+row 12 S|i78e1f1g5h9i1h1i1h1i1h59|
+row 13 T|                                                                              │▌  12 line 11 日 本 語  long long long long long long long long long long long lon|
+row 13 S|i78e1f1g5h9i1h1i1h1i1h59|
+row 14 T|                                                                              │▌  13 line 12 日 本 語  long long long long long long long long long long long lon|
+row 14 S|i78e1f1g5h9i1h1i1h1i1h59|
+row 15 T|                                                                              │▌  14 line 13 日 本 語  long long long long long long long long long long long lon|
+row 15 S|i78e1f1g5h9i1h1i1h1i1h59|
+case lang=en w=160 worktree=linked back
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Green	Reset	BOLD
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|* main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b4c17d6c129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|a2c156|
+row 4 T|  日 本 語   9311cbd  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|e2f1c1f1c1f1c1f19g22c109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|a2c28d10c118|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case lang=en w=160 worktree=main title
+region x=0..35 y=0..1
+style a	Reset	Reset	NONE
+row 0 T|main  ~/main  (Uncommitted changes)|
+row 0 S|a35|
+case lang=en w=160 worktree=main diff
+region x=0..158 y=2..16
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style d	DarkGray	Rgb(58, 24, 26)	NONE
+style e	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style f	Reset	Reset	NONE
+style g	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style h	DarkGray	Rgb(20, 48, 28)	NONE
+style i	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|┌─ file.txt ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b10a146|
+row 3 T|▌   1      base                                                                                                                                               |
+row 3 S|c1d10e4f143|
+row 4 T|▌        1 uncommitted 0 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 4 S|g1h10i147|
+row 5 T|▌        2 uncommitted 1 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 5 S|g1h10i147|
+row 6 T|▌        3 uncommitted 2 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 6 S|g1h10i147|
+row 7 T|▌        4 uncommitted 3 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 7 S|g1h10i147|
+row 8 T|▌        5 uncommitted 4 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 8 S|g1h10i147|
+row 9 T|▌        6 uncommitted 5 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 9 S|g1h10i147|
+row 10 T|▌        7 uncommitted 6 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 10 S|g1h10i147|
+row 11 T|▌        8 uncommitted 7 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 11 S|g1h10i147|
+row 12 T|▌        9 uncommitted 8 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 12 S|g1h10i147|
+row 13 T|▌       10 uncommitted 9 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 13 S|g1h10i147|
+row 14 T|▌       11 uncommitted 10 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 14 S|g1h10i147|
+row 15 T|▌       12 uncommitted 11 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 15 S|g1h10i147|
+case lang=en w=160 worktree=main diff key=j
+region x=0..158 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Reset	NONE
+style e	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style f	DarkGray	Rgb(20, 48, 28)	NONE
+style g	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|▌   1      base                                                                                                                                               |
+row 2 S|a1b10c4d143|
+row 3 T|▌        1 uncommitted 0 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 3 S|e1f10g147|
+row 4 T|▌        2 uncommitted 1 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 4 S|e1f10g147|
+row 5 T|▌        3 uncommitted 2 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 5 S|e1f10g147|
+row 6 T|▌        4 uncommitted 3 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 6 S|e1f10g147|
+row 7 T|▌        5 uncommitted 4 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 7 S|e1f10g147|
+row 8 T|▌        6 uncommitted 5 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 8 S|e1f10g147|
+row 9 T|▌        7 uncommitted 6 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 9 S|e1f10g147|
+row 10 T|▌        8 uncommitted 7 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 10 S|e1f10g147|
+row 11 T|▌        9 uncommitted 8 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 11 S|e1f10g147|
+row 12 T|▌       10 uncommitted 9 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 12 S|e1f10g147|
+row 13 T|▌       11 uncommitted 10 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 13 S|e1f10g147|
+row 14 T|▌       12 uncommitted 11 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 14 S|e1f10g147|
+row 15 T|▌       13 uncommitted 12 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 15 S|e1f10g147|
+case lang=en w=160 worktree=main diff key=l
+region x=0..158 y=2..16
+style a	DarkGray	Rgb(58, 24, 26)	NONE
+style b	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style c	Reset	Reset	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|1      base                                                                                                                                                   |
+row 2 S|a7b4c147|
+row 3 T|     1 uncommitted 0 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 3 S|d7e151|
+row 4 T|     2 uncommitted 1 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 4 S|d7e151|
+row 5 T|     3 uncommitted 2 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 5 S|d7e151|
+row 6 T|     4 uncommitted 3 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 6 S|d7e151|
+row 7 T|     5 uncommitted 4 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 7 S|d7e151|
+row 8 T|     6 uncommitted 5 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 8 S|d7e151|
+row 9 T|     7 uncommitted 6 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 9 S|d7e151|
+row 10 T|     8 uncommitted 7 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 10 S|d7e151|
+row 11 T|     9 uncommitted 8 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 11 S|d7e151|
+row 12 T|    10 uncommitted 9 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 12 S|d7e151|
+row 13 T|    11 uncommitted 10 long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 13 S|d7e151|
+row 14 T|    12 uncommitted 11 long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 14 S|d7e151|
+row 15 T|    13 uncommitted 12 long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 15 S|d7e151|
+case lang=en w=160 worktree=main diff key=s
+region x=0..158 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Rgb(58, 24, 26)	NONE
+style e	DarkGray	Reset	NONE
+style f	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style g	DarkGray	Rgb(20, 48, 28)	NONE
+style h	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+style i	Reset	Reset	NONE
+row 2 T|▌   1 base                                                                    │▌   1 uncommitted 0 long long long long long long long long long long long long|
+row 2 S|a1b5c4d68e1f1g5h73|
+row 3 T|                                                                              │▌   2 uncommitted 1 long long long long long long long long long long long long|
+row 3 S|i78e1f1g5h73|
+row 4 T|                                                                              │▌   3 uncommitted 2 long long long long long long long long long long long long|
+row 4 S|i78e1f1g5h73|
+row 5 T|                                                                              │▌   4 uncommitted 3 long long long long long long long long long long long long|
+row 5 S|i78e1f1g5h73|
+row 6 T|                                                                              │▌   5 uncommitted 4 long long long long long long long long long long long long|
+row 6 S|i78e1f1g5h73|
+row 7 T|                                                                              │▌   6 uncommitted 5 long long long long long long long long long long long long|
+row 7 S|i78e1f1g5h73|
+row 8 T|                                                                              │▌   7 uncommitted 6 long long long long long long long long long long long long|
+row 8 S|i78e1f1g5h73|
+row 9 T|                                                                              │▌   8 uncommitted 7 long long long long long long long long long long long long|
+row 9 S|i78e1f1g5h73|
+row 10 T|                                                                              │▌   9 uncommitted 8 long long long long long long long long long long long long|
+row 10 S|i78e1f1g5h73|
+row 11 T|                                                                              │▌  10 uncommitted 9 long long long long long long long long long long long long|
+row 11 S|i78e1f1g5h73|
+row 12 T|                                                                              │▌  11 uncommitted 10 long long long long long long long long long long long lon|
+row 12 S|i78e1f1g5h73|
+row 13 T|                                                                              │▌  12 uncommitted 11 long long long long long long long long long long long lon|
+row 13 S|i78e1f1g5h73|
+row 14 T|                                                                              │▌  13 uncommitted 12 long long long long long long long long long long long lon|
+row 14 S|i78e1f1g5h73|
+row 15 T|                                                                              │▌  14 uncommitted 13 long long long long long long long long long long long lon|
+row 15 S|i78e1f1g5h73|
+case lang=en w=160 worktree=main back
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	REVERSED
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	DIM
+row 2 T|* main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b4c17d6e129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|f2e156|
+row 4 T|  日 本 語   9311cbd  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|f2e25g22e109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|f2e28g10e118|
+row 6 T|                                                                                                                                                              |
+row 6 S|e158|
+row 7 T|                                                                                                                                                              |
+row 7 S|e158|
+row 8 T|                                                                                                                                                              |
+row 8 S|e158|
+row 9 T|                                                                                                                                                              |
+row 9 S|e158|
+row 10 T|                                                                                                                                                              |
+row 10 S|e158|
+row 11 T|                                                                                                                                                              |
+row 11 S|e158|
+row 12 T|                                                                                                                                                              |
+row 12 S|e158|
+row 13 T|                                                                                                                                                              |
+row 13 S|e158|
+row 14 T|                                                                                                                                                              |
+row 14 S|e158|
+row 15 T|                                                                                                                                                              |
+row 15 S|e158|
+row 16 T|                                                                                                                                                              |
+row 16 S|e158|
+row 17 T|                                                                                                                                                              |
+row 17 S|e158|
+case lang=ja w=80 worktree=linked title
+region x=0..23 y=0..1
+style a	Reset	Reset	NONE
+row 0 T|日 本 語  ← main  ~/linked|
+row 0 S|a23|
+case lang=ja w=80 worktree=linked diff
+region x=0..78 y=2..16
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style d	DarkGray	Rgb(58, 24, 26)	NONE
+style e	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style f	Reset	Reset	NONE
+style g	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style h	DarkGray	Rgb(20, 48, 28)	NONE
+style i	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|┌─ file.txt ─────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b10a66|
+row 3 T|▌   1      base                                                               |
+row 3 S|c1d10e4f63|
+row 4 T|▌        1 line 0 日 本 語  long long long long long long long long long long lon|
+row 4 S|g1h10i8f1i1f1i1f1i54|
+row 5 T|▌        2 line 1 日 本 語  long long long long long long long long long long lon|
+row 5 S|g1h10i8f1i1f1i1f1i54|
+row 6 T|▌        3 line 2 日 本 語  long long long long long long long long long long lon|
+row 6 S|g1h10i8f1i1f1i1f1i54|
+row 7 T|▌        4 line 3 日 本 語  long long long long long long long long long long lon|
+row 7 S|g1h10i8f1i1f1i1f1i54|
+row 8 T|▌        5 line 4 日 本 語  long long long long long long long long long long lon|
+row 8 S|g1h10i8f1i1f1i1f1i54|
+row 9 T|▌        6 line 5 日 本 語  long long long long long long long long long long lon|
+row 9 S|g1h10i8f1i1f1i1f1i54|
+row 10 T|▌        7 line 6 日 本 語  long long long long long long long long long long lon|
+row 10 S|g1h10i8f1i1f1i1f1i54|
+row 11 T|▌        8 line 7 日 本 語  long long long long long long long long long long lon|
+row 11 S|g1h10i8f1i1f1i1f1i54|
+row 12 T|▌        9 line 8 日 本 語  long long long long long long long long long long lon|
+row 12 S|g1h10i8f1i1f1i1f1i54|
+row 13 T|▌       10 line 9 日 本 語  long long long long long long long long long long lon|
+row 13 S|g1h10i8f1i1f1i1f1i54|
+row 14 T|▌       11 line 10 日 本 語  long long long long long long long long long long lo|
+row 14 S|g1h10i9f1i1f1i1f1i53|
+row 15 T|▌       12 line 11 日 本 語  long long long long long long long long long long lo|
+row 15 S|g1h10i9f1i1f1i1f1i53|
+case lang=ja w=80 worktree=linked diff key=j
+region x=0..78 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Reset	NONE
+style e	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style f	DarkGray	Rgb(20, 48, 28)	NONE
+style g	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|▌   1      base                                                               |
+row 2 S|a1b10c4d63|
+row 3 T|▌        1 line 0 日 本 語  long long long long long long long long long long lon|
+row 3 S|e1f10g8d1g1d1g1d1g54|
+row 4 T|▌        2 line 1 日 本 語  long long long long long long long long long long lon|
+row 4 S|e1f10g8d1g1d1g1d1g54|
+row 5 T|▌        3 line 2 日 本 語  long long long long long long long long long long lon|
+row 5 S|e1f10g8d1g1d1g1d1g54|
+row 6 T|▌        4 line 3 日 本 語  long long long long long long long long long long lon|
+row 6 S|e1f10g8d1g1d1g1d1g54|
+row 7 T|▌        5 line 4 日 本 語  long long long long long long long long long long lon|
+row 7 S|e1f10g8d1g1d1g1d1g54|
+row 8 T|▌        6 line 5 日 本 語  long long long long long long long long long long lon|
+row 8 S|e1f10g8d1g1d1g1d1g54|
+row 9 T|▌        7 line 6 日 本 語  long long long long long long long long long long lon|
+row 9 S|e1f10g8d1g1d1g1d1g54|
+row 10 T|▌        8 line 7 日 本 語  long long long long long long long long long long lon|
+row 10 S|e1f10g8d1g1d1g1d1g54|
+row 11 T|▌        9 line 8 日 本 語  long long long long long long long long long long lon|
+row 11 S|e1f10g8d1g1d1g1d1g54|
+row 12 T|▌       10 line 9 日 本 語  long long long long long long long long long long lon|
+row 12 S|e1f10g8d1g1d1g1d1g54|
+row 13 T|▌       11 line 10 日 本 語  long long long long long long long long long long lo|
+row 13 S|e1f10g9d1g1d1g1d1g53|
+row 14 T|▌       12 line 11 日 本 語  long long long long long long long long long long lo|
+row 14 S|e1f10g9d1g1d1g1d1g53|
+row 15 T|▌       13 line 12 日 本 語  long long long long long long long long long long lo|
+row 15 S|e1f10g9d1g1d1g1d1g53|
+case lang=ja w=80 worktree=linked diff key=l
+region x=0..78 y=2..16
+style a	DarkGray	Rgb(58, 24, 26)	NONE
+style b	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style c	Reset	Reset	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|1      base                                                                   |
+row 2 S|a7b4c67|
+row 3 T|     1 line 0 日 本 語  long long long long long long long long long long long lo|
+row 3 S|d7e8c1e1c1e1c1e58|
+row 4 T|     2 line 1 日 本 語  long long long long long long long long long long long lo|
+row 4 S|d7e8c1e1c1e1c1e58|
+row 5 T|     3 line 2 日 本 語  long long long long long long long long long long long lo|
+row 5 S|d7e8c1e1c1e1c1e58|
+row 6 T|     4 line 3 日 本 語  long long long long long long long long long long long lo|
+row 6 S|d7e8c1e1c1e1c1e58|
+row 7 T|     5 line 4 日 本 語  long long long long long long long long long long long lo|
+row 7 S|d7e8c1e1c1e1c1e58|
+row 8 T|     6 line 5 日 本 語  long long long long long long long long long long long lo|
+row 8 S|d7e8c1e1c1e1c1e58|
+row 9 T|     7 line 6 日 本 語  long long long long long long long long long long long lo|
+row 9 S|d7e8c1e1c1e1c1e58|
+row 10 T|     8 line 7 日 本 語  long long long long long long long long long long long lo|
+row 10 S|d7e8c1e1c1e1c1e58|
+row 11 T|     9 line 8 日 本 語  long long long long long long long long long long long lo|
+row 11 S|d7e8c1e1c1e1c1e58|
+row 12 T|    10 line 9 日 本 語  long long long long long long long long long long long lo|
+row 12 S|d7e8c1e1c1e1c1e58|
+row 13 T|    11 line 10 日 本 語  long long long long long long long long long long long l|
+row 13 S|d7e9c1e1c1e1c1e57|
+row 14 T|    12 line 11 日 本 語  long long long long long long long long long long long l|
+row 14 S|d7e9c1e1c1e1c1e57|
+row 15 T|    13 line 12 日 本 語  long long long long long long long long long long long l|
+row 15 S|d7e9c1e1c1e1c1e57|
+case lang=ja w=80 worktree=linked diff key=s
+region x=0..78 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Rgb(58, 24, 26)	NONE
+style e	DarkGray	Reset	NONE
+style f	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style g	DarkGray	Rgb(20, 48, 28)	NONE
+style h	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+style i	Reset	Reset	NONE
+row 2 T|▌   1 base                            │▌   1 line 0 日 本 語  long long long long|
+row 2 S|a1b5c4d28e1f1g5h8i1h1i1h1i1h20|
+row 3 T|                                      │▌   2 line 1 日 本 語  long long long long|
+row 3 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 4 T|                                      │▌   3 line 2 日 本 語  long long long long|
+row 4 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 5 T|                                      │▌   4 line 3 日 本 語  long long long long|
+row 5 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 6 T|                                      │▌   5 line 4 日 本 語  long long long long|
+row 6 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 7 T|                                      │▌   6 line 5 日 本 語  long long long long|
+row 7 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 8 T|                                      │▌   7 line 6 日 本 語  long long long long|
+row 8 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 9 T|                                      │▌   8 line 7 日 本 語  long long long long|
+row 9 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 10 T|                                      │▌   9 line 8 日 本 語  long long long long|
+row 10 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 11 T|                                      │▌  10 line 9 日 本 語  long long long long|
+row 11 S|i38e1f1g5h8i1h1i1h1i1h20|
+row 12 T|                                      │▌  11 line 10 日 本 語  long long long lon|
+row 12 S|i38e1f1g5h9i1h1i1h1i1h19|
+row 13 T|                                      │▌  12 line 11 日 本 語  long long long lon|
+row 13 S|i38e1f1g5h9i1h1i1h1i1h19|
+row 14 T|                                      │▌  13 line 12 日 本 語  long long long lon|
+row 14 S|i38e1f1g5h9i1h1i1h1i1h19|
+row 15 T|                                      │▌  14 line 13 日 本 語  long long long lon|
+row 15 S|i38e1f1g5h9i1h1i1h1i1h19|
+case lang=ja w=80 worktree=linked back
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Green	Reset	BOLD
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|* main  6270993  ~/main  main                                                 |
+row 2 S|a2b4c17d6c49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|a2c76|
+row 4 T|  日 本 語   9311cbd  ~/linked  locked: fixture lock                             |
+row 4 S|e2f1c1f1c1f1c1f19g22c29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|a2c28d10c38|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case lang=ja w=80 worktree=main title
+region x=0..32 y=0..1
+style a	Reset	Reset	NONE
+row 0 T|main  ~/main  (未 コ ミ ッ ト の 変 更 )|
+row 0 S|a32|
+case lang=ja w=80 worktree=main diff
+region x=0..78 y=2..16
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style d	DarkGray	Rgb(58, 24, 26)	NONE
+style e	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style f	Reset	Reset	NONE
+style g	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style h	DarkGray	Rgb(20, 48, 28)	NONE
+style i	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|┌─ file.txt ─────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b10a66|
+row 3 T|▌   1      base                                                               |
+row 3 S|c1d10e4f63|
+row 4 T|▌        1 uncommitted 0 long long long long long long long long long long lon|
+row 4 S|g1h10i67|
+row 5 T|▌        2 uncommitted 1 long long long long long long long long long long lon|
+row 5 S|g1h10i67|
+row 6 T|▌        3 uncommitted 2 long long long long long long long long long long lon|
+row 6 S|g1h10i67|
+row 7 T|▌        4 uncommitted 3 long long long long long long long long long long lon|
+row 7 S|g1h10i67|
+row 8 T|▌        5 uncommitted 4 long long long long long long long long long long lon|
+row 8 S|g1h10i67|
+row 9 T|▌        6 uncommitted 5 long long long long long long long long long long lon|
+row 9 S|g1h10i67|
+row 10 T|▌        7 uncommitted 6 long long long long long long long long long long lon|
+row 10 S|g1h10i67|
+row 11 T|▌        8 uncommitted 7 long long long long long long long long long long lon|
+row 11 S|g1h10i67|
+row 12 T|▌        9 uncommitted 8 long long long long long long long long long long lon|
+row 12 S|g1h10i67|
+row 13 T|▌       10 uncommitted 9 long long long long long long long long long long lon|
+row 13 S|g1h10i67|
+row 14 T|▌       11 uncommitted 10 long long long long long long long long long long lo|
+row 14 S|g1h10i67|
+row 15 T|▌       12 uncommitted 11 long long long long long long long long long long lo|
+row 15 S|g1h10i67|
+case lang=ja w=80 worktree=main diff key=j
+region x=0..78 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Reset	NONE
+style e	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style f	DarkGray	Rgb(20, 48, 28)	NONE
+style g	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|▌   1      base                                                               |
+row 2 S|a1b10c4d63|
+row 3 T|▌        1 uncommitted 0 long long long long long long long long long long lon|
+row 3 S|e1f10g67|
+row 4 T|▌        2 uncommitted 1 long long long long long long long long long long lon|
+row 4 S|e1f10g67|
+row 5 T|▌        3 uncommitted 2 long long long long long long long long long long lon|
+row 5 S|e1f10g67|
+row 6 T|▌        4 uncommitted 3 long long long long long long long long long long lon|
+row 6 S|e1f10g67|
+row 7 T|▌        5 uncommitted 4 long long long long long long long long long long lon|
+row 7 S|e1f10g67|
+row 8 T|▌        6 uncommitted 5 long long long long long long long long long long lon|
+row 8 S|e1f10g67|
+row 9 T|▌        7 uncommitted 6 long long long long long long long long long long lon|
+row 9 S|e1f10g67|
+row 10 T|▌        8 uncommitted 7 long long long long long long long long long long lon|
+row 10 S|e1f10g67|
+row 11 T|▌        9 uncommitted 8 long long long long long long long long long long lon|
+row 11 S|e1f10g67|
+row 12 T|▌       10 uncommitted 9 long long long long long long long long long long lon|
+row 12 S|e1f10g67|
+row 13 T|▌       11 uncommitted 10 long long long long long long long long long long lo|
+row 13 S|e1f10g67|
+row 14 T|▌       12 uncommitted 11 long long long long long long long long long long lo|
+row 14 S|e1f10g67|
+row 15 T|▌       13 uncommitted 12 long long long long long long long long long long lo|
+row 15 S|e1f10g67|
+case lang=ja w=80 worktree=main diff key=l
+region x=0..78 y=2..16
+style a	DarkGray	Rgb(58, 24, 26)	NONE
+style b	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style c	Reset	Reset	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|1      base                                                                   |
+row 2 S|a7b4c67|
+row 3 T|     1 uncommitted 0 long long long long long long long long long long long lo|
+row 3 S|d7e71|
+row 4 T|     2 uncommitted 1 long long long long long long long long long long long lo|
+row 4 S|d7e71|
+row 5 T|     3 uncommitted 2 long long long long long long long long long long long lo|
+row 5 S|d7e71|
+row 6 T|     4 uncommitted 3 long long long long long long long long long long long lo|
+row 6 S|d7e71|
+row 7 T|     5 uncommitted 4 long long long long long long long long long long long lo|
+row 7 S|d7e71|
+row 8 T|     6 uncommitted 5 long long long long long long long long long long long lo|
+row 8 S|d7e71|
+row 9 T|     7 uncommitted 6 long long long long long long long long long long long lo|
+row 9 S|d7e71|
+row 10 T|     8 uncommitted 7 long long long long long long long long long long long lo|
+row 10 S|d7e71|
+row 11 T|     9 uncommitted 8 long long long long long long long long long long long lo|
+row 11 S|d7e71|
+row 12 T|    10 uncommitted 9 long long long long long long long long long long long lo|
+row 12 S|d7e71|
+row 13 T|    11 uncommitted 10 long long long long long long long long long long long l|
+row 13 S|d7e71|
+row 14 T|    12 uncommitted 11 long long long long long long long long long long long l|
+row 14 S|d7e71|
+row 15 T|    13 uncommitted 12 long long long long long long long long long long long l|
+row 15 S|d7e71|
+case lang=ja w=80 worktree=main diff key=s
+region x=0..78 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Rgb(58, 24, 26)	NONE
+style e	DarkGray	Reset	NONE
+style f	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style g	DarkGray	Rgb(20, 48, 28)	NONE
+style h	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+style i	Reset	Reset	NONE
+row 2 T|▌   1 base                            │▌   1 uncommitted 0 long long long long|
+row 2 S|a1b5c4d28e1f1g5h33|
+row 3 T|                                      │▌   2 uncommitted 1 long long long long|
+row 3 S|i38e1f1g5h33|
+row 4 T|                                      │▌   3 uncommitted 2 long long long long|
+row 4 S|i38e1f1g5h33|
+row 5 T|                                      │▌   4 uncommitted 3 long long long long|
+row 5 S|i38e1f1g5h33|
+row 6 T|                                      │▌   5 uncommitted 4 long long long long|
+row 6 S|i38e1f1g5h33|
+row 7 T|                                      │▌   6 uncommitted 5 long long long long|
+row 7 S|i38e1f1g5h33|
+row 8 T|                                      │▌   7 uncommitted 6 long long long long|
+row 8 S|i38e1f1g5h33|
+row 9 T|                                      │▌   8 uncommitted 7 long long long long|
+row 9 S|i38e1f1g5h33|
+row 10 T|                                      │▌   9 uncommitted 8 long long long long|
+row 10 S|i38e1f1g5h33|
+row 11 T|                                      │▌  10 uncommitted 9 long long long long|
+row 11 S|i38e1f1g5h33|
+row 12 T|                                      │▌  11 uncommitted 10 long long long lon|
+row 12 S|i38e1f1g5h33|
+row 13 T|                                      │▌  12 uncommitted 11 long long long lon|
+row 13 S|i38e1f1g5h33|
+row 14 T|                                      │▌  13 uncommitted 12 long long long lon|
+row 14 S|i38e1f1g5h33|
+row 15 T|                                      │▌  14 uncommitted 13 long long long lon|
+row 15 S|i38e1f1g5h33|
+case lang=ja w=80 worktree=main back
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	REVERSED
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	DIM
+row 2 T|* main  6270993  ~/main  main                                                 |
+row 2 S|a2b4c17d6e49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|f2e76|
+row 4 T|  日 本 語   9311cbd  ~/linked  locked: fixture lock                             |
+row 4 S|f2e25g22e29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|f2e28g10e38|
+row 6 T|                                                                              |
+row 6 S|e78|
+row 7 T|                                                                              |
+row 7 S|e78|
+row 8 T|                                                                              |
+row 8 S|e78|
+row 9 T|                                                                              |
+row 9 S|e78|
+row 10 T|                                                                              |
+row 10 S|e78|
+row 11 T|                                                                              |
+row 11 S|e78|
+row 12 T|                                                                              |
+row 12 S|e78|
+row 13 T|                                                                              |
+row 13 S|e78|
+row 14 T|                                                                              |
+row 14 S|e78|
+row 15 T|                                                                              |
+row 15 S|e78|
+row 16 T|                                                                              |
+row 16 S|e78|
+row 17 T|                                                                              |
+row 17 S|e78|
+case lang=ja w=160 worktree=linked title
+region x=0..23 y=0..1
+style a	Reset	Reset	NONE
+row 0 T|日 本 語  ← main  ~/linked|
+row 0 S|a23|
+case lang=ja w=160 worktree=linked diff
+region x=0..158 y=2..16
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style d	DarkGray	Rgb(58, 24, 26)	NONE
+style e	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style f	Reset	Reset	NONE
+style g	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style h	DarkGray	Rgb(20, 48, 28)	NONE
+style i	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|┌─ file.txt ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b10a146|
+row 3 T|▌   1      base                                                                                                                                               |
+row 3 S|c1d10e4f143|
+row 4 T|▌        1 line 0 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 4 S|g1h10i8f1i1f1i1f1i134|
+row 5 T|▌        2 line 1 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 5 S|g1h10i8f1i1f1i1f1i134|
+row 6 T|▌        3 line 2 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 6 S|g1h10i8f1i1f1i1f1i134|
+row 7 T|▌        4 line 3 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 7 S|g1h10i8f1i1f1i1f1i134|
+row 8 T|▌        5 line 4 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 8 S|g1h10i8f1i1f1i1f1i134|
+row 9 T|▌        6 line 5 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 9 S|g1h10i8f1i1f1i1f1i134|
+row 10 T|▌        7 line 6 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 10 S|g1h10i8f1i1f1i1f1i134|
+row 11 T|▌        8 line 7 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 11 S|g1h10i8f1i1f1i1f1i134|
+row 12 T|▌        9 line 8 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 12 S|g1h10i8f1i1f1i1f1i134|
+row 13 T|▌       10 line 9 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 13 S|g1h10i8f1i1f1i1f1i134|
+row 14 T|▌       11 line 10 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 14 S|g1h10i9f1i1f1i1f1i133|
+row 15 T|▌       12 line 11 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 15 S|g1h10i9f1i1f1i1f1i133|
+case lang=ja w=160 worktree=linked diff key=j
+region x=0..158 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Reset	NONE
+style e	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style f	DarkGray	Rgb(20, 48, 28)	NONE
+style g	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|▌   1      base                                                                                                                                               |
+row 2 S|a1b10c4d143|
+row 3 T|▌        1 line 0 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 3 S|e1f10g8d1g1d1g1d1g134|
+row 4 T|▌        2 line 1 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 4 S|e1f10g8d1g1d1g1d1g134|
+row 5 T|▌        3 line 2 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 5 S|e1f10g8d1g1d1g1d1g134|
+row 6 T|▌        4 line 3 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 6 S|e1f10g8d1g1d1g1d1g134|
+row 7 T|▌        5 line 4 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 7 S|e1f10g8d1g1d1g1d1g134|
+row 8 T|▌        6 line 5 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 8 S|e1f10g8d1g1d1g1d1g134|
+row 9 T|▌        7 line 6 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 9 S|e1f10g8d1g1d1g1d1g134|
+row 10 T|▌        8 line 7 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 10 S|e1f10g8d1g1d1g1d1g134|
+row 11 T|▌        9 line 8 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 11 S|e1f10g8d1g1d1g1d1g134|
+row 12 T|▌       10 line 9 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 12 S|e1f10g8d1g1d1g1d1g134|
+row 13 T|▌       11 line 10 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 13 S|e1f10g9d1g1d1g1d1g133|
+row 14 T|▌       12 line 11 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 14 S|e1f10g9d1g1d1g1d1g133|
+row 15 T|▌       13 line 12 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 15 S|e1f10g9d1g1d1g1d1g133|
+case lang=ja w=160 worktree=linked diff key=l
+region x=0..158 y=2..16
+style a	DarkGray	Rgb(58, 24, 26)	NONE
+style b	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style c	Reset	Reset	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|1      base                                                                                                                                                   |
+row 2 S|a7b4c147|
+row 3 T|     1 line 0 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 3 S|d7e8c1e1c1e1c1e138|
+row 4 T|     2 line 1 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 4 S|d7e8c1e1c1e1c1e138|
+row 5 T|     3 line 2 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 5 S|d7e8c1e1c1e1c1e138|
+row 6 T|     4 line 3 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 6 S|d7e8c1e1c1e1c1e138|
+row 7 T|     5 line 4 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 7 S|d7e8c1e1c1e1c1e138|
+row 8 T|     6 line 5 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 8 S|d7e8c1e1c1e1c1e138|
+row 9 T|     7 line 6 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 9 S|d7e8c1e1c1e1c1e138|
+row 10 T|     8 line 7 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 10 S|d7e8c1e1c1e1c1e138|
+row 11 T|     9 line 8 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 11 S|d7e8c1e1c1e1c1e138|
+row 12 T|    10 line 9 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 12 S|d7e8c1e1c1e1c1e138|
+row 13 T|    11 line 10 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 13 S|d7e9c1e1c1e1c1e137|
+row 14 T|    12 line 11 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 14 S|d7e9c1e1c1e1c1e137|
+row 15 T|    13 line 12 日 本 語  long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 15 S|d7e9c1e1c1e1c1e137|
+case lang=ja w=160 worktree=linked diff key=s
+region x=0..158 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Rgb(58, 24, 26)	NONE
+style e	DarkGray	Reset	NONE
+style f	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style g	DarkGray	Rgb(20, 48, 28)	NONE
+style h	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+style i	Reset	Reset	NONE
+row 2 T|▌   1 base                                                                    │▌   1 line 0 日 本 語  long long long long long long long long long long long long|
+row 2 S|a1b5c4d68e1f1g5h8i1h1i1h1i1h60|
+row 3 T|                                                                              │▌   2 line 1 日 本 語  long long long long long long long long long long long long|
+row 3 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 4 T|                                                                              │▌   3 line 2 日 本 語  long long long long long long long long long long long long|
+row 4 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 5 T|                                                                              │▌   4 line 3 日 本 語  long long long long long long long long long long long long|
+row 5 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 6 T|                                                                              │▌   5 line 4 日 本 語  long long long long long long long long long long long long|
+row 6 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 7 T|                                                                              │▌   6 line 5 日 本 語  long long long long long long long long long long long long|
+row 7 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 8 T|                                                                              │▌   7 line 6 日 本 語  long long long long long long long long long long long long|
+row 8 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 9 T|                                                                              │▌   8 line 7 日 本 語  long long long long long long long long long long long long|
+row 9 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 10 T|                                                                              │▌   9 line 8 日 本 語  long long long long long long long long long long long long|
+row 10 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 11 T|                                                                              │▌  10 line 9 日 本 語  long long long long long long long long long long long long|
+row 11 S|i78e1f1g5h8i1h1i1h1i1h60|
+row 12 T|                                                                              │▌  11 line 10 日 本 語  long long long long long long long long long long long lon|
+row 12 S|i78e1f1g5h9i1h1i1h1i1h59|
+row 13 T|                                                                              │▌  12 line 11 日 本 語  long long long long long long long long long long long lon|
+row 13 S|i78e1f1g5h9i1h1i1h1i1h59|
+row 14 T|                                                                              │▌  13 line 12 日 本 語  long long long long long long long long long long long lon|
+row 14 S|i78e1f1g5h9i1h1i1h1i1h59|
+row 15 T|                                                                              │▌  14 line 13 日 本 語  long long long long long long long long long long long lon|
+row 15 S|i78e1f1g5h9i1h1i1h1i1h59|
+case lang=ja w=160 worktree=linked back
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Green	Reset	BOLD
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|* main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b4c17d6c129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|a2c156|
+row 4 T|  日 本 語   9311cbd  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|e2f1c1f1c1f1c1f19g22c109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|a2c28d10c118|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case lang=ja w=160 worktree=main title
+region x=0..32 y=0..1
+style a	Reset	Reset	NONE
+row 0 T|main  ~/main  (未 コ ミ ッ ト の 変 更 )|
+row 0 S|a32|
+case lang=ja w=160 worktree=main diff
+region x=0..158 y=2..16
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style d	DarkGray	Rgb(58, 24, 26)	NONE
+style e	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style f	Reset	Reset	NONE
+style g	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style h	DarkGray	Rgb(20, 48, 28)	NONE
+style i	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|┌─ file.txt ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b10a146|
+row 3 T|▌   1      base                                                                                                                                               |
+row 3 S|c1d10e4f143|
+row 4 T|▌        1 uncommitted 0 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 4 S|g1h10i147|
+row 5 T|▌        2 uncommitted 1 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 5 S|g1h10i147|
+row 6 T|▌        3 uncommitted 2 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 6 S|g1h10i147|
+row 7 T|▌        4 uncommitted 3 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 7 S|g1h10i147|
+row 8 T|▌        5 uncommitted 4 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 8 S|g1h10i147|
+row 9 T|▌        6 uncommitted 5 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 9 S|g1h10i147|
+row 10 T|▌        7 uncommitted 6 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 10 S|g1h10i147|
+row 11 T|▌        8 uncommitted 7 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 11 S|g1h10i147|
+row 12 T|▌        9 uncommitted 8 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 12 S|g1h10i147|
+row 13 T|▌       10 uncommitted 9 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 13 S|g1h10i147|
+row 14 T|▌       11 uncommitted 10 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 14 S|g1h10i147|
+row 15 T|▌       12 uncommitted 11 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 15 S|g1h10i147|
+case lang=ja w=160 worktree=main diff key=j
+region x=0..158 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Reset	NONE
+style e	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style f	DarkGray	Rgb(20, 48, 28)	NONE
+style g	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|▌   1      base                                                                                                                                               |
+row 2 S|a1b10c4d143|
+row 3 T|▌        1 uncommitted 0 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 3 S|e1f10g147|
+row 4 T|▌        2 uncommitted 1 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 4 S|e1f10g147|
+row 5 T|▌        3 uncommitted 2 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 5 S|e1f10g147|
+row 6 T|▌        4 uncommitted 3 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 6 S|e1f10g147|
+row 7 T|▌        5 uncommitted 4 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 7 S|e1f10g147|
+row 8 T|▌        6 uncommitted 5 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 8 S|e1f10g147|
+row 9 T|▌        7 uncommitted 6 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 9 S|e1f10g147|
+row 10 T|▌        8 uncommitted 7 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 10 S|e1f10g147|
+row 11 T|▌        9 uncommitted 8 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 11 S|e1f10g147|
+row 12 T|▌       10 uncommitted 9 long long long long long long long long long long long long long long long long long long long long long long long long long long lon|
+row 12 S|e1f10g147|
+row 13 T|▌       11 uncommitted 10 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 13 S|e1f10g147|
+row 14 T|▌       12 uncommitted 11 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 14 S|e1f10g147|
+row 15 T|▌       13 uncommitted 12 long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 15 S|e1f10g147|
+case lang=ja w=160 worktree=main diff key=l
+region x=0..158 y=2..16
+style a	DarkGray	Rgb(58, 24, 26)	NONE
+style b	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style c	Reset	Reset	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+row 2 T|1      base                                                                                                                                                   |
+row 2 S|a7b4c147|
+row 3 T|     1 uncommitted 0 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 3 S|d7e151|
+row 4 T|     2 uncommitted 1 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 4 S|d7e151|
+row 5 T|     3 uncommitted 2 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 5 S|d7e151|
+row 6 T|     4 uncommitted 3 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 6 S|d7e151|
+row 7 T|     5 uncommitted 4 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 7 S|d7e151|
+row 8 T|     6 uncommitted 5 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 8 S|d7e151|
+row 9 T|     7 uncommitted 6 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 9 S|d7e151|
+row 10 T|     8 uncommitted 7 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 10 S|d7e151|
+row 11 T|     9 uncommitted 8 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 11 S|d7e151|
+row 12 T|    10 uncommitted 9 long long long long long long long long long long long long long long long long long long long long long long long long long long long lo|
+row 12 S|d7e151|
+row 13 T|    11 uncommitted 10 long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 13 S|d7e151|
+row 14 T|    12 uncommitted 11 long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 14 S|d7e151|
+row 15 T|    13 uncommitted 12 long long long long long long long long long long long long long long long long long long long long long long long long long long long l|
+row 15 S|d7e151|
+case lang=ja w=160 worktree=main diff key=s
+region x=0..158 y=2..16
+style a	Rgb(199, 84, 80)	Rgb(58, 24, 26)	NONE
+style b	DarkGray	Rgb(58, 24, 26)	NONE
+style c	Rgb(171, 178, 191)	Rgb(58, 24, 26)	NONE
+style d	Reset	Rgb(58, 24, 26)	NONE
+style e	DarkGray	Reset	NONE
+style f	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style g	DarkGray	Rgb(20, 48, 28)	NONE
+style h	Rgb(171, 178, 191)	Rgb(20, 48, 28)	NONE
+style i	Reset	Reset	NONE
+row 2 T|▌   1 base                                                                    │▌   1 uncommitted 0 long long long long long long long long long long long long|
+row 2 S|a1b5c4d68e1f1g5h73|
+row 3 T|                                                                              │▌   2 uncommitted 1 long long long long long long long long long long long long|
+row 3 S|i78e1f1g5h73|
+row 4 T|                                                                              │▌   3 uncommitted 2 long long long long long long long long long long long long|
+row 4 S|i78e1f1g5h73|
+row 5 T|                                                                              │▌   4 uncommitted 3 long long long long long long long long long long long long|
+row 5 S|i78e1f1g5h73|
+row 6 T|                                                                              │▌   5 uncommitted 4 long long long long long long long long long long long long|
+row 6 S|i78e1f1g5h73|
+row 7 T|                                                                              │▌   6 uncommitted 5 long long long long long long long long long long long long|
+row 7 S|i78e1f1g5h73|
+row 8 T|                                                                              │▌   7 uncommitted 6 long long long long long long long long long long long long|
+row 8 S|i78e1f1g5h73|
+row 9 T|                                                                              │▌   8 uncommitted 7 long long long long long long long long long long long long|
+row 9 S|i78e1f1g5h73|
+row 10 T|                                                                              │▌   9 uncommitted 8 long long long long long long long long long long long long|
+row 10 S|i78e1f1g5h73|
+row 11 T|                                                                              │▌  10 uncommitted 9 long long long long long long long long long long long long|
+row 11 S|i78e1f1g5h73|
+row 12 T|                                                                              │▌  11 uncommitted 10 long long long long long long long long long long long lon|
+row 12 S|i78e1f1g5h73|
+row 13 T|                                                                              │▌  12 uncommitted 11 long long long long long long long long long long long lon|
+row 13 S|i78e1f1g5h73|
+row 14 T|                                                                              │▌  13 uncommitted 12 long long long long long long long long long long long lon|
+row 14 S|i78e1f1g5h73|
+row 15 T|                                                                              │▌  14 uncommitted 13 long long long long long long long long long long long lon|
+row 15 S|i78e1f1g5h73|
+case lang=ja w=160 worktree=main back
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	REVERSED
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	DIM
+row 2 T|* main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b4c17d6e129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|f2e156|
+row 4 T|  日 本 語   9311cbd  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|f2e25g22e109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|f2e28g10e118|
+row 6 T|                                                                                                                                                              |
+row 6 S|e158|
+row 7 T|                                                                                                                                                              |
+row 7 S|e158|
+row 8 T|                                                                                                                                                              |
+row 8 S|e158|
+row 9 T|                                                                                                                                                              |
+row 9 S|e158|
+row 10 T|                                                                                                                                                              |
+row 10 S|e158|
+row 11 T|                                                                                                                                                              |
+row 11 S|e158|
+row 12 T|                                                                                                                                                              |
+row 12 S|e158|
+row 13 T|                                                                                                                                                              |
+row 13 S|e158|
+row 14 T|                                                                                                                                                              |
+row 14 S|e158|
+row 15 T|                                                                                                                                                              |
+row 15 S|e158|
+row 16 T|                                                                                                                                                              |
+row 16 S|e158|
+row 17 T|                                                                                                                                                              |
+row 17 S|e158|

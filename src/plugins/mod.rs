@@ -16,9 +16,15 @@ pub(crate) mod external_testkit;
 mod listing;
 #[cfg(test)]
 mod notify_tests;
+#[cfg(feature = "git")]
+pub(crate) mod old_screens;
+#[cfg(test)]
+mod preview_io_tests;
 mod profile;
 #[cfg(test)]
 mod program_parity_tests;
+#[cfg(test)]
+mod project_preview_tests;
 pub(crate) mod projects;
 pub(crate) mod read_scope;
 mod resolve;
@@ -53,7 +59,7 @@ pub(crate) use listing::plugins_table;
 #[cfg(test)]
 pub(crate) use profile::record as record_for_test;
 pub(crate) use profile::{profile_of, register, shows_of, unavailable_of, Profile};
-pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
+pub(crate) use resolve::{kind_of, plugin_id_of, resolve_file, resolve_kind, user_rules};
 
 /// Host-internal pseudo plugins. They own no file binding: a `[[preview.rules]]` entry that asks
 /// for plain text, an external command, or an unknown renderer is aimed at one of them, so the
@@ -92,42 +98,25 @@ fn standard(id: &str, name: konoma_plugin::Tr) -> Manifest {
     Manifest::new(id, env!("CARGO_PKG_VERSION")).name(name)
 }
 
-/// The declarations of the standard plugins, in registration order. The order is the order of the
-/// default `[[preview.rules]]` konoma had before plugins (svg before `image/*`, the mime rules for
-/// images and videos in their old places), so a file is decided exactly as it was.
-pub(crate) fn standard_manifests() -> Vec<Manifest> {
-    let md = konoma_markdown::markdown_manifest();
-    let mermaid = konoma_mermaid::mermaid_manifest();
-    let math = konoma_math::math_manifest();
-    let svg = konoma_media::svg_manifest();
-    let image = konoma_media::image_manifest();
-    let csv = konoma_table::csv_manifest();
-    let spreadsheet = konoma_office::spreadsheet_manifest();
-    let document = konoma_office::document_manifest();
-    let presentation = konoma_office::presentation_manifest();
-    let archive = konoma_table::archive_manifest();
-    let code = konoma_code::code_manifest();
-    let video = konoma_media::video_manifest();
-    let pdf = konoma_media::pdf_manifest();
+/// Plugins this host can run, with projects after the shared file plugins.
+fn standard_plugins() -> Vec<Arc<dyn Plugin>> {
+    #[allow(unused_mut)]
+    let mut plugins = konoma_file_plugins::plugins();
+    // Both readers need vcs-core's git feature; jj's CLI backend is gated by it too.
+    #[cfg(feature = "git")]
+    plugins.extend([
+        Arc::new(konoma_vcs::Git) as Arc<dyn Plugin>,
+        Arc::new(konoma_vcs::Jj),
+    ]);
+    plugins
+}
 
-    // Every one of them already carries its own `edit` / `open` chain.
-    let mut out: Vec<Manifest> = vec![
-        md,
-        mermaid,
-        svg,
-        image,
-        csv,
-        spreadsheet,
-        document,
-        presentation,
-        archive,
-        code,
-        video,
-        pdf,
-    ];
-    // `math` only takes the formulas inside Markdown, so it has no file to edit or open.
-    out.insert(2, math);
-    out
+/// The standard declarations this build can run, in registration order.
+pub(crate) fn standard_manifests() -> Vec<Manifest> {
+    standard_plugins()
+        .into_iter()
+        .map(|plugin| plugin.manifest())
+        .collect()
 }
 
 /// The `verb` declared by the plugin `id` (`None` = it declares none, or is unknown).
@@ -158,30 +147,23 @@ fn internal_manifests() -> Vec<Manifest> {
     ]
 }
 
-/// The implementation behind a standard manifest: the plugins wired to the display are real, the
-/// others are declarations only.
+/// The implementation behind a shared file manifest or a host-internal pseudo plugin.
 fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
-    match m.id.as_str() {
-        konoma_table::CSV_ID => Arc::new(konoma_table::CsvPlugin),
-        konoma_table::ARCHIVE_ID => Arc::new(konoma_table::ArchivePlugin),
-        konoma_media::IMAGE_ID => Arc::new(konoma_media::ImagePlugin),
-        konoma_media::SVG_ID => Arc::new(konoma_media::SvgPlugin),
-        konoma_media::PDF_ID => Arc::new(konoma_media::PdfPlugin),
-        konoma_media::VIDEO_ID => Arc::new(konoma_media::VideoPlugin),
-        konoma_code::CODE_ID => Arc::new(konoma_code::CodePlugin),
-        konoma_office::SPREADSHEET_ID => Arc::new(konoma_office::SpreadsheetPlugin),
-        konoma_office::DOCUMENT_ID => Arc::new(konoma_office::DocumentPlugin),
-        konoma_office::PRESENTATION_ID => Arc::new(konoma_office::PresentationPlugin),
-        konoma_mermaid::MERMAID_ID => Arc::new(konoma_mermaid::MermaidPlugin),
-        konoma_math::MATH_ID => Arc::new(konoma_math::MathPlugin),
-        konoma_markdown::MARKDOWN_ID => Arc::new(konoma_markdown::MarkdownPlugin),
-        COMMAND_ID => Arc::new(CommandPlugin::unbound()),
-        _ => Arc::new(Declared(m)),
-    }
+    standard_plugins()
+        .into_iter()
+        .find(|plugin| plugin.manifest().id == m.id)
+        .unwrap_or_else(|| match m.id.as_str() {
+            COMMAND_ID => Arc::new(CommandPlugin::unbound()),
+            _ => Arc::new(Declared(m)),
+        })
 }
 
 /// A registry of the standard plugins, with `disabled` ids switched off.
 pub(crate) fn build_registry(disabled: &[String]) -> Registry {
+    #[cfg(test)]
+    if let Some(linked) = test_plugins::linked_set(disabled) {
+        return build_registry_with(disabled, Some(&linked));
+    }
     build_registry_with(disabled, statics::current())
 }
 
@@ -192,11 +174,11 @@ fn build_registry_with(disabled: &[String], linked: Option<&statics::StaticSet>)
     // What the program that started konoma linked in (`konoma::Host`): a replaced standard plugin
     // keeps its place in the order; the added ones follow the standard ones.
     if linked.is_none_or(|s| s.standard) {
-        for m in standard_manifests() {
+        for plugin in standard_plugins() {
             // The declarations are static; a refusal would be a bug that `tests` catches.
-            let _ = match linked.and_then(|s| s.replaced.get(&m.id)) {
+            let _ = match linked.and_then(|s| s.replaced.get(&plugin.manifest().id)) {
                 Some(p) => register(&mut r, Arc::clone(p), PluginOrigin::User),
-                None => register(&mut r, plugin_of(m), PluginOrigin::Standard),
+                None => register(&mut r, plugin, PluginOrigin::Standard),
             };
         }
     }
@@ -222,6 +204,9 @@ fn build_registry_with(disabled: &[String], linked: Option<&statics::StaticSet>)
         // `test_plugins`.
         #[cfg(test)]
         if let Some(plugin) = test_plugins::lookup(id) {
+            if test_plugins::is_replacement(id) {
+                continue;
+            }
             let _ = register(&mut r, plugin, PluginOrigin::User);
             continue;
         }
@@ -339,7 +324,13 @@ pub(crate) fn moved_settings(ui: &toml::Table, plugins: &PluginTables) -> Vec<(S
 /// `[ui]` items it replaces (S2-12). Decided by `konoma_plugin::config::plugin_settings`, the one
 /// function the standalone app calls too; this is only konoma's config handed to it.
 pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Settings {
-    konoma_plugin::config::plugin_settings(&cfg.plugins, &cfg.ui.moved(), id)
+    let mut settings = konoma_plugin::config::plugin_settings(&cfg.plugins, &cfg.ui.moved(), id);
+    if let Some(project) = cfg.moved_project_settings.get(id) {
+        for (key, value) in project.iter() {
+            settings.set(key, value.clone());
+        }
+    }
+    settings
 }
 
 /// `[plugins.<id>] <key>` when it is a string, otherwise the old `[ui]` value `old`. The same rule

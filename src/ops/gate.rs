@@ -40,6 +40,13 @@ fn when(cond: bool) -> Gate {
     }
 }
 
+fn diff_gate(app: &App, op: konoma_plugin::host::project::diff_presentation::DiffUiOp) -> Gate {
+    when(
+        app.diff_presentation_state()
+            .enabled(app.diff_presentation_capabilities(), op),
+    )
+}
+
 /// Whether `a` acts in `ctx` right now.
 pub fn action_enabled(app: &App, ctx: Context, a: Action) -> bool {
     gate(app, ctx, a).is_on()
@@ -54,7 +61,36 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
             return verdict;
         }
     }
+    // A project screen in front covers the screen under it (`App::project_screen_covers`): only
+    // the actions on an explicit allow list stay available, so a key bound by config to any other
+    // action cannot reach the preview, outline, selection or marks under the screen, and the
+    // keys, the footer and the help agree with the layer walk. The project screen's own keys are
+    // handled before the gate is asked.
+    if app.project_screen_covers() && !allowed_over_a_project_screen_in(app, ctx, a) {
+        return Gate::Off(None);
+    }
     match a {
+        A::Navigate(
+            m @ (crate::keymap::Motion::Left
+            | crate::keymap::Motion::Right
+            | crate::keymap::Motion::LineHome
+            | crate::keymap::Motion::LineEnd),
+        ) if ctx == Context::Diff => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::Navigate(m),
+        ),
+        A::Navigate(
+            m @ (crate::keymap::Motion::Left
+            | crate::keymap::Motion::Right
+            | crate::keymap::Motion::LineHome
+            | crate::keymap::Motion::LineEnd),
+        ) if ctx == Context::Document && !app.shows_picture_frame_plugin() => when(
+            konoma_plugin::host::project::preview_presentation::horizontal_moves(
+                app.cfg.ui.wrap,
+                app.is_windowed(),
+            ) || (m != crate::keymap::Motion::LineEnd
+                && crate::ops::preview_plan::state(app, ctx).mermaid_pannable),
+        ),
         // --- A plugin's own action: the session's word, the same one the footer and the help read ---
         A::Plugin(p) => gate_plugin(app, ctx, p),
 
@@ -69,6 +105,10 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         }
 
         // --- What a "page" is depends on the preview (the predicate `App::page_turn` gates on) ---
+        A::PageNext | A::PagePrev if ctx == Context::Diff => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::PageNext,
+        ),
         A::PageNext | A::PagePrev => when(match app.tab.preview_kind {
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => app.media_diff_can_page(),
@@ -152,6 +192,17 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         // Wrapping is a property of the text and the decorated document.
         A::ToggleWrap => when(matches!(ctx, Context::Text | Context::Document)),
 
+        // On a project canvas `[` and `]` return at once with a single tab, so they do not act
+        // there (the menu and the help list a key only when it acts).
+        A::TabPrev | A::TabNext if matches!(ctx, Context::Canvas) && app.project_active() => {
+            when(app.tab_count() > 1)
+        }
+        // The help words a version-control screen by its own context.
+        #[cfg(feature = "git")]
+        A::TabPrev | A::TabNext if matches!(ctx, Context::Screen(..)) && app.project_active() => {
+            when(app.tab_count() > 1)
+        }
+
         // --- `e` and `o` ---
         A::RequestEdit => gate_edit(app),
         A::OpenExternal => gate_open_external(app),
@@ -160,8 +211,25 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         A::OpenInNewTab if matches!(ctx, Context::Screen(..)) => {
             when(matches!(app.verb_target(), VerbTarget::File(_)))
         }
+        // On a project canvas `Ctrl-t` opens the row's target only while the owner marks it
+        // launchable — the same cached decision `e`/`o` read, so a deleted file's row offers
+        // nothing. A target that is a directory (a worktree row) keeps opening: the owner's
+        // launch decision records it as existing too.
+        A::OpenInNewTab if ctx == Context::Canvas && app.project_active() => {
+            when(app.project_launch_target().is_some())
+        }
 
         // --- `!`: the project's tool. The version-control screens always have a repository. ---
+        // On a project canvas the base table's `!` is reachable from every screen, but the old
+        // hub bound it on the changes screen alone: the other screens do nothing, silently.
+        #[cfg(feature = "git")]
+        A::GitLaunchTool
+            if matches!(ctx, Context::Canvas)
+                && app.project_active()
+                && !app.project_tool_screen() =>
+        {
+            Gate::Off(None)
+        }
         #[cfg(feature = "git")]
         A::GitLaunchTool if !matches!(ctx, Context::Screen(..)) => {
             if !app.cfg.external.git_tool {
@@ -202,20 +270,34 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         }
 
         // --- The diff screen ---
+        #[cfg(feature = "git")]
+        A::GitDiffDiscard if ctx == Context::Diff => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::Discard,
+        ),
         // `n` / `N` step through the change blocks of the file: only while it has some.
         #[cfg(feature = "git")]
-        A::DiffNextChange | A::DiffPrevChange => when(app.diff_has_change_blocks()),
+        A::DiffNextChange | A::DiffPrevChange => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::NextBlock,
+        ),
         #[cfg(feature = "git")]
-        A::CycleDiffView => when(app.diff_view_cycle_hint().is_some()),
+        A::CycleDiffView => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::View,
+        ),
         #[cfg(feature = "git")]
-        A::ToggleFollowDiffScope => when(app.follow_diff_scope_msg().is_some()),
+        A::ToggleFollowDiffScope => diff_gate(
+            app,
+            konoma_plugin::host::project::diff_presentation::DiffUiOp::FollowScope,
+        ),
         A::CycleDiffLayout => {
             if ctx == Context::Diff {
                 // The media diff cycles its own layout; the line diff has none while it is shown
                 // as rendered blocks or as a summary of a binary file.
-                when(
-                    app.media_diff_showing_pictures()
-                        || (!app.diff_footer_is_media_or_summary() && !app.diff_rendered_active()),
+                diff_gate(
+                    app,
+                    konoma_plugin::host::project::diff_presentation::DiffUiOp::Layout,
                 )
             } else {
                 Gate::On
@@ -267,6 +349,109 @@ fn gate_plugin(app: &App, ctx: Context, p: crate::plugins::PluginAct) -> Gate {
     super::write_guard::write_guard(app, p.plugin(), binding.writes, false)
 }
 
+/// [`allowed_over_a_project_screen`] for the layer `ctx` belongs to. A project screen covers the
+/// layers BEHIND it and nothing in front of it: an overlay in front (help, the bookmark list, the
+/// tab list, Info) keeps its own actions, plus the application-level ones; anything else bound
+/// there (a config binding to a preview action) is off, so it cannot reach the hidden screen.
+pub(super) fn allowed_over_a_project_screen_in(app: &App, ctx: Context, a: Action) -> bool {
+    if app.overlay_in_front_of_project(ctx) {
+        return overlay_owns(app, ctx, a) || app_level_over_a_project_screen(a);
+    }
+    allowed_over_a_project_screen(app, a)
+}
+
+/// The actions an overlay owns, from the same sources as its footer and `Space` menu: what its
+/// defaults bind (whatever `[keys]` did since), its fixed keys and the operations that have no
+/// key. Config-independent, so a rebinding cannot widen it.
+fn overlay_owns(app: &App, ctx: Context, a: Action) -> bool {
+    // The overlay's own table (not the global one: tabs, quit, ... are the app-level part).
+    app.keymaps
+        .default_ops
+        .get(&ctx)
+        .is_some_and(|v| v.contains(&a))
+        || super::keys::fixed_bindings(ctx)
+            .iter()
+            .any(|f| f.action == a)
+        || super::menu::unkeyed(ctx).contains(&a)
+}
+
+/// The actions that stay available while a project screen covers the screen under it. Everything
+/// else is off there, so an action added later cannot act on the hidden preview by default.
+/// Written once as two parts: the application-level ones (also kept in an overlay in front of the
+/// screen) and the ones that act on the project screen itself.
+fn allowed_over_a_project_screen(app: &App, a: Action) -> bool {
+    app_level_over_a_project_screen(a) || acts_on_the_project_screen(app, a)
+}
+
+/// The application-level part of the allow list: tab, quit, help, paste-jump and refresh
+/// commands, and the screen's own motions. None of them reads the screen under (the ones that
+/// would are redirected where they run: see `dispatch_action`).
+fn app_level_over_a_project_screen(a: Action) -> bool {
+    use Action as A;
+    matches!(
+        a,
+        // A key the user disabled does nothing anywhere.
+        A::Noop
+            // The screen's own motions (it reads them through the same table).
+            | A::Navigate(_)
+            | A::TabNew
+            | A::TabNewAfter
+            | A::TabClose
+            | A::CloseTabOrQuit
+            | A::TabPrev
+            | A::TabNext
+            // The digit keys: switch to a tab.
+            | A::TabGoto(_)
+            | A::ToggleTabList
+            | A::ToggleHelp
+            | A::ToggleFollow
+            | A::PasteJump
+            | A::Quit
+            | A::Refresh
+    )
+}
+
+/// The part of the allow list that acts on the project screen: leaving it, launching from its own
+/// rows, its `Space` menu controls and the project-aware old names.
+fn acts_on_the_project_screen(app: &App, a: Action) -> bool {
+    use Action as A;
+    match a {
+        A::OpenInNewTab => true,
+        // Leaving the screen, and launching from its own rows.
+        A::PreviewBack | A::OpenGitView | A::RequestEdit | A::OpenExternal => true,
+        // A control chosen from the project screen's own `Space` menu.
+        A::ProjectControl(_) => true,
+        // `worktree_close` bound on a project canvas runs the project's own close.
+        #[cfg(feature = "git")]
+        A::WorktreeClose => true,
+        // The bookmark list opens in front of the screen.
+        A::MarkJump => true,
+        #[cfg(feature = "git")]
+        A::GitLaunchTool => true,
+        // An old hub name bound on a canvas is read for the open project (never for the screen
+        // under): `run_old_hub_name_in_project`.
+        #[cfg(feature = "git")]
+        A::GitOpenLog
+        | A::GitOpenGraph
+        | A::GitOpenBranches
+        | A::GitOpenWorktrees
+        | A::GitWorktreeDiff
+        | A::GitCommit
+        | A::GitStageAll
+        | A::GitUnstageAll
+        | A::JjSync
+        | A::GitGraphToggleAll
+        | A::BranchCreate
+        | A::WorktreeCreate => true,
+        // A plugin's action only where the plugin declares a project context (its own screen).
+        A::Plugin(p) => app
+            .plugin_keys
+            .declaration(p)
+            .is_some_and(|d| d.project_context.is_some()),
+        _ => false,
+    }
+}
+
 /// `e`: the target and whether opening it is possible (mirrors `App::request_edit`).
 fn gate_edit(app: &App) -> Gate {
     match app.verb_target() {
@@ -308,10 +493,37 @@ fn gate_open_external(app: &App) -> Gate {
     }
 }
 
-/// `o`: the hub opens only in a repository the backend can show (mirrors `App::open_git_view`).
+/// `p` offers only enabled projects; pending discovery can queue entry without blocking.
 fn gate_open_git_view(app: &App) -> Gate {
-    if !app.tab.projects.projects.is_empty() || app.tab.projects.pending() {
+    if app
+        .tab
+        .projects
+        .projects
+        .iter()
+        .any(|p| !p.declaration.screens.is_empty() && app.project_is_enabled(&p.plugin))
+    {
         return Gate::On;
+    }
+    let (pending, independent) = if app.tab.projects.pending() {
+        crate::plugins::with_registry(&app.cfg.plugin_disabled(), |registry| {
+            registry
+                .ids()
+                .into_iter()
+                .filter(|id| registry.is_enabled(id))
+                .filter_map(|id| registry.manifest(id)?.project.as_ref())
+                .filter(|p| !p.screens.is_empty())
+                .fold((false, false), |(_, independent), project| {
+                    (true, independent || !project.version_control)
+                })
+        })
+    } else {
+        (false, false)
+    };
+    if independent {
+        return Gate::On;
+    }
+    if !cfg!(feature = "git") {
+        return Gate::Off(Some(Msg::NotAGitRepo));
     }
     let backend_is_git = app.git_vcs == crate::vcs::VcsKind::Git;
     if backend_is_git && !app.cfg.external.git {
@@ -325,5 +537,9 @@ fn gate_open_git_view(app: &App) -> Gate {
     if app.git_state_known() && app.git_branch().is_none() {
         return Gate::Off(Some(Msg::NotAGitRepo));
     }
-    Gate::On
+    if pending {
+        Gate::On
+    } else {
+        Gate::Off(Some(Msg::NotAGitRepo))
+    }
 }

@@ -237,7 +237,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 match status {
                     Some(st) => spans.push(Span::styled(
                         format!("{} ", st.marker()),
-                        Style::new().fg(super::git::vcs_color(st.color())),
+                        Style::new().fg(super::vcs_color(st.color())),
                     )),
                     None => spans.push(Span::from("  ")),
                 }
@@ -253,7 +253,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ));
             // Name color priority: git status color > ignored (dimmed) > default color (follows theme).
             let name_style = if let Some(st) = status {
-                Style::new().fg(super::git::vcs_color(st.color()))
+                Style::new().fg(super::vcs_color(st.color()))
             } else if ignored {
                 dim
             } else {
@@ -490,9 +490,15 @@ mod tests {
             .iter()
             .find(|s| s.title == tr(app.lang, crate::i18n::Msg::TreeSection))
             .expect("ツリー節が無い");
+        // The `p` row is shown iff the key acts: a build without `git` has no project type with
+        // screens, so the gate is off and the help has no `p` row.
+        let has_p = tree.rows.iter().any(|(k, _)| k == "p");
+        #[cfg(feature = "git")]
+        assert!(has_p, "git 変更ハブ(p)の行が無い: {:?}", tree.rows);
+        #[cfg(not(feature = "git"))]
         assert!(
-            tree.rows.iter().any(|(k, _)| k == "p"),
-            "git 変更ハブ(p)の行が無い: {:?}",
+            !has_p,
+            "git 無しのビルドに p の行が出ている: {:?}",
             tree.rows
         );
         // No section is empty (confirms the policy of never creating a title-only section).
