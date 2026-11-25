@@ -293,30 +293,6 @@ fn samples_root() -> PathBuf {
         .unwrap_or(manifest)
 }
 
-#[cfg(test)]
-mod samples_root_tests {
-    use super::*;
-
-    #[test]
-    fn a_package_below_the_repo_root_finds_the_repo_samples() {
-        assert!(sample_path_or_skip("sample.pdf").is_some());
-        assert!(samples_root().join("samples").is_dir());
-    }
-
-    #[test]
-    fn the_repo_root_is_the_workspace_above_the_package_under_test() {
-        let root = repo_root();
-        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
-        assert!(manifest.lines().any(|l| l.trim() == "[workspace]"));
-        assert!(root.join("crates").join("konoma-test-support").is_dir());
-    }
-
-    #[test]
-    fn a_missing_fixture_is_none_not_a_panic() {
-        assert!(sample_path_or_skip("no-such-fixture.bin").is_none());
-    }
-}
-
 /// A PNG header that declares `w` x `h` with no pixel data behind it.
 pub fn png_header_only(w: u32, h: u32) -> Vec<u8> {
     fn chunk(t: &[u8; 4], d: &[u8]) -> Vec<u8> {
@@ -742,4 +718,28 @@ pub fn assert_overlay_over_wide_background(
         }
     }
     rect
+}
+
+#[cfg(test)]
+mod samples_root_tests {
+    use super::*;
+
+    #[test]
+    fn a_package_below_the_repo_root_finds_the_repo_samples() {
+        assert!(sample_path_or_skip("sample.pdf").is_some());
+        assert!(samples_root().join("samples").is_dir());
+    }
+
+    #[test]
+    fn the_repo_root_is_the_workspace_above_the_package_under_test() {
+        let root = repo_root();
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(manifest.lines().any(|l| l.trim() == "[workspace]"));
+        assert!(root.join("crates").join("konoma-test-support").is_dir());
+    }
+
+    #[test]
+    fn a_missing_fixture_is_none_not_a_panic() {
+        assert!(sample_path_or_skip("no-such-fixture.bin").is_none());
+    }
 }
