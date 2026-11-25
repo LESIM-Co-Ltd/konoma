@@ -53,10 +53,34 @@ fn template_builds_offline_and_declares_the_rendered_id() {
     render_tree(&workspace.join("templates/konoma-plugin"), &generated);
     let manifest = generated.join("Cargo.toml");
     let mut text = std::fs::read_to_string(&manifest).unwrap();
-    text.push_str(&format!(
-        "\n[patch.crates-io]\nkonoma-plugin = {{ path = {:?} }}\n",
-        workspace.join("crates/konoma-plugin")
-    ));
+    // Every crate the workspace's own `[patch.crates-io]` points back at a path. konoma-plugin pulls
+    // the rest in by version; patching only it would send the others to the registry, which an
+    // offline build cannot reach (and a cold cargo cache does not have).
+    text.push_str("\n[patch.crates-io]\n");
+    let root = std::fs::read_to_string(workspace.join("Cargo.toml")).unwrap();
+    let section = root
+        .split("[patch.crates-io]")
+        .nth(1)
+        .expect("the workspace has a [patch.crates-io] section")
+        .split("\n[")
+        .next()
+        .unwrap();
+    let mut patched = 0;
+    for line in section.lines() {
+        let Some((name, rest)) = line.split_once(" = { path = \"") else {
+            continue;
+        };
+        let relative = rest.split('"').next().unwrap();
+        text.push_str(&format!(
+            "{name} = {{ path = {:?} }}\n",
+            workspace.join(relative)
+        ));
+        patched += 1;
+    }
+    assert!(
+        patched >= 8,
+        "expected the workspace patches, found {patched}"
+    );
     std::fs::write(&manifest, text).unwrap();
     // Reuse cached, resolved dependency versions, including yanked versions already locked.
     std::fs::copy(workspace.join("Cargo.lock"), generated.join("Cargo.lock")).unwrap();
