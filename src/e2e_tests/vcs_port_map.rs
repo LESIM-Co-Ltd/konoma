@@ -4212,10 +4212,7 @@ fn vcs_port_git_cases_run_before_the_jj_guard_returns() {
 fn vcs_port_changelog_keeps_each_decided_graph_difference() {
     let notes = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("CHANGELOG.md"))
         .unwrap();
-    let unreleased = notes
-        .split_once("## [Unreleased]")
-        .unwrap()
-        .1;
+    let unreleased = notes.split_once("## [Unreleased]").unwrap().1;
     // The notes move under a version heading when it is released, so every section after
     // `[Unreleased]` counts, not only the first.
     let unreleased = unreleased.split_whitespace().collect::<Vec<_>>().join(" ");
