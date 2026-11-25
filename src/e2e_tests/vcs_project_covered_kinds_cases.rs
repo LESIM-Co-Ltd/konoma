@@ -988,6 +988,9 @@ fn vcs_kind_reaper_stops_an_idle_plugin_child_while_away() {
     let mut sim = kind_sim(&repo, Sim::with_config_sized(&repo, cfg, 120, 30).with_media());
     sim.select("a.xd");
     sim.enter();
+    // The child's page arrives on the media worker; wait on its answer instead of judging the
+    // screen while it still says "loading" (a loaded CI runner loses that race).
+    sim.settle_inline_images("open", DRAIN_WAIT);
     sim.see("child says hello");
     sim.esc();
     // The session is dropped on the reaper thread: wait for that before judging idleness.
