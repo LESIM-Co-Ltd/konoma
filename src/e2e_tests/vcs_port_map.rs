@@ -4215,10 +4215,9 @@ fn vcs_port_changelog_keeps_each_decided_graph_difference() {
     let unreleased = notes
         .split_once("## [Unreleased]")
         .unwrap()
-        .1
-        .split("\n## [")
-        .next()
-        .unwrap();
+        .1;
+    // The notes move under a version heading when it is released, so every section after
+    // `[Unreleased]` counts, not only the first.
     let unreleased = unreleased.split_whitespace().collect::<Vec<_>>().join(" ");
     for difference in [
         "second tab",
