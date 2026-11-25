@@ -8,7 +8,7 @@ repository.workspace = true
 description = "The part of konoma's config.toml that every host shares (language, editor, key overrides, external switches), for konoma and the plugin SDK's small host"
 
 [dependencies]
-konoma-base = { path = "../konoma-base" }
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
 serde.workspace = true
 toml.workspace = true
 # The OS default language (no external process).
