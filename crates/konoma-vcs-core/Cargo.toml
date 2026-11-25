@@ -19,6 +19,8 @@ ignore.workspace = true
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
+# Sets a file's modification time in the jj snapshot tests (`utimensat`).
+libc.workspace = true
 
 [features]
 default = []
