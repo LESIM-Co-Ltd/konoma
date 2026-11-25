@@ -242,6 +242,10 @@ pub struct ProjectScreen {
     pub title: Tr,
     /// Optional label for the host's list filter hint; absent keeps the shared wording.
     pub filter_label: Option<Tr>,
+    /// Whether the host offers list filtering. Defaults to true.
+    pub filter: bool,
+    /// Close this pushed screen when its host tab loses focus.
+    pub transient: bool,
     /// An optional single character that jumps to this screen. The project entry key `p`
     /// may be reused here; other reserved host keys cannot be used as screen jumps.
     pub key: Option<char>,
@@ -260,6 +264,8 @@ impl ProjectScreen {
             id: id.into(),
             title: title.into(),
             filter_label: None,
+            filter: true,
+            transient: false,
             key: None,
             row_kinds: Vec::new(),
             marks: false,
@@ -274,6 +280,14 @@ impl ProjectScreen {
     }
     pub fn filter_label(mut self, label: impl Into<Tr>) -> Self {
         self.filter_label = Some(label.into());
+        self
+    }
+    pub fn filter(mut self, enabled: bool) -> Self {
+        self.filter = enabled;
+        self
+    }
+    pub fn transient(mut self) -> Self {
+        self.transient = true;
         self
     }
     pub fn pushed(mut self) -> Self {

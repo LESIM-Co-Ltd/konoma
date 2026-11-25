@@ -1553,21 +1553,22 @@ fn e2e_project_screen_key_collision_preserves_tree_key_and_menu_help_access() {
             .is_some(),
         "the declaration must keep its key"
     );
-    assert!(!crate::ui::status::hint_tokens(&f.sim.app)
+    assert!(crate::ui::status::hint_tokens(&f.sim.app)
         .iter()
         .any(|hint| hint.contains("z:screen-shortcut")));
     let before = f.log.lock().unwrap().acts.len();
     f.sim.key('z');
     drain(&mut f.sim);
-    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "text");
-    assert_eq!(f.log.lock().unwrap().acts.len(), before);
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "items");
+    assert_eq!(f.log.lock().unwrap().acts.len(), before + 1);
+    assert_eq!(last_act(&f).0, "screen-shortcut");
     f.sim.key('i');
     drain(&mut f.sim);
     f.sim.key('?');
     assert!(crate::ops::help::sections(&f.sim.app)
         .iter()
         .flat_map(|section| &section.rows)
-        .any(|(keys, desc)| keys.starts_with("Space") && desc == "screen-shortcut"));
+        .any(|(keys, desc)| keys.starts_with('z') && desc == "screen-shortcut"));
     f.sim.key('q');
     f.sim.key(' ');
     let ctx = f.sim.app.key_context().unwrap();
@@ -1639,7 +1640,7 @@ fn e2e_project_rendering_reuses_styled_list_text_diff_and_document_widgets() {
     assert!(cells
         .iter()
         .any(|c| c.modifier.contains(Modifier::REVERSED)));
-    f.sim.key('z');
+    f.sim.press(KeyCode::Tab, KeyModifiers::NONE);
     drain(&mut f.sim);
     f.sim.see("text selection=none");
     f.sim.key('d');
@@ -2196,7 +2197,7 @@ fn e2e_project_keep_input_other_tab_does_not_reopen_even_on_same_screen() {
 #[test]
 fn e2e_project_keep_input_changed_screen_does_not_reopen() {
     let (mut f, release) = pending_input_failure("project_keep_input_changed_screen");
-    f.sim.key('z');
+    f.sim.press(KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "text");
     release.open();
     drain(&mut f.sim);

@@ -1150,6 +1150,7 @@ pub enum WOutcome {
     Redraw,
     Flash(WTr),
     Reload,
+    PopScreen,
     PushScreen {
         screen: String,
         selection: Option<String>,
@@ -1178,6 +1179,7 @@ pub fn outcome_to_wire(o: &Outcome) -> WOutcome {
         Outcome::Redraw => WOutcome::Redraw,
         Outcome::Flash(t) => WOutcome::Flash(tr_to_wire(t)),
         Outcome::Reload => WOutcome::Reload,
+        Outcome::PopScreen => WOutcome::PopScreen,
         Outcome::PushScreen { screen, selection } => WOutcome::PushScreen {
             screen: screen.clone(),
             selection: selection.clone(),
@@ -1214,6 +1216,7 @@ pub fn outcome_from_wire_checked(o: WOutcome) -> Result<Outcome, WireError> {
         WOutcome::Redraw => Outcome::Redraw,
         WOutcome::Flash(t) => Outcome::Flash(tr_from_wire(t)),
         WOutcome::Reload => Outcome::Reload,
+        WOutcome::PopScreen => Outcome::PopScreen,
         WOutcome::PushScreen { screen, selection } => Outcome::PushScreen { screen, selection },
         WOutcome::OpenFile { path, line } => Outcome::OpenFile {
             path: abs_path_from_wire(path, "preview path")?,
