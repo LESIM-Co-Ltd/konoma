@@ -258,13 +258,7 @@ pub fn render_check_dir() -> PathBuf {
 /// captured-output dump whenever the process later exits non-zero for any reason) instead of
 /// quietly passing zero assertions with no trace anywhere in the test output.
 pub fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
-    // This crate lives at `<repo>/crates/konoma-test-support`; `samples/` is at the repo root.
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = root
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap_or(&root);
-    let p = root.join("samples").join(name);
+    let p = samples_root().join("samples").join(name);
     if p.exists() {
         Some(p)
     } else {
@@ -272,6 +266,37 @@ pub fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
             "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
         );
         None
+    }
+}
+
+/// The nearest ancestor of the package under test that has a `samples/` directory. The package is
+/// named by `CARGO_MANIFEST_DIR` at run time (set for the test process by the test runner), so the
+/// same call finds the fixtures in konoma's checkout and in a plugin repository split out of it,
+/// where this crate comes from the registry and its own location says nothing about the repo.
+fn samples_root() -> PathBuf {
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    manifest
+        .ancestors()
+        .find(|dir| dir.join("samples").is_dir())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or(manifest)
+}
+
+#[cfg(test)]
+mod samples_root_tests {
+    use super::*;
+
+    #[test]
+    fn a_package_below_the_repo_root_finds_the_repo_samples() {
+        assert!(sample_path_or_skip("sample.pdf").is_some());
+        assert!(samples_root().join("samples").is_dir());
+    }
+
+    #[test]
+    fn a_missing_fixture_is_none_not_a_panic() {
+        assert!(sample_path_or_skip("no-such-fixture.bin").is_none());
     }
 }
 
