@@ -115,59 +115,57 @@ fn a_dotted_context_name_is_written_with_quotes() {
 #[test]
 fn the_text_preview_is_text_or_document_by_what_is_shown() {
     assert_eq!(
-        Context::of_surface(Surface::PreviewText, false, false),
+        Context::of_surface(Surface::PreviewText, false),
         Some(Context::Text)
     );
     assert_eq!(
-        Context::of_surface(Surface::PreviewText, true, false),
+        Context::of_surface(Surface::PreviewText, true),
         Some(Context::Document)
     );
     // The flag refines only the text preview.
     assert_eq!(
-        Context::of_surface(Surface::PreviewImage, true, true),
+        Context::of_surface(Surface::PreviewImage, true),
         Some(Context::Image)
     );
     assert_eq!(
-        Context::of_surface(Surface::Tree, true, true),
+        Context::of_surface(Surface::Tree, true),
         Some(Context::Tree)
     );
 }
 
-#[cfg(feature = "git")]
 #[test]
-fn a_version_control_screen_gets_its_backends_context() {
-    for (sfc, screen) in [
-        (Surface::GitChanges, Screen::Changes),
-        (Surface::GitLog, Screen::Log),
-        (Surface::GitGraph, Screen::Graph),
-        (Surface::GitGraphPicker, Screen::GraphPicker),
-        (Surface::GitBranches, Screen::Branches),
-        (Surface::GitWorktrees, Screen::Worktrees),
-        (Surface::GitDetail, Screen::Detail),
-    ] {
-        assert_eq!(
-            Context::of_surface(sfc, false, false),
-            Some(Context::Screen(Backend::Git, screen))
-        );
-        assert_eq!(
-            Context::of_surface(sfc, false, true),
-            Some(Context::Screen(Backend::Jj, screen))
-        );
-    }
-    // The diff of one file is the same context for both backends.
+fn the_diff_of_one_file_is_the_same_context_for_both_backends() {
     assert_eq!(
-        Context::of_surface(Surface::PreviewGitDiff, false, true),
+        Context::of_surface(Surface::PreviewGitDiff, false),
         Some(Context::Diff)
     );
+}
+
+/// Whether `c` is a project screen context (`Context::Screen` exists only with the `git` feature).
+pub(super) fn is_screen_context(c: &Context) -> bool {
+    #[cfg(feature = "git")]
+    {
+        matches!(c, Context::Screen(..))
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = c;
+        false
+    }
 }
 
 #[test]
 fn every_context_maps_back_to_the_surface_it_refines() {
     for ctx in Context::all() {
         // The surface a context refines maps to this context for some flags.
-        let found = [(false, false), (false, true), (true, false), (true, true)]
+        // A project screen context refines the canvas surface, so `surface()` maps it to
+        // `PreviewCanvas`, not back to itself; it is layered over the canvas's context instead.
+        if is_screen_context(&ctx) {
+            continue;
+        }
+        let found = [false, true]
             .iter()
-            .any(|&(doc, jj)| Context::of_surface(ctx.surface(), doc, jj) == Some(ctx));
+            .any(|&doc| Context::of_surface(ctx.surface(), doc) == Some(ctx));
         assert!(found, "{ctx:?}");
     }
 }

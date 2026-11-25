@@ -86,7 +86,7 @@ details = []           # e.g. ["type", "size", "modified"]
 # With many branches the lanes/colors/legend overflow, so at startup they are auto-selected up to this limit,
 # ordered by base/priority + HEAD + recent commits. The graph's `b` panel toggles visibility and reorders
 # priority (x:toggle / J/K:reorder / a:all / c:current only / Enter:apply; HEAD is always shown). 0 = unlimited.
-graph_max_branches = 12
+graph_max_branches = 12   # Now also [plugins.git] / [plugins.jj] graph_max_branches, which wins.
 
 # The graph's "base / priority branches" (ordered; default []). e.g. ["main", "develop"]
 # 1. Branches listed here are shown with priority (placed at the front of the limit).
@@ -106,7 +106,7 @@ graph_base_branches = []
 #                        subject is truncated first, and if still narrow the metadata itself is dropped (a
 #                        non-essential column).
 #   "inline"           … place it right after the subject (the classic layout, metadata next to the subject).
-commit_meta_align = "right"
+commit_meta_align = "right"   # Now also [plugins.git] / [plugins.jj] commit_meta_align, which wins.
 
 # Quit confirmation. When q (top-level tree) / Q (from anywhere) quits the whole app, whether to confirm.
 #   true  (default) … ask "Quit?" (q / y / Enter = quit, n / Esc = cancel; qq exits quickly).
@@ -119,7 +119,7 @@ confirm_quit = true
 #   true  (default) … confirm before overwriting (y / Enter = overwrite, n / Esc = cancel).
 #   false           … overwrite immediately without confirmation.
 confirm_bookmark_overwrite = true
-confirm_jj_sync            = true   # Ask before `s` in a jj changes list lets jj snapshot the working copy.
+confirm_jj_sync            = true   # (Now [plugins.jj] confirm_sync, which wins.) Ask before `s` on a jj changes screen lets jj snapshot the working copy.
                                     # That is the one thing konoma writes to a jj repository, and only
                                     # when asked: it exists for the case konoma cannot see on its own,
                                     # a file whose contents changed while its timestamp did not.
@@ -512,7 +512,7 @@ code_theme = "TwoDark"
 #   enabled = false    switch the plugin off — its files go to the next step (plain text if they read as
 #                      text, otherwise [can not preview]). Unknown ids are reported at startup.
 #   read_only = true   stop the writing actions of that plugin (the actions it declares as writing; such a key says why
-#                      and does nothing). The standard plugins declare no actions yet, so it has no effect on them today.
+#                      and does nothing). The standard git and jj plugins declare their writes: [plugins.git] read_only = true leaves the git screens read-only and [plugins.jj] read_only = true the jj screens (separate settings); the other standard plugins declare no actions.
 #   read_dirs = ["~/Pictures"]
 #                      folders konoma may read files from on behalf of a plugin YOU added (a picture or text
 #                      file the plugin names). Default: the tab's root folder and the folder of the file being
@@ -531,6 +531,9 @@ code_theme = "TwoDark"
 #   svg          max_px           (was [ui] svg_max_px)
 #   mermaid      mode theme curve routing rows   (were [ui] mermaid mermaid_theme mermaid_curve mermaid_routing mermaid_rows)
 #   math         mode color       (were [ui] math math_color)
+#   git, jj      commit_meta_align graph_max_branches graph_base_branches   (were [ui] commit_meta_align
+#                                 graph_max_branches graph_base_branches); git: worktree_dir (was [git] worktree_dir); jj: confirm_sync (was [ui] confirm_jj_sync)
+#                path_style (not a rename, no notice: overrides [ui] path_style for the project screens; follows it until set here)
 #   markdown     task_states autolink alerts emoji frontmatter footnotes inline_html details table_align image_align
 #                                 (were [ui] md_task_states md_autolink md_alerts md_emoji md_frontmatter md_footnotes
 #                                  md_inline_html md_details md_table_align md_image_align)
@@ -538,6 +541,13 @@ code_theme = "TwoDark"
 # The keys of a plugin's own actions are rebound in [keys.<plugin id>] (W = "width" gives the action `width` the key W;
 # w = "noop" takes a key away). A key the host keeps for itself is refused and the startup message says so; the
 # action stays in the `Space` menu.
+# The keys that jump between a plugin's project screens are operations named goto_<screen id>: B = "goto_branches"
+# in [keys.git] moves the branches jump from b to B; b = "noop" removes it (Tab still reaches the screen).
+# Every screen that is not pushed has its goto_<screen id>, also one with no default key: L = "goto_log" gives the log a key.
+# The old per-screen tables ([keys."git.changes"], [keys."jj.log"], [keys.git_changes]) are read as old names: x = "git_stage"
+# there is moved to [keys.git] x = "stage" and announced once at start; an old action with no counterpart is announced as
+# "no effect". [keys.git] / [keys.jj] win over an old entry for the same key or operation. Host actions written in
+# those tables (git_close, git_launch_tool, refresh, ...) stay there and act on that screen only.
 # A plugin that is a program of its own (any language; it speaks konoma's plugin protocol on stdin/stdout):
 #   command = "my-viewer"   the program. A name without `/` is searched on PATH, a path is taken as it is. It is not run
 #                           through a shell. The id is the table's name and must be the id the program declares.
@@ -611,6 +621,8 @@ code_theme = "TwoDark"
 #                   reserved and does nothing here); scrolling, search, selection and the arrows,
 #                   Home/End, PageUp/PageDown, Enter, Tab and Shift-Tab belong to the plugin
 #   git.changes   : the changes list (p)   git.log / git.graph / git.branches / git.detail
+#                   (host actions written in these tables act on that screen only; plugin operations written
+#                   there move to [keys.git] / [keys.jj] with a rename notice)
 #   git.graph_picker : the graph's branch-visibility panel (b)
 #   git.worktrees : the linked-worktree list (w, on the version-control screens)
 #   jj.changes ... : the same screens opened for a jj repository (jj.log jj.graph jj.graph_picker
@@ -697,43 +709,35 @@ code_theme = "TwoDark"
 #                  "toggle_table_cell" (Enter in a table preview: full-text popup for the cursor cell — the grid
 #                    truncates wide cells with "…", this shows the untruncated value, wrapped and scrollable with
 #                    j/k/g/G/PageUp/PageDown; q/Esc/Enter close it. Context [keys.table_cell] covers the popup's keys.)
-#   Git          : "open_git_view" (p: the project screen, from the tree, a preview or a diff)
-#                  "git_launch_tool" (!: from the tree, a preview, a diff and the changes list)
-#                  "git_screen_next" "git_screen_prev" (Tab / Shift-Tab: walk the changes, log, graph, branches and
-#                    worktrees screens) "list_filter_start" (/ on the changes list, the log and the graph)
-#                  "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard" "git_commit" (c)
-#                  "git_worktree_diff" "git_open_selected_diff" (l / Enter) "git_open_branches" (b)
-#                  "git_open_log" "git_open_graph" (no default keys: reach them with Tab)
-#                  "cycle_diff_layout" (s) "cycle_diff_view" (R) "git_diff_discard"
-#                  "git_open_detail" (l / Enter on the log and graph) "git_close" (q / h) "git_diff_discard" (x in a diff)
-#                  "git_copy_short_hash" "git_copy_full_hash" "git_copy_subject" "git_copy_message" "git_copy_author"
-#                  "git_copy_date" (the commit's y menu) "copy_branch_name" (the branch list's y menu)
-#                  "branch_checkout" (l / Enter) "branch_create" (c) "branch_delete" (d) "branch_filter_start" (/)
-#                  "jj_sync" (s, in a jj changes list: let jj snapshot the working copy — konoma's only
-#                    write to a jj repository, and only after a confirmation. Does nothing in a
-#                    git repository.)
-#   Git graph    : "git_graph_set_base" (s) "git_graph_clear_base" (x) "git_graph_open_picker" (b)
-#                  "git_graph_toggle_all" (a: show every revision instead of the range the
-#                    backend considers current — only jj has a narrower one)
-#                  "git_graph_picker_toggle" (x) "git_graph_picker_all" (a) "git_graph_picker_current_only" (c)
-#                  "git_graph_picker_move_up" (K) "git_graph_picker_move_down" (J) "git_graph_picker_apply" (l / Enter)
-#   Git worktrees: "git_open_worktrees" (w, on the version-control screens: open the linked-worktree list — a
+#   Git          : "open_git_view" (p: open the project screens, from the tree, a preview or a diff)
+#                  "git_launch_tool" (!: from the tree, a preview, a diff and the changes screen of a project)
+#                  "list_filter_start" (/ on a project list) "git_close" (q / h on a top-level project screen: back to where p was pressed)
+#                  "cycle_diff_layout" (s) "cycle_diff_view" (R; does nothing on a project screen) "git_diff_discard" (x in a diff)
+#   Project screens (the git and jj plugins: rebind in [keys.git] / [keys.jj]; the screens are tabs, Tab / Shift-Tab walk them)
+#                  jumps: "goto_changes" (p) "goto_log" "goto_graph" (no default keys) "goto_branches" (b) "goto_worktrees" (w, git only)
+#                  git: "stage" (s) "stage_all" (S) "unstage" (u) "unstage_all" (U) "discard" (x) "commit" (c) "diff" (Enter)
+#                  "diff_all" (d) "detail" (Enter on the log) "checkout" (Enter) "create_branch" (c) "delete_branch" (d)
+#                  "branch_copy_name" (n in the branches y menu); the commit y menu: s short hash, h full hash, t subject,
+#                  m message, a author, d date
+#                  jj: "sync" (s: let jj snapshot the working copy — konoma's only write to a jj repository; it asks first by default,
+#                  and [plugins.jj] confirm_sync = false snapshots without asking). The jj bookmarks screen has only the copy action; w does nothing.
+#                  While a write runs the other action keys are hidden and do nothing, and quitting asks first.
+#   Git graph    : "graph_set_base" (s) "graph_clear_base" (x, git only) "graph_picker" (b) "graph_detail" (Enter)
+#                  "graph_all" (a: show every revision instead of the range the backend considers current — jj only;
+#                    git has no such toggle: its graph shows the history of the selected branches, newest 400 commits)
+#                  the branch panel: "picker_toggle" "picker_all" "picker_current" "picker_up" "picker_down" "picker_apply"
+#   Git worktrees: "goto_worktrees" (w, on the project screens: open the linked-worktree list — a
 #                    *linked* working tree from `git worktree add`, not the "worktree" meant
 #                    everywhere else in this file, which is always the uncommitted working tree)
-#                  "worktree_filter_start" (/: filter by branch name / path)
-#                  "worktree_goto" (Enter / l: switch this tab's root — and open_dir — to the selected
-#                    worktree; Enter is a fixed key here, same as branch_checkout, but the action
-#                    name is still config-rebindable to another key)
-#                  "worktree_goto_new_tab" (Ctrl-t: open the selected worktree in a new tab,
-#                    leaving this tab as-is) "worktree_close" (q / h)
-#                  "worktree_show_changes" (d: show the selected worktree's diff since the base
+#                  "worktree_switch" (Enter: switch this tab's root — and open_dir — to the selected worktree)
+#                  "worktree_changes" (d: show the selected worktree's diff since the base
 #                    branch — committed AND uncommitted together, so it still shows something even
 #                    if the worktree already committed its work. The base is graph_base_branches
 #                    below, falling back to the main worktree's branch. Falls back further to an
 #                    uncommitted-only diff when there's no base or nothing has piled up yet.)
 #                  "worktree_create" (c: open an input dialog for a branch name — new vs. existing is
 #                    auto-detected, no separate prompt for it — then `git worktree add` it under
-#                    [git] worktree_dir next to the main worktree, and switch this tab into it)
+#                    worktree_dir ([plugins.git] / [git]) next to the main worktree, and switch this tab into it)
 #   Tabs / app   : "tab_new_after" (t) "tab_new" (no default key) "toggle_tab_list" (T) "tab_list_close" (d in the list)
 #                  "tab_list_activate" (Enter in the list) "tab_prev" "tab_next" ([ ]) "toggle_help" (?) "cancel" (Esc)
 #   Disable      : "noop" (alias "disabled") = remove that key's default binding.
@@ -754,7 +758,7 @@ code_theme = "TwoDark"
 # "I" = "tab_new_after"        # the old "new tab right of this one" key (t does it now)
 # "t" = "tab_new"              # the old "append a tab at the end" key
 # [keys.tree]
-# o = "open_git_view"          # the old Git hub key (p now; o opens the file in another app)
+# o = "open_git_view"          # the old Git screen key (p now; o opens the file in another app)
 # s = "open_sort_menu"         # the old sort menu key (opens the `,` menu)
 #
 # Example (uncomment to use):
@@ -767,8 +771,9 @@ code_theme = "TwoDark"
 # [keys.text]
 # "ctrl-f" = "navigate:page_down"
 #
-# [keys."git.changes"]
-# g = "git_open_graph"
+# Screen jumps and the plugin's operations live in the plugin's own table, not in a per-screen one:
+# [keys.git]
+# L = "goto_graph"             # give the graph screen a jump key (it has none by default)
 #
 # (Backward compat) The old [keys] copy_name/copy_full/copy_relative/copy_parent (suffix) are still read for now
 # and mapped to the y copy leader. copy_prefix is ignored (the prefix is fixed to y in the new scheme).
@@ -796,16 +801,16 @@ command = ""          # Default editor. Empty falls back to $VISUAL → $EDITOR 
 # txt = "nano"
 
 # ── Git integration ──────────────────────────────────────────────────────────
-# `p` opens the built-in Git view (the changes list; Tab walks its screens). An external git tool is launched with `!`.
+# `p` opens the Git project screens (supplied by the standard git plugin; the screens are tabs, Tab walks them, q / h on a top-level screen go back to where p was pressed). An external git tool is launched with `!`.
 [git]
-tool        = "lazygit"   # The external git tool launched with `!` (from the tree, a preview, a diff or the changes list; command + args, space-separated). e.g. "tig status"
+tool        = "lazygit"   # The external git tool launched with `!` (from the tree, a preview, a diff or the changes screen of a project; command + args, space-separated). e.g. "tig status"
 diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" (side-by-side) | "auto" (by width). `s` cycles vertical→side-by-side→auto in a diff.
 media_diff  = "auto"      # Initial layout for the image/PDF/SVG side-by-side "diff": "auto" (whichever of side-by-
                         # side/stacked lets the picture render larger) | "side" | "stack". Separate from `diff` above
                         # (they mean different things). `s` cycles auto→side→stack→auto while that view is showing.
 # main_branch: [unimplemented / reserved] for the pinned-base-branch graph.
 #              Currently referenced nowhere = has no effect. It will be enabled when implemented.
-worktree_dir = "../"   # Where `c` (in the worktree list, [keys."git.worktrees"]) places a new linked worktree: resolved
+worktree_dir = "../"   # (Now [plugins.git] worktree_dir, which wins.) Where `c` (on the worktrees screen) places a new linked worktree: resolved
                         # against the MAIN worktree's own path (not wherever this tab's root is), then joined with the
                         # branch name (its / replaced with -, since a slash would otherwise make git nest directories).
                         # Default = a sibling of the main worktree, e.g. ~/work/proj + branch feat -> ~/work/feat. An
@@ -819,7 +824,7 @@ vcs = "auto" # "auto" | "git" | "jj". An explicit [project] value wins over [ext
 # git: always Git. jj: prefer Jj wherever .jj exists; fall back to Git if jj is unavailable.
 # With [external] git = false, a colocated repo uses Jj under auto or jj; git stays disabled.
 # The tree title identifies the active backend: a branch marker for Git, @ for Jj.
-# Jj reads never snapshot (--ignore-working-copy). Only an explicitly confirmed sync writes.
+# Jj reads never snapshot (--ignore-working-copy). Only an explicit sync writes (after a confirmation unless [plugins.jj] confirm_sync = false).
 
 # ── External process switches ────────────────────────────────────────────────
 # One on/off switch per external process konoma can launch. All default to `true` (unchanged

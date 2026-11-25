@@ -436,6 +436,115 @@ mod reading {
             .unwrap();
     }
 
+    /// The title of the diff a worktrees row's `d` opens, for the `graph_base_branches` given.
+    fn changes_title(root: &Path, target: &Path, branches: &[&str]) -> String {
+        let mut session = konoma_vcs::Git
+            .open(
+                Input::Project {
+                    root: root.into(),
+                    marker: ".git".into(),
+                },
+                &OpenCx::bare(),
+            )
+            .unwrap();
+        let settings = Settings::new().with(
+            "graph_base_branches",
+            Value::List(branches.iter().map(|s| Value::Str((*s).into())).collect()),
+        );
+        let context = ProjectAct::new()
+            .screen("worktrees")
+            .selected(ProjectRow::new("worktree", target.to_string_lossy()));
+        session
+            .act(
+                "worktree_changes",
+                &ActCx::new(&settings, "en").with_project(context),
+            )
+            .unwrap();
+        let View::Diff(diff) = session
+            .view(
+                &ViewReq::new(80, 20)
+                    .project(ProjectView::new("worktree_diff").selection(target.to_string_lossy())),
+                &ViewCx::new(&settings, "en"),
+            )
+            .unwrap()
+        else {
+            panic!("diff required")
+        };
+        diff.title.as_ref().map(Line::plain).unwrap()
+    }
+
+    /// A repository on `main` with a linked worktree `feature` that branched off it and has one
+    /// commit of its own; `other` is a second branch at the same commit as `main`.
+    fn base_fixture() -> (
+        konoma_test_support::TmpDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let dir = fixture();
+        let main = dir.join("main");
+        command(&main, &["branch", "-m", "main"]);
+        commit_file(&main, "base.txt", "base\n", 1_577_837_000);
+        command(&main, &["branch", "other"]);
+        let feature = dir.join("feature");
+        command(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-qb",
+                "feature",
+                feature.to_str().unwrap(),
+            ],
+        );
+        commit_file(&feature, "feature.txt", "feature\n", 1_577_837_100);
+        (dir, main, feature)
+    }
+
+    #[test]
+    fn worktrees_changes_base_falls_back_to_the_main_worktrees_branch_when_config_is_empty() {
+        let (_dir, main, feature) = base_fixture();
+        assert_eq!(
+            changes_title(&main, &feature, &[]),
+            format!(" feature ← main  {} ", feature.display())
+        );
+    }
+
+    #[test]
+    fn worktrees_changes_base_falls_back_to_the_main_worktrees_branch_when_every_configured_branch_is_missing(
+    ) {
+        let (_dir, main, feature) = base_fixture();
+        assert_eq!(
+            changes_title(&main, &feature, &["konoma-nope", "konoma-also-nope"]),
+            format!(" feature ← main  {} ", feature.display())
+        );
+    }
+
+    #[test]
+    fn worktrees_changes_base_picks_the_existing_configured_branch_among_missing_ones() {
+        let (_dir, main, feature) = base_fixture();
+        // `other` and `main` share the merge-base time: the configured branch is first and wins.
+        assert_eq!(
+            changes_title(
+                &main,
+                &feature,
+                &["konoma-nope", "other", "konoma-also-nope"]
+            ),
+            format!(" feature ← other  {} ", feature.display())
+        );
+    }
+
+    #[test]
+    fn worktrees_changes_base_is_none_when_the_only_candidate_is_the_targets_own_branch() {
+        let (_dir, main, _feature) = base_fixture();
+        std::fs::write(main.join("base.txt"), "uncommitted\n").unwrap();
+        // Empty config: the only candidate is the main worktree's own branch, so no base is
+        // chosen and the title is the uncommitted-changes one (never a diff against itself).
+        assert_eq!(
+            changes_title(&main, &main, &[]),
+            format!(" main  {}  (Uncommitted changes) ", main.display())
+        );
+    }
+
     #[test]
     fn worktrees_changes_base_uses_newest_merge_base_then_first_on_ties_excludes_own_and_falls_back(
     ) {
@@ -502,9 +611,11 @@ mod reading {
             else {
                 panic!("diff required")
             };
+            // The title sits on the frame's top edge, padded like the old hub's; no header line.
+            assert!(diff.header.is_empty());
             assert_eq!(
-                diff.header[0].plain(),
-                format!("feature ← {base}  {}", feature.display())
+                diff.title.as_ref().map(Line::plain).as_deref(),
+                Some(format!(" feature ← {base}  {} ", feature.display()).as_str())
             );
             assert_eq!(diff.hunks.len(), 1);
             assert_eq!(diff.hunks[0].path.as_deref(), Some("feature.txt"));
@@ -541,7 +652,11 @@ mod reading {
                 else {
                     panic!("diff required")
                 };
-                assert!(diff.header[0].plain().ends_with("(未コミットの変更)"));
+                assert!(diff.header.is_empty());
+                assert!(diff
+                    .title
+                    .as_ref()
+                    .is_some_and(|t| t.plain().ends_with("(未コミットの変更) ")));
                 assert!(diff
                     .hunks
                     .iter()

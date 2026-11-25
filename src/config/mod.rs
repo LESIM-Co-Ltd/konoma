@@ -8,6 +8,10 @@ use serde::Deserialize;
 
 use crate::preview::PreviewKind;
 
+mod project_settings;
+#[cfg(test)]
+mod project_settings_tests;
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -32,6 +36,9 @@ pub struct Config {
     /// (`plugin_disabled`), so a configuration with other external plugins never shares a registry.
     #[serde(skip)]
     pub external_plugins: Option<String>,
+    /// Project settings read through the shared old-name readers when loading a file.
+    #[serde(skip)]
+    pub(crate) moved_project_settings: std::collections::BTreeMap<String, konoma_plugin::Settings>,
 }
 
 /// Project selection (`[project]`). An absent key defers to the legacy name, then `auto`.
@@ -569,9 +576,7 @@ impl ThemeConfig {
     }
 }
 
-/// `[[preview.rules]]`: the user's assignments, tried first. The default assignments (markdown,
-/// mermaid, svg, image, csv, ...) are not listed here; they come from the standard plugins'
-/// declarations (`crate::plugins`), so the default is no rules at all.
+/// The host keeps its config schema here for the example-config field ownership checks.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PreviewConfig {
@@ -579,16 +584,28 @@ pub struct PreviewConfig {
 }
 
 /// A single preview rule. Matches by either glob or mime.
-/// Specify either builtin (a built-in renderer name) or command (an external command).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Rule {
     pub glob: Option<String>,
     pub mime: Option<String>,
-    pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "archive" | "spreadsheet" | "document" | "text"
-    pub command: Option<String>, // template: {path} {out}
-    pub render_as: Option<String>, // how to treat the command's output: "image" | "text"
-    pub detached: bool, // opens in a separate process so it doesn't block the TUI (video, etc.)
+    pub builtin: Option<String>,
+    pub command: Option<String>,
+    pub render_as: Option<String>,
+    pub detached: bool,
+}
+
+impl From<&Rule> for konoma_host_core::shared::Rule {
+    fn from(rule: &Rule) -> Self {
+        Self {
+            glob: rule.glob.clone(),
+            mime: rule.mime.clone(),
+            builtin: rule.builtin.clone(),
+            command: rule.command.clone(),
+            render_as: rule.render_as.clone(),
+            detached: rule.detached,
+        }
+    }
 }
 
 impl Default for UiConfig {
@@ -674,6 +691,9 @@ impl Config {
         };
         match toml::from_str::<Config>(&text) {
             Ok(mut cfg) => {
+                if let Ok(root) = text.parse::<toml::Table>() {
+                    cfg.moved_project_settings = project_settings::read(&root).0;
+                }
                 cfg.renamed_settings = Config::old_setting_names(&text, &cfg);
                 (cfg, None)
             }
@@ -702,6 +722,7 @@ impl Config {
         if table.get("external").and_then(|v| v.get("vcs")).is_some() {
             renamed.push(("[external] vcs".into(), "[project] vcs".into()));
         }
+        renamed.extend(project_settings::read(&table).1);
         renamed
     }
 
@@ -801,8 +822,6 @@ pub(crate) fn resolve_preview_kind(
     path: &Path,
     sniff: Option<&[u8]>,
 ) -> PreviewKind {
-    #[cfg(test)]
-    crate::test_support::note_resolve_preview_call();
     crate::plugins::resolve_kind(rules, disabled, preview_commands, path, sniff)
 }
 
@@ -836,6 +855,8 @@ use konoma_host_core::shared::format_load_error as format_config_load_error;
 
 #[cfg(test)]
 mod parity_tests;
+#[cfg(test)]
+mod shared_ui_gutter_tests;
 
 #[cfg(test)]
 mod tests {

@@ -17,8 +17,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, DisplayMode, InternalMode, Mode, PathStyle};
 use crate::i18n::{tr, Lang, Msg};
 use crate::keymap::Context;
-#[cfg(feature = "git")]
-use crate::keymap::Screen;
 use konoma_widgets::help_panel::fit_tokens;
 
 /// Shared helper that builds one mode chip. Background color = meaning; foreground is black/white by lightness.
@@ -64,13 +62,18 @@ fn chip_str(text: String, bg: Color, dark_bg: bool) -> Span<'static> {
 /// Display-mode (outer) chip. In a Git view = GIT (yellow) / TREE = white / PREVIEW/IMAGE = blue.
 /// Since Git has grown, the changes hub/log/graph/branches/detail **promote the main mode to GIT**.
 fn display_chip(app: &App) -> Span<'static> {
+    // A version-control project canvas names the backend answering, as the released git views did;
+    // a canvas of any other provider keeps the generic project chip.
+    if let Some(chips) = app.project_vcs_chips() {
+        return chip_str(chips.backend.text, chips.backend.bg, chips.backend.dark);
+    }
     if app.project_active() {
         return chip(app.lang, Msg::ProjectTitle, Color::Cyan, false);
     }
-    if app.in_git_view() {
+    if app.is_git_diff_preview() {
         // Which backend is answering has to be visible: a colocated repository has both, and a diff
         // taken against `@-` is not the same thing as one taken against HEAD.
-        return match app.git_vcs {
+        return match app.diff_vcs() {
             crate::vcs::VcsKind::Git => chip(app.lang, Msg::StGit, Color::Yellow, false),
             #[cfg(feature = "git")]
             crate::vcs::VcsKind::Jj => chip(app.lang, Msg::StJj, Color::Magenta, false),
@@ -93,15 +96,13 @@ fn display_chip(app: &App) -> Span<'static> {
 /// Nested state is a breadcrumb `parent - child` (e.g. the graph's branch panel = `GRAPH - BRANCH`).
 fn internal_chip(app: &App) -> Option<Span<'static>> {
     // The graph's branch panel is a sub-state of GRAPH, so it's shown as a breadcrumb.
-    if matches!(app.internal_mode()?, InternalMode::GitGraphPicker) {
-        let text = format!(
-            "{} - {}",
-            tr(app.lang, Msg::StGraph),
-            tr(app.lang, Msg::StBranch)
-        );
-        return Some(chip_str(text, Color::Yellow, false));
-    }
-    let (msg, bg, dark) = match app.internal_mode()? {
+    // An overlay in front of a version-control canvas (help, a dialog) shows its own mode; the
+    // canvas's screen names the chip when nothing is in front of it.
+    let Some(mode) = app.internal_mode() else {
+        let screen = app.project_vcs_chips()?.screen?;
+        return Some(chip_str(screen.text, screen.bg, screen.dark));
+    };
+    let (msg, bg, dark) = match mode {
         // Help is part of the same "view-only overlay" family as Info (dim/DarkGray).
         InternalMode::Help => (Msg::StHelp, Color::DarkGray, true),
         InternalMode::Visual => (Msg::StVisual, Color::Magenta, true),
@@ -137,31 +138,8 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::QuitConfirm => (Msg::StQuit, Color::Yellow, false),
         // The bookmark-overwrite confirmation is also non-destructive = yellow.
         InternalMode::BookmarkConfirm => (Msg::StMarkOverwrite, Color::Yellow, false),
-        InternalMode::GitChanges => (Msg::StChanges, Color::Yellow, false),
         // diff is part of the "viewing content" preview family, so blue.
         InternalMode::GitDiff => (Msg::StDiff, Color::Blue, true),
-        // A commit is "creating/finalizing", so green (same family as create).
-        InternalMode::Commit => (Msg::StCommit, Color::Green, false),
-        // log is history browsing (the Git family's yellow). Detail is part of the "viewing
-        // content" diff family, so blue.
-        InternalMode::GitLog => (Msg::StLog, Color::Yellow, false),
-        InternalMode::GitDetail => (Msg::StCommitDiff, Color::Blue, true),
-        // Branch operations are also part of the Git family's yellow.
-        InternalMode::GitBranch => {
-            // jj's list holds bookmarks; the word is not a synonym for branch there.
-            match app.git_vcs {
-                crate::vcs::VcsKind::Git => (Msg::StBranch, Color::Yellow, false),
-                #[cfg(feature = "git")]
-                crate::vcs::VcsKind::Jj => (Msg::StBookmark, Color::Yellow, false),
-            }
-        }
-        // Worktrees are also part of the Git family's yellow.
-        InternalMode::GitWorktrees => (Msg::StWorktrees, Color::Yellow, false),
-        InternalMode::GitGraph => (Msg::StGraph, Color::Yellow, false),
-        // GitGraphPicker is already handled as a breadcrumb up top (early return) = it never
-        // reaches here. Even if that guard ever slips, fall back gently to the GRAPH chip so
-        // nothing panics inside the render loop.
-        InternalMode::GitGraphPicker => (Msg::StGraph, Color::Yellow, false),
     };
     Some(chip(app.lang, msg, bg, dark))
 }
@@ -233,7 +211,8 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
     if !app.project_active() {
         spans.extend(match app.tab.mode {
             Mode::Tree => crate::ui::tree::context(app),
-            Mode::Preview => crate::ui::preview::context(app),
+            Mode::Preview if !app.is_git_diff_preview() => crate::ui::preview::context(app),
+            Mode::Preview => Vec::new(),
         });
     }
     let lang = app.lang;
@@ -254,7 +233,6 @@ fn mode_footer(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
     let lang = app.lang;
     let mode = app.internal_mode()?;
     let fixed = match mode {
-        InternalMode::DeleteConfirm if app.confirm_is_branch_delete() => Some(Msg::StDeleteForce),
         InternalMode::DeleteConfirm => Some(Msg::StTrashDelete),
         InternalMode::DropConfirm => Some(Msg::StCopyMoveHint),
         InternalMode::QuitConfirm => Some(Msg::StQuitHint),
@@ -263,7 +241,6 @@ fn mode_footer(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
         InternalMode::Create => Some(Msg::StCreateHint),
         InternalMode::BatchRename => Some(Msg::StRenamePreviewHint),
         InternalMode::Rename => Some(Msg::StRenameHint),
-        InternalMode::Commit => Some(Msg::StCommitHint),
         InternalMode::PluginInput => Some(Msg::StPluginInputHint),
         _ => None,
     };
@@ -285,9 +262,6 @@ fn mode_footer(app: &App, width: u16) -> Option<Vec<Span<'static>>> {
 
 /// The key context whose footer an internal mode shows (`None` = the mode has no footer of its own).
 fn mode_context(app: &App, mode: InternalMode) -> Option<Context> {
-    #[cfg(feature = "git")]
-    let backend = crate::ops::backend(app);
-    #[cfg(not(feature = "git"))]
     let _ = app;
     Some(match mode {
         InternalMode::Help => Context::Help,
@@ -295,27 +269,23 @@ fn mode_context(app: &App, mode: InternalMode) -> Option<Context> {
         InternalMode::PreviewVisual => Context::TextVisual,
         InternalMode::Info => Context::Info,
         InternalMode::TableCell => Context::TableCell,
-        #[cfg(feature = "git")]
-        InternalMode::GitChanges => Context::Screen(backend, Screen::Changes),
-        #[cfg(feature = "git")]
-        InternalMode::GitGraph => Context::Screen(backend, Screen::Graph),
-        #[cfg(feature = "git")]
-        InternalMode::GitGraphPicker => Context::Screen(backend, Screen::GraphPicker),
-        #[cfg(feature = "git")]
-        InternalMode::GitBranch => Context::Screen(backend, Screen::Branches),
-        #[cfg(feature = "git")]
-        InternalMode::GitWorktrees => Context::Screen(backend, Screen::Worktrees),
-        #[cfg(feature = "git")]
-        InternalMode::GitLog => Context::Screen(backend, Screen::Log),
-        #[cfg(feature = "git")]
-        InternalMode::GitDetail => Context::Screen(backend, Screen::Detail),
         InternalMode::GitDiff => Context::Diff,
         _ => return None,
     })
 }
 
 /// Footer: flash → which-key leader → in-progress input guide → priority-ordered key hints (as many as fit in `width`).
+#[cfg(test)]
 pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
+    let presentation = super::dialog::project_presentation(app);
+    footer_spans_with_project_dialog(app, width, presentation.as_ref())
+}
+
+fn footer_spans_with_project_dialog(
+    app: &App,
+    width: u16,
+    presentation: Option<&konoma_plugin::host::project::draw::ProjectDialogPresentation>,
+) -> Vec<Span<'static>> {
     let lang = app.lang;
     if let Some(msg) = &app.flash {
         return konoma_widgets::footer_line::flash_spans(msg);
@@ -325,43 +295,8 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     if let Some(spans) = whichkey_spans_fit(app, width) {
         return spans;
     }
-    if let Some(crate::app::project_screens::ProjectDialog::Act { prompts, stage, .. }) =
-        &app.project_dialog
-    {
-        if let Some(crate::app::project_screens::ProjectPrompt::Confirmation(prompt)) =
-            prompts.get(*stage)
-        {
-            let choices: Vec<_> = prompt
-                .choices
-                .iter()
-                .map(|choice| {
-                    format!(
-                        "{}:{}",
-                        choice.key,
-                        choice
-                            .status
-                            .as_ref()
-                            .unwrap_or(&choice.choice.label)
-                            .get(app.plugin_lang())
-                    )
-                })
-                .collect();
-            let cancel = tr(lang, Msg::ProjectConfirmCancelStatus);
-            let room = usize::from(width);
-            if room < cancel.width() {
-                return vec![Span::raw(fit_tokens(&["Esc".into()], width)).dim()];
-            }
-            let choices = fit_tokens(&choices, room.saturating_sub(cancel.width() + 2) as u16);
-            let text = if choices.is_empty() {
-                cancel.to_string()
-            } else {
-                format!("{choices}  {cancel}")
-            };
-            return vec![Span::raw(text).dim()];
-        }
-    }
-    if app.project_dialog.is_some() {
-        return vec![Span::raw(tr(lang, crate::i18n::Msg::ProjectDialogKeys)).dim()];
+    if let Some(presentation) = presentation {
+        return konoma_plugin::host::project::draw::project_dialog_footer(presentation, width);
     }
     if app.project_active()
         && app.key_context() == Some(crate::keymap::Context::Canvas)
@@ -433,7 +368,7 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
 /// Swaps a label whose wording assumes git for the one the answering backend uses.
 pub(crate) fn relabel_for_backend(app: &App, label: crate::i18n::Msg) -> crate::i18n::Msg {
     #[cfg(feature = "git")]
-    if app.git_vcs == crate::vcs::VcsKind::Jj {
+    if app.diff_vcs() == crate::vcs::VcsKind::Jj {
         use crate::i18n::Msg;
         return match label {
             Msg::WkShortHash => Msg::WkChangeId,
@@ -480,11 +415,26 @@ pub(crate) fn hint_tokens(app: &App) -> Vec<String> {
 }
 
 /// Render everything on one line (for statusbar="bottom"/"top"). Concatenates context + footer.
+#[cfg(test)]
 pub fn render_combined(frame: &mut Frame, app: &App, area: Rect) {
+    let presentation = super::dialog::project_presentation(app);
+    render_combined_with_project_dialog(frame, app, area, presentation.as_ref());
+}
+
+pub(super) fn render_combined_with_project_dialog(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    presentation: Option<&konoma_plugin::host::project::draw::ProjectDialogPresentation>,
+) {
     let mut spans = context_spans(app);
     spans.push(Span::from("  "));
     let rest = combined_footer_width(app, usize::from(area.width));
-    spans.extend(footer_spans(app, rest as u16));
+    spans.extend(footer_spans_with_project_dialog(
+        app,
+        rest as u16,
+        presentation,
+    ));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -509,9 +459,18 @@ pub fn render_context(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render the footer only (key hints, etc.) (for the bottom row of the split).
-pub fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn render_footer_with_project_dialog(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    presentation: Option<&konoma_plugin::host::project::draw::ProjectDialogPresentation>,
+) {
     frame.render_widget(
-        Paragraph::new(Line::from(footer_spans(app, area.width))),
+        Paragraph::new(Line::from(footer_spans_with_project_dialog(
+            app,
+            area.width,
+            presentation,
+        ))),
         area,
     );
 }
@@ -522,7 +481,7 @@ mod tests {
     use crate::config::Config;
     use crate::test_support::unique_tmp;
     #[cfg(feature = "git")]
-    use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git, run_jj};
+    use crate::test_support::{init_git_repo, jj_scratch_seeded};
 
     /// Helper: preview `name` in `dir` (found by exact filename suffix), triggering a real render
     /// pass so `md_items`/`md_cache` are populated (the same route `tree_activate` + a draw takes
@@ -1018,191 +977,6 @@ mod tests {
     // both backends is caught either way.
     // -----------------------------------------------------------------------------------------
 
-    /// (status.rs item 1) The jj changes-hub footer (the hub plan of `ops::footer` minus what a
-    /// read-only backend refuses): `R:sync`/`b:bookmarks`/
-    /// `!:tool`, never git's write words (`stage`/`unstage`/`commit`/`worktree`). Checked in both
-    /// languages (jp coverage #1). Paired with a git repository's hub, which must show the
-    /// opposite. The write tokens drop out through `ops::gate`, which reads
-    /// `crate::vcs::caps(&app.tab.root).write` straight from the path, so no
-    /// `refresh_git_if_needed()` call is needed to reach either branch.
-    #[cfg(feature = "git")]
-    #[test]
-    fn jj_changes_hub_footer_uses_jj_words_never_git_write_words() {
-        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_hub_footer") else {
-            return;
-        };
-        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
-        app.open_git_view();
-        assert!(app.is_git_view(), "jj でも changes ハブが開くはず");
-
-        for lang in [Lang::En, Lang::Jp] {
-            app.lang = lang;
-            let footer: String = footer_spans(&app, 200)
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
-            // The hub footer is generated from the operations that act on a read-only backend:
-            // the diff (`l` opens it like `Enter`), bookmarks, `s:sync` and the tool, the `/`
-            // filter and the `Tab` cycle of screens, then `h/q:close`. The log and the graph have
-            // no default key.
-            let expected = [
-                format!("l/Enter:{}", tr(lang, Msg::HintDiff)),
-                format!("d:{}", tr(lang, Msg::FtDiffAll)),
-                format!("b:{}", tr(lang, Msg::HintBookmarks)),
-                format!("s:{}", tr(lang, Msg::FtSync)),
-                format!("!:{}", tr(lang, Msg::FtTool)),
-                format!("/:{}", tr(lang, Msg::HintSearch)),
-                format!("Tab/⇧Tab:{}", tr(lang, Msg::FtScreens)),
-                format!("h/q:{}", tr(lang, Msg::FtClose)),
-            ]
-            .join("  ");
-            assert_eq!(
-                footer, expected,
-                "{lang:?}: jj の changes ハブフッターが期待と一致しない: {footer}"
-            );
-            for word in ["stage", "unstage", "commit", "worktree"] {
-                assert!(
-                    !footer.contains(word),
-                    "{lang:?}: jj フッターに git 専用語 {word:?} が出ている: {footer}"
-                );
-            }
-        }
-        std::fs::remove_dir_all(&jj_dir).ok();
-
-        // Pair: a git repository's hub shows the write words and none of jj's.
-        let git_dir = unique_tmp("konoma_status_git_hub_footer");
-        let _ = std::fs::remove_dir_all(&git_dir);
-        std::fs::create_dir_all(&git_dir).unwrap();
-        init_git_repo(&git_dir);
-        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        run_git(&git_dir, &["add", "-A"]);
-        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
-        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
-        git_app.open_git_view();
-        assert!(git_app.is_git_view(), "git でも changes ハブが開くはず");
-        let footer: String = footer_spans(&git_app, 200)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(
-            footer,
-            "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  \
-             b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close"
-        );
-        for word in ["stage", "unstage", "commit", "worktree"] {
-            assert!(
-                footer.contains(word),
-                "git フッターに {word:?} が無い: {footer}"
-            );
-        }
-        for word in ["sync", "bookmarks"] {
-            assert!(
-                !footer.contains(word),
-                "git フッターに jj 専用語 {word:?} が出ている: {footer}"
-            );
-        }
-    }
-
-    /// (status.rs item 2, graph) The jj graph footer: `a:all revisions`/`b:bookmarks`, never git's
-    /// base-pinning keys (`s:base`/`0/x:base off`/`b:branches`). Paired with a git repository's
-    /// graph footer.
-    #[cfg(feature = "git")]
-    #[test]
-    fn jj_graph_footer_shows_jj_hint_not_git_base_pin_hint() {
-        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_graph_footer") else {
-            return;
-        };
-        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
-        app.open_git_graph();
-        assert!(app.is_git_graph(), "jj でもグラフが開くはず");
-        let footer: String = footer_spans(&app, 200)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(
-            footer,
-            "j/k:nav  l/Enter:detail  a:all revisions  b:bookmarks  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
-        );
-        assert!(
-            !footer.contains("base"),
-            "jj のグラフフッターに base 固定語が出ている: {footer}"
-        );
-        std::fs::remove_dir_all(&jj_dir).ok();
-
-        let git_dir = unique_tmp("konoma_status_git_graph_footer");
-        let _ = std::fs::remove_dir_all(&git_dir);
-        std::fs::create_dir_all(&git_dir).unwrap();
-        init_git_repo(&git_dir);
-        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        run_git(&git_dir, &["add", "-A"]);
-        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
-        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
-        git_app.open_git_graph();
-        assert!(git_app.is_git_graph());
-        let footer: String = footer_spans(&git_app, 200)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(
-            footer,
-            "j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
-        );
-        assert!(
-            !footer.contains("all revisions"),
-            "git のグラフフッターに jj 専用語が出ている: {footer}"
-        );
-    }
-
-    /// (status.rs item 2, bookmarks) The jj bookmark-list footer: nav/search only, never git's
-    /// checkout/new/delete ops (the writes are gated off). Paired with
-    /// a git repository's branch-list footer.
-    #[cfg(feature = "git")]
-    #[test]
-    fn jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops() {
-        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_bookmarks_footer") else {
-            return;
-        };
-        assert!(
-            run_jj(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
-            "jj bookmark create に失敗"
-        );
-        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
-        app.open_git_branches();
-        assert!(app.is_git_branches(), "jj のブックマーク一覧が開かない");
-        let footer: String = footer_spans(&app, 200)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(footer, "j/k:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back");
-        for word in ["checkout", "new", "delete"] {
-            assert!(
-                !footer.contains(word),
-                "jj のブックマークフッターに {word:?} が出ている: {footer}"
-            );
-        }
-        std::fs::remove_dir_all(&jj_dir).ok();
-
-        let git_dir = unique_tmp("konoma_status_git_branches_footer");
-        let _ = std::fs::remove_dir_all(&git_dir);
-        std::fs::create_dir_all(&git_dir).unwrap();
-        init_git_repo(&git_dir);
-        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        run_git(&git_dir, &["add", "-A"]);
-        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
-        run_git(&git_dir, &["branch", "feature"]);
-        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
-        git_app.open_git_branches();
-        assert!(git_app.is_git_branches());
-        let footer: String = footer_spans(&git_app, 200)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(
-            footer,
-            "j/k:nav  l/Enter:checkout  c:new  d:delete  /:search  Tab/⇧Tab:screens  h/q/Esc:back"
-        );
-    }
-
     /// The diff's `Rendered` presentation shares the ordinary decorated Markdown preview's own
     /// wrap-aware layout — `h/l:hscroll` is a no-op the moment lines wrap, so the footer must not
     /// advertise it while `[ui] wrap` is on (the default), matching the ordinary decorated
@@ -1386,154 +1160,5 @@ mod tests {
         );
         assert!(footer.contains("discard"));
         std::fs::remove_dir_all(&git_dir).ok();
-    }
-
-    /// (status.rs item 3) The `JJ` chip (`Msg::StJj`) shows in the git view for a jj repository,
-    /// never for git (which shows `GIT`/`Git` via `Msg::StGit` instead). Checked in both languages
-    /// (jp coverage #2). Unlike the footer/help tests above, `display_chip` reads the cached
-    /// `app.git_vcs` field, which only the status scan populates — hence `refresh_git_if_needed()`.
-    #[cfg(feature = "git")]
-    #[test]
-    fn jj_chip_shows_in_git_view_for_jj_not_for_git() {
-        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_chip") else {
-            return;
-        };
-        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
-        app.refresh_git_if_needed();
-        assert_eq!(
-            app.git_vcs,
-            crate::vcs::VcsKind::Jj,
-            "jj と検出されているはず"
-        );
-        app.open_git_view();
-        assert!(app.is_git_view());
-        for lang in [Lang::En, Lang::Jp] {
-            app.lang = lang;
-            let chip = display_chip(&app);
-            assert_eq!(
-                chip.content.as_ref().trim(),
-                tr(lang, Msg::StJj),
-                "{lang:?}: jj の Git ビューに JJ チップが出ていない"
-            );
-        }
-        std::fs::remove_dir_all(&jj_dir).ok();
-
-        let git_dir = unique_tmp("konoma_status_git_chip");
-        let _ = std::fs::remove_dir_all(&git_dir);
-        std::fs::create_dir_all(&git_dir).unwrap();
-        init_git_repo(&git_dir);
-        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        run_git(&git_dir, &["add", "-A"]);
-        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
-        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
-        git_app.refresh_git_if_needed();
-        assert_eq!(git_app.git_vcs, crate::vcs::VcsKind::Git);
-        git_app.open_git_view();
-        assert!(git_app.is_git_view());
-        let chip = display_chip(&git_app);
-        assert_eq!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StGit));
-        assert_ne!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StJj));
-    }
-
-    /// (status.rs item 4) The `BOOKMARK` chip (`Msg::StBookmark`) shows for jj's bookmark list;
-    /// git's branch list keeps showing `BRANCH` (`Msg::StBranch`). `jj::bookmarks` always reports
-    /// `is_current: false` (a jj bookmark doesn't follow the working copy the way a branch follows
-    /// HEAD), so this also indirectly backs up the "no current marker" property `ui::git`'s render
-    /// test checks directly.
-    #[cfg(feature = "git")]
-    #[test]
-    fn bookmark_chip_shows_for_jj_list_branch_chip_for_git_list() {
-        let Some(jj_dir) = jj_scratch_seeded("konoma_status_bookmark_chip") else {
-            return;
-        };
-        assert!(
-            run_jj(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
-            "jj bookmark create に失敗"
-        );
-        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
-        app.refresh_git_if_needed();
-        app.open_git_branches();
-        assert!(app.is_git_branches(), "jj のブックマーク一覧が開かない");
-        for lang in [Lang::En, Lang::Jp] {
-            app.lang = lang;
-            let chip = internal_chip(&app).expect("Bookmarks の内部チップが無い");
-            assert_eq!(
-                chip.content.as_ref().trim(),
-                tr(lang, Msg::StBookmark),
-                "{lang:?}: BOOKMARK チップが出ていない"
-            );
-        }
-        std::fs::remove_dir_all(&jj_dir).ok();
-
-        let git_dir = unique_tmp("konoma_status_branch_chip");
-        let _ = std::fs::remove_dir_all(&git_dir);
-        std::fs::create_dir_all(&git_dir).unwrap();
-        init_git_repo(&git_dir);
-        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        run_git(&git_dir, &["add", "-A"]);
-        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
-        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
-        git_app.refresh_git_if_needed();
-        git_app.open_git_branches();
-        assert!(git_app.is_git_branches());
-        let chip = internal_chip(&git_app).expect("Branch の内部チップが無い");
-        assert_eq!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StBranch));
-    }
-
-    /// (status.rs item 5) The copy menu's read-back: jj shows `WkChangeId` ("change id") where
-    /// git shows `WkShortHash` ("short hash"), and jj's `WkCommitId` ("commit id") replaces git's
-    /// `WkFullHash` ("full hash"). Checked at the function level (`relabel_for_backend`) and
-    /// through the real which-key footer a user actually sees — opened via `LeaderId::GitCopy`,
-    /// which is what `y` binds to in the git log/detail surfaces (`Surface::GitLog`), not the
-    /// plain `LeaderId::Copy` the tree/preview `y` binds to.
-    #[cfg(feature = "git")]
-    #[test]
-    fn copy_menu_relabels_short_hash_to_change_id_for_jj_not_git() {
-        let Some(jj_dir) = jj_scratch_seeded("konoma_status_relabel_jj") else {
-            return;
-        };
-        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
-        app.refresh_git_if_needed();
-        assert_eq!(app.git_vcs, crate::vcs::VcsKind::Jj);
-        assert_eq!(relabel_for_backend(&app, Msg::WkShortHash), Msg::WkChangeId);
-        assert_eq!(relabel_for_backend(&app, Msg::WkFullHash), Msg::WkCommitId);
-
-        app.pending_leader = Some(crate::keymap::LeaderId::GitCopy);
-        let menu: String = footer_spans(&app, 200)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(
-            menu.contains(tr(Lang::En, Msg::WkChangeId)),
-            "jj のコピーメニューに change id が無い: {menu}"
-        );
-        assert!(
-            !menu.contains(tr(Lang::En, Msg::WkShortHash)),
-            "jj のコピーメニューに short hash が残っている: {menu}"
-        );
-        std::fs::remove_dir_all(&jj_dir).ok();
-
-        // Pair: a git repository keeps "short hash" and never shows "change id".
-        let git_dir = unique_tmp("konoma_status_relabel_git");
-        let _ = std::fs::remove_dir_all(&git_dir);
-        std::fs::create_dir_all(&git_dir).unwrap();
-        init_git_repo(&git_dir);
-        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        run_git(&git_dir, &["add", "-A"]);
-        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
-        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
-        git_app.refresh_git_if_needed();
-        assert_eq!(git_app.git_vcs, crate::vcs::VcsKind::Git);
-        assert_eq!(
-            relabel_for_backend(&git_app, Msg::WkShortHash),
-            Msg::WkShortHash
-        );
-        git_app.pending_leader = Some(crate::keymap::LeaderId::GitCopy);
-        let menu: String = footer_spans(&git_app, 200)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(menu.contains(tr(Lang::En, Msg::WkShortHash)));
-        assert!(!menu.contains(tr(Lang::En, Msg::WkChangeId)));
     }
 }

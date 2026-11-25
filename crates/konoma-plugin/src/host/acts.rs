@@ -11,6 +11,35 @@ use konoma_host_core::menu::{add_candidate, plain_key};
 
 use crate::text::Tr;
 
+/// Translated words supplied by the host. An explicit menu label takes precedence over the
+/// operation's current short label; missing words retain the existing empty-label fallback.
+#[derive(Clone, Debug)]
+pub struct FixedMenuLabel {
+    pub declared: Option<String>,
+    pub fallback: Option<String>,
+}
+
+/// Filter and name a resolved fixed declaration in its own order. Neither default-menu
+/// generation nor Actions letter assignment belongs to this path.
+pub fn fixed_menu_items<A: Copy, D>(
+    declaration: &[konoma_host_core::menu::Item<A, D>],
+    enabled: impl Fn(A) -> bool,
+    label: impl Fn(&D, A) -> FixedMenuLabel,
+) -> Vec<konoma_host_core::menu::Item<A, String>> {
+    declaration
+        .iter()
+        .filter(|item| enabled(item.action))
+        .map(|item| {
+            let words = label(&item.label, item.action);
+            konoma_host_core::menu::Item {
+                key: item.key,
+                action: item.action,
+                label: words.declared.or(words.fallback).unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
 /// The names of the key contexts that show a plugin's view: the plugin's layer sits on top of the
 /// display type's, and nowhere else.
 pub const VIEW_CONTEXTS: [&str; 5] = ["text", "document", "table", "image", "canvas"];
@@ -92,6 +121,34 @@ impl<'a, H> Hint<'a, H> {
             self.label(lang)
         } else {
             help
+        }
+    }
+
+    /// The help words of a row that shows only the keys of the members that act now. The group's
+    /// joined help describes every member, so it is used only when all of them show a key; else
+    /// the words are the first showing member's own help (or label), so a row never names a key
+    /// that is not on it.
+    pub fn help_for(&self, lang: &str, enabled: impl Fn(&ActBinding<H>) -> bool) -> &'a str {
+        let shows = |b: &&&ActBinding<H>| b.key.is_some() && enabled(**b);
+        // A screen may not offer every declared member at all (a row-scoped member has no row to
+        // act on): those do not show either.
+        let declared = self.members[0]
+            .hint_group
+            .as_ref()
+            .map_or(0, |(_, g)| g.members)
+            .max(self.members.len());
+        let all_show = self.members.iter().filter(|b| shows(b)).count() == declared;
+        let first = self.members.iter().find(|b| shows(b));
+        match first {
+            Some(b) if !all_show => {
+                let own = b.help.get(lang);
+                if own.is_empty() {
+                    b.label.get(lang)
+                } else {
+                    own
+                }
+            }
+            _ => self.help(lang),
         }
     }
 
@@ -179,7 +236,7 @@ pub fn help_rows<'a, H>(
                 return None;
             }
             let b = h.members[0];
-            let desc = h.help(lang);
+            let desc = h.help_for(lang, &enabled);
             Some((keys, desc, b))
         })
         .collect()
@@ -262,6 +319,34 @@ pub fn gate<H>(binding: Option<&ActBinding<H>>, enabled: bool, read_only: bool) 
         return ActGate::ReadOnly;
     }
     ActGate::On
+}
+
+/// The verdict of the write policy on one operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteVerdict {
+    /// The operation may run (as far as the plugin policy goes).
+    Allowed,
+    /// The plugin is read-only, by its own declaration or by `read_only = true` in its table.
+    PluginReadOnly,
+}
+
+/// The plugin-level write policy, the one rule konoma and the standalone app share. `writes` is
+/// whether the operation writes (a reading one always passes, even for a read-only plugin);
+/// `declared_read_only` is the plugin's own manifest declaration, which configuration cannot
+/// override; `configured` is the `read_only` value of its `[plugins.<id>]` table. Only a boolean
+/// `true` there refuses: any other value (absent, `false`, a string) leaves the operation allowed.
+pub fn write_policy(
+    writes: bool,
+    declared_read_only: bool,
+    configured: Option<&toml::Value>,
+) -> WriteVerdict {
+    if !writes {
+        return WriteVerdict::Allowed;
+    }
+    if declared_read_only || matches!(configured, Some(toml::Value::Boolean(true))) {
+        return WriteVerdict::PluginReadOnly;
+    }
+    WriteVerdict::Allowed
 }
 
 #[cfg(test)]
@@ -494,5 +579,37 @@ mod tests {
         assert_eq!(gate(Some(&all[1]), true, true), ActGate::On);
         // Off wins over the refusal: a hint that does not act is not explained.
         assert_eq!(gate(Some(&all[0]), false, true), ActGate::Off);
+    }
+
+    #[test]
+    fn the_write_policy_over_every_read_only_value_and_both_kinds_of_action() {
+        let configured = [
+            None,
+            Some(toml::Value::Boolean(false)),
+            Some(toml::Value::Boolean(true)),
+            Some(toml::Value::String("true".into())),
+            Some(toml::Value::Integer(1)),
+        ];
+        let mut refused = 0;
+        for declared in [false, true] {
+            for value in &configured {
+                for writes in [false, true] {
+                    let blocked = declared || value == &Some(toml::Value::Boolean(true));
+                    let want = if writes && blocked {
+                        refused += 1;
+                        WriteVerdict::PluginReadOnly
+                    } else {
+                        WriteVerdict::Allowed
+                    };
+                    assert_eq!(
+                        write_policy(writes, declared, value.as_ref()),
+                        want,
+                        "declared={declared} configured={value:?} writes={writes}"
+                    );
+                }
+            }
+        }
+        // declared (5 values) + configured true with no declaration (1) = 6 refusals.
+        assert_eq!(refused, 6);
     }
 }

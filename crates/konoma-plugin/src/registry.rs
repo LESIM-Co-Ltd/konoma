@@ -965,6 +965,16 @@ impl Registry {
 
     /// Decide who shows a file.
     pub fn resolve_file(&self, rules: &[UserRule], facts: &FileFacts) -> Resolution {
+        self.resolve_file_with(rules, facts, |_| false)
+    }
+
+    /// Host pseudo assignments have no executable plugin in the registry.
+    pub(crate) fn resolve_file_with(
+        &self,
+        rules: &[UserRule],
+        facts: &FileFacts,
+        internal: impl Fn(&str) -> bool,
+    ) -> Resolution {
         let lazy = Lazy {
             facts,
             mime: OnceCell::new(),
@@ -972,7 +982,7 @@ impl Registry {
         };
         // 1. The user's rules, first match; a rule aimed at a missing or disabled plugin is skipped.
         for rule in rules {
-            if !self.is_enabled(&rule.plugin)
+            if (!internal(&rule.plugin) && !self.is_enabled(&rule.plugin))
                 || self.origin(&rule.plugin) == Some(PluginOrigin::Bundled)
             {
                 continue;

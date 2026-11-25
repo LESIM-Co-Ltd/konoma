@@ -14,6 +14,10 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     if let Some(mode) = std::env::var_os(child::CHILD_ENV) {
+        #[cfg(feature = "app")]
+        if mode == "projects" {
+            return child::projects();
+        }
         // "multi": a program that carries two plugins (`export!(A, B)`).
         if mode == "multi" {
             return konoma_plugin::proc::cli_main_many(vec![

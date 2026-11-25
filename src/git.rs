@@ -1,44 +1,7 @@
 // Shared VCS data types. Production reads and writes go through `crate::vcs`.
-pub use konoma_vcs_core::git::{
-    BranchInfo, ChangeEntry, CommitInfo, CommitMeta, DiffLine, DiffLineKind, FileStatus, GraphRow,
-    LegendEntry, WorktreeInfo,
-};
+pub use konoma_vcs_core::git::{DiffLine, DiffLineKind, FileStatus};
 
-// Legacy fixture helpers are available only to tests, never to host features.
-#[cfg(test)]
+// Legacy fixture helpers are available only to tests, never to host features. Without the `git`
+// feature no test reads them any more, so the glob would be an unused import there.
+#[cfg(all(test, feature = "git"))]
 pub use konoma_vcs_core::git::*;
-
-#[cfg(test)]
-mod tests {
-    use crate::i18n::{tr, worktree_labels, Lang, Msg};
-    use konoma_vcs_core::git::WorktreeLabels;
-
-    /// The core repeats the English words as its `Default` (its own tests build graphs without a
-    /// host); if the host's English table changes, this fails.
-    #[test]
-    fn the_cores_default_worktree_words_are_the_english_ones() {
-        assert_eq!(WorktreeLabels::default(), worktree_labels(Lang::En));
-    }
-
-    #[test]
-    fn the_worktree_words_handed_in_are_what_the_graph_row_always_said() {
-        let en = worktree_labels(Lang::En);
-        assert_eq!(en.uncommitted, "Uncommitted changes");
-        assert_eq!(
-            (&*en.staged, &*en.unstaged, &*en.untracked),
-            ("staged", "unstaged", "untracked")
-        );
-        let jp = worktree_labels(Lang::Jp);
-        assert_eq!(jp.uncommitted, "未コミットの変更");
-        assert_eq!(
-            (&*jp.staged, &*jp.unstaged, &*jp.untracked),
-            ("ステージ済", "未ステージ", "未追跡")
-        );
-        for lang in [Lang::En, Lang::Jp] {
-            assert_eq!(
-                worktree_labels(lang).uncommitted,
-                tr(lang, Msg::UncommittedChanges)
-            );
-        }
-    }
-}

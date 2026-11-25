@@ -1,0 +1,152 @@
+//! The standalone `konoma-vcs` program's `!` reaches the launch seam with the configured tool.
+//! The seam records the attempt and runs no program.
+use super::vcs_changes::git_repo;
+use konoma_host_core::shared::SharedConfig;
+use konoma_plugin::app::project::{
+    prepare_projects, run_project_with, ProjectIdleSnapshot, ProjectLoopCx,
+};
+use konoma_plugin::app::{key_from_crossterm, AppEvent, EventSource, LaunchCx, Next};
+use konoma_plugin::{Plugin, TermCaps};
+use ratatui::{backend::TestBackend, Terminal};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+/// One recorded launch: program, arguments and working directory.
+type Launch = (String, Vec<String>, String);
+
+/// Feeds `keys` one at a time at the code-side idle fence (`ProjectIdleSnapshot::is_idle`), so
+/// asynchronous screen loading, replayed keys and queued launches have settled before each key
+/// and before the end. No sleeping or turn counting: the loop reports when it owes nothing.
+struct Keys {
+    keys: std::collections::VecDeque<char>,
+}
+
+impl EventSource for Keys {
+    fn next(&mut self, _wait: Option<std::time::Duration>) -> Next {
+        unreachable!("a fenced source is only asked at the idle fence")
+    }
+    fn project_fenced(&self) -> bool {
+        true
+    }
+    fn project_idle(&mut self, _: ProjectIdleSnapshot, _: ratatui::buffer::Buffer) -> Next {
+        let Some(c) = self.keys.pop_front() else {
+            return Next::End;
+        };
+        Next::Event(AppEvent::Key(
+            key_from_crossterm(&crossterm::event::KeyEvent::new(
+                // `\t` stands for the Tab key, which cycles the project's screens.
+                if c == '\t' {
+                    crossterm::event::KeyCode::Tab
+                } else {
+                    crossterm::event::KeyCode::Char(c)
+                },
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .expect("a key"),
+        ))
+    }
+}
+
+/// Runs the standalone project loop on `root` with `keys` and returns what the seam recorded as
+/// `(program, args, cwd)`.
+fn run_keys(root: &Path, config: &str, keys: &str) -> Vec<Launch> {
+    let mut plugins: Vec<Arc<dyn Plugin>> =
+        konoma_vcs::program().into_iter().map(Arc::from).collect();
+    plugins.extend(konoma_file_plugins::plugins());
+    let mut prepared = prepare_projects(
+        plugins,
+        root,
+        TermCaps::new(),
+        (SharedConfig::parse(config).unwrap(), None),
+        Arc::new(konoma_vcs::standalone::VcsServices),
+    )
+    .unwrap_or_else(|e| panic!("{}", e.error));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let sink = log.clone();
+    let launch = LaunchCx::new(
+        prepared.config.editor.clone(),
+        &prepared.config.external,
+        vec![],
+    )
+    .with_hand_off(Arc::new(move |attempt, cwd, redraw| {
+        sink.lock().unwrap().push((
+            attempt.prog.clone(),
+            attempt.args.clone(),
+            cwd.display().to_string(),
+        ));
+        redraw()?;
+        Ok(Some(0))
+    }));
+    let cx = ProjectLoopCx {
+        launch: Some(launch),
+        ..Default::default()
+    };
+    let mut events = Keys {
+        keys: keys.chars().collect(),
+    };
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    run_project_with(&mut terminal, &mut prepared, &mut events, &cx, None).unwrap();
+    let records = log.lock().unwrap().clone();
+    records
+}
+
+#[test]
+fn vcs_standalone_bang_hands_the_configured_tool_to_the_launch_seam() {
+    let repo = git_repo("vcs_standalone_bang", true);
+    let root = repo.canonicalize().unwrap();
+    // No trailing keys: the loop ends only at the idle fence, after the queued launch is polled.
+    let records = run_keys(
+        &root,
+        "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool --flag'\n",
+        "!",
+    );
+    assert_eq!(records.len(), 1, "{records:?}");
+    let (prog, args, cwd) = &records[0];
+    assert_eq!(prog, "fixture-git-tool");
+    assert_eq!(args, &["--flag".to_string()]);
+    assert_eq!(Path::new(cwd).canonicalize().unwrap(), root);
+}
+
+#[test]
+fn vcs_standalone_bang_without_the_key_launches_nothing_and_a_disabled_tool_stays_off() {
+    let repo = git_repo("vcs_standalone_no_bang", true);
+    let root = repo.canonicalize().unwrap();
+    let config = "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool'\n";
+    assert!(run_keys(&root, config, "jjj").is_empty());
+    let off = "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool'\n[external]\ngit_tool=false\n";
+    assert!(run_keys(&root, off, "!").is_empty());
+}
+
+/// Old hub: `!` is bound only in the changes screen's table, so the standalone program's `!`
+/// launches nothing on the log, graph, branches and worktrees screens either (Tab cycles to them).
+#[test]
+fn vcs_standalone_bang_acts_only_on_the_changes_screen() {
+    let repo = git_repo("vcs_standalone_bang_screens", true);
+    let root = repo.canonicalize().unwrap();
+    let config = "[ui]\nlang='en'\n[git]\ntool='fixture-git-tool'\n";
+    for tabs in 1..=4 {
+        let keys = format!("{}!jjj", "\t".repeat(tabs));
+        assert!(
+            run_keys(&root, config, &keys).is_empty(),
+            "`!` {tabs} screen(s) after changes launched the tool"
+        );
+    }
+    // The same keys without the Tabs do launch (changes), so the empty results above are not a
+    // harness that never launches.
+    assert_eq!(run_keys(&root, config, "!").len(), 1);
+    // jj has changes, log, graph and bookmarks (no worktrees screen): three Tabs reach them all.
+    // The guard lives to the end of the test: dropping it would delete the fixture.
+    if crate::vcs::jj::available() {
+        let jj = crate::test_support::jj_scratch_seeded("vcs_standalone_bang_screens_jj")
+            .expect("a jj fixture");
+        let jj_root = jj.canonicalize().unwrap();
+        for tabs in 1..=3 {
+            let keys = format!("{}!jjj", "\t".repeat(tabs));
+            assert!(
+                run_keys(&jj_root, config, &keys).is_empty(),
+                "jj: `!` {tabs} screen(s) after changes launched the tool"
+            );
+        }
+        assert_eq!(run_keys(&jj_root, config, "!").len(), 1);
+    }
+}

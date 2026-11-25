@@ -42,7 +42,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 
-use super::doc_pictures::{DocEnv, DocPics};
+use super::doc_pictures::{DocEnv, DocPics, DocPictureFocus};
 use super::document::Laid;
 use super::still::{Still, StillShape};
 use crate::canvas_pictures::{
@@ -163,6 +163,61 @@ pub struct Pictures {
 }
 
 impl Pictures {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn media_cache_for_test(
+        &self,
+    ) -> Vec<super::project::media_test_hooks::MediaCacheSnapshot> {
+        self.doc
+            .as_ref()
+            .map_or_else(Vec::new, DocPics::media_cache_for_test)
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn cell_px_for_test(&self) -> (u32, u32) {
+        let font = self.picker.font_size();
+        (font.width.into(), font.height.into())
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn settled_for_test(&self) -> bool {
+        self.job.is_none()
+            && self.again_at.is_none()
+            && !self.cache.encodes_in_flight()
+            && self.still.as_ref().is_none_or(Still::settled_for_test)
+            && self.doc.as_ref().is_none_or(|d| !d.loading())
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn settle_for_test(&mut self) {
+        while self.job.is_some() || self.again_at.is_some() {
+            // A deferred decode is owed work; animation deadlines do not fence publication.
+            if self.job.is_none() && self.again_at.take().is_some() {
+                if let Some((cols, rows, images)) = self.latest.clone() {
+                    self.start_for(cols, rows, &images, true);
+                }
+            }
+            if self.job.is_none() {
+                break;
+            }
+            let done = self
+                .done_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: canvas picture decode");
+            self.done_tx.send(done).expect("picture receiver");
+            self.poll();
+        }
+        while self.cache.encodes_in_flight() {
+            let result = self
+                .enc_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: canvas picture encode");
+            self.cache.apply_encode(result);
+        }
+        if let Some(still) = self.still.as_mut() {
+            still.settle_for_test();
+        }
+        if let Some(doc) = self.doc.as_mut() {
+            doc.settle_for_test();
+        }
+    }
     /// The pictures for `plugin_id` showing `path`, drawn through `picker`. Starts the encode
     /// worker; the SVGs are drawn in this process at `raster_px` (`ui.svg_max_px`) and the
     /// kitty deletes go to standard output.
@@ -244,22 +299,88 @@ impl Pictures {
         }
     }
 
+    /// The view that drew these pictures (the diff screen or its Preview) is left: a project
+    /// screen covers it, or it went back to its project screen. Covering is leaving, as in a
+    /// konoma tab that is left (`leave_tab_view`): the canvas and the still picture go with their
+    /// decodes, and what animates or may yet animate in the document goes
+    /// (`DocPics::stop_animations`). The return opens the file again (a new session) and places
+    /// them again. Every field is named, so a new one is decided here.
+    pub(crate) fn leave_view(&mut self) {
+        let Self {
+            // The terminal, the encoder and the file: the return draws the same file there.
+            overlay: _,
+            plugin_id: _,
+            path: _,
+            raster_px: _,
+            svg: _,
+            out: _,
+            picker: _,
+            doc_env: _,
+            // The workers' channels: a canvas answer is refused once its job went (`forget`).
+            enc_rx: _,
+            done_tx: _,
+            done_rx: _,
+            // Left by `forget`: the canvas job, its pictures and their cache entries.
+            cache: _,
+            host: _,
+            gen: _,
+            job: _,
+            last: _,
+            latest: _,
+            unlanded: _,
+            again_at: _,
+            on_canvas,
+            still,
+            doc,
+        } = self;
+        // Nothing of the canvas is on screen: its animations ask for no wake-up.
+        *on_canvas = false;
+        if let Some(still) = still {
+            still.leave();
+        }
+        if let Some(doc) = doc {
+            doc.stop_animations();
+        }
+        self.forget();
+    }
+
     /// Whether the page must be laid out again (a picture's result changed what it reserves).
     pub fn take_doc_relayout(&mut self) -> bool {
         self.doc.as_mut().is_some_and(DocPics::take_relayout)
     }
 
+    pub(crate) fn take_doc_redraw(&mut self) -> bool {
+        self.doc.as_mut().is_some_and(DocPics::take_redraw)
+    }
+
     /// Draw the pictures of a document over the cells in `inner` (`None`: the frame is not a
     /// document).
-    pub fn draw_document(&mut self, buf: &mut Buffer, inner: Rect, doc: Option<(&Laid, usize)>) {
+    pub fn draw_document(
+        &mut self,
+        buf: &mut Buffer,
+        inner: Rect,
+        doc: Option<(&Laid, usize)>,
+        gutter: u16,
+        focus: Option<DocPictureFocus<'_>>,
+    ) {
         if let Some(d) = self.doc.as_mut() {
-            d.draw(buf, inner, doc);
+            d.draw_with(buf, inner, doc, gutter, focus);
         }
     }
 
     pub fn with_out(mut self, out: Box<dyn Write>) -> Pictures {
         self.out = out;
         self
+    }
+
+    /// A fresh project Preview resets its file pose while retaining the pictures owner.
+    pub(in crate::app) fn begin_file(&mut self, plugin_id: &str, path: &Path) {
+        self.plugin_id = plugin_id.into();
+        self.path = path.into();
+        if let Some(still) = &mut self.still {
+            still.begin_file(plugin_id, path);
+        }
+        self.doc_pics().set_path(path);
     }
 
     /// The session returned `canvas`: decode what it places that the app does not hold yet.
@@ -287,6 +408,37 @@ impl Pictures {
         }
         if let Some(s) = self.still.as_mut() {
             s.submit(iv, page_turn);
+        }
+    }
+
+    /// The pose of the still picture held, or the one the next picture waits to be shown in: the
+    /// user's view a Preview keeps over its leave, a reload or a hand-off (a konoma tab keeps its
+    /// `image_view`).
+    pub(in crate::app) fn still_pose(&self) -> Option<konoma_widgets::image_view::ImageViewState> {
+        self.still.as_ref().and_then(Still::pose_held)
+    }
+
+    /// The terminal was another program's meanwhile (an editor, a terminal opener, a tool): what
+    /// was drawn on it goes and is drawn again, and the user's view of the still picture waits for
+    /// it (the picture shown next, by the same loop or by the Preview opened again, is put in it,
+    /// as a konoma tab keeps its `image_view`). Every hand-off of the terminal ends here.
+    pub(in crate::app) fn after_hand_off(&mut self) {
+        let pose = self.still_pose();
+        self.forget();
+        self.forget_still();
+        self.reset_document();
+        if let Some(pose) = pose {
+            self.restore_still_pose(pose);
+        }
+    }
+
+    /// The still picture the session shows next is put in `pose` (a left Preview opened again).
+    pub(in crate::app) fn restore_still_pose(
+        &mut self,
+        pose: konoma_widgets::image_view::ImageViewState,
+    ) {
+        if let Some(s) = self.still.as_mut() {
+            s.pose_back(pose);
         }
     }
 
@@ -319,6 +471,22 @@ impl Pictures {
     /// The zoom of the still picture (1.0 when there is none).
     pub fn still_zoom(&self) -> f64 {
         self.still.as_ref().map_or(1.0, Still::zoom)
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_still_decode_for_test(&mut self) {
+        self.still
+            .as_mut()
+            .expect("submitted image")
+            .wait_decode_for_test();
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_still_resizes_for_test(&mut self) -> (Sender<()>, Receiver<()>) {
+        self.still
+            .as_mut()
+            .expect("submitted still picture")
+            .hold_resizes_for_test()
     }
 
     /// The centre of the visible window of the still picture.
@@ -417,7 +585,7 @@ impl Pictures {
         if let Some(s) = self.still.as_mut() {
             s.poll_at(now);
         }
-        self.cache.advance_gifs_if_due();
+        self.cache.advance_gifs_at(now);
         if let Some(d) = self.doc.as_mut() {
             d.poll_at(now);
         }
@@ -456,11 +624,11 @@ impl Pictures {
             want(w);
         }
         if self.on_canvas {
-            if let Some(g) = self.cache.gif_poll_timeout() {
+            if let Some(g) = self.cache.gif_poll_timeout_at(now) {
                 want(g);
             }
         }
-        if let Some(w) = self.doc.as_ref().and_then(|d| d.wake_in(BUSY_POLL)) {
+        if let Some(w) = self.doc.as_ref().and_then(|d| d.wake_in_at(BUSY_POLL, now)) {
             want(w);
         }
         wake

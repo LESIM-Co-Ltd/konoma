@@ -466,12 +466,12 @@ text comes from `Tr`. The field defaults to true, preserving legacy list bytes.
 The `konoma-vcs` project tabs are changes, log, graph, branches, then worktrees
 (Git only). Git calls the branches tab Branches,
 jj Bookmarks (`b`). Git declares checkout, create and safe/force delete; jj only
-declares name copying. Checkout and creation stay on this tab, whereas the legacy
-hub returns to Changes. The host retains shared navigation/filter controls before
+declares name copying. Checkout and creation stay on this tab, whereas the old built-in
+hub (now removed) returned to Changes. The host retains shared navigation/filter controls before
 plugin acts; its copy menu uses the generic Copy title. An empty or unmatched list
-shows a dim message; unlike the legacy empty hub list, the tab can always open.
+shows a dim message; unlike the old hub's empty list, the tab can always open.
 On jj, write keys that cannot act (`Enter`, `c`, `d`) are hidden, whereas the
-legacy hub displayed them and refused the write. All project confirmation dialogs
+old hub displayed them and refused the write. All project confirmation dialogs
 now display `key = label` instead of `key: label`, show explicitly destructive
 choices in red (including the branch's `!` force-delete choice), and
 use a red border for destructive actions.
@@ -518,7 +518,7 @@ before converting their lines. Values at the limits are accepted.
 Git/jj graph preferences are plugin-owned: `[plugins.git]` / `[plugins.jj]`
 `graph_max_branches = 12` (`0` means unlimited), `graph_base_branches = []`, and
 `commit_meta_align = "right"` (`"inline"` places metadata after the subject).
-Legacy `[ui]` aliases are wired when the VCS plugins are registered in PR 5.
+The old `[ui]` names (`graph_max_branches`, `graph_base_branches`, `commit_meta_align`) are still read, and the plugin table wins.
 
 ### Session watch paths
 
@@ -858,17 +858,17 @@ Diffs exclude the worktree's own branch and choose the newest merge-base;
 ties keep the first candidate. They show committed and uncommitted changes
 since that base, falling back to uncommitted changes alone. With neither, the
 screen flashes “no changes”. `s` changes layout, text motions scroll, and
-`q` / Esc restores the list cursor. Reading the old `[git] worktree_dir` and
-`[ui] graph_base_branches` names is deferred to the renamed-settings unit.
+`q` / Esc restores the list cursor. The old `[git] worktree_dir` and
+`[ui] graph_base_branches` names are still read; the plugin table wins.
 
-The legacy hub remains unchanged for comparison. Accepted differences are the
+The old built-in hub has been removed. The screens differ from it in the
 project title/tabs/frame and navigation hints, an empty message instead of
 refusing to open an empty list, staying on the list after Enter on the current
 worktree, and silent `Ctrl-t` with no hint on current/bare/unavailable rows.
-jj declares neither this screen nor `w`, instead of the legacy refusal flash.
+jj declares neither this screen nor `w`, instead of the old refusal flash.
 `/` comes first in the footer, followed by the row operations in their declared
-order; its worktree label and help retain the legacy wording. A worktree diff's
-title uses the diff header and divider instead of the legacy outer frame.
+order; its worktree label and help retain the old wording. A worktree diff's
+title uses the diff header and divider instead of the old outer frame.
 
 The checked examples live in
 `crates/konoma-plugin-test/tests/vectors/project-v2.json`, `project-calls-v2.msgpack.hex` and

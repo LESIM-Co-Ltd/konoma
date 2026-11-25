@@ -12,8 +12,7 @@ use super::*;
 /// Every `Surface`. `surface_ordinal` is exhaustive, so a new variant fails to compile until it is
 /// added there, and `the_surface_list_is_complete` fails until it is added here.
 fn all_surfaces() -> Vec<Surface> {
-    #[allow(unused_mut)]
-    let mut v = vec![
+    vec![
         Surface::DialogInput,
         Surface::Filter,
         Surface::Search,
@@ -39,20 +38,7 @@ fn all_surfaces() -> Vec<Surface> {
         Surface::PluginInput,
         Surface::ListFilter,
         Surface::PreviewGitDiff,
-    ];
-    #[cfg(feature = "git")]
-    v.extend([
-        Surface::BranchFilter,
-        Surface::WorktreeFilter,
-        Surface::GitDetail,
-        Surface::GitLog,
-        Surface::GitGraph,
-        Surface::GitGraphPicker,
-        Surface::GitBranches,
-        Surface::GitChanges,
-        Surface::GitWorktrees,
-    ]);
-    v
+    ]
 }
 
 fn surface_ordinal(s: Surface) -> usize {
@@ -81,25 +67,7 @@ fn surface_ordinal(s: Surface) -> usize {
         Surface::ListFilter => 21,
         Surface::PreviewCanvas => 22,
         Surface::PluginInput => 23,
-        #[cfg(feature = "git")]
-        Surface::BranchFilter => 24,
-        #[cfg(feature = "git")]
-        Surface::WorktreeFilter => 25,
-        #[cfg(feature = "git")]
-        Surface::GitDetail => 26,
-        #[cfg(feature = "git")]
-        Surface::GitLog => 27,
-        #[cfg(feature = "git")]
-        Surface::GitGraph => 28,
-        #[cfg(feature = "git")]
-        Surface::GitGraphPicker => 29,
-        #[cfg(feature = "git")]
-        Surface::GitBranches => 30,
-        #[cfg(feature = "git")]
-        Surface::GitChanges => 31,
-        #[cfg(feature = "git")]
-        Surface::GitWorktrees => 32,
-        Surface::PreviewGitDiff => 33,
+        Surface::PreviewGitDiff => 24,
     }
 }
 
@@ -108,54 +76,24 @@ fn the_surface_list_is_complete() {
     let all = all_surfaces();
     let mut ords: Vec<usize> = all.iter().map(|&s| surface_ordinal(s)).collect();
     ords.sort_unstable();
-    let expected: Vec<usize> = if cfg!(feature = "git") {
-        (0..34).collect()
-    } else {
-        (0..24).chain([33]).collect()
-    };
+    let expected: Vec<usize> = (0..25).collect();
     assert_eq!(ords, expected, "all_surfaces() misses or repeats a Surface");
 }
 
-/// Every state a key can arrive in: (surface, text preview is a decorated document, git screens
-/// are open for jj). The two flags only matter to the surfaces they refine; the rest are visited
-/// once per flag value anyway, which also checks that the flags do not leak.
-fn all_states() -> Vec<(Surface, bool, bool)> {
+/// Every state a key can arrive in: (surface, text preview is a decorated document). The flag
+/// only matters to the surface it refines; the rest are visited once.
+fn all_states() -> Vec<(Surface, bool)> {
     let mut v = Vec::new();
     for s in all_surfaces() {
         for doc in [false, true] {
-            for jj in [false, true] {
-                // Visiting the unrefined surfaces four times would only repeat work.
-                let refined_by_doc = s == Surface::PreviewText;
-                let refined_by_jj = surface_has_backend(s);
-                if (doc && !refined_by_doc) || (jj && !refined_by_jj) {
-                    continue;
-                }
-                v.push((s, doc, jj));
+            // Visiting the unrefined surfaces twice would only repeat work.
+            if doc && s != Surface::PreviewText {
+                continue;
             }
+            v.push((s, doc));
         }
     }
     v
-}
-
-fn surface_has_backend(s: Surface) -> bool {
-    #[cfg(feature = "git")]
-    {
-        matches!(
-            s,
-            Surface::GitDetail
-                | Surface::GitLog
-                | Surface::GitGraph
-                | Surface::GitGraphPicker
-                | Surface::GitBranches
-                | Surface::GitChanges
-                | Surface::GitWorktrees
-        )
-    }
-    #[cfg(not(feature = "git"))]
-    {
-        let _ = s;
-        false
-    }
 }
 
 /// Every key the terminal can send: printable ASCII and its Ctrl version, the named keys, F1-F12.
@@ -194,8 +132,8 @@ fn all_keys() -> Vec<KeyPress> {
 #[test]
 fn the_contexts_and_the_surface_states_cover_each_other() {
     let mut reached: Vec<Context> = Vec::new();
-    for (s, doc, jj) in all_states() {
-        match Context::of_surface(s, doc, jj) {
+    for (s, doc) in all_states() {
+        match Context::of_surface(s, doc) {
             Some(c) => {
                 assert!(
                     s.allows_tabs(),
@@ -208,7 +146,15 @@ fn the_contexts_and_the_surface_states_cover_each_other() {
     }
     reached.sort_by_key(|c| c.name());
     reached.dedup();
-    let mut all = Context::all();
+    // `Context::Screen` is excluded because a project screen context refines the canvas surface:
+    // it maps to `PreviewCanvas`, not back to itself. The version-control screens' contexts are
+    // not reached from a surface: a project canvas is
+    // `Context::Canvas`, and the screen it shows (`App::canvas_screen`) only layers the user's
+    // `[keys."git.changes"]`-style tables over it.
+    let mut all: Vec<Context> = Context::all()
+        .into_iter()
+        .filter(|c| !super::context_tests::is_screen_context(c))
+        .collect();
     all.sort_by_key(|c| c.name());
     assert_eq!(reached, all);
 }

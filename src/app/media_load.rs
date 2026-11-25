@@ -112,6 +112,8 @@ impl App {
     /// Still images are synchronous, while **heavy SVG rasterization / GIF full-frame decode are offloaded to a separate thread**
     /// (to start display fast without blocking the UI thread). With no media_tx (tests, etc.), a synchronous fallback is used.
     pub(super) fn start_media_load(&mut self, kind: &PreviewKind, path: &Path) {
+        #[cfg(test)]
+        crate::test_support::note_tab_view_load();
         // Record the baseline time for auto-reloading media (`reload_media_if_changed` uses it for
         // the mtime comparison).
         self.preview_media_mtime = file_mtime(path);
@@ -314,6 +316,9 @@ impl App {
     }
 
     fn apply_media_result(&mut self, result: MediaResult) -> bool {
+        if let Some(MediaPayload::FilePreview(reply)) = result.payload {
+            return self.apply_file_preview_reply(*reply);
+        }
         // The work group of a plugin whose job just answered (the Office plugins share one) is
         // free again, current result or not; what was asked for meanwhile starts now (and is
         // dropped if the preview moved on since).
@@ -416,6 +421,9 @@ impl App {
 
     pub(super) fn apply_payload(&mut self, payload: MediaPayload) {
         match payload {
+            MediaPayload::FilePreview(reply) => {
+                self.apply_file_preview_reply(*reply);
+            }
             MediaPayload::Static(img) => self.set_static_image(img),
             MediaPayload::ImageFailed(why) => self.set_image_failure(why),
             MediaPayload::Gif(frames) => self.set_gif_frames(frames),
@@ -465,6 +473,9 @@ impl App {
         };
         let was = self.tab.search_matches.get(self.tab.search_idx).copied();
         let pending = std::mem::take(&mut self.tab.search_pending);
+        // The tab came back and its matches were not those of this sheet: the hit nearest the
+        // cursor is the current one, and nothing moves.
+        let stale = std::mem::take(&mut self.tab.search_stale);
         self.table_search_scan(&q);
         if self.tab.search_matches.is_empty() {
             self.tab.search_idx = 0;
@@ -474,6 +485,10 @@ impl App {
         } else if pending {
             self.tab.search_idx = self.first_table_match_from_cursor();
             self.jump_to_match();
+        } else if stale {
+            // The hit nearest the cursor (the earlier one on a tie), not the first after it.
+            self.tab.search_idx =
+                self.nearest_match_to(self.tab.table_cur_row, self.tab.table_cur_col);
         } else {
             let last = self.tab.search_matches.len() - 1;
             self.tab.search_idx = match was {

@@ -34,7 +34,7 @@ pub(super) fn declare(manifest: Manifest, git: bool) -> Manifest {
                 action(
                     "sync", "s", t!(en: "sync", ja: "同期"),
                     t!(en: "let jj snapshot the working copy (confirm)", ja: "jj に作業コピーを取り込ませる (確認)"),
-                    0, false,
+                    7, false,
                 )
                 .confirmation(Confirmation::new(
                     t!(en: "Let jj snapshot the working copy? (jj undo reverses it)", ja: "jj に作業コピーを取り込ませますか?(jj undo で戻せます)"),
@@ -47,6 +47,11 @@ pub(super) fn declare(manifest: Manifest, git: bool) -> Manifest {
     let stage_help = t!(en: "stage / stage all", ja: "ステージ / 全ステージ");
     let unstage = t!(en: "unstage(all)", ja: "解除(全)");
     let unstage_help = t!(en: "unstage / unstage all", ja: "アンステージ / 全アンステージ");
+    // Each member's own help: the words of a help row that shows only that member's key.
+    let stage_one = t!(en: "stage", ja: "ステージ");
+    let stage_all_help = t!(en: "stage all", ja: "全ステージ");
+    let unstage_one = t!(en: "unstage", ja: "アンステージ");
+    let unstage_all_help = t!(en: "unstage all", ja: "全アンステージ");
     manifest
         .action(Act::new("worktree_create").key("c")
             .label(t!(en: "new", ja: "新規"))
@@ -61,21 +66,15 @@ pub(super) fn declare(manifest: Manifest, git: bool) -> Manifest {
         .hint_group(HintGroup::new("stage", stage.clone()).help(stage_help.clone()))
         .hint_group(HintGroup::new("unstage", unstage.clone()).help(unstage_help.clone()))
         .action(
-            action("stage", "s", stage.clone(), stage_help.clone(), 0, true).hint_group("stage"),
+            action("stage", "s", stage.clone(), stage_one, 0, true).hint_group("stage"),
         )
-        .action(action("stage_all", "S", stage, stage_help, 0, false).hint_group("stage"))
+        .action(action("stage_all", "S", stage, stage_all_help, 0, false).hint_group("stage"))
         .action(
-            action(
-                "unstage",
-                "u",
-                unstage.clone(),
-                unstage_help.clone(),
-                1,
-                true,
-            )
-            .hint_group("unstage"),
+            action("unstage", "u", unstage.clone(), unstage_one, 1, true).hint_group("unstage"),
         )
-        .action(action("unstage_all", "U", unstage, unstage_help, 1, false).hint_group("unstage"))
+        .action(
+            action("unstage_all", "U", unstage, unstage_all_help, 1, false).hint_group("unstage"),
+        )
         .action(
             action(
                 "discard",

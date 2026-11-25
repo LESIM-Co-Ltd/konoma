@@ -16,9 +16,8 @@ fn req(path: PathBuf, root: PathBuf, baseline: DiffBaseline) -> MediaDiffRequest
         baseline,
         page: 1,
         raster_px: (800, 600),
-        preview_rules: Config::default().preview.rules,
-        plugin_disabled: Vec::new(),
-        preview_commands: true,
+        classify: media_classifier(Config::default().preview.rules, Vec::new(), true),
+        rasterize_svg: crate::preview::svg::rasterize_untrusted,
         cancel: Default::default(),
     }
 }
@@ -191,9 +190,8 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px() {
         baseline: DiffBaseline::Empty,
         page: 1,
         raster_px: (100, 50), // height (50) is the *smaller* component — must not be used alone.
-        preview_rules: Config::default().preview.rules,
-        plugin_disabled: Vec::new(),
-        preview_commands: true,
+        classify: media_classifier(Config::default().preview.rules, Vec::new(), true),
+        rasterize_svg: crate::preview::svg::rasterize_untrusted,
         cancel: Default::default(),
     };
     match App::compute_media_diff(&r) {
@@ -232,9 +230,8 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px_when_width_is_larg
         baseline: DiffBaseline::Empty,
         page: 1,
         raster_px: (50, 100), // width (50) is the *smaller* component this time.
-        preview_rules: Config::default().preview.rules,
-        plugin_disabled: Vec::new(),
-        preview_commands: true,
+        classify: media_classifier(Config::default().preview.rules, Vec::new(), true),
+        rasterize_svg: crate::preview::svg::rasterize_untrusted,
         cancel: Default::default(),
     };
     match App::compute_media_diff(&r) {
@@ -813,7 +810,7 @@ fn apply_media_diff_drops_a_stale_generation() {
     // Kick once for real (bumps media_diff_gen to 1 and lands a result via the sync fallback).
     let first = app.poll_media_diff(&png, 1, (400, 300));
     assert!(first.is_some());
-    let current_gen = app.media_diff_gen;
+    let current_gen = *app.media_diff.generation_for_test();
     // A result tagged with an older generation must be rejected.
     let stale = MediaDiffResult {
         gen: current_gen.wrapping_sub(1),
@@ -1168,7 +1165,7 @@ fn coalesces_a_burst_of_invalidate_and_poll_into_one_follow_up_dispatch_for_the_
         "busy な間の invalidate+poll バーストは新規 dispatch を増やさないはず"
     );
     assert_eq!(
-        app.media_diff_queued,
+        (*app.media_diff.queued_for_test()),
         Some((doc.clone(), 2, (800, 600))),
         "coalesce された want は最新のものだけ(上書き、蓄積ではない)のはず"
     );
@@ -1191,7 +1188,7 @@ fn coalesces_a_burst_of_invalidate_and_poll_into_one_follow_up_dispatch_for_the_
         "着地の瞬間に coalesce されていた want が1回だけ dispatch されるはず"
     );
     assert!(
-        app.media_diff_queued.is_none(),
+        (*app.media_diff.queued_for_test()).is_none(),
         "dispatch 後は queued スロットが空になるはず"
     );
 
@@ -1292,7 +1289,7 @@ fn a_stale_landing_with_nothing_queued_still_frees_the_worker_slot() {
     // in-flight A worker's eventual result is now stale, and nothing is queued behind it.
     app.invalidate_media_diff();
     assert!(
-        app.media_diff_queued.is_none(),
+        (*app.media_diff.queued_for_test()).is_none(),
         "前提: この時点で何も queue されていない"
     );
 
@@ -1411,9 +1408,8 @@ fn a_directory_at_the_new_path_is_treated_as_absent_not_an_existing_unreadable_f
         baseline: DiffBaseline::FollowSnapshot(old_bytes.clone()),
         page: 1,
         raster_px: (400, 300),
-        preview_rules: Config::default().preview.rules,
-        plugin_disabled: Vec::new(),
-        preview_commands: true,
+        classify: media_classifier(Config::default().preview.rules, Vec::new(), true),
+        rasterize_svg: crate::preview::svg::rasterize_untrusted,
         cancel: Default::default(),
     };
     match App::compute_media_diff(&r) {
@@ -1445,15 +1441,14 @@ fn app_with_png(name: &str) -> (App, PathBuf, crate::test_support::TmpDir) {
 }
 
 fn cancelled(app: &App) -> bool {
-    app.media_diff_cancel
-        .load(std::sync::atomic::Ordering::SeqCst)
+    (*app.media_diff.cancel_for_test()).load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[test]
 fn a_new_want_behind_a_running_worker_cancels_the_running_one() {
     let (mut app, png, _dir) = app_with_png("konoma_media_diff_cancel_queue");
     // A worker is in flight (an untrusted SVG holding its child process, say).
-    app.media_diff_worker_busy = true;
+    *app.media_diff.busy_for_test() = true;
     assert!(!cancelled(&app));
     assert!(app.poll_media_diff(&png, 1, (400, 300)).is_none());
     assert!(
@@ -1465,7 +1460,7 @@ fn a_new_want_behind_a_running_worker_cancels_the_running_one() {
 #[test]
 fn invalidating_the_diff_cancels_the_running_computation() {
     let (mut app, _png, _dir) = app_with_png("konoma_media_diff_cancel_invalidate");
-    app.media_diff_worker_busy = true;
+    *app.media_diff.busy_for_test() = true;
     assert!(!cancelled(&app));
     app.invalidate_media_diff();
     assert!(cancelled(&app));
@@ -1476,9 +1471,8 @@ fn every_dispatch_gets_a_fresh_flag_and_a_cancelled_result_is_not_applied() {
     let (mut app, png, _dir) = app_with_png("konoma_media_diff_cancel_apply");
     assert!(app.poll_media_diff(&png, 1, (400, 300)).is_some());
     assert!(!cancelled(&app), "a new computation starts uncancelled");
-    let gen = app.media_diff_gen;
-    app.media_diff_cancel
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let gen = *app.media_diff.generation_for_test();
+    (*app.media_diff.cancel_for_test()).store(true, std::sync::atomic::Ordering::SeqCst);
     let res = MediaDiffResult {
         gen,
         path: png.clone(),
@@ -1618,7 +1612,11 @@ fn a_picture_plugin_under_another_id_gets_the_side_by_side_view_for_a_png() {
 
     // The worker pairs the two sides of a change like it does for the standard plugin.
     let mut r = req(png.clone(), dir.to_path_buf(), DiffBaseline::Empty);
-    r.plugin_disabled = cfg.plugin_disabled();
+    r.classify = media_classifier(
+        cfg.preview.rules.clone(),
+        cfg.plugin_disabled(),
+        cfg.external.preview_commands,
+    );
     assert!(
         matches!(
             App::compute_media_diff(&r),

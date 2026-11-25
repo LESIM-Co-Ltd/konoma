@@ -133,11 +133,6 @@ fn guard_is_before_each_write_executor_and_before_a_session_is_taken() {
         start.matches("run_git_op(").count() + 1,
         "only start_git_op may call the executor (the extra occurrence is its definition)"
     );
-    let sync = method(git, "jj_run_sync");
-    assert!(
-        sync.find("allow_write(\"jj\", true, false)").unwrap()
-            < sync.find("vcs::jj::snapshot(").unwrap()
-    );
     let plugin = include_str!("../app/plugin_host.rs");
     for name in ["plugin_act", "send_queued_act"] {
         let body = method(plugin, name);
@@ -161,17 +156,18 @@ fn guard_is_before_each_write_executor_and_before_a_session_is_taken() {
     let body = method(policy, "allow_plugin_write");
     assert!(body.contains("b.act.act() == action && b.writes"));
     assert!(body.contains("self.allow_write(&id, writes, false)"));
-    let project = include_str!("../app/project_screens.rs");
-    let execute = method(project, "execute_project_act");
-    assert!(execute.contains("invocation.declaration.writes"));
+    let project = include_str!("../../crates/konoma-plugin/src/host/project/actions.rs");
+    let execute = method(project, "execute_act");
+    assert!(execute.contains("shared.declaration.writes"));
     assert!(execute.find("allow_write(").unwrap() < execute.find("ProjectJob::Act {").unwrap());
-    assert!(method(project, "request_project_act").contains("allow_write("));
+    assert!(execute.find("ProjectJob::Act {").unwrap() < execute.find("try_send(job)").unwrap());
+    assert!(method(project, "request_act").contains("allow_write("));
     assert_eq!(
         project.matches("ProjectJob::Act {").count(),
         1,
         "one guarded project action dispatcher"
     );
-    let worker = include_str!("../app/project_worker.rs");
+    let worker = include_str!("../../crates/konoma-plugin/src/host/project/runtime.rs");
     assert_eq!(
         worker.matches("ProjectJob::Act {").count(),
         1,
@@ -220,35 +216,32 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
         "worktree_add",
     ];
     let mut git_calls = 0;
-    let mut jj_calls = 0;
     let mut plugin_calls = 0;
     for path in files {
         let text = std::fs::read_to_string(&path).unwrap();
         for name in names {
-            let call = format!("Git::{name}(");
-            if text.contains(&call) {
-                git_calls += text.matches(&call).count();
-                assert_eq!(
-                    path,
-                    src.join("app/git_view.rs"),
-                    "{call} bypasses the guarded executor"
-                );
-                assert_eq!(
-                    text.matches(&call).count(),
-                    method(&text, "run_git_op").matches(&call).count()
-                );
+            // Cover both the old API and the temporary capability boundary so moving a
+            // write behind Vcs cannot make the execution-guard scan stop seeing it.
+            for prefix in ["git::", "vcs::Git::"] {
+                let call = format!("{prefix}{name}(");
+                if text.contains(&call) {
+                    git_calls += text.matches(&call).count();
+                    assert_eq!(
+                        path,
+                        src.join("app/git_view.rs"),
+                        "{call} bypasses the guarded executor"
+                    );
+                    assert_eq!(
+                        text.matches(&call).count(),
+                        method(&text, "run_git_op").matches(&call).count()
+                    );
+                }
             }
         }
-        if text.contains("vcs::jj::snapshot(") {
-            jj_calls += text.matches("vcs::jj::snapshot(").count();
-            assert_eq!(path, src.join("app/git_view.rs"));
-            assert_eq!(
-                text.matches("vcs::jj::snapshot(").count(),
-                method(&text, "jj_run_sync")
-                    .matches("vcs::jj::snapshot(")
-                    .count()
-            );
-        }
+        assert!(
+            !text.contains("vcs::jj::snapshot("),
+            "{path:?}: the host no longer writes to a jj repository"
+        );
         if text.contains("session.act(") {
             plugin_calls += text.matches("session.act(").count();
             assert_eq!(
@@ -260,13 +253,33 @@ fn guard_source_scan_rejects_repository_writes_outside_the_known_executor() {
         }
     }
     assert!(
-        git_calls >= names.len(),
-        "each of the ten known git write APIs must be scanned"
+        git_calls >= 1,
+        "the one remaining git write (discard) must be scanned"
     );
-    assert!(jj_calls >= 1, "the jj snapshot write must be scanned");
     assert!(plugin_calls >= 1, "the plugin act executor must be scanned");
-    let project = include_str!("../app/project_screens.rs");
+    let project = include_str!("../../crates/konoma-plugin/src/host/project/actions.rs");
     assert_eq!(project.matches("ProjectJob::Act {").count(), 1);
-    assert!(method(project, "execute_project_act").contains("allow_write("));
-    eprintln!("guarded write paths: git={git_calls}, jj={jj_calls}, plugin={plugin_calls}, project=1; lower bound=13");
+    let execute = method(project, "execute_act");
+    assert!(execute.find("allow_write(").unwrap() < execute.find("ProjectJob::Act {").unwrap());
+    assert!(execute.find("ProjectJob::Act {").unwrap() < execute.find("try_send(job)").unwrap());
+    let sdk = src
+        .parent()
+        .unwrap()
+        .join("crates/konoma-plugin/src/host/project");
+    let mut files = Vec::new();
+    sources(&sdk, &mut files);
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let count = text.matches("ProjectJob::Act {").count();
+        let expected =
+            usize::from(path == sdk.join("actions.rs") || path == sdk.join("runtime.rs"));
+        assert_eq!(
+            count,
+            expected,
+            "one guarded send point and one serial owner: {}",
+            path.display()
+        );
+    }
+    assert!(!include_str!("../app/project_screens.rs").contains("ProjectJob::Act {"));
+    eprintln!("guarded write paths: git={git_calls}, plugin={plugin_calls}, project=1");
 }

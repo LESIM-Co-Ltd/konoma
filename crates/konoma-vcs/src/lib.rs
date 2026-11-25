@@ -13,10 +13,20 @@ mod graph;
 mod graph_cleanup_tests;
 mod log;
 mod paths;
+#[cfg(feature = "app")]
+pub mod standalone;
+#[cfg(all(test, feature = "app"))]
+mod standalone_tests;
+mod titles;
 mod worktrees;
 
 pub struct Git;
 pub struct Jj;
+
+/// The project plugins of the `konoma-vcs` program, in registration order.
+pub fn program() -> Vec<Box<dyn Plugin>> {
+    vec![Box::new(Git), Box::new(Jj)]
+}
 
 macro_rules! plugin {
     ($plugin:ident, $id:literal, $marker:literal, $kind:expr, $name:literal) => {
@@ -31,13 +41,18 @@ macro_rules! plugin {
                             .screen(ProjectScreen::new("changes", t!(en: "Changes", ja: "変更"))
                                 .key('p').row_kind("file").row_kind("empty"))
                             .screen(ProjectScreen::new("log", t!(en: "Log", ja: "ログ"))
+                                .jump_hint(8, t!(en: "log", ja: "ログ"))
                                 .row_kind("commit").row_kind("empty"))
                             .screen(ProjectScreen::new("graph", t!(en: "Graph", ja: "グラフ"))
+                                .jump_hint(9, t!(en: "graph", ja: "グラフ"))
                                 .row_kind("commit").row_kind("worktree").row_kind("connector").row_kind("empty"))
                             .screen(ProjectScreen::new("branches", if $id == "git" {
                                 t!(en: "Branches", ja: "ブランチ")
                             } else { t!(en: "Bookmarks", ja: "ブックマーク") })
-                                .key('b').row_kind("branch").row_kind("current").row_kind("empty"))
+                                .key('b')
+                                .jump_hint(6, if $id == "git" {
+                                    t!(en: "branch", ja: "ブランチ")
+                                } else { t!(en: "bookmarks", ja: "ブックマーク") }).row_kind("branch").row_kind("current").row_kind("empty"))
                             .screen(ProjectScreen::new("detail", t!(en: "Detail", ja: "詳細")).pushed())
                             .screen(ProjectScreen::new("graph_picker", t!(en: "Graph branches", ja: "グラフのブランチ")).pushed().filter(false).transient()
                                 .row_kind("branch").row_kind("current").row_kind("empty")),
@@ -47,15 +62,30 @@ macro_rules! plugin {
                         t!(en: "Path display: relative, home or full", ja: "パス表示: relative・home・full")))
                     .setting(SettingDecl::new("commit_meta_align", Value::Str("right".into()),
                         t!(en: "Commit author and date: right or inline", ja: "コミットの作者と日付: right・inline")));
-                let manifest = actions::declare(worktrees::declare(manifest, $id == "git"), $id == "git")
+                // The help lists rows in declaration order, and the old hub's order is: git's
+                // write keys, the diffs, then jj's `s` (sync).
+                let manifest = worktrees::declare(manifest, $id == "git");
+                let manifest = if $id == "git" { actions::declare(manifest, true) } else { manifest };
+                let manifest = manifest
                     .action(Act::new("diff").key("Enter")
                         .label(t!(en: "diff", ja: "差分"))
-                        .help(t!(en: "Open the file diff", ja: "ファイルの差分を開く"))
+                        .help(t!(en: "file diff", ja: "ファイル差分"))
                         .footer(4)
                         .project_context(ActContext::screen("changes", ["file"])))
+                    .action(Act::new("diff_all").key("d")
+                        .label(t!(en: "diff-all", ja: "全差分"))
+                        .help(if $id == "git" {
+                            t!(en: "diff of all changes (worktree)", ja: "全変更まとめ diff (作業ツリー)")
+                        } else {
+                            t!(en: "diff of everything against @-", ja: "@- との差分をまとめて表示")
+                        })
+                        .footer(5)
+                        .project_context(ActContext::screen("changes", Vec::<String>::new())))
                     .action(Act::new("detail").key("Enter")
                         .label(t!(en: "detail", ja: "詳細"))
+                        .help(t!(en: "commit detail (diff)", ja: "コミット詳細 (差分)"))
                         .project_context(ActContext::screen("log", ["commit"])));
+                let manifest = if $id == "git" { manifest } else { actions::declare(manifest, false) };
                 branches::declare(log::copy_declarations(graph::declare(manifest, $id == "jj"), $id == "jj"), $id == "git")
             }
             fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
@@ -211,12 +241,20 @@ impl Session for Changes {
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "worktrees") {
             if matches!(self.backend, Backend::Git) {
                 self.worktree_home = project.home_dir.clone();
-                return Ok(worktrees::view(&self.root, project, cx));
+                let mut view = worktrees::view(&self.root, project, cx);
+                if let View::List(list) = &mut view {
+                    list.heading = Some(titles::worktrees());
+                }
+                return Ok(view);
             }
         }
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "detail") {
-            let (view, meta) =
-                detail::read(&self.backend, &self.root, project.selection.as_deref());
+            let (view, meta) = detail::read(
+                &self.backend,
+                &self.root,
+                project.selection.as_deref(),
+                cx.lang,
+            );
             if let Some(id) = &project.selection {
                 if let Some(meta) = meta {
                     self.detail_meta.insert(id.clone(), meta);
@@ -226,11 +264,20 @@ impl Session for Changes {
             }
             return Ok(View::Diff(view));
         }
+        let icons = req.project.as_ref().is_none_or(|p| p.icons);
         if req.project.as_ref().is_some_and(|p| p.screen == "log") {
-            return Ok(log::view(self.backend.log(&self.root), cx));
+            let mut view = log::view(self.backend.log(&self.root), cx);
+            if let View::List(list) = &mut view {
+                list.heading = Some(titles::log(&self.backend, &self.root, icons));
+            }
+            return Ok(view);
         }
         if req.project.as_ref().is_some_and(|p| p.screen == "branches") {
-            return Ok(branches::view(konoma_vcs_core::vcs::refs(&self.root), cx));
+            let mut view = branches::view(konoma_vcs_core::vcs::refs(&self.root), cx);
+            if let View::List(list) = &mut view {
+                list.heading = Some(titles::branches(&self.backend));
+            }
+            return Ok(view);
         }
         if req.project.as_ref().is_none_or(|p| p.screen != "changes") {
             return Err(Failure::unsupported(
@@ -283,11 +330,13 @@ impl Session for Changes {
                 .collect();
             return Ok(View::List(ListView {
                 rows,
+                heading: Some(titles::changes(&self.backend, &self.root, icons)),
                 ..Default::default()
             }));
         }
         Ok(View::List(ListView {
             title: None,
+            heading: Some(titles::changes(&self.backend, &self.root, icons)),
             bottom: None,
             rows: vec![ListRow::new(
                 "empty",
@@ -415,6 +464,19 @@ impl Session for Changes {
         else {
             return Ok(Outcome::Unhandled);
         };
+        if action == "diff_all" {
+            // The old hub's `d`: the uncommitted changes as one detail diff, or "no changes".
+            return Ok(
+                if detail::uncommitted(&self.backend, &self.root).is_empty() {
+                    Outcome::Flash(t!(en: "no changes", ja: "変更なし"))
+                } else {
+                    Outcome::PushScreen {
+                        screen: "detail".into(),
+                        selection: Some(detail::UNCOMMITTED.into()),
+                    }
+                },
+            );
+        }
         if action == "sync" {
             #[cfg(feature = "git")]
             let ok = konoma_vcs_core::vcs::jj::snapshot(&self.root);
@@ -523,6 +585,7 @@ impl Session for Changes {
                 matches!(self.backend, Backend::Git)
             }
             "diff" => !self.files.is_empty(),
+            "diff_all" => true,
             "stage" | "unstage" | "discard" => {
                 matches!(self.backend, Backend::Git) && !self.files.is_empty()
             }

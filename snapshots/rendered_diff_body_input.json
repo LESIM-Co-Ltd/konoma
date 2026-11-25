@@ -1,0 +1,20 @@
+{
+  "resources": {
+    "old": "# Removed heading\n\nOld paragraph that wraps into several rows before the replacement.\n\n![old](https://invalid.test/old.png)\n\n```mermaid\ngraph TD\nOld-->Gone\n```\n\n[old](https://invalid.test/link) :smile: $old$\n\nshared\n",
+    "new": "# New heading\n\nNew paragraph.\n\n![new](https://invalid.test/new.png)\n\n```mermaid\ngraph TD\nNew-->Here\n```\n\n[new](https://invalid.test/link) :smile: $new$\n\nshared\n\nadded tail\n"
+  },
+  "details-cap": {
+    "old": {
+      "prefix": "---\nfirst: stripped\n---\n---\nsecond: previous\n---\n\n<details open>\n<summary>Expanded</summary>\n\n[link](https://invalid.test/link) :smile: $shifted$\n\n</details>\n\n<details>\n<summary>Collapsed</summary>\n\nHIDDEN BODY\n\n</details>\n\n",
+      "row_template": "cap row {i}\n",
+      "count": 5005,
+      "tail": "\n![outside](https://invalid.test/outside.png)\n\n$outside$\n"
+    },
+    "new": {
+      "prefix": "---\nfirst: stripped\n---\n---\nsecond: retained\n---\n\n<details open>\n<summary>Expanded</summary>\n\n[link](https://invalid.test/link) :smile: $shifted$\n\n</details>\n\n<details>\n<summary>Collapsed</summary>\n\nHIDDEN BODY\n\n</details>\n\n",
+      "row_template": "cap row {i}\n",
+      "count": 5005,
+      "tail": "\n![outside](https://invalid.test/outside.png)\n\n$outside$\n"
+    }
+  }
+}

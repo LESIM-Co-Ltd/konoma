@@ -38,7 +38,8 @@ enum Sec {
 /// One help row: the keys of one or more operations and what they do.
 #[derive(Clone)]
 struct Row {
-    groups: Vec<&'static [Action]>,
+    groups: Vec<Vec<Action>>,
+    resolved: Option<Option<RowOut>>,
     lit: Option<&'static str>,
     /// Keys written out by hand (not rebindable and not an operation: `1 - 9`, the drop of a file).
     lit_only: Option<&'static str>,
@@ -54,7 +55,8 @@ struct Row {
 
 fn r(acts: &'static [Action]) -> Row {
     Row {
-        groups: vec![acts],
+        groups: vec![acts.to_vec()],
+        resolved: None,
         lit: None,
         lit_only: None,
         lit_msg: None,
@@ -68,6 +70,7 @@ fn r(acts: &'static [Action]) -> Row {
 fn lit_row(keys: &'static str, desc: Msg, sec: Sec) -> Row {
     Row {
         groups: Vec::new(),
+        resolved: None,
         lit: None,
         lit_only: Some(keys),
         lit_msg: None,
@@ -89,7 +92,7 @@ fn lit_msg_row(keys: Msg, desc: Msg, sec: Sec) -> Row {
 impl Row {
     /// A second group of operations, written after the first (`/  n / N`).
     fn then(mut self, acts: &'static [Action]) -> Row {
-        self.groups.push(acts);
+        self.groups.push(acts.to_vec());
         self
     }
     /// Keys that cannot be rebound, written after the generated ones (`↑ ↓`).
@@ -153,8 +156,6 @@ const ZOOM_ALL: &[Action] = &[
 ];
 const PAGE_TURN: &[Action] = &[Action::PageNext, Action::PagePrev];
 #[cfg(feature = "git")]
-const DIFF_CHANGES: &[Action] = &[Action::DiffNextChange, Action::DiffPrevChange];
-#[cfg(feature = "git")]
 const SCREENS: &[Action] = &[Action::GitScreenNext, Action::GitScreenPrev];
 const CHANGES: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
 const SEARCH: &[Action] = &[Action::SearchStart];
@@ -178,28 +179,6 @@ const LOG_GRAPH: &[Action] = &[Action::GitOpenLog, Action::GitOpenGraph];
 pub fn help_context(app: &App) -> Context {
     if app.project_active() {
         return Context::Canvas;
-    }
-    #[cfg(feature = "git")]
-    {
-        let backend = crate::ops::backend(app);
-        let screen = if app.is_git_detail() {
-            Some(Screen::Detail)
-        } else if app.is_git_log() {
-            Some(Screen::Log)
-        } else if app.is_git_graph() {
-            Some(Screen::Graph)
-        } else if app.is_git_branches() {
-            Some(Screen::Branches)
-        } else if app.is_git_worktrees() {
-            Some(Screen::Worktrees)
-        } else if app.is_git_view() {
-            Some(Screen::Changes)
-        } else {
-            None
-        };
-        if let Some(s) = screen {
-            return Context::Screen(backend, s);
-        }
     }
     if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
         return Context::Diff;
@@ -444,37 +423,130 @@ fn table_rows() -> Vec<Row> {
 }
 
 fn diff_rows(app: &App) -> Vec<Row> {
-    // The media diff's side-by-side view and the binary-summary body have nothing to scroll.
-    let media_or_summary = app.diff_footer_is_media_or_summary();
-    let mut v = Vec::new();
-    if !media_or_summary {
-        v.push(r(SCROLL).lit("↑ ↓"));
-        v.push(r(ENDS));
-        v.push(r(HSCROLL).then(LINE_ENDS).d(Msg::GitHScrollEnds));
+    diff_rows_with(&app.diff_presentation())
+}
+
+fn diff_rows_with(
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> Vec<Row> {
+    use konoma_plugin::host::project::diff_presentation::DiffHelpSection as S;
+    p.row_declarations()
+        .iter()
+        .zip(p.resolved_rows())
+        .map(|(decl, output)| {
+            let mut row = r(&[]);
+            row.groups = decl
+                .groups
+                .iter()
+                .map(|group| {
+                    group
+                        .iter()
+                        .filter_map(|op| crate::ops::decl::diff_action(*op))
+                        .collect()
+                })
+                .collect();
+            row.resolved = Some(output.as_ref().map(|o| {
+                RowOut {
+                    keys_text: o.keys_text.clone(),
+                    desc: o.description.clone(),
+                    keys: o.keys.clone(),
+                    actions: o
+                        .ops
+                        .iter()
+                        .filter_map(|op| crate::ops::decl::diff_action(*op))
+                        .collect(),
+                    ungated: o.ungated,
+                    sec: match o.section {
+                        S::View => Sec::View,
+                        S::Move => Sec::Move,
+                        S::Launch => Sec::Launch,
+                        S::Tabs => Sec::Tabs,
+                        S::Global => Sec::Global,
+                    },
+                }
+            }));
+            row
+        })
+        .collect()
+}
+
+pub(crate) fn diff_declared_groups(
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> (Vec<Action>, Vec<Action>) {
+    let own = p
+        .row_declarations()
+        .iter()
+        .flat_map(|r| r.groups.iter().flatten())
+        .filter_map(|op| crate::ops::decl::diff_action(*op))
+        .collect();
+    let global = global_rows()
+        .into_iter()
+        .flat_map(|r| r.groups.into_iter().flatten())
+        .collect();
+    (own, global)
+}
+
+pub(crate) fn diff_help_parts(
+    app: &App,
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> (
+    Vec<konoma_plugin::host::project::diff_presentation::DiffHelpRow>,
+    Vec<konoma_plugin::host::project::diff_presentation::DiffHelpMenu>,
+) {
+    use konoma_plugin::host::project::diff_presentation::{
+        DiffHelpMenu, DiffHelpRow, DiffHelpSection as S, DiffUiOp,
+    };
+    let facts = core_help::facts_for(app, Context::Diff);
+    let extra = global_rows()
+        .iter()
+        .filter_map(|r| render_row(app, Context::Diff, r, &facts))
+        .map(|r| DiffHelpRow {
+            keys_text: r.keys_text,
+            description: r.desc,
+            keys: r.keys,
+            ops: r
+                .actions
+                .iter()
+                .filter_map(|a| crate::ops::decl::diff_op(*a))
+                .collect(),
+            section: match r.sec {
+                Sec::Tabs => S::Tabs,
+                Sec::Global => S::Global,
+                Sec::Move => S::Move,
+                Sec::Launch => S::Launch,
+                _ => S::View,
+            },
+            ungated: r.ungated,
+        })
+        .collect();
+    let mut menus = Vec::new();
+    let mut seen = Vec::new();
+    for (key, id) in app.keymaps.leader_keys_of(Context::Diff) {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        if let Some(menu) =
+            crate::ops::menu::menu_with_diff(app, id, crate::ops::menu::View::Help, p)
+        {
+            menus.push(DiffHelpMenu {
+                title: menu.title,
+                prefix: help_key(key),
+                items: menu
+                    .items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, i)| konoma_host_core::menu::Item {
+                        key: i.key,
+                        action: crate::ops::decl::diff_op(i.action)
+                            .unwrap_or(DiffUiOp::Host(index)),
+                        label: i.label,
+                    })
+                    .collect(),
+            });
+        }
     }
-    v.push(r(&[Action::CycleDiffLayout]));
-    v.push(r(PAGE_TURN));
-    #[cfg(feature = "git")]
-    v.push(r(&[Action::CycleDiffView]));
-    v.push(r(CHANGES));
-    #[cfg(feature = "git")]
-    v.push(r(DIFF_CHANGES));
-    #[cfg(feature = "git")]
-    v.push(r(&[Action::ToggleFollowDiffScope]));
-    v.push(r(&[Action::RequestEdit]));
-    v.push(r(&[Action::OpenExternal]));
-    v.push(r(&[Action::OpenGitView]));
-    #[cfg(feature = "git")]
-    v.push(r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool));
-    v.push(r(&[Action::Refresh]));
-    if !media_or_summary {
-        v.push(r(PAGE_KEYS));
-        v.push(r(HALF_KEYS));
-    }
-    #[cfg(feature = "git")]
-    v.push(r(&[Action::GitDiffDiscard]));
-    v.push(r(BACK_PREVIEW).d(Msg::BackToGitView));
-    v
+    (extra, menus)
 }
 
 #[cfg(feature = "git")]
@@ -673,6 +745,9 @@ impl std::fmt::Debug for Sec {
 
 /// The keys of a row as the help writes them, and the description. `None` = nothing to list.
 fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<RowOut> {
+    if let Some(output) = &row.resolved {
+        return output.clone();
+    }
     if let (Some(core), Some(cctx)) = (row.core, core_ctx(ctx)) {
         let lookup = core_help::HostLookup { app, ctx };
         let o = konoma_host_core::help::render_row(core, cctx, facts, &lookup, app.lang)?;
@@ -752,7 +827,10 @@ fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<R
         if decl(lead).launch {
             Sec::Launch
         } else {
-            match first_key.and_then(|k| app.keymaps.layer_of_key(ctx, k)) {
+            match first_key.and_then(|k| {
+                app.keymaps
+                    .layer_of_key_on(ctx, app.screen_keys_for(ctx), k)
+            }) {
                 Some(KeyLayer::Global) => Sec::Global,
                 Some(KeyLayer::Basic) => Sec::Move,
                 _ => Sec::View,
@@ -818,13 +896,8 @@ fn plugin_section_with_keys(app: &App, ctx: Context) -> Option<(HelpSection, Vec
     Some((sec, covered))
 }
 
-fn remaining_project_open_control(
-    mut control: crate::app::project_screens::ProjectControl,
-    covered: &[KeyPress],
-) -> Option<crate::app::project_screens::ProjectControl> {
-    control.keys.retain(|key| !covered.contains(key));
-    (!control.keys.is_empty()).then_some(control)
-}
+#[cfg(test)]
+use konoma_plugin::host::project::presentation::remaining_project_open_control;
 
 /// Every row of `ctx`'s help (before it is grouped into sections), for tests.
 #[cfg(test)]
@@ -842,162 +915,324 @@ pub fn sections(app: &App) -> Vec<HelpSection> {
     sections_for(app, help_context(app))
 }
 
-pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
-    if app.project_active() {
-        let (mut sections, covered) = match plugin_section_with_keys(app, ctx) {
-            Some((section, keys)) => (vec![section], keys),
-            None => (vec![], vec![]),
-        };
-        if app.project_picker() {
-            let mut picker = sections.pop().unwrap_or_else(|| HelpSection::new(""));
-            picker.title = tr(app.lang, Msg::GraphPickerTitle).into();
-            for (keys, description) in &mut picker.rows {
-                if description == tr(app.lang, Msg::FtApply) {
-                    *keys = "l/Enter".into();
-                }
-            }
-            picker.rows.splice(
-                0..0,
-                [
-                    ("j/k".into(), tr(app.lang, Msg::GitMove).into()),
-                    ("g/G".into(), tr(app.lang, Msg::TopBottom).into()),
-                ],
-            );
-            picker
-                .rows
-                .push(("h/Esc  ·  q".into(), tr(app.lang, Msg::FtCancel).into()));
-            return vec![picker];
-        }
-        if let Some(jj) = app.project_graph_jj() {
-            let mut graph = sections.pop().unwrap_or_else(|| HelpSection::new(""));
-            graph.title = tr(
+fn project_sections(app: &App) -> Vec<HelpSection> {
+    use konoma_plugin::host::project::presentation::ProjectHelpWords;
+    let Some((presentation, actions)) = app.project_presentation() else {
+        return vec![];
+    };
+    let plugin = actions
+        .first()
+        .and_then(|a| app.plugin_keys.name_of(a.plugin()))
+        .map(|name| name.get(app.plugin_lang()))
+        .unwrap_or_default();
+    let jj = app.project_vcs_jj() == Some(true);
+    let (screen_title, screen_filter, copy_title) = vcs_screen_words(app, jj);
+    let jumps = [
+        (
+            "branches",
+            tr(
                 app.lang,
                 if jj {
-                    Msg::JjGraphLabel
+                    Msg::JjBookmarksRow
                 } else {
-                    Msg::GitGraphLabel
+                    Msg::GitBranches
                 },
+            ),
+        ),
+        ("worktrees", tr(app.lang, Msg::GitWorktreesRow)),
+        // The log and graph jumps have no default key: a row shows only once the user binds one.
+        ("log", tr(app.lang, Msg::FtLog)),
+        ("graph", tr(app.lang, Msg::FtGraph)),
+    ];
+    let words = ProjectHelpWords {
+        screen_title: tr(app.lang, screen_title),
+        screen_filter: tr(app.lang, screen_filter),
+        close_view: tr(
+            app.lang,
+            if jj {
+                Msg::JjCloseView
+            } else {
+                Msg::GitCloseView
+            },
+        ),
+        tool: tr(
+            app.lang,
+            if jj {
+                Msg::JjExternalTool
+            } else {
+                Msg::GitExternalTool
+            },
+        ),
+        jumps: &jumps,
+        movement: tr(app.lang, Msg::HelpMove),
+        plugin,
+        project: tr(app.lang, Msg::ProjectTitle),
+        picker: tr(app.lang, Msg::GraphPickerTitle),
+        graph: tr(
+            app.lang,
+            if jj {
+                Msg::JjGraphLabel
+            } else {
+                Msg::GitGraphLabel
+            },
+        ),
+        new_tab: tr(app.lang, Msg::OpenInNewTabHelp),
+        move_list: tr(app.lang, Msg::GitMove),
+        move_commit: tr(app.lang, Msg::GitMoveCommit),
+        ends: tr(app.lang, Msg::TopBottom),
+        apply: tr(app.lang, Msg::FtApply),
+        cancel: tr(app.lang, Msg::FtCancel),
+        filter: tr(app.lang, Msg::GitFilterByName),
+        mark: tr(app.lang, Msg::ProjectMark),
+        search: tr(app.lang, Msg::ListFilterHelp),
+        refresh: tr(app.lang, Msg::Refresh),
+        screens: tr(
+            app.lang,
+            if jj {
+                Msg::JjScreensHelp
+            } else {
+                Msg::GitScreensHelp
+            },
+        ),
+        back_to_changes: tr(app.lang, Msg::BackToChanges),
+        cycle: tr(app.lang, Msg::ProjectCycle),
+        back: tr(app.lang, Msg::ProjectBack),
+        scroll: tr(app.lang, Msg::Scroll),
+        copy: tr(app.lang, copy_title),
+        actions: tr(app.lang, Msg::WkActionsTitle),
+        detail_hscroll: tr(app.lang, Msg::GitHScrollEnds),
+        detail_page: tr(app.lang, Msg::HintPage),
+        detail_half_page: tr(app.lang, Msg::Scroll10Lines),
+        detail_layout: tr(app.lang, Msg::GitLayout),
+        detail_back: tr(app.lang, Msg::GitBack),
+    };
+    let screens = app
+        .tab
+        .project_navigation
+        .as_ref()
+        .and_then(|nav| Some((nav, app.project_runtimes.get(&nav.project)?)))
+        .map(|(nav, runtime)| {
+            konoma_plugin::host::project::presentation::screen_help_rows(
+                &runtime.project.declaration.screens,
+                app.plugin_keys.jumps_of(&nav.project.plugin),
+                app.plugin_lang(),
             )
-            .into();
-            graph.rows.splice(
-                0..0,
-                [
-                    ("j/k / ↑/↓".into(), tr(app.lang, Msg::GitMoveCommit).into()),
-                    ("g/G".into(), tr(app.lang, Msg::TopBottom).into()),
-                ],
+        })
+        .unwrap_or_default();
+    let mut sections: Vec<HelpSection> = presentation
+        .help_sections(&words, &screens)
+        .into_iter()
+        .map(|section| HelpSection {
+            title: section.title,
+            rows: section.rows,
+        })
+        .collect();
+    // The Tabs and Global rows (`t`, `[`, `]`, `1 - 9`, `T`, `?`, `Q`, `P`, `F`) act on every
+    // project screen, the graph's branch picker included, so every screen lists them; the launch
+    // verbs (`e`, `o`) are gated by the selected row's target.
+    add_host_rows(app, &mut sections);
+    sections
+}
+
+/// The words of a version-control screen that differ per screen, read from the old hub's
+/// catalog: the main section's title, the filter row's wording and the title of the `y` menu.
+#[cfg(feature = "git")]
+fn vcs_screen_words(app: &App, jj: bool) -> (Msg, Msg, Msg) {
+    use crate::keymap::{Context, Screen};
+    let Some(Context::Screen(_, screen)) = app.canvas_screen() else {
+        return (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint);
+    };
+    match screen {
+        Screen::Changes => (
+            if jj {
+                Msg::JjChangesLabel
+            } else {
+                Msg::GitChangesLabel
+            },
+            Msg::ListFilterHelp,
+            Msg::WkCopyPathTitle,
+        ),
+        Screen::Log => (Msg::GitLogLabel, Msg::ListFilterHelp, Msg::WkGitCopyTitle),
+        Screen::Graph => (
+            if jj {
+                Msg::JjGraphLabel
+            } else {
+                Msg::GitGraphLabel
+            },
+            Msg::ListFilterHelp,
+            Msg::WkGitCopyTitle,
+        ),
+        Screen::Branches => (
+            Msg::GitBranchesLabel,
+            Msg::GitFilterByName,
+            Msg::WkBranchCopyTitle,
+        ),
+        Screen::Worktrees => (Msg::GitWorktreesLabel, Msg::GitFilterByName, Msg::CopyHint),
+        // The old hub's `Screen::Detail` heading; the pushed detail lists no filter row, and its
+        // `y` menu is titled as the log's (the commit it shows).
+        Screen::Detail => (
+            Msg::GitCommitWorktreeDetail,
+            Msg::GitFilterByName,
+            Msg::WkGitCopyTitle,
+        ),
+        Screen::GraphPicker => (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint),
+    }
+}
+
+#[cfg(not(feature = "git"))]
+fn vcs_screen_words(_: &App, _: bool) -> (Msg, Msg, Msg) {
+    (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint)
+}
+
+/// The rows the host adds to a project canvas's help. Every project screen lists the Tabs and
+/// Global rows at the end: those keys sit in the core Global layer, which a project screen hands
+/// back to the host (the graph's branch picker included). The launch verbs (`e`, `o`) are listed
+/// too: they act on any project screen whose selected row has a launchable target (`verb_target`),
+/// so `gate_edit` / `gate_open_external` decide, per screen and per row, like every other row.
+/// They sit after the movement section as the old hub listed them; a screen without one (another
+/// provider's) puts them where every canvas does, before the menus behind `Space` / `y`.
+fn add_host_rows(app: &App, sections: &mut Vec<HelpSection>) {
+    // The screen's own context: its rows are worded and gated as the old hub's were.
+    let ctx = app.canvas_screen().unwrap_or(Context::Canvas);
+    let facts = core_help::facts_for(app, ctx);
+    let mut rows = vec![r(&[Action::RequestEdit]), r(&[Action::OpenExternal])];
+    rows.extend(global_rows());
+    let mut by: Vec<(Sec, Vec<(String, String)>)> = Vec::new();
+    for row in &rows {
+        let Some(out) = render_row(app, ctx, row, &facts) else {
+            continue;
+        };
+        let pair = (out.keys_text, out.desc);
+        match by.iter_mut().find(|(s, _)| *s == out.sec) {
+            Some((_, v)) => v.push(pair),
+            None => by.push((out.sec, vec![pair])),
+        }
+    }
+    let mut take = |sec: Sec, title: Msg| -> Option<HelpSection> {
+        let i = by.iter().position(|(s, _)| *s == sec)?;
+        Some(HelpSection {
+            title: tr(app.lang, title).to_string(),
+            rows: by.remove(i).1,
+        })
+    };
+    let launch = take(Sec::Launch, Msg::HelpLaunch);
+    let tabs = take(Sec::Tabs, Msg::HelpTabs);
+    let global = take(Sec::Global, Msg::HelpGlobal);
+    if let Some(launch) = launch {
+        let movement = tr(app.lang, Msg::HelpMove);
+        let menus = tr(app.lang, Msg::WkActionsTitle);
+        let at = sections
+            .iter()
+            .position(|s| s.title == movement)
+            .map(|i| i + 1)
+            .or_else(|| sections.iter().position(|s| s.title == menus))
+            .unwrap_or(sections.len());
+        sections.insert(at, launch);
+    }
+    sections.extend(tabs);
+    sections.extend(global);
+}
+
+pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
+    if app.project_active() {
+        return project_sections(app);
+    }
+    {
+        if let Some(values) = crate::ops::preview_plan::front_values(app, ctx) {
+            use konoma_plugin::host::project::preview_presentation::{
+                PreviewHelpRow, PreviewSection,
+            };
+            let extra = global_rows()
+                .iter()
+                .filter_map(|r| render_row(app, ctx, r, &values.core))
+                .map(|r| PreviewHelpRow {
+                    keys_text: r.keys_text,
+                    description: r.desc,
+                    section: match r.sec {
+                        Sec::Tabs => PreviewSection::Tabs,
+                        Sec::Global => PreviewSection::Global,
+                        Sec::Move => PreviewSection::Move,
+                        Sec::Launch => PreviewSection::Launch,
+                        _ => PreviewSection::View,
+                    },
+                })
+                .collect();
+            let plugin = plugin_section(app, ctx)
+                .into_iter()
+                .map(|s| konoma_host_core::help::CoreSection {
+                    title: s.title,
+                    rows: s.rows,
+                })
+                .collect();
+            let mut seen = Vec::new();
+            let menus = app
+                .keymaps
+                .leader_keys_of(ctx)
+                .into_iter()
+                .filter_map(|(key, id)| {
+                    if seen.contains(&id) {
+                        return None;
+                    }
+                    seen.push(id);
+                    let section = crate::ui::help::leader_section(app, ctx, id, &help_key(key))?;
+                    Some(konoma_host_core::help::CoreSection {
+                        title: section.title,
+                        rows: section.rows,
+                    })
+                })
+                .collect();
+            return values
+                .help_sections(
+                    &crate::ops::preview_plan::help_words(app),
+                    &core_help::HostLookup { app, ctx },
+                    app.lang,
+                    extra,
+                    plugin,
+                    menus,
+                )
+                .into_iter()
+                .map(|s| HelpSection {
+                    title: s.title,
+                    rows: s.rows,
+                })
+                .collect();
+        }
+    }
+    if ctx == Context::Diff {
+        let p = app.diff_presentation();
+        let (extra, menus) = diff_help_parts(app, &p);
+        let mut sections: Vec<_> = p
+            .help_sections(&extra, &menus)
+            .into_iter()
+            .map(|s| HelpSection {
+                title: s.title,
+                rows: s.rows,
+            })
+            .collect();
+        if let Some(plugin) = plugin_section(app, ctx) {
+            let at = usize::from(
+                sections
+                    .first()
+                    .is_some_and(|s| s.title == tr(app.lang, Msg::PreviewGitDiff)),
             );
-            graph.rows.extend([
-                ("/".into(), tr(app.lang, Msg::ListFilterHelp).into()),
-                ("r".into(), tr(app.lang, Msg::Refresh).into()),
-                (
-                    "Tab / Shift-Tab".into(),
-                    tr(
-                        app.lang,
-                        if jj {
-                            Msg::JjScreensHelp
-                        } else {
-                            Msg::GitScreensHelp
-                        },
-                    )
-                    .into(),
-                ),
-                ("h/q/Esc".into(), tr(app.lang, Msg::BackToChanges).into()),
-            ]);
-            sections.push(graph);
-            for (key, id) in app.keymaps.leader_keys_of(ctx) {
-                if id == LeaderId::Copy {
-                    if let Some(section) =
-                        crate::ui::help::leader_section(app, ctx, id, &help_key(key))
-                    {
-                        sections.push(section);
-                    }
-                }
-            }
-            if let Some(section) =
-                crate::ui::help::leader_section(app, ctx, LeaderId::Actions, "Space")
-            {
-                sections.push(section);
-            }
-            return sections;
-        }
-        let mut navigation = HelpSection::new(tr(app.lang, Msg::ProjectTitle));
-        if let Some((keys, _)) = app.project_new_tab_hint() {
-            navigation
-                .rows
-                .push((keys, tr(app.lang, Msg::OpenInNewTabHelp).into()));
-        }
-        if let Some(hints) = app.project_text_help() {
-            navigation.rows.extend(hints);
-        } else {
-            if let Some(control) = app
-                .project_open_control()
-                .and_then(|control| remaining_project_open_control(control, &covered))
-            {
-                navigation
-                    .rows
-                    .push((control.rendered_keys(), control.label));
-            }
-            if !app.project_pushed() {
-                navigation.rows.push((
-                    "Tab / Shift-Tab".into(),
-                    tr(app.lang, Msg::ProjectCycle).into(),
-                ));
-            }
-            navigation
-                .rows
-                .push(("q / Esc".into(), tr(app.lang, Msg::ProjectBack).into()));
-            navigation
-                .rows
-                .push(("j/k / ↑/↓".into(), tr(app.lang, Msg::Scroll).into()));
-        }
-        if app.project_content().is_some_and(|view| {
-            matches!(
-                view.as_ref(),
-                crate::app::project_screens::ProjectContent::List(_)
-            )
-        }) {
-            if app.project_filter_enabled() {
-                navigation
-                    .rows
-                    .push(("/".into(), tr(app.lang, Msg::GitFilterByName).into()));
-            }
-            if app.project_marks_enabled() {
-                navigation
-                    .rows
-                    .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
-            }
-        }
-        if let Some(nav) = app
-            .tab
-            .project_navigation
-            .as_ref()
-            .filter(|_| !app.project_pushed())
-        {
-            if let Some(runtime) = app.project_runtimes.get(&nav.project) {
-                for screen in &runtime.project.declaration.screens {
-                    if let Some(key) = screen.key {
-                        navigation
-                            .rows
-                            .push((key.to_string(), screen.title.get(app.plugin_lang()).into()));
-                    }
-                }
-            }
-        }
-        sections.push(navigation);
-        for (key, id) in app.keymaps.leader_keys_of(ctx) {
-            if id == LeaderId::Copy {
-                if let Some(section) = crate::ui::help::leader_section(app, ctx, id, &help_key(key))
-                {
-                    sections.push(section);
-                }
-            }
-        }
-        if let Some(section) = crate::ui::help::leader_section(app, ctx, LeaderId::Actions, "Space")
-        {
-            sections.push(section);
+            sections.insert(at, plugin);
         }
         return sections;
     }
+    generic_sections_for(app, ctx)
+}
+
+#[cfg(all(test, feature = "git"))]
+pub(crate) fn project_sections_legacy_for_test(app: &App) -> Vec<HelpSection> {
+    project_sections(app)
+}
+
+#[cfg(all(test, feature = "git"))]
+pub(crate) fn preview_sections_legacy_for_test(app: &App, ctx: Context) -> Vec<HelpSection> {
+    generic_sections_for(app, ctx)
+}
+
+fn generic_sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     let (view_title, mut rows) = view_rows(app, ctx);
     rows.extend(global_rows());
     let facts = core_help::facts_for(app, ctx);
@@ -1037,7 +1272,7 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
     push(&mut out, Msg::HelpLaunch, take(&mut by, Sec::Launch));
     // The menus behind `y` and `Space`: every leader this screen opens.
     let mut seen: Vec<LeaderId> = Vec::new();
-    for (k, id) in app.keymaps.leader_keys_of(ctx) {
+    for (k, id) in app.keymaps.leader_keys_of_on(ctx, app.screen_keys_for(ctx)) {
         if seen.contains(&id) {
             continue;
         }

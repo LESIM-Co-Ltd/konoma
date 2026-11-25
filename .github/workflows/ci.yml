@@ -34,7 +34,7 @@ jobs:
     # become the cache the test parts restore.
     name: ${{ matrix.part == 0 && 'checks' || 'test' }} (macOS Apple Silicon, ${{ matrix.features }}, ${{ matrix.part == 0 && 'not partitioned' || format('part {0}/3', matrix.part) }})
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -116,7 +116,7 @@ jobs:
     # part 0 runs the checks that do not depend on the partition and not the partitioned suite.
     name: ${{ matrix.part == 0 && 'checks' || 'test' }} (Linux x86_64, ${{ matrix.features }}, ${{ matrix.part == 0 && 'not partitioned' || format('part {0}/3', matrix.part) }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:

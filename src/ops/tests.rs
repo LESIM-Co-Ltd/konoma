@@ -304,10 +304,14 @@ fn a_menu_key_follows_the_config_in_the_help() {
 #[cfg(feature = "git")]
 #[test]
 fn a_version_control_key_follows_the_config() {
-    let (app, _d) = app_with(cfg_keys(
-        "git.changes",
-        &[("a", "git_stage"), ("s", "noop")],
-    ));
+    // With the plugins on, these old entries are read as the plugins' `[keys.git]` and leave the
+    // host's table (`plugins::old_screens`); the host's own hub reads its tables as written.
+    let cfg = cfg_keys("git.changes", &[("a", "git_stage"), ("s", "noop")]);
+    let (mut app, _d) = app_with(Config::default());
+    app.keymaps = crate::keymap::KeyMap::from_config(
+        crate::keymap::scheme_from_str(&cfg.ui.keys),
+        &cfg.keys.to_keymap_config(),
+    );
     let ctx = Context::Screen(Backend::Git, Screen::Changes);
     let stage = crate::i18n::tr(app.lang, Msg::FtStage);
     // Whether the writes act depends on the backend of the directory; ask the gate, not a repo.

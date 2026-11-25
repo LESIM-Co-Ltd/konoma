@@ -64,9 +64,9 @@ Back in the tree (`q`):
 
 ## 6. Git, live
 
-If this directory is inside a git repository: `p` opens the changes hub
+If this directory is inside a git repository: `p` opens the project screens, on the changes
 (stage/unstage/commit), `d` on a changed file shows its full-screen diff,
-and inside the hub `Tab` walks on to the log and the commit graph. Modified files
+and on those screens `Tab` walks on to the log and the commit graph. Modified files
 are colored in the tree, and code previews get an editor-style change gutter.
 
 ## 7. Watch an AI agent work

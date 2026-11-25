@@ -3,11 +3,16 @@
 fn graph_sdk_wire_strip_title_tab_icons_and_old_json() {
     use konoma_plugin::prelude::*;
     use konoma_plugin::proc::wire::*;
-    use konoma_plugin::view::{ListRow, ListStrip, ListView};
+    use konoma_plugin::view::{ListHeading, ListRow, ListStrip, ListView};
     let dir = konoma_test_support::unique_tmp("graph_sdk_wire");
     let side = Side::new(dir.as_path(), 'h');
     let expected = ListView {
         title: Some(Line::raw("Graph (2) base: main")),
+        heading: Some(
+            ListHeading::new(Line::raw(" Graph"))
+                .after(Line::raw(" base: main "))
+                .query_gap(2),
+        ),
         bottom: Some(ListStrip::new(
             vec![Line::from(vec![Span::styled(
                 "⎇ ● main",
@@ -18,7 +23,8 @@ fn graph_sdk_wire_strip_title_tab_icons_and_old_json() {
         rows: vec![
             ListRow::new("commit", vec![Line::raw("selected")])
                 .initial_selection(true)
-                .filter_text("selected"),
+                .filter_text("selected")
+                .counted(false),
             ListRow::new("empty", vec![Line::raw("no match")]).filter_fallback(true),
         ],
     };
@@ -247,6 +253,7 @@ fn graph_sdk_wire_rejects_oversized_list_strips_in_both_directions() {
         let wire = WView::ListDecorated {
             rows: vec![],
             title: None,
+            heading: None,
             bottom: Some(WListStrip {
                 chips: vec![line_to_wire(&Line::raw("chip")); count],
                 estimated_width: width,

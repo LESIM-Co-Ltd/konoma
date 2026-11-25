@@ -334,12 +334,15 @@ fn rebuilds_are_limited_and_every_picture_still_comes_back() {
     );
 
     // Frame after frame: land what finished, ask again. All of them come back.
-    let t = std::time::Instant::now();
+    let deadline = std::time::Instant::now() + WAIT;
     while app.md_images.cache.values().any(|e| e.decoded.is_none()) {
-        assert!(t.elapsed() < WAIT, "not every picture came back");
-        if let Ok(res) = img_rx.recv_timeout(std::time::Duration::from_millis(20)) {
-            app.apply_md_image(res);
-        }
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("rebuild cap: every picture must finish");
+        let res = img_rx
+            .recv_timeout(left)
+            .expect("rebuild cap: an outstanding rebuild must answer");
+        app.apply_md_image(res);
         app.md_images.frame += 1;
         assert!(app.md_rebuilds_running() <= MD_MAX_REBUILDS);
         for u in &urls {
@@ -589,7 +592,12 @@ fn the_full_screen_fallback_names_the_reason() {
             .expect("the image is in the tree");
         app.tab.selected = i;
         app.tree_activate().unwrap();
-        let res = media_rx.recv_timeout(WAIT).expect("media result");
+        let res = crate::test_support::recv_media_final(
+            &mut app,
+            &media_rx,
+            WAIT,
+            "full-screen image failure: decode after layout",
+        );
         app.apply_media(res);
         assert!(app.image_failure().is_some(), "{name}: the reason is kept");
 
@@ -966,7 +974,12 @@ fn a_still_image_is_decoded_on_the_worker_not_on_the_ui_thread() {
         app.image_src.is_none(),
         "nothing was decoded on the UI thread"
     );
-    let res = media_rx.recv_timeout(WAIT).expect("the worker's result");
+    let res = crate::test_support::recv_media_final(
+        &mut app,
+        &media_rx,
+        WAIT,
+        "still image: decode after layout",
+    );
     assert!(app.apply_media(res));
     assert!(app.image_src.is_some() && !app.is_media_loading());
 }

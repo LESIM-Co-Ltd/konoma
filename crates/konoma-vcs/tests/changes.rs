@@ -258,14 +258,14 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
             manifest.actions.len(),
             if !cfg!(feature = "git") {
                 if id == "git" {
-                    32
+                    33
                 } else {
-                    30
+                    31
                 }
             } else if id == "git" {
-                44
+                45
             } else {
-                31
+                32
             }
         );
         let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();
@@ -344,7 +344,7 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
         let writes: Vec<_> = manifest
             .actions
             .iter()
-            .filter(|a| a.id != "diff" && matches!(&a.project_context, Some(ActContext::Screen { screen, .. }) if screen == "changes"))
+            .filter(|a| !matches!(a.id.as_str(), "diff" | "diff_all") && matches!(&a.project_context, Some(ActContext::Screen { screen, .. }) if screen == "changes"))
             .collect();
         assert_eq!(
             writes.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
@@ -363,6 +363,17 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
                 vec!["sync"]
             }
         );
+        // `d` (diff-all) is the old hub's key for the uncommitted diff: read-only and always on.
+        // `!` is the host's reserved key, so the plugin declares no tool action.
+        let diff_all = manifest
+            .actions
+            .iter()
+            .find(|a| a.id == "diff_all")
+            .unwrap();
+        assert!(!diff_all.writes && !diff_all.destructive);
+        // Without the `git` feature the plugin reads nothing, so every action is off.
+        assert_eq!(session.enabled("diff_all"), cfg!(feature = "git"));
+        assert!(manifest.actions.iter().all(|a| a.id != "tool"));
         for a in writes {
             assert!(a.writes);
             assert!(a.refresh.contains(&RefreshTarget::CurrentScreen));

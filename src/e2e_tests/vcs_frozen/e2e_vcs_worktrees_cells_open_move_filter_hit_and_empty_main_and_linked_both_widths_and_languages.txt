@@ -1,0 +1,1557 @@
+# frozen vcs frames: e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages
+case root=main lang=en w=80 open
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	REVERSED
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	DIM
+row 2 T|* main  6270993  ~/main  main                                                 |
+row 2 S|a2b4c17d6e49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|f2e76|
+row 4 T|  日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 4 S|f2e25g22e29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|f2e28g10e38|
+row 6 T|                                                                              |
+row 6 S|e78|
+row 7 T|                                                                              |
+row 7 S|e78|
+row 8 T|                                                                              |
+row 8 S|e78|
+row 9 T|                                                                              |
+row 9 S|e78|
+row 10 T|                                                                              |
+row 10 S|e78|
+row 11 T|                                                                              |
+row 11 S|e78|
+row 12 T|                                                                              |
+row 12 S|e78|
+row 13 T|                                                                              |
+row 13 S|e78|
+row 14 T|                                                                              |
+row 14 S|e78|
+row 15 T|                                                                              |
+row 15 S|e78|
+row 16 T|                                                                              |
+row 16 S|e78|
+row 17 T|                                                                              |
+row 17 S|e78|
+case root=main lang=en w=80 move
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Green	Reset	BOLD
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+row 2 T|* main  6270993  ~/main  main                                                 |
+row 2 S|a2b4c17d6c49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|e2f31c45|
+row 4 T|  日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 4 S|a2c25d22c29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|a2c28d10c38|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=main lang=en w=80 query="日本語"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+row 2 T|  日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 2 S|a2b1c1b1c1b1c1b19d22c29|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=main lang=en w=80 query="LINKED"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+row 2 T|  日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 2 S|a2b1c1b1c1b1c1b19d22c29|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=main lang=en w=80 query="no-match"
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no worktrees)                                                              |
+row 2 S|a16b62|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case root=main lang=en w=160 open
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	REVERSED
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	DIM
+row 2 T|* main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b4c17d6e129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|f2e156|
+row 4 T|  日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|f2e25g22e109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|f2e28g10e118|
+row 6 T|                                                                                                                                                              |
+row 6 S|e158|
+row 7 T|                                                                                                                                                              |
+row 7 S|e158|
+row 8 T|                                                                                                                                                              |
+row 8 S|e158|
+row 9 T|                                                                                                                                                              |
+row 9 S|e158|
+row 10 T|                                                                                                                                                              |
+row 10 S|e158|
+row 11 T|                                                                                                                                                              |
+row 11 S|e158|
+row 12 T|                                                                                                                                                              |
+row 12 S|e158|
+row 13 T|                                                                                                                                                              |
+row 13 S|e158|
+row 14 T|                                                                                                                                                              |
+row 14 S|e158|
+row 15 T|                                                                                                                                                              |
+row 15 S|e158|
+row 16 T|                                                                                                                                                              |
+row 16 S|e158|
+row 17 T|                                                                                                                                                              |
+row 17 S|e158|
+case root=main lang=en w=160 move
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Green	Reset	BOLD
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+row 2 T|* main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b4c17d6c129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|e2f31c125|
+row 4 T|  日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|a2c25d22c109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|a2c28d10c118|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=main lang=en w=160 query="日本語"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+row 2 T|  日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 2 S|a2b1c1b1c1b1c1b19d22c109|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=main lang=en w=160 query="LINKED"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+row 2 T|  日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 2 S|a2b1c1b1c1b1c1b19d22c109|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=main lang=en w=160 query="no-match"
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no worktrees)                                                                                                                                              |
+row 2 S|a16b142|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case root=main lang=ja w=80 open
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	REVERSED
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	DIM
+row 2 T|* main  6270993  ~/main  main                                                 |
+row 2 S|a2b4c17d6e49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|f2e76|
+row 4 T|  日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 4 S|f2e25g22e29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|f2e28g10e38|
+row 6 T|                                                                              |
+row 6 S|e78|
+row 7 T|                                                                              |
+row 7 S|e78|
+row 8 T|                                                                              |
+row 8 S|e78|
+row 9 T|                                                                              |
+row 9 S|e78|
+row 10 T|                                                                              |
+row 10 S|e78|
+row 11 T|                                                                              |
+row 11 S|e78|
+row 12 T|                                                                              |
+row 12 S|e78|
+row 13 T|                                                                              |
+row 13 S|e78|
+row 14 T|                                                                              |
+row 14 S|e78|
+row 15 T|                                                                              |
+row 15 S|e78|
+row 16 T|                                                                              |
+row 16 S|e78|
+row 17 T|                                                                              |
+row 17 S|e78|
+case root=main lang=ja w=80 move
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Green	Reset	BOLD
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+row 2 T|* main  6270993  ~/main  main                                                 |
+row 2 S|a2b4c17d6c49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|e2f31c45|
+row 4 T|  日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 4 S|a2c25d22c29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|a2c28d10c38|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=main lang=ja w=80 query="日本語"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+row 2 T|  日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 2 S|a2b1c1b1c1b1c1b19d22c29|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=main lang=ja w=80 query="LINKED"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+row 2 T|  日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 2 S|a2b1c1b1c1b1c1b19d22c29|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=main lang=ja w=80 query="no-match"
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ワ ー ク ツ リ ー な し )                                                          |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b1a1b1a1b58|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case root=main lang=ja w=160 open
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	REVERSED
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	NONE
+style f	Green	Reset	NONE
+style g	Reset	Reset	DIM
+row 2 T|* main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b4c17d6e129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|f2e156|
+row 4 T|  日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|f2e25g22e109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|f2e28g10e118|
+row 6 T|                                                                                                                                                              |
+row 6 S|e158|
+row 7 T|                                                                                                                                                              |
+row 7 S|e158|
+row 8 T|                                                                                                                                                              |
+row 8 S|e158|
+row 9 T|                                                                                                                                                              |
+row 9 S|e158|
+row 10 T|                                                                                                                                                              |
+row 10 S|e158|
+row 11 T|                                                                                                                                                              |
+row 11 S|e158|
+row 12 T|                                                                                                                                                              |
+row 12 S|e158|
+row 13 T|                                                                                                                                                              |
+row 13 S|e158|
+row 14 T|                                                                                                                                                              |
+row 14 S|e158|
+row 15 T|                                                                                                                                                              |
+row 15 S|e158|
+row 16 T|                                                                                                                                                              |
+row 16 S|e158|
+row 17 T|                                                                                                                                                              |
+row 17 S|e158|
+case root=main lang=ja w=160 move
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Green	Reset	BOLD
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+row 2 T|* main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b4c17d6c129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|e2f31c125|
+row 4 T|  日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|a2c25d22c109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|a2c28d10c118|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=main lang=ja w=160 query="日本語"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+row 2 T|  日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 2 S|a2b1c1b1c1b1c1b19d22c109|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=main lang=ja w=160 query="LINKED"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+row 2 T|  日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 2 S|a2b1c1b1c1b1c1b19d22c109|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=main lang=ja w=160 query="no-match"
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ワ ー ク ツ リ ー な し )                                                                                                                                          |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b1a1b1a1b138|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case root=linked lang=en w=80 open
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|  main  6270993  ~/main  main                                                 |
+row 2 S|a2b21c6b49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|a2b76|
+row 4 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 4 S|d2e1b1e1b1e1b1f19g22b29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|a2b28c10b38|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case root=linked lang=en w=80 move
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	BOLD
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|  main  6270993  ~/main  main                                                 |
+row 2 S|a2b21c6b49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|a2b76|
+row 4 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 4 S|a2d1b1d1b1d1b20c22b29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|e2f28g10b38|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case root=linked lang=en w=80 query="日本語"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Reset	Reset	DIM | REVERSED
+row 2 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 2 S|a2b1c1b1c1b1c1d19e22c29|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=linked lang=en w=80 query="LINKED"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Reset	Reset	DIM | REVERSED
+row 2 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 2 S|a2b1c1b1c1b1c1d19e22c29|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=linked lang=en w=80 query="no-match"
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no worktrees)                                                              |
+row 2 S|a16b62|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case root=linked lang=en w=160 open
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|  main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b21c6b129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|a2b156|
+row 4 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|d2e1b1e1b1e1b1f19g22b109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|a2b28c10b118|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case root=linked lang=en w=160 move
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	BOLD
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|  main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b21c6b129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|a2b156|
+row 4 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|a2d1b1d1b1d1b20c22b109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|e2f28g10b118|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case root=linked lang=en w=160 query="日本語"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Reset	Reset	DIM | REVERSED
+row 2 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 2 S|a2b1c1b1c1b1c1d19e22c109|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=linked lang=en w=160 query="LINKED"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Reset	Reset	DIM | REVERSED
+row 2 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 2 S|a2b1c1b1c1b1c1d19e22c109|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=linked lang=en w=160 query="no-match"
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no worktrees)                                                                                                                                              |
+row 2 S|a16b142|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case root=linked lang=ja w=80 open
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|  main  6270993  ~/main  main                                                 |
+row 2 S|a2b21c6b49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|a2b76|
+row 4 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 4 S|d2e1b1e1b1e1b1f19g22b29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|a2b28c10b38|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case root=linked lang=ja w=80 move
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	BOLD
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|  main  6270993  ~/main  main                                                 |
+row 2 S|a2b21c6b49|
+row 3 T|  (detached)  6270993  ~/detached                                             |
+row 3 S|a2b76|
+row 4 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 4 S|a2d1b1d1b1d1b20c22b29|
+row 5 T|  missing  6270993  ~/prunable  prunable                                      |
+row 5 S|e2f28g10b38|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case root=linked lang=ja w=80 query="日本語"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Reset	Reset	DIM | REVERSED
+row 2 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 2 S|a2b1c1b1c1b1c1d19e22c29|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=linked lang=ja w=80 query="LINKED"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Reset	Reset	DIM | REVERSED
+row 2 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                             |
+row 2 S|a2b1c1b1c1b1c1d19e22c29|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case root=linked lang=ja w=80 query="no-match"
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ワ ー ク ツ リ ー な し )                                                          |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b1a1b1a1b58|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case root=linked lang=ja w=160 open
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	REVERSED
+style e	Green	Reset	BOLD | REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|  main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b21c6b129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|a2b156|
+row 4 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|d2e1b1e1b1e1b1f19g22b109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|a2b28c10b118|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case root=linked lang=ja w=160 move
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Reset	Reset	DIM
+style d	Green	Reset	BOLD
+style e	Green	Reset	REVERSED
+style f	Reset	Reset	REVERSED
+style g	Reset	Reset	DIM | REVERSED
+row 2 T|  main  6270993  ~/main  main                                                                                                                                 |
+row 2 S|a2b21c6b129|
+row 3 T|  (detached)  6270993  ~/detached                                                                                                                             |
+row 3 S|a2b156|
+row 4 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 4 S|a2d1b1d1b1d1b20c22b109|
+row 5 T|  missing  6270993  ~/prunable  prunable                                                                                                                      |
+row 5 S|e2f28g10b118|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case root=linked lang=ja w=160 query="日本語"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Reset	Reset	DIM | REVERSED
+row 2 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 2 S|a2b1c1b1c1b1c1d19e22c109|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=linked lang=ja w=160 query="LINKED"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Green	Reset	BOLD | REVERSED
+style c	Reset	Reset	NONE
+style d	Reset	Reset	REVERSED
+style e	Reset	Reset	DIM | REVERSED
+row 2 T|* 日 本 語   6270993  ~/linked  locked: fixture lock                                                                                                             |
+row 2 S|a2b1c1b1c1b1c1d19e22c109|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case root=linked lang=ja w=160 query="no-match"
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ワ ー ク ツ リ ー な し )                                                                                                                                          |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b1a1b1a1b138|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|

@@ -48,6 +48,9 @@ fn refusing() -> io::Error {
 /// What `e` and `o` need to run in the app.
 #[derive(Clone)]
 pub struct LaunchCx {
+    /// Called after a GUI reply is published, allowing tests to wait without a timing race.
+    #[cfg(feature = "test-hooks")]
+    pub gui_published: Option<Arc<dyn Fn() + Send + Sync>>,
     /// `[editor]`: the editor and its per-extension rules.
     pub editor: EditorConfig,
     /// `[external] office_apps`.
@@ -87,6 +90,8 @@ impl LaunchCx {
         verbs: Vec<VerbDecl>,
     ) -> LaunchCx {
         LaunchCx {
+            #[cfg(feature = "test-hooks")]
+            gui_published: None,
             editor,
             office_apps: external.office_apps,
             open_links: external.open_links,
@@ -230,8 +235,14 @@ fn gui(
 ) -> Done {
     if lc.worker {
         let (runner, tx) = (lc.runner.clone(), tx.clone());
+        #[cfg(feature = "test-hooks")]
+        let published = lc.gui_published.clone();
         std::thread::spawn(move || {
             let _ = tx.send(run_chain(&attempts, &*runner));
+            #[cfg(feature = "test-hooks")]
+            if let Some(published) = published {
+                published();
+            }
         });
         Done::default()
     } else {

@@ -1,0 +1,361 @@
+# frozen vcs frames: e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints
+case colocated=false lang=en picker
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no branches)                                                                                                                                               |
+row 2 S|a15b143|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case colocated=false lang=en slash
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no branches)                                                                                                                                               |
+row 2 S|a15b143|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case colocated=false lang=en applied
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	Reset	Reset	NONE
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@                                                                                                                          rlvkpnrz · 作 者  Author · 2020-01-01|
+row 2 S|a1b122c12d1c1d1c20|
+row 3 T|○ (日 本 語 ) Graph 日 本 語                                                                                                     qpvuntsm · 作 者  Author · 2020-01-01|
+row 3 S|e1d1f2d1f1d1f1d1f2d112g12d1g1d1g20|
+row 4 T|◆ root()                                                                                                                                              zzzzzzzz|
+row 4 S|e1d149g8|
+row 5 T|                                                                                                                                                              |
+row 5 S|d158|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|                                                                                                                                                              |
+row 12 S|d158|
+row 13 T|                                                                                                                                                              |
+row 13 S|d158|
+case colocated=false lang=ja picker
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ブ ラ ン チ な し )                                                                                                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b142|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case colocated=false lang=ja slash
+region x=0..158 y=2..14
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ブ ラ ン チ な し )                                                                                                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b142|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+case colocated=false lang=ja applied
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	Reset	Reset	NONE
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@                                                                                                                          rlvkpnrz · 作 者  Author · 2020-01-01|
+row 2 S|a1b122c12d1c1d1c20|
+row 3 T|○ (日 本 語 ) Graph 日 本 語                                                                                                     qpvuntsm · 作 者  Author · 2020-01-01|
+row 3 S|e1d1f2d1f1d1f1d1f2d112g12d1g1d1g20|
+row 4 T|◆ root()                                                                                                                                              zzzzzzzz|
+row 4 S|e1d149g8|
+row 5 T|                                                                                                                                                              |
+row 5 S|d158|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|                                                                                                                                                              |
+row 12 S|d158|
+row 13 T|                                                                                                                                                              |
+row 13 S|d158|
+case colocated=true lang=en picker
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|[x]   日 本 語                                                                                                                                                   |
+row 2 S|a4b3c1b1c1b1c147|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case colocated=true lang=en slash
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|[x]   日 本 語                                                                                                                                                   |
+row 2 S|a4b3c1b1c1b1c147|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case colocated=true lang=en applied
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	Reset	Reset	NONE
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@                                                                                                                          rlvkpnrz · 作 者  Author · 2020-01-01|
+row 2 S|a1b122c12d1c1d1c20|
+row 3 T|○ (日 本 語 ) Graph 日 本 語                                                                                                     qpvuntsm · 作 者  Author · 2020-01-01|
+row 3 S|e1d1f2d1f1d1f1d1f2d112g12d1g1d1g20|
+row 4 T|◆ root()                                                                                                                                              zzzzzzzz|
+row 4 S|e1d149g8|
+row 5 T|                                                                                                                                                              |
+row 5 S|d158|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|g158|
+row 13 T|● 日 本 語                                                                                                                                                       |
+row 13 S|e1d157|
+case colocated=true lang=ja picker
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|[x]   日 本 語                                                                                                                                                   |
+row 2 S|a4b3c1b1c1b1c147|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case colocated=true lang=ja slash
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|[x]   日 本 語                                                                                                                                                   |
+row 2 S|a4b3c1b1c1b1c147|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case colocated=true lang=ja applied
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	Reset	Reset	NONE
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@                                                                                                                          rlvkpnrz · 作 者  Author · 2020-01-01|
+row 2 S|a1b122c12d1c1d1c20|
+row 3 T|○ (日 本 語 ) Graph 日 本 語                                                                                                     qpvuntsm · 作 者  Author · 2020-01-01|
+row 3 S|e1d1f2d1f1d1f1d1f2d112g12d1g1d1g20|
+row 4 T|◆ root()                                                                                                                                              zzzzzzzz|
+row 4 S|e1d149g8|
+row 5 T|                                                                                                                                                              |
+row 5 S|d158|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|g158|
+row 13 T|● 日 本 語                                                                                                                                                       |
+row 13 S|e1d157|

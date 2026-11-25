@@ -15,6 +15,58 @@ use std::collections::HashMap;
 use std::io::Write as _;
 
 #[test]
+fn shared_config_media_diff_agrees_with_config_on_parse_and_load() {
+    use konoma_host_core::shared::SharedConfig;
+    use konoma_widgets::media_diff::MediaDiffLayout;
+    let dir = unique_tmp("shared_media_diff_parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    for raw in [
+        None,
+        Some("auto"),
+        Some("side"),
+        Some("stack"),
+        Some("split"),
+        Some("horizontal"),
+        Some("side-by-side"),
+        Some("vertical"),
+        Some("stacked"),
+        Some("unified"),
+        Some("sideways"),
+    ] {
+        let text = raw.map_or(String::new(), |s| format!("[git]\nmedia_diff='{s}'\n"));
+        let config: Config = toml::from_str(&text).unwrap();
+        let shared = SharedConfig::parse(&text).unwrap();
+        assert_eq!(
+            shared.git.media_diff,
+            raw.unwrap_or("auto"),
+            "stored as written"
+        );
+        assert_eq!(config.git.media_diff, shared.git.media_diff);
+        assert_eq!(
+            MediaDiffLayout::parse(&config.git.media_diff),
+            MediaDiffLayout::parse(&shared.git.media_diff)
+        );
+        std::fs::write(&path, text).unwrap();
+        let (config, host_error) = Config::load_path_reporting(&path);
+        let (shared, shared_error) = SharedConfig::load(&path);
+        assert_eq!(host_error, None);
+        assert_eq!(shared_error, None);
+        assert_eq!(config.git.media_diff, shared.git.media_diff);
+    }
+    let text = "[git]\nmedia_diff=17\n";
+    assert!(toml::from_str::<Config>(text).is_err());
+    assert!(SharedConfig::parse(text).is_err());
+    std::fs::write(&path, text).unwrap();
+    let (config, host_error) = Config::load_path_reporting(&path);
+    let (shared, shared_error) = SharedConfig::load(&path);
+    assert!(host_error.is_some());
+    assert_eq!(host_error, shared_error);
+    assert_eq!(shared.git.media_diff, "auto");
+    assert_eq!(config.git.media_diff, shared.git.media_diff);
+}
+
+#[test]
 fn config_project_vcs_precedence_and_legacy_notice() {
     assert_eq!(Config::default().project_vcs(), "auto");
     for (text, expected, renamed) in [
@@ -73,26 +125,6 @@ fn vcs_host_quick_scan_of_qualified_git_calls_and_function_imports() {
             let source = std::fs::read_to_string(&path).unwrap();
             let production = source.split("\nmod tests {").next().unwrap();
             for function in vcs_quick_git_scan(production) {
-                // These are the host's local renderers, not repository operations.
-                if path.ends_with("ui/mod.rs")
-                    && [
-                        "render_detail",
-                        "render_graph_picker",
-                        "render_graph",
-                        "render_log",
-                        "render_branches",
-                        "render_worktrees",
-                        "render_changes",
-                    ]
-                    .contains(&function.as_str())
-                {
-                    continue;
-                }
-                // The tree title draws the plugin's chip with this colour mapping; it reads no
-                // repository state.
-                if path.ends_with("ui/tree.rs") && function == "vcs_color" {
-                    continue;
-                }
                 violations.push(format!(
                     "{}: git::{function}",
                     path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
@@ -789,6 +821,102 @@ fn cfg_ui_diff_view_default_and_parse() {
         "source"
     );
     assert_eq!(Config::default().ui.diff_view, "rendered");
+}
+
+#[test]
+fn shared_config_diff_view_agrees_with_config_on_parse_and_load() {
+    use konoma_host_core::{project::DiffView, shared::SharedConfig};
+
+    let dir = unique_tmp("shared_diff_view_parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    for (name, text, raw, resolved) in [
+        ("absent", "", "rendered", DiffView::Rendered),
+        ("absent-in-ui", "[ui]\n", "rendered", DiffView::Rendered),
+        (
+            "source",
+            "[ui]\ndiff_view='source'\n",
+            "source",
+            DiffView::Source,
+        ),
+        (
+            "rendered",
+            "[ui]\ndiff_view='rendered'\n",
+            "rendered",
+            DiffView::Rendered,
+        ),
+        (
+            "preview",
+            "[ui]\ndiff_view='preview'\n",
+            "preview",
+            DiffView::Preview,
+        ),
+        (
+            "typo",
+            "[ui]\ndiff_view='sideways'\n",
+            "sideways",
+            DiffView::Rendered,
+        ),
+    ] {
+        let config: Config = toml::from_str(text).unwrap();
+        let shared = SharedConfig::parse(text).unwrap();
+        assert_eq!(shared.ui.diff_view, raw, "{name}: shared ui.diff_view");
+        assert_eq!(
+            config.ui.diff_view, shared.ui.diff_view,
+            "{name}: stored value"
+        );
+        assert_eq!(
+            DiffView::parse(&config.ui.diff_view),
+            resolved,
+            "{name}: host resolution"
+        );
+        assert_eq!(
+            DiffView::parse(&shared.ui.diff_view),
+            resolved,
+            "{name}: shared resolution"
+        );
+
+        std::fs::write(&path, text).unwrap();
+        let (config, host_error) = Config::load_path_reporting(&path);
+        let (shared, shared_error) = SharedConfig::load(&path);
+        assert_eq!(host_error, None, "{name}: host load");
+        assert_eq!(shared_error, None, "{name}: shared load");
+        assert_eq!(shared.ui.diff_view, raw, "{name}: shared loaded value");
+        assert_eq!(
+            config.ui.diff_view, shared.ui.diff_view,
+            "{name}: loaded value"
+        );
+    }
+
+    let wrong_type = "[ui]\ndiff_view=17\nwrap=false\n";
+    assert!(
+        toml::from_str::<Config>(wrong_type).is_err(),
+        "host rejects a non-string view"
+    );
+    assert!(
+        SharedConfig::parse(wrong_type).is_err(),
+        "shared reader rejects a non-string view"
+    );
+    std::fs::write(&path, wrong_type).unwrap();
+    let (config, host_error) = Config::load_path_reporting(&path);
+    let (shared, shared_error) = SharedConfig::load(&path);
+    assert!(host_error.is_some(), "wrong type reports a load error");
+    assert_eq!(
+        host_error, shared_error,
+        "wrong type reports the same load error"
+    );
+    assert_eq!(
+        config.ui.diff_view, "rendered",
+        "host falls back to defaults"
+    );
+    assert_eq!(
+        shared.ui.diff_view, config.ui.diff_view,
+        "shared reader falls back to the same view"
+    );
+    assert!(
+        config.ui.wrap && shared.ui.wrap,
+        "a broken config falls back as a whole"
+    );
 }
 
 #[test]
@@ -2485,14 +2613,70 @@ fn struct_pub_field_names(source: &str, struct_name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Checks one commented `<key> = "<operation>"` entry of a `[keys.<plugin id>]` example the way
+/// konoma binds it: the entry goes alone into the plugin's table, through the binders the app
+/// calls (`bind_actions` for the plugin's actions, `bind_jumps` for its `goto_<screen>` jumps),
+/// and must come out bound to its key with no note, and not shadowed by another binding.
+fn check_plugin_example_entry(
+    name: &str,
+    id: &str,
+    manifest: &konoma_plugin::Manifest,
+    key: &str,
+    operation: &str,
+) {
+    use konoma_plugin::host::bind::{bind_actions, bind_jumps, keypress_of};
+    let table: HashMap<String, String> = [(key.to_string(), operation.to_string())].into();
+    let (acts, act_notes) = bind_actions(id, manifest, Some(&table), |a| a.to_string());
+    let (jumps, jump_notes) = bind_jumps(id, manifest, Some(&table));
+    let notes: Vec<_> = act_notes.into_iter().chain(jump_notes).collect();
+    assert!(
+        notes.is_empty(),
+        "{name}: `[keys.{id}]` example `{key} = {operation:?}` is refused by the binder: {notes:?}"
+    );
+    if operation == "noop" || operation == "disabled" {
+        return; // taking a key away binds nothing
+    }
+    let spec = konoma_plugin::keys::parse_key(key).unwrap_or_else(|e| {
+        panic!("{name}: `[keys.{id}]` example key {key:?} does not parse: {e:?}")
+    });
+    let pressed = keypress_of(spec);
+    let jump = jumps.iter().find(|j| j.op == operation);
+    let act = acts.iter().find(|a| a.act == operation);
+    let owners = acts.iter().filter(|a| a.key == Some(pressed)).count()
+        + jumps.iter().filter(|j| j.key == Some(pressed)).count();
+    match (jump, act) {
+        (Some(j), _) => assert_eq!(
+            j.key,
+            Some(pressed),
+            "{name}: `[keys.{id}]` example `{key} = {operation:?}` does not bind the jump"
+        ),
+        (None, Some(a)) => assert_eq!(
+            a.key,
+            Some(pressed),
+            "{name}: `[keys.{id}]` example `{key} = {operation:?}` does not bind the action"
+        ),
+        (None, None) => panic!(
+            "{name}: `[keys.{id}]` example binds {operation:?}, which the plugin does not declare"
+        ),
+    }
+    assert_eq!(
+        owners, 1,
+        "{name}: `[keys.{id}]` example key {key:?} is also bound to another action or jump of the plugin"
+    );
+}
+
 /// The example configs' `[keys]` section names every key context, and the `[keys.<name>]` examples in
 /// them (commented out, so `toml::from_str` never sees them) use names konoma actually knows — so an
 /// example a user uncomments does not just produce an "unknown key surface" warning. Context names
 /// that were renamed (plugin stage 2 / B1) are the thing this guards: the lists are hand-written
-/// in two languages.
+/// in two languages. A `[keys.<plugin id>]` example (the id of a standard plugin) runs from its
+/// commented header to the next header or the first line that is not a comment (a bare `#` does not
+/// end it); every commented `key = value` line in it is parsed as TOML and bound with the real
+/// binders (`check_plugin_example_entry`).
 #[test]
 fn shipped_example_configs_name_every_key_context_and_only_real_ones() {
     use crate::keymap::Context;
+    let manifests = crate::plugins::standard_manifests();
     for name in ["config.example.toml", "config.example.ja.toml"] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -2508,30 +2692,83 @@ fn shipped_example_configs_name_every_key_context_and_only_real_ones() {
         }
         // Every `[keys.<name>]` / `[keys."<name>"]` header, commented out or not.
         let mut headers = 0;
-        for line in text.lines() {
-            let l = line.trim_start_matches('#').trim();
+        // Entries checked, by plugin id.
+        let mut checked: HashMap<String, usize> = HashMap::new();
+        // The plugin whose `[keys.<id>]` example table the lines below belong to.
+        let mut plugin_table: Option<String> = None;
+        for (index, line) in text.lines().enumerate() {
+            let at = format!("{name}:{}", index + 1);
+            let commented = line.trim_start().starts_with('#');
+            let l = line.trim_start().trim_start_matches('#').trim();
+            if !commented || l.starts_with('[') {
+                // A line that is not a comment, or any header, ends the table in scope.
+                plugin_table = None;
+            } else if let (Some(id), false) = (&plugin_table, l.is_empty()) {
+                // An entry of the table in scope; prose (no `=`) is skipped.
+                if l.contains('=') {
+                    let parsed: toml::Table = toml::from_str(l).unwrap_or_else(|e| {
+                        panic!("{at}: `{l}` in the `[keys.{id}]` example is not a TOML entry: {e}")
+                    });
+                    assert_eq!(parsed.len(), 1, "{at}: expected one entry in `{l}`");
+                    let (key, value) = parsed.iter().next().expect("one entry");
+                    let operation = value.as_str().unwrap_or_else(|| {
+                        panic!("{at}: the value of `{key}` in the `[keys.{id}]` example is not a string")
+                    });
+                    let manifest = manifests
+                        .iter()
+                        .find(|m| m.id == *id)
+                        .unwrap_or_else(|| panic!("{at}: no manifest for plugin `{id}`"));
+                    check_plugin_example_entry(&at, id, manifest, key, operation);
+                    *checked.entry(id.clone()).or_default() += 1;
+                }
+            }
             let Some(rest) = l.strip_prefix("[keys.") else {
                 continue;
             };
             let Some(end) = rest.find(']') else { continue };
+            // A header ends at its `]` (a trailing comment is fine); a prose line that merely
+            // starts with a `[keys.…]` mention is not one.
+            let after = rest[end + 1..].trim();
+            if !after.is_empty() && !after.starts_with('#') {
+                continue;
+            }
             let n = rest[..end].trim_matches('"');
             if n.starts_with('<') {
                 continue; // the `[keys.<context>]` placeholder
             }
             headers += 1;
+            // A standard plugin's own table (`[keys.git]`); without git the git and jj plugins are
+            // not built in and their tables are skipped like the dotted names.
+            // A host context of the same name (`text`, `image`, ...) is the context, not the plugin.
+            let is_context = n == "global" || Context::from_name(n).is_some();
+            if !is_context
+                && (manifests.iter().any(|m| m.id == n)
+                    || (!cfg!(feature = "git") && matches!(n, "git" | "jj")))
+            {
+                plugin_table =
+                    (commented && manifests.iter().any(|m| m.id == n)).then(|| n.to_string());
+                continue;
+            }
             // Without git the dotted version-control names are unknown by design.
             let known = n == "global" || Context::from_name(n).is_some() || n.contains('.');
-            assert!(known, "{name}: `[keys.{n}]` is not a key context");
+            assert!(known, "{at}: `[keys.{n}]` is not a key context");
             if cfg!(feature = "git") && n.contains('.') {
                 assert!(
                     Context::from_name(n).is_some(),
-                    "{name}: `[keys.\"{n}\"]` is not a key context"
+                    "{at}: `[keys.\"{n}\"]` is not a key context"
                 );
             }
         }
         assert!(
             headers >= 3,
             "{name}: found only {headers} [keys.…] examples"
+        );
+        // Lower bound per expected table: the examples show at least one operation under
+        // `[keys.git]`, so the check above cannot pass by finding nothing (with git off the table
+        // is skipped).
+        assert!(
+            !cfg!(feature = "git") || checked.get("git").copied().unwrap_or(0) >= 1,
+            "{name}: no `[keys.git]` example entry was checked"
         );
     }
 }
@@ -2703,5 +2940,284 @@ fn cfg_default_rules_send_every_word_and_presentation_extension_to_the_document_
         "d.xlsx",
     ] {
         assert!(!is_doc(name), "{name}");
+    }
+}
+
+// =============================================================================
+// The shared project settings (`konoma_host_core::project::ProjectSettings`) against konoma's own
+// reading of the same text. The host stays the oracle: it reads the fields below through `Config`.
+// =============================================================================
+
+mod project_settings_parity {
+    use super::*;
+    use konoma_host_core::project::{DiffLayout as SharedDiffLayout, ProjectSettings};
+    use konoma_host_core::shared::SharedConfig;
+
+    /// What the host reads for the project screens from `cfg`: the layout the diff starts in, the
+    /// worktree folder, the title path style, icons, theme, the `[external]` gates, and the
+    /// command `!` launches for git and for jj (the host's own `tool_command`).
+    #[derive(Debug, PartialEq, Eq)]
+    struct HostReading {
+        layout: &'static str,
+        worktree_dir: String,
+        path_style: String,
+        icons: bool,
+        theme: [String; 5],
+        git_enabled: bool,
+        tool_enabled: bool,
+        git_tool: (String, &'static str),
+        jj_tool: (String, &'static str),
+    }
+
+    fn layout_name(l: crate::app::DiffLayout) -> &'static str {
+        match l {
+            SharedDiffLayout::Unified => "unified",
+            SharedDiffLayout::Split => "split",
+            SharedDiffLayout::Auto => "auto",
+        }
+    }
+
+    fn host_reading(cfg: &Config) -> HostReading {
+        let t = &cfg.ui.theme;
+        HostReading {
+            layout: layout_name(crate::app::DiffLayout::parse(&cfg.git.diff)),
+            worktree_dir: cfg.git.worktree_dir.clone(),
+            path_style: cfg.ui.path_style.clone(),
+            icons: cfg.ui.icons,
+            theme: [
+                t.bg.clone(),
+                t.code_bg.clone(),
+                t.code_label_align.clone(),
+                t.code_label_bg.clone(),
+                t.code_theme.clone(),
+            ],
+            git_enabled: cfg.external.git,
+            tool_enabled: cfg.external.git_tool,
+            git_tool: crate::tool_command(crate::vcs::VcsKind::Git, cfg),
+            #[cfg(feature = "git")]
+            jj_tool: crate::tool_command(crate::vcs::VcsKind::Jj, cfg),
+            #[cfg(not(feature = "git"))]
+            jj_tool: (cfg.jj.tool.trim().to_string(), "lazyjj"),
+        }
+    }
+
+    fn shared_reading(s: &ProjectSettings) -> HostReading {
+        let t = &s.theme;
+        HostReading {
+            layout: layout_name(s.diff_layout),
+            worktree_dir: s.worktree_dir.clone(),
+            path_style: s.path_style.clone(),
+            icons: s.icons,
+            theme: [
+                t.bg.clone(),
+                t.code_bg.clone(),
+                t.code_label_align.clone(),
+                t.code_label_bg.clone(),
+                t.code_theme.clone(),
+            ],
+            git_enabled: s.git_enabled,
+            tool_enabled: s.tool_enabled,
+            git_tool: s.tool_command(false),
+            jj_tool: s.tool_command(true),
+        }
+    }
+
+    /// One config text: both readings of it agree, or both refuse it. Returns whether it parsed.
+    fn agree(text: &str) -> bool {
+        let host = toml::from_str::<Config>(text);
+        let shared = SharedConfig::parse(text);
+        match (host, shared) {
+            (Ok(c), Ok(s)) => {
+                let mut host = host_reading(&c);
+                let mut shared = shared_reading(&ProjectSettings::from_config(&s));
+                // The jj fallback of a no-git build is not the shared one's concern.
+                if !cfg!(feature = "git") {
+                    host.jj_tool = shared.jj_tool.clone();
+                    shared.jj_tool = host.jj_tool.clone();
+                }
+                assert_eq!(host, shared, "{text:?}");
+                true
+            }
+            (Err(_), Err(_)) => false,
+            (h, s) => panic!(
+                "{text:?}: the host {:?} but the shared reading {:?}",
+                h.map(|_| ()),
+                s.map(|_| ())
+            ),
+        }
+    }
+
+    #[test]
+    fn every_field_agrees_when_present_absent_or_blank() {
+        let cases = [
+            "",
+            "[git]\ntool = \"gitui\"\n",
+            "[git]\ntool = \"  \"\n",
+            "[git]\ntool = \"\"\n",
+            "[git]\ntool = \"  tig  \"\n",
+            "[jj]\ntool = \"jjui\"\n",
+            "[jj]\ntool = \"   \"\n",
+            "[jj]\ntool = \"\"\n",
+            "[git]\ndiff = \"split\"\n",
+            "[git]\ndiff = \"Side-By-Side\"\n",
+            "[git]\ndiff = \"auto\"\n",
+            "[git]\ndiff = \"vertical\"\n",
+            "[git]\ndiff = \"nonsense\"\n",
+            "[git]\nworktree_dir = \"/srv/wt\"\n",
+            "[git]\nworktree_dir = \"\"\n",
+            "[ui]\npath_style = \"home\"\n",
+            "[ui]\npath_style = \"full\"\n",
+            "[ui]\npath_style = \"whatever\"\n",
+            "[ui]\nicons = false\n",
+            "[ui]\nicons = true\n",
+            "[ui.theme]\nbg = \"#102030\"\ncode_bg = \"none\"\ncode_label_align = \"left\"\ncode_label_bg = \"#405060\"\ncode_theme = \"Dracula\"\n",
+            "[ui.theme]\ncode_theme = \"Dracula\"\n",
+            "[external]\ngit = false\n",
+            "[external]\ngit_tool = false\n",
+            "[external]\ngit = false\ngit_tool = true\n",
+            "[external]\ngit = true\ngit_tool = false\n",
+            // Every field at once, none of them the default.
+            "[git]\ntool = \"gitui\"\ndiff = \"split\"\nworktree_dir = \"/w\"\n[jj]\ntool = \"jjui\"\n[ui]\npath_style = \"full\"\nicons = false\n[ui.theme]\nbg = \"#000001\"\n[external]\ngit = false\ngit_tool = false\n",
+        ];
+        for text in cases {
+            assert!(agree(text), "{text:?} should parse");
+        }
+    }
+
+    /// Precedence between the sections: the settings of one section never leak into another, and
+    /// `[external] git_tool` (a gate) does not change which tool `[git] tool` names.
+    #[test]
+    fn the_git_tool_gate_and_the_tool_name_are_independent_and_the_legacy_git_gate_stands_alone() {
+        let c: Config =
+            toml::from_str("[external]\ngit_tool = false\n[git]\ntool = \"tig\"\n").unwrap();
+        let s =
+            SharedConfig::parse("[external]\ngit_tool = false\n[git]\ntool = \"tig\"\n").unwrap();
+        let p = ProjectSettings::from_config(&s);
+        assert!(!c.external.git_tool && !p.tool_enabled);
+        assert!(
+            c.external.git && p.git_enabled,
+            "the legacy gate is untouched"
+        );
+        assert_eq!(p.tool_command(false), ("tig".to_string(), "lazygit"));
+        assert_eq!(crate::tool_command(crate::vcs::VcsKind::Git, &c).0, "tig");
+        // The jj tool does not follow the git one.
+        assert_eq!(p.tool_command(true).0, "lazyjj");
+        let both = "[git]\ntool = \"a\"\n[jj]\ntool = \"b\"\n";
+        assert!(agree(both));
+        let p = ProjectSettings::from_config(&SharedConfig::parse(both).unwrap());
+        assert_eq!(
+            (p.tool_command(false).0, p.tool_command(true).0),
+            ("a".to_string(), "b".to_string())
+        );
+    }
+
+    /// A value of the wrong type is an error for the whole file in both readings (the host then
+    /// runs on defaults and says so), never a half-read value in one of them.
+    #[test]
+    fn a_wrong_type_is_refused_by_both_readings() {
+        for text in [
+            "[git]\ntool = 3\n",
+            "[git]\ntool = true\n",
+            "[git]\ndiff = 1\n",
+            "[git]\nworktree_dir = false\n",
+            "[jj]\ntool = [\"a\"]\n",
+            "[jj]\ntool = 1\n",
+            "[ui]\npath_style = 1\n",
+            "[ui]\nicons = \"no\"\n",
+            "[ui]\nicons = 1\n",
+            "[ui.theme]\nbg = 1\n",
+            "[ui.theme]\ncode_theme = false\n",
+            "[external]\ngit = \"yes\"\n",
+            "[external]\ngit_tool = 1\n",
+            "[git]\ntool = \"ok\"\n[external]\ngit = \"yes\"\n",
+        ] {
+            assert!(!agree(text), "{text:?} must be refused by both");
+        }
+    }
+
+    /// The host's fallback for a refused file is the defaults; the shared defaults are the same.
+    #[test]
+    fn the_defaults_agree_with_the_host_defaults() {
+        let host = host_reading(&Config::default());
+        let shared = shared_reading(&ProjectSettings::from_config(&SharedConfig::default()));
+        assert_eq!(host, shared);
+        assert_eq!(host.git_tool, ("lazygit".to_string(), "lazygit"));
+        assert_eq!(host.layout, "unified");
+        assert_eq!(host.worktree_dir, "../");
+    }
+}
+
+// =============================================================================
+// The readers of the old names (`konoma_plugin::config`) against konoma's own reading of the same
+// old names: where the host accepts a value, the reader returns the same; where the host refuses
+// the file (a wrong type), the reader returns the default the host then runs on.
+// =============================================================================
+
+mod old_name_readers_parity {
+    use super::*;
+    use konoma_plugin::config as readers;
+
+    fn root(text: &str) -> toml::Table {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn the_readers_give_what_the_host_reads_from_the_old_names() {
+        for (text, align, jj_sync, base, max, wt) in [
+            ("", "right", true, vec![], 12, "../"),
+            (
+                "[ui]\ncommit_meta_align = \"inline\"\nconfirm_jj_sync = false\ngraph_base_branches = [\"main\", \"dev\"]\ngraph_max_branches = 0\n[git]\nworktree_dir = \"/w\"\n",
+                "inline",
+                false,
+                vec!["main".to_string(), "dev".to_string()],
+                0,
+                "/w",
+            ),
+            ("[ui]\ngraph_max_branches = 5\n", "right", true, vec![], 5, "../"),
+        ] {
+            let c: Config = toml::from_str(text).unwrap();
+            let t = root(text);
+            assert_eq!(c.ui.commit_meta_align, align, "{text:?}");
+            for plugin in ["git", "jj"] {
+                assert_eq!(readers::commit_meta_align(&t, plugin).value, c.ui.commit_meta_align, "{text:?}");
+                assert_eq!(readers::graph_base_branches(&t, plugin).value, c.ui.graph_base_branches, "{text:?}");
+                assert_eq!(readers::graph_max_branches(&t, plugin).value, c.ui.graph_max_branches, "{text:?}");
+            }
+            assert_eq!(readers::confirm_jj_sync(&t).value, c.ui.confirm_jj_sync, "{text:?}");
+            assert_eq!(readers::worktree_dir(&t).value, c.git.worktree_dir, "{text:?}");
+            assert_eq!(c.ui.confirm_jj_sync, jj_sync);
+            assert_eq!(c.ui.graph_base_branches, base);
+            assert_eq!(c.ui.graph_max_branches, max);
+            assert_eq!(c.git.worktree_dir, wt);
+        }
+    }
+
+    #[test]
+    fn a_wrong_type_is_refused_by_the_host_and_the_reader_gives_the_host_default() {
+        let d = Config::default();
+        for text in [
+            "[ui]\ncommit_meta_align = 1\n",
+            "[ui]\nconfirm_jj_sync = \"no\"\n",
+            "[ui]\ngraph_base_branches = [1]\n",
+            "[ui]\ngraph_max_branches = -1\n",
+            "[git]\nworktree_dir = true\n",
+        ] {
+            assert!(toml::from_str::<Config>(text).is_err(), "{text:?}");
+            let t = root(text);
+            assert_eq!(
+                readers::commit_meta_align(&t, "git").value,
+                d.ui.commit_meta_align
+            );
+            assert_eq!(readers::confirm_jj_sync(&t).value, d.ui.confirm_jj_sync);
+            assert_eq!(
+                readers::graph_base_branches(&t, "jj").value,
+                d.ui.graph_base_branches
+            );
+            assert_eq!(
+                readers::graph_max_branches(&t, "jj").value,
+                d.ui.graph_max_branches
+            );
+            assert_eq!(readers::worktree_dir(&t).value, d.git.worktree_dir);
+        }
     }
 }

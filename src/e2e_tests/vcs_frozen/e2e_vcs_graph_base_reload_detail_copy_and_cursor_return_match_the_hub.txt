@@ -1,0 +1,857 @@
+# frozen vcs frames: e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub
+case lang=en worktree row s
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD | REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	White	Reset	NONE
+style e	Reset	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+style h	Cyan	Reset	NONE
+style i	Reset	Reset	BOLD
+style j	White	Reset	BOLD
+row 2 T|●   Uncommitted changes                                                                                                    1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b3a19b100c35|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1e3f49e71g11e1g1e1g20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1h2e155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|d1e1h1e1f35e85g11e1g1e1g20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1e1h1e121g11e1g1e1g20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1h2e155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1e123g11e1g1e1g20|
+row 9 T|                                                                                                                                                              |
+row 9 S|e158|
+row 10 T|                                                                                                                                                              |
+row 10 S|e158|
+row 11 T|                                                                                                                                                              |
+row 11 S|e158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|g158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|i1e1j1i7e2d1e33h1e111|
+case lang=en worktree=true open=Enter detail
+region x=0..158 y=2..14
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Reset	Rgb(20, 48, 28)	NONE
+style f	Reset	Reset	NONE
+row 2 T|┌─ tracked ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b9a147|
+row 3 T|▌        1 unstaged 日 本 語                                                                                                                                     |
+row 3 S|c1d10e10f1e1f1e1f133|
+row 4 T|┌─ untracked ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 4 S|a2b11a145|
+row 5 T|▌        1 untracked                                                                                                                                          |
+row 5 S|c1d10e9f138|
+row 6 T|                                                                                                                                                              |
+row 6 S|f158|
+row 7 T|                                                                                                                                                              |
+row 7 S|f158|
+row 8 T|                                                                                                                                                              |
+row 8 S|f158|
+row 9 T|                                                                                                                                                              |
+row 9 S|f158|
+row 10 T|                                                                                                                                                              |
+row 10 S|f158|
+row 11 T|                                                                                                                                                              |
+row 11 S|f158|
+row 12 T|                                                                                                                                                              |
+row 12 S|f158|
+row 13 T|                                                                                                                                                              |
+row 13 S|f158|
+case lang=en worktree=true open=Enter back
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD | REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	White	Reset	NONE
+style e	Reset	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+style h	Cyan	Reset	NONE
+style i	Reset	Reset	BOLD
+style j	White	Reset	BOLD
+row 2 T|●   Uncommitted changes                                                                                                    1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b3a19b100c35|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1e3f49e71g11e1g1e1g20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1h2e155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|d1e1h1e1f35e85g11e1g1e1g20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1e1h1e121g11e1g1e1g20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1h2e155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1e123g11e1g1e1g20|
+row 9 T|                                                                                                                                                              |
+row 9 S|e158|
+row 10 T|                                                                                                                                                              |
+row 10 S|e158|
+row 11 T|                                                                                                                                                              |
+row 11 S|e158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|g158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|i1e1j1i7e2d1e33h1e111|
+case lang=en worktree=true open=Char('l') detail
+region x=0..158 y=2..14
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Reset	Rgb(20, 48, 28)	NONE
+style f	Reset	Reset	NONE
+row 2 T|┌─ tracked ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b9a147|
+row 3 T|▌        1 unstaged 日 本 語                                                                                                                                     |
+row 3 S|c1d10e10f1e1f1e1f133|
+row 4 T|┌─ untracked ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 4 S|a2b11a145|
+row 5 T|▌        1 untracked                                                                                                                                          |
+row 5 S|c1d10e9f138|
+row 6 T|                                                                                                                                                              |
+row 6 S|f158|
+row 7 T|                                                                                                                                                              |
+row 7 S|f158|
+row 8 T|                                                                                                                                                              |
+row 8 S|f158|
+row 9 T|                                                                                                                                                              |
+row 9 S|f158|
+row 10 T|                                                                                                                                                              |
+row 10 S|f158|
+row 11 T|                                                                                                                                                              |
+row 11 S|f158|
+row 12 T|                                                                                                                                                              |
+row 12 S|f158|
+row 13 T|                                                                                                                                                              |
+row 13 S|f158|
+case lang=en worktree=true open=Char('l') back
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD | REVERSED
+style b	Reset	Reset	REVERSED
+style c	DarkGray	Reset	REVERSED
+style d	White	Reset	NONE
+style e	Reset	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+style h	Cyan	Reset	NONE
+style i	Reset	Reset	BOLD
+style j	White	Reset	BOLD
+row 2 T|●   Uncommitted changes                                                                                                    1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b3a19b100c35|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1e3f49e71g11e1g1e1g20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1h2e155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|d1e1h1e1f35e85g11e1g1e1g20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1e1h1e121g11e1g1e1g20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1h2e155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1e123g11e1g1e1g20|
+row 9 T|                                                                                                                                                              |
+row 9 S|e158|
+row 10 T|                                                                                                                                                              |
+row 10 S|e158|
+row 11 T|                                                                                                                                                              |
+row 11 S|e158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|g158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|i1e1j1i7e2d1e33h1e111|
+case lang=en side base set
+region x=0..158 y=2..14
+style a	White	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Yellow	Reset	BOLD
+style d	DarkGray	Reset	NONE
+style e	Cyan	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	Green	Reset	NONE
+style h	White	Reset	REVERSED
+style i	Reset	Reset	REVERSED
+style j	Cyan	Reset	REVERSED
+style k	Yellow	Reset	REVERSED
+style l	DarkGray	Reset	REVERSED
+style m	Reset	Reset	BOLD
+style n	Cyan	Reset	BOLD
+row 2 T|│ ●   Uncommitted changes                                                                                                  1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b1c1b3c19b98d35|
+row 3 T|│ ◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                          17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|a1b1e1b3f49b69d11b1d1b1d20|
+row 4 T|│ ├─┐                                                                                                                                                         |
+row 4 S|a1b1e1g2b153|
+row 5 T|├─┼─┘                                                                                                                                                         |
+row 5 S|a1g1e1g2b153|
+row 6 T|● │   (priority-branch-with-a-long-name) Side 日 本 語                                                                         1b1491b · 作 者  Author · 2020-01-01|
+row 6 S|h1i1j1i3k35i6b1i1b1i1b1i72l11b1l1b1l20|
+row 7 T|│ ●   Main commit                                                                                                           3b7da10 · 作 者  Author · 2020-01-01|
+row 7 S|a1b1e1b121d11b1d1b1d20|
+row 8 T|├─┘                                                                                                                                                           |
+row 8 S|a1e2b155|
+row 9 T|●     0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab… 63748e3 · 作 者  Author · 2020-01-01|
+row 9 S|a1b123d11b1d1b1d20|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|d158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ⌖ ● priority-branch-with-a-long-name                                                                            |
+row 13 S|m1b1n1m7b2e1b33a1b1a1b109|
+case lang=en side base cleared
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	White	Reset	NONE
+style e	Yellow	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	White	Reset	REVERSED
+style h	Reset	Reset	REVERSED
+style i	Cyan	Reset	REVERSED
+style j	Yellow	Reset	REVERSED
+style k	DarkGray	Reset	REVERSED
+style l	Reset	Reset	BOLD
+style m	White	Reset	BOLD
+row 2 T|●   Uncommitted changes                                                                                                    1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b3a19b100c35|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1b3e49b71c11b1c1b1c20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1f2b155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|g1h1i1h1j35h6b1h1b1h1b1h74k11b1k1b1k20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1b1f1b121c11b1c1b1c20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1f2b155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1b123c11b1c1b1c20|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|c158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|l1b1m1l7b2d1b33f1b111|
+case lang=en side reloaded
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	White	Reset	NONE
+style e	Yellow	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	White	Reset	REVERSED
+style h	Reset	Reset	REVERSED
+style i	Cyan	Reset	REVERSED
+style j	Yellow	Reset	REVERSED
+style k	DarkGray	Reset	REVERSED
+style l	Reset	Reset	BOLD
+style m	White	Reset	BOLD
+row 2 T|●   Uncommitted changes                                                                                                    1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b3a19b100c35|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1b3e49b71c11b1c1b1c20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1f2b155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|g1h1i1h1j35h6b1h1b1h1b1h74k11b1k1b1k20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1b1f1b121c11b1c1b1c20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1f2b155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1b123c11b1c1b1c20|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|c158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|l1b1m1l7b2d1b33f1b111|
+case lang=en worktree=false open=Enter detail
+region x=0..158 y=2..14
+style a	Yellow	Reset	NONE
+style b	DarkGray	Reset	NONE
+style c	Reset	Reset	NONE
+style d	Reset	Reset	BOLD
+row 2 T|commit 1b1491b   作 者  Author · 2020-01-01 00:01                                                                                                               |
+row 2 S|a14b4c1b1c1b26c111|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|Side 日 本 語                                                                                                                                                    |
+row 4 S|d6c1d1c1d1c148|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|Body                                                                                                                                                          |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 8 S|b158|
+row 9 T|(no changes)                                                                                                                                                  |
+row 9 S|b12c146|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en worktree=false open=Enter back
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	White	Reset	NONE
+style e	Yellow	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	White	Reset	REVERSED
+style h	Reset	Reset	REVERSED
+style i	Cyan	Reset	REVERSED
+style j	Yellow	Reset	REVERSED
+style k	DarkGray	Reset	REVERSED
+style l	Reset	Reset	BOLD
+style m	White	Reset	BOLD
+row 2 T|●   Uncommitted changes                                                                                                    1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b3a19b100c35|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1b3e49b71c11b1c1b1c20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1f2b155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|g1h1i1h1j35h6b1h1b1h1b1h74k11b1k1b1k20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1b1f1b121c11b1c1b1c20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1f2b155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1b123c11b1c1b1c20|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|c158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|l1b1m1l7b2d1b33f1b111|
+case lang=en worktree=false open=Char('l') detail
+region x=0..158 y=2..14
+style a	Yellow	Reset	NONE
+style b	DarkGray	Reset	NONE
+style c	Reset	Reset	NONE
+style d	Reset	Reset	BOLD
+row 2 T|commit 1b1491b   作 者  Author · 2020-01-01 00:01                                                                                                               |
+row 2 S|a14b4c1b1c1b26c111|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|Side 日 本 語                                                                                                                                                    |
+row 4 S|d6c1d1c1d1c148|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|Body                                                                                                                                                          |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 8 S|b158|
+row 9 T|(no changes)                                                                                                                                                  |
+row 9 S|b12c146|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en worktree=false open=Char('l') back
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	White	Reset	NONE
+style e	Yellow	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	White	Reset	REVERSED
+style h	Reset	Reset	REVERSED
+style i	Cyan	Reset	REVERSED
+style j	Yellow	Reset	REVERSED
+style k	DarkGray	Reset	REVERSED
+style l	Reset	Reset	BOLD
+style m	White	Reset	BOLD
+row 2 T|●   Uncommitted changes                                                                                                    1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b3a19b100c35|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1b3e49b71c11b1c1b1c20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1f2b155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|g1h1i1h1j35h6b1h1b1h1b1h74k11b1k1b1k20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1b1f1b121c11b1c1b1c20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1f2b155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1b123c11b1c1b1c20|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|c158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|l1b1m1l7b2d1b33f1b111|
+case lang=ja worktree row s
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+style h	Cyan	Reset	NONE
+style i	Reset	Reset	BOLD
+style j	White	Reset	BOLD
+row 2 T|●   未 コ ミ ッ ト の 変 更                                                                                                     1 ス テ ー ジ 済  · 0 未 ス テ ー ジ  · 1 未 追 跡 |
+row 2 S|a1b3a1c1a1c1a1c1a1c1a1c1a1c1a1c1a1c1b100d3c1d1c1d1c1d1c1d1c1d6c1d1c1d1c1d1c1d1c1d6c1d1c1d1c1|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|e1c3f49c71g11c1g1c1g20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|e1h2c155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|e1c1h1c1f35c85g11c1g1c1g20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|e1c1h1c121g11c1g1c1g20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|e1h2c155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|e1c123g11c1g1c1g20|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|g158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|i1c1j1i7c2e1c33h1c111|
+case lang=ja worktree=true open=Enter detail
+region x=0..158 y=2..14
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Reset	Rgb(20, 48, 28)	NONE
+style f	Reset	Reset	NONE
+row 2 T|┌─ tracked ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b9a147|
+row 3 T|▌        1 unstaged 日 本 語                                                                                                                                     |
+row 3 S|c1d10e10f1e1f1e1f133|
+row 4 T|┌─ untracked ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 4 S|a2b11a145|
+row 5 T|▌        1 untracked                                                                                                                                          |
+row 5 S|c1d10e9f138|
+row 6 T|                                                                                                                                                              |
+row 6 S|f158|
+row 7 T|                                                                                                                                                              |
+row 7 S|f158|
+row 8 T|                                                                                                                                                              |
+row 8 S|f158|
+row 9 T|                                                                                                                                                              |
+row 9 S|f158|
+row 10 T|                                                                                                                                                              |
+row 10 S|f158|
+row 11 T|                                                                                                                                                              |
+row 11 S|f158|
+row 12 T|                                                                                                                                                              |
+row 12 S|f158|
+row 13 T|                                                                                                                                                              |
+row 13 S|f158|
+case lang=ja worktree=true open=Enter back
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+style h	Cyan	Reset	NONE
+style i	Reset	Reset	BOLD
+style j	White	Reset	BOLD
+row 2 T|●   未 コ ミ ッ ト の 変 更                                                                                                     1 ス テ ー ジ 済  · 0 未 ス テ ー ジ  · 1 未 追 跡 |
+row 2 S|a1b3a1c1a1c1a1c1a1c1a1c1a1c1a1c1a1c1b100d3c1d1c1d1c1d1c1d1c1d6c1d1c1d1c1d1c1d1c1d6c1d1c1d1c1|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|e1c3f49c71g11c1g1c1g20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|e1h2c155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|e1c1h1c1f35c85g11c1g1c1g20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|e1c1h1c121g11c1g1c1g20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|e1h2c155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|e1c123g11c1g1c1g20|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|g158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|i1c1j1i7c2e1c33h1c111|
+case lang=ja worktree=true open=Char('l') detail
+region x=0..158 y=2..14
+style a	Rgb(122, 162, 247)	Reset	NONE
+style b	Rgb(122, 162, 247)	Reset	BOLD
+style c	Rgb(87, 171, 90)	Rgb(20, 48, 28)	NONE
+style d	DarkGray	Rgb(20, 48, 28)	NONE
+style e	Reset	Rgb(20, 48, 28)	NONE
+style f	Reset	Reset	NONE
+row 2 T|┌─ tracked ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 2 S|a2b9a147|
+row 3 T|▌        1 unstaged 日 本 語                                                                                                                                     |
+row 3 S|c1d10e10f1e1f1e1f133|
+row 4 T|┌─ untracked ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+row 4 S|a2b11a145|
+row 5 T|▌        1 untracked                                                                                                                                          |
+row 5 S|c1d10e9f138|
+row 6 T|                                                                                                                                                              |
+row 6 S|f158|
+row 7 T|                                                                                                                                                              |
+row 7 S|f158|
+row 8 T|                                                                                                                                                              |
+row 8 S|f158|
+row 9 T|                                                                                                                                                              |
+row 9 S|f158|
+row 10 T|                                                                                                                                                              |
+row 10 S|f158|
+row 11 T|                                                                                                                                                              |
+row 11 S|f158|
+row 12 T|                                                                                                                                                              |
+row 12 S|f158|
+row 13 T|                                                                                                                                                              |
+row 13 S|f158|
+case lang=ja worktree=true open=Char('l') back
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD | REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+style h	Cyan	Reset	NONE
+style i	Reset	Reset	BOLD
+style j	White	Reset	BOLD
+row 2 T|●   未 コ ミ ッ ト の 変 更                                                                                                     1 ス テ ー ジ 済  · 0 未 ス テ ー ジ  · 1 未 追 跡 |
+row 2 S|a1b3a1c1a1c1a1c1a1c1a1c1a1c1a1c1a1c1b100d3c1d1c1d1c1d1c1d1c1d6c1d1c1d1c1d1c1d1c1d6c1d1c1d1c1|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|e1c3f49c71g11c1g1c1g20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|e1h2c155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|e1c1h1c1f35c85g11c1g1c1g20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|e1c1h1c121g11c1g1c1g20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|e1h2c155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|e1c123g11c1g1c1g20|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|g158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|i1c1j1i7c2e1c33h1c111|
+case lang=ja side base set
+region x=0..158 y=2..14
+style a	White	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Yellow	Reset	BOLD
+style d	DarkGray	Reset	NONE
+style e	Cyan	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	Green	Reset	NONE
+style h	White	Reset	REVERSED
+style i	Reset	Reset	REVERSED
+style j	Cyan	Reset	REVERSED
+style k	Yellow	Reset	REVERSED
+style l	DarkGray	Reset	REVERSED
+style m	Reset	Reset	BOLD
+style n	Cyan	Reset	BOLD
+row 2 T|│ ●   未 コ ミ ッ ト の 変 更                                                                                                   1 ス テ ー ジ 済  · 0 未 ス テ ー ジ  · 1 未 追 跡 |
+row 2 S|a1b1c1b3c1b1c1b1c1b1c1b1c1b1c1b1c1b1c1b99d3b1d1b1d1b1d1b1d1b1d6b1d1b1d1b1d1b1d1b1d6b1d1b1d1b1|
+row 3 T|│ ◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                          17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|a1b1e1b3f49b69d11b1d1b1d20|
+row 4 T|│ ├─┐                                                                                                                                                         |
+row 4 S|a1b1e1g2b153|
+row 5 T|├─┼─┘                                                                                                                                                         |
+row 5 S|a1g1e1g2b153|
+row 6 T|● │   (priority-branch-with-a-long-name) Side 日 本 語                                                                         1b1491b · 作 者  Author · 2020-01-01|
+row 6 S|h1i1j1i3k35i6b1i1b1i1b1i72l11b1l1b1l20|
+row 7 T|│ ●   Main commit                                                                                                           3b7da10 · 作 者  Author · 2020-01-01|
+row 7 S|a1b1e1b121d11b1d1b1d20|
+row 8 T|├─┘                                                                                                                                                           |
+row 8 S|a1e2b155|
+row 9 T|●     0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  ab… 63748e3 · 作 者  Author · 2020-01-01|
+row 9 S|a1b123d11b1d1b1d20|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|d158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ⌖ ● priority-branch-with-a-long-name                                                                            |
+row 13 S|m1b1n1m7b2e1b33a1b1a1b109|
+case lang=ja side base cleared
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	White	Reset	NONE
+style e	Yellow	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	White	Reset	REVERSED
+style h	Reset	Reset	REVERSED
+style i	Cyan	Reset	REVERSED
+style j	Yellow	Reset	REVERSED
+style k	DarkGray	Reset	REVERSED
+style l	Reset	Reset	BOLD
+style m	White	Reset	BOLD
+row 2 T|●   未 コ ミ ッ ト の 変 更                                                                                                     1 ス テ ー ジ 済  · 0 未 ス テ ー ジ  · 1 未 追 跡 |
+row 2 S|a1b3a1b1a1b1a1b1a1b1a1b1a1b1a1b1a1b101c3b1c1b1c1b1c1b1c1b1c6b1c1b1c1b1c1b1c1b1c6b1c1b1c1b1|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1b3e49b71c11b1c1b1c20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1f2b155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|g1h1i1h1j35h6b1h1b1h1b1h74k11b1k1b1k20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1b1f1b121c11b1c1b1c20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1f2b155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1b123c11b1c1b1c20|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|c158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|l1b1m1l7b2d1b33f1b111|
+case lang=ja side reloaded
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	White	Reset	NONE
+style e	Yellow	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	White	Reset	REVERSED
+style h	Reset	Reset	REVERSED
+style i	Cyan	Reset	REVERSED
+style j	Yellow	Reset	REVERSED
+style k	DarkGray	Reset	REVERSED
+style l	Reset	Reset	BOLD
+style m	White	Reset	BOLD
+row 2 T|●   未 コ ミ ッ ト の 変 更                                                                                                     1 ス テ ー ジ 済  · 0 未 ス テ ー ジ  · 1 未 追 跡 |
+row 2 S|a1b3a1b1a1b1a1b1a1b1a1b1a1b1a1b1a1b101c3b1c1b1c1b1c1b1c1b1c6b1c1b1c1b1c1b1c1b1c6b1c1b1c1b1|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1b3e49b71c11b1c1b1c20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1f2b155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|g1h1i1h1j35h6b1h1b1h1b1h74k11b1k1b1k20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1b1f1b121c11b1c1b1c20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1f2b155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1b123c11b1c1b1c20|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|c158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|l1b1m1l7b2d1b33f1b111|
+case lang=ja worktree=false open=Enter detail
+region x=0..158 y=2..14
+style a	Yellow	Reset	NONE
+style b	DarkGray	Reset	NONE
+style c	Reset	Reset	NONE
+style d	Reset	Reset	BOLD
+row 2 T|commit 1b1491b   作 者  Author · 2020-01-01 00:01                                                                                                               |
+row 2 S|a14b4c1b1c1b26c111|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|Side 日 本 語                                                                                                                                                    |
+row 4 S|d6c1d1c1d1c148|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|Body                                                                                                                                                          |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 8 S|b158|
+row 9 T|(変 更 な し )                                                                                                                                                    |
+row 9 S|b2c1b1c1b1c1b1c1b1c148|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja worktree=false open=Enter back
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	White	Reset	NONE
+style e	Yellow	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	White	Reset	REVERSED
+style h	Reset	Reset	REVERSED
+style i	Cyan	Reset	REVERSED
+style j	Yellow	Reset	REVERSED
+style k	DarkGray	Reset	REVERSED
+style l	Reset	Reset	BOLD
+style m	White	Reset	BOLD
+row 2 T|●   未 コ ミ ッ ト の 変 更                                                                                                     1 ス テ ー ジ 済  · 0 未 ス テ ー ジ  · 1 未 追 跡 |
+row 2 S|a1b3a1b1a1b1a1b1a1b1a1b1a1b1a1b1a1b101c3b1c1b1c1b1c1b1c1b1c6b1c1b1c1b1c1b1c1b1c6b1c1b1c1b1|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1b3e49b71c11b1c1b1c20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1f2b155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|g1h1i1h1j35h6b1h1b1h1b1h74k11b1k1b1k20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1b1f1b121c11b1c1b1c20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1f2b155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1b123c11b1c1b1c20|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|c158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|l1b1m1l7b2d1b33f1b111|
+case lang=ja worktree=false open=Char('l') detail
+region x=0..158 y=2..14
+style a	Yellow	Reset	NONE
+style b	DarkGray	Reset	NONE
+style c	Reset	Reset	NONE
+style d	Reset	Reset	BOLD
+row 2 T|commit 1b1491b   作 者  Author · 2020-01-01 00:01                                                                                                               |
+row 2 S|a14b4c1b1c1b26c111|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|Side 日 本 語                                                                                                                                                    |
+row 4 S|d6c1d1c1d1c148|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|Body                                                                                                                                                          |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 8 S|b158|
+row 9 T|(変 更 な し )                                                                                                                                                    |
+row 9 S|b2c1b1c1b1c1b1c1b1c148|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja worktree=false open=Char('l') back
+region x=0..158 y=2..14
+style a	Yellow	Reset	BOLD
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	White	Reset	NONE
+style e	Yellow	Reset	NONE
+style f	Cyan	Reset	NONE
+style g	White	Reset	REVERSED
+style h	Reset	Reset	REVERSED
+style i	Cyan	Reset	REVERSED
+style j	Yellow	Reset	REVERSED
+style k	DarkGray	Reset	REVERSED
+style l	Reset	Reset	BOLD
+style m	White	Reset	BOLD
+row 2 T|●   未 コ ミ ッ ト の 変 更                                                                                                     1 ス テ ー ジ 済  · 0 未 ス テ ー ジ  · 1 未 追 跡 |
+row 2 S|a1b3a1b1a1b1a1b1a1b1a1b1a1b1a1b1a1b101c3b1c1b1c1b1c1b1c1b1c6b1c1b1c1b1c1b1c1b1c6b1c1b1c1b1|
+row 3 T|◆   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                            17c49bb · 作 者  Author · 2020-01-01|
+row 3 S|d1b3e49b71c11b1c1b1c20|
+row 4 T|├─┐                                                                                                                                                           |
+row 4 S|d1f2b155|
+row 5 T|│ ● (priority-branch-with-a-long-name) Side 日 本 語                                                                           1b1491b · 作 者  Author · 2020-01-01|
+row 5 S|g1h1i1h1j35h6b1h1b1h1b1h74k11b1k1b1k20|
+row 6 T|● │ Main commit                                                                                                             3b7da10 · 作 者  Author · 2020-01-01|
+row 6 S|d1b1f1b121c11b1c1b1c20|
+row 7 T|├─┘                                                                                                                                                           |
+row 7 S|d1f2b155|
+row 8 T|●   0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc … 63748e3 · 作 者  Author · 2020-01-01|
+row 8 S|d1b123c11b1c1b1c20|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|c158|
+row 13 T|⎇ ● master  ● second-branch-with-a-long-name  ● priority-branch-with-a-long-name                                                                              |
+row 13 S|l1b1m1l7b2d1b33f1b111|

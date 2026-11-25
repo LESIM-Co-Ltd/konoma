@@ -1,0 +1,9 @@
+{
+  "keys": ["j", "e", "o", "Enter", "n", "e", "!"],
+  "launches": [
+    {"program":"row-editor","args":["--line=1","$ROOT/nested/second.launch"],"cwd":"$ROOT/nested"},
+    {"program":"row-opener","args":["$ROOT/nested/second.launch"],"cwd":null},
+    {"program":"row-editor","args":["--line=8","$ROOT/nested/second.launch"],"cwd":"$ROOT/nested"},
+    {"program":"git-tool","args":["--git"],"cwd":"$ROOT"}
+  ]
+}

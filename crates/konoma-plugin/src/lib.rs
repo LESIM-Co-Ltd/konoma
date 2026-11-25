@@ -90,7 +90,7 @@ pub mod canvas_pictures;
 pub mod config;
 #[cfg(feature = "pictures")]
 pub mod document_pictures;
-#[cfg(feature = "pictures")]
+#[cfg(all(feature = "widgets", feature = "ratatui"))]
 pub mod document_render;
 pub mod hints;
 #[cfg(feature = "host")]
@@ -105,6 +105,8 @@ pub mod prelude;
 #[cfg(feature = "proc")]
 pub mod proc;
 pub mod project;
+#[cfg(feature = "ratatui")]
+pub mod ratatui_backend;
 #[cfg(feature = "ratatui")]
 pub mod ratatui_draw;
 pub mod registry;

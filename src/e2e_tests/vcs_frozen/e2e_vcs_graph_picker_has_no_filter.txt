@@ -1,0 +1,63 @@
+# frozen vcs frames: e2e_vcs_graph_picker_has_no_filter
+case after slash
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Green	Reset	BOLD | REVERSED
+style d	Reset	Reset	NONE
+style e	Green	Reset	NONE
+row 2 T|[x] ⎇ master                                                                                                                                                  |
+row 2 S|a4b2c6d146|
+row 3 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 3 S|e4d154|
+row 4 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 4 S|e4d154|
+row 5 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 5 S|e4d154|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|                                                                                                                                                              |
+row 12 S|d158|
+row 13 T|                                                                                                                                                              |
+row 13 S|d158|
+case after b again
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Green	Reset	BOLD | REVERSED
+style d	Reset	Reset	NONE
+style e	Green	Reset	NONE
+row 2 T|[x] ⎇ master                                                                                                                                                  |
+row 2 S|a4b2c6d146|
+row 3 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 3 S|e4d154|
+row 4 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 4 S|e4d154|
+row 5 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 5 S|e4d154|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|                                                                                                                                                              |
+row 12 S|d158|
+row 13 T|                                                                                                                                                              |
+row 13 S|d158|

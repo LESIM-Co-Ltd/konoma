@@ -13,6 +13,8 @@ pub struct Display {
     pub wrap: bool,
     /// How a path is written in a title (`[ui] path_style`, cycled with `,` `p`).
     pub path_style: PathStyle,
+    /// Combine project-diff context and hints on the bottom row. File-app chrome is unchanged.
+    pub combined_status: bool,
     /// Icon glyphs in a document.
     pub icons: bool,
     /// The tab stop of code blocks.
@@ -32,6 +34,7 @@ impl Display {
         Self {
             wrap: cfg.ui.wrap,
             path_style: PathStyle::parse(&cfg.ui.path_style),
+            combined_status: cfg.ui.statusbar == "bottom",
             icons: cfg.ui.icons,
             tab_width: cfg.ui.tab_width,
             theme: cfg.ui.theme.clone(),

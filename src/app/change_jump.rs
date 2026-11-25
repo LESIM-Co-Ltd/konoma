@@ -16,29 +16,11 @@
 //! acts); the key handler computes what it needs itself.
 
 use super::*;
-
-/// Merge change marks (logical-line ranges) into blocks: touching or overlapping ranges are one
-/// change. Returns the first logical line of each block, ascending.
-fn block_starts(mut ranges: Vec<std::ops::Range<usize>>) -> Vec<usize> {
-    ranges.sort_by_key(|r| r.start);
-    let mut out: Vec<usize> = Vec::new();
-    let mut end = 0usize;
-    for r in ranges {
-        if out.is_empty() || r.start > end {
-            out.push(r.start);
-        }
-        end = end.max(r.end);
-    }
-    out
-}
-
-/// The change blocks of what is on screen as the scroll rows they start at (ascending), and the
-/// last position the view can scroll to (the renderer clamps the scroll to it).
-#[derive(Default)]
-struct Blocks {
-    rows: Vec<usize>,
-    max_v: usize,
-}
+#[cfg(feature = "git")]
+use konoma_plugin::host::project::diff_blocks::source_diff_edit_line;
+use konoma_plugin::host::project::diff_blocks::{
+    block_starts, source_diff_blocks, step_change_block, DiffBlockCursor, DiffBlocks as Blocks,
+};
 
 impl App {
     /// The caret line (0-based) of a windowed preview, for the tests.
@@ -50,13 +32,7 @@ impl App {
     /// The first line (1-based) of each change block of the git change gutter of the windowed
     /// preview, from the cache the drawing filled.
     fn gutter_block_starts(marks: &std::collections::HashMap<u32, GutterMark>) -> Vec<u32> {
-        let mut v: Vec<u32> = marks
-            .keys()
-            .copied()
-            .filter(|&n| n <= 1 || !marks.contains_key(&(n - 1)))
-            .collect();
-        v.sort_unstable();
-        v
+        konoma_plugin::host::project::diff_blocks::marked_line_block_starts(marks)
     }
 
     /// Whether the decorated document has any change block: the cheap answer to "is `doc_blocks`
@@ -104,35 +80,32 @@ impl App {
     /// since (the last screenful cannot scroll a late block to the top, so the position alone
     /// would not tell two such blocks apart), else the last block at or above the top of the view.
     fn current_block(&self, b: &Blocks) -> Option<usize> {
-        let scroll = self.tab.preview_scroll as usize;
-        if let Some((p, i)) = &self.change_at {
-            if Some(p) == self.tab.preview_path.as_ref()
-                && b.rows.get(*i).is_some_and(|&r| r.min(b.max_v) == scroll)
-            {
-                return Some(*i);
-            }
+        self.block_cursor().current_block(b)
+    }
+
+    fn block_cursor(&self) -> DiffBlockCursor {
+        DiffBlockCursor {
+            scroll: self.tab.preview_scroll as usize,
+            block: self
+                .change_at
+                .as_ref()
+                .filter(|(path, _)| Some(path) == self.tab.preview_path.as_ref())
+                .map(|(_, index)| *index),
         }
-        b.rows.iter().rposition(|&r| r <= scroll)
     }
 
     /// Scroll to the next / previous block of `b` (wrapping) and remember which it is.
     fn scroll_to_block(&mut self, b: &Blocks, dir: i32) {
-        let n = b.rows.len();
-        if n == 0 {
+        let cursor = DiffBlockCursor {
+            block: self.current_block(b),
+            ..self.block_cursor()
+        };
+        let Some(target) = step_change_block(b, cursor, dir) else {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::NoChangesInFile).into());
             return;
-        }
-        let scroll = self.tab.preview_scroll as usize;
-        let known = self
-            .current_block(b)
-            .filter(|&i| b.rows[i].min(b.max_v) == scroll);
-        let target = match known {
-            Some(i) => (i as i64 + dir.signum() as i64).rem_euclid(n as i64) as usize,
-            None if dir >= 0 => b.rows.iter().position(|&r| r > scroll).unwrap_or(0),
-            None => b.rows.iter().rposition(|&r| r < scroll).unwrap_or(n - 1),
         };
-        self.tab.preview_scroll = b.rows[target].min(b.max_v).min(u16::MAX as usize) as u16;
-        self.change_at = self.tab.preview_path.clone().map(|p| (p, target));
+        self.tab.preview_scroll = target.scroll.min(u16::MAX as usize) as u16;
+        self.change_at = self.tab.preview_path.clone().zip(target.block);
     }
 
     /// Whether the preview on screen has a change `n` / `N` can step to, answered from cached state
@@ -195,19 +168,12 @@ impl App {
         let Some(c) = self.diff_cache.as_ref() else {
             return Blocks::default();
         };
-        let split = self.diff_split_drawn;
-        let total = if split {
-            crate::preview::gitdiff::side_by_side_row_count(&c.lines, self.current_preview_ext())
-        } else {
-            c.lines.len()
-        };
-        Blocks {
-            rows: crate::preview::gitdiff::change_block_starts(&c.lines)
-                .into_iter()
-                .map(|i| crate::preview::gitdiff::scroll_row_of_line(&c.lines, i, split))
-                .collect(),
-            max_v: total.saturating_sub(self.tab.preview_viewport as usize),
-        }
+        source_diff_blocks(
+            &c.lines,
+            self.current_preview_ext(),
+            self.diff_split_drawn,
+            self.tab.preview_viewport as usize,
+        )
     }
 
     /// The scroll rows `n` / `N` step through in the diff on screen, for the tests.
@@ -253,16 +219,15 @@ impl App {
             return None;
         }
         let c = self.diff_cache.as_ref()?;
-        let starts = crate::preview::gitdiff::change_block_starts(&c.lines);
         let blocks = self.diff_blocks();
-        let pick = self
-            .current_block(&blocks)
-            .or(Some(0))
-            .filter(|&i| i < starts.len())?;
-        crate::preview::gitdiff::block_new_line(&c.lines, starts[pick]).map(|n| n as usize)
+        source_diff_edit_line(&c.lines, &blocks, self.block_cursor())
     }
 }
 
 #[cfg(test)]
 #[path = "change_jump_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "git"))]
+#[path = "file_diff_blocks_bridge_tests.rs"]
+mod bridge_tests;

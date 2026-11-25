@@ -8,6 +8,48 @@ enum TabInsert {
     AfterCurrent,
 }
 
+/// The tab a saved one becomes when it is put back (`put_tab_back`).
+/// `adopt_preview` takes the whole preview of the working tab into the saved copy when the
+/// working tab still holds the same load (before the reload), `restored` builds the tab from
+/// the saved copy after the reload. `working` is the tab as it is working now when the saved
+/// one is that same tab coming back after its screen was covered, `None` on a tab switch.
+///
+/// Every field is in one of the classes below, and the list is exhaustive: a field added to
+/// `PerTab` does not compile until it is put in a class here. One list generates both
+/// functions, so the preview group has one definition.
+///
+/// The two big groups:
+/// - `preview`: the whole preview of the tab, taken as a whole by the load rule. With the same
+///   load at the return, the working tab's values; with another load, the saved copy's. Never
+///   field by field.
+/// - `tree` and `live`: the tree part of the tab and what the tab keeps moving while covered;
+///   not affected by the load rule.
+macro_rules! classes {
+    (preview: [$($prev:ident),* $(,)?],
+     tree: [$($tree:ident),* $(,)?],
+     live: [$($live:ident),* $(,)?],
+     derived_by_the_restore: [$($made:ident),* $(,)?],
+     derived_again: [$($again:ident => |$p:ident| $value:expr),* $(,)?]) => {
+        /// The load rule, the same load case: the whole preview group of the saved copy is
+        /// replaced by the working tab's (copied: the working tab keeps its own values, which the
+        /// reload reads while it runs, until the bulk restore replaces it).
+        fn adopt_preview(saved: &mut PerTab, working: &PerTab) {
+            $(saved.$prev = working.$prev.clone();)*
+        }
+
+        fn restored(mut saved: PerTab, mut working: Option<PerTab>) -> PerTab {
+            // The exhaustive pattern: no `..`.
+            let PerTab { $($prev: _,)* $($tree: _,)* $($live: _,)* $($made: _,)* $($again: _,)* } = &saved;
+            // live: kept from the working tab (swapped in), when there is one.
+            if let Some(working) = working.as_mut() {
+                $(std::mem::swap(&mut saved.$live, &mut working.$live);)*
+            }
+            $(let $again = { let $p = &saved; $value }; saved.$again = $again;)*
+            saved
+        }
+    };
+}
+
 impl App {
     // ---- Tabs (FR-5) ----
 
@@ -40,17 +82,89 @@ impl App {
     /// while a tab is active its slot is never read (tab_label/tab_root use the live App fields)
     /// and every switch path calls save_active before the slot is needed again.
     fn load_active(&mut self) {
-        let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
+        let t = std::mem::take(&mut self.tabs[self.active_tab]);
+        self.put_tab_back(t, false);
+    }
+
+    /// Puts a saved tab back as the working state and brings its preview up to date with the
+    /// files as they are now. The one restore both a tab switch (`load_active`) and the return
+    /// from a project screen that covered the preview (`leave_project_screens`) go through, so a
+    /// field the saved tab carries is put back whichever way the tab comes back.
+    ///
+    /// `covered`: the saved tab is the one that is working now, put back after something covered
+    /// its screen (a project screen). `self.tab` is then the same tab as it is after the time it
+    /// was covered, and the state that went on moving meanwhile is kept from it
+    /// (`PerTab::restored`). A tab switch has no such state: `self.tab` is another tab's.
+    pub(super) fn put_tab_back(&mut self, mut t: PerTab, covered: bool) {
+        // The one decision of the return: is the tab's view in front once the tab is put back?
+        // A project screen in front of the tab that comes back covers its view (the tab switch
+        // back to a covered tab): the view is not read again and none of its workers is asked
+        // (media load, windowed reader, plugin open, kind resolution, block diff); it is read
+        // again when the screen is left (the return from the project screen comes here, with the
+        // view in front). The navigation that decides it is the one `restored` keeps: the working
+        // tab's on the return to the same tab (its `live` group), the saved copy's on a tab switch.
+        let navigation = if covered {
+            &self.tab.project_navigation
+        } else {
+            &t.project_navigation
+        };
+        let in_front = navigation.is_none();
+        if covered {
+            // The area the screen under was last drawn at is what is drawn now: the saved size
+            // is the one of a moment before the screens opened.
+            if self.tab.preview_cols != 0 {
+                t.preview_cols = self.tab.preview_cols;
+                t.preview_viewport = self.tab.preview_viewport;
+            }
+        }
+        // The whole preview of a tab has one owner at a time (`PerTab::load_id`, the preview group
+        // of `restored`). When the working tab still holds the load the saved copy was made in, it
+        // IS the continuation of that preview: every field that describes the preview (what is
+        // shown, its representation, positions and carets, the table cursor and search, the
+        // pending landing, the one-shot reservations) comes from it, nothing of the preview from
+        // the saved copy (a request that ran while covered produced its result in the same copy
+        // that holds its end). The reload below brings it up to date with the files, keeping that
+        // view. When the working tab shows another load, the saved copy is the only owner of the
+        // old preview: it stays whole and the reload finishes its pending requests.
+        let same_load = covered
+            && self.tab.mode == Mode::Preview
+            && self.tab.preview_path.is_some()
+            && self.tab.load_id != 0
+            && self.tab.load_id == t.load_id;
+        if same_load {
+            Self::adopt_preview(&mut t, &self.tab);
+        }
+        // The pending landing `self.tab` holds is never run by the reload below (a text that lands
+        // inside it must not run a landing of the tab that was showing); the landing `t` holds
+        // runs after the restore, in this tab's own context.
+        self.tab.pending = None;
+        // The search this tab held was confirmed against the text it was saved with: it is found
+        // again once the reload below has put the current text up (`PerTab::restored`).
+        self.tab.search_stale = false;
+        // `self.tab` still holds the tab that was showing until the bulk restore below: a text
+        // that lands inside this reload (the windowed reader opening is one) must not run that
+        // tab's pending landing (taken above), nor any landing on a tab it was not asked for.
+        // The landing this tab holds runs after the restore, in this tab's own context.
         // preview_path/preview_kind are read below (table-hits check, media block, setup_windowed,
         // load_plugin) before the bulk `self.tab = t` restore at the end of this function, so they
         // are restored early here (mirroring `self.tab.repr = t.repr.clone();` further down).
         self.tab.preview_path = t.preview_path.clone();
         self.tab.preview_kind = t.preview_kind.clone();
-        // Same reason: `kind_loads_media`/`start_media_load` below may read/overwrite it
-        // (a text-mode delegated command regenerating synchronously) before `self.tab = t` restores
-        // the whole bundle at the end — hoist this tab's own saved value first so that happens
-        // against the *target* tab's leftover output, not whatever tab was live a moment ago.
-        self.tab.command_out = t.command_out.clone();
+        // The text a command or a plugin generated is the output of the run that was made before:
+        // the reload below makes it again, and what is read is the new output when it arrives,
+        // never the old file (a reader opened on it would take the old content for the current
+        // one, and the position saved in it for a position in the new). The old file is done for.
+        // On a return to the same tab the working output is the same tab's own and goes too; on
+        // a tab switch it is another tab's, still its owner's to read, and only the reference is
+        // dropped.
+        if covered {
+            self.clear_command_out();
+        } else {
+            self.tab.command_out = None;
+        }
+        if let Some(old) = t.command_out.take() {
+            let _ = std::fs::remove_file(old);
+        }
         // The size of the area this tab last drew (`ViewReq::cols` / `rows`) is read when the
         // plugin is opened below (a text diagram is laid out to the width, a canvas to the size),
         // while `self.tab` still holds the previous tab's until the bulk restore at the end. A tab
@@ -60,52 +174,35 @@ impl App {
             self.tab.preview_cols = t.preview_cols;
             self.tab.preview_viewport = t.preview_viewport;
         }
-        // The parsed Word document is App-level (too big to clone into every tab snapshot): drop
-        // the previous tab's and let the media block below re-read this tab's on the worker. (A
-        // spreadsheet's sheet is the plugin show's, dropped by `clear_image` below and opened
-        // again by `load_plugin`.)
-        self.set_document(None);
-        // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
-        // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
-        // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
-        // pure per-tab copies with no read anywhere below before `self.tab = t` restores the whole
-        // PerTab bundle at the end of this function — nothing in between reads them, so no individual
-        // line is needed here.
-        // The graph's branch-visibility picker (modal) is not carried across tabs: keep it closed
-        // on restore.
-        // (The git overlay itself and the graph decoration state are restored together later via
-        // `self.tab = t`.)
-        self.git_graph_picker = false;
-        self.git_graph_picker_sel = 0;
-        self.git_graph_picker_set.clear();
-        self.git_graph_reordered = false;
-        // The heading outline overlay is not carried across tabs either.
-        self.close_outline();
-        // Same for the table-cell full-text popup (the meaning of the shown cell changes per tab).
-        self.table_cell_open = false;
-        // The <details> open/closed state is also per-document = not carried across tabs.
-        self.details_open.clear();
-        // The decoration cache isn't carried over (decorated_lines regenerates it).
-        self.md_cache = None;
-        // A filter-pool scan started by the tab we are leaving must not land in this one:
-        // `filter_pool` is per-tab but the scan's bookkeeping is on `App`. The abandoned tab
-        // re-kicks its own scan when it becomes active again (the `refresh_fs_after_tab_switch`
-        // at the end of this function re-collects while a filter is active).
-        self.invalidate_filter_pool_scan();
-        // A restored diff preview doesn't carry over the follow-origin mark: `diff_follow_scope`
-        // lives on `App` (not `PerTab`), so switching tabs always shows a restored GitDiff view in
-        // the ordinary full-diff scope, even if it happens to be the same file a follow jump opened
-        // before the switch. This is independent of the follow session/baseline themselves (also
-        // App-level, not per-tab) — those persist across the switch and stay valid for the *new*
-        // active tab's root exactly as long as `follow_root` matches it (see its doc comment);
-        // `follow_note_change` recaptures them once it doesn't.
-        self.diff_follow_scope = false;
+        // The screen this tab replaces is left: its live work goes (the same drop a project screen
+        // that covers a tab's screen makes, `leave_tab_view`).
+        self.leave_tab_view();
+        if in_front {
+            self.read_tab_view_again(t, covered);
+        } else {
+            // No reader is opened behind the screen (`setup_windowed` is a worker request of the
+            // view in front): the reader of the screen left is not this tab's, so it goes.
+            self.preview_win = None;
+            self.win_cache = None;
+            self.preview_total_lines = None;
+            self.restore_tab(t, covered);
+            self.refresh_after_return();
+        }
+        debug_assert_eq!(in_front, !self.project_screen_covers());
+    }
+
+    /// The return of a tab whose view is in front (`put_tab_back`): its view is read again from
+    /// the files as they are now (the media, the windowed reader, the plugin), the tab is restored,
+    /// the `App`-level freshness runs, and the view asks for its workers. Every worker request of
+    /// the return is made here, and only here.
+    fn read_tab_view_again(&mut self, mut t: PerTab, covered: bool) {
         // Images don't carry over their heavy state (protocol/source image/GIF frames) — for an
-        // image-type preview, restore it by reloading instead.
-        // (clear_image also resets tab.image_view.center/tab.page/tab.page_count to their defaults,
-        // but `self.tab = t` at the end of this function overwrites them with the restored values,
-        // so this is harmless as long as nothing in between reads them.)
-        self.clear_image();
+        // image-type preview, restore it by reloading instead. The view fields `clear_image`
+        // resets (image_view.center/page/page_count) are overwritten by `self.tab = t` at the end
+        // of this function, so this is harmless as long as nothing in between reads them.
+        self.tab.image_view.reset();
+        self.tab.page = 1;
+        self.tab.page_count = None;
         if let (Some(kind), Some(path)) =
             (self.tab.preview_kind.clone(), self.tab.preview_path.clone())
         {
@@ -173,15 +270,13 @@ impl App {
         // clamped to range at that point (emptied here so nothing references the old document's
         // items in the meantime).
         // (focused_item/fence_zoom/fence_center/fence_return aren't read here, so leave them to
-        // `self.tab = t` at the end.)
-        self.md_items.clear();
+        // `self.tab = t` at the end.) `md_items` was emptied by `leave_tab_view` above.
         // For a large Code/Text (+ raw Markdown/Mermaid), re-arm the windowed-reading reader
         // (byte_top is restored at the end).
         self.setup_windowed();
         // The windowed preview's 2D caret is restored by `self.tab = t` at the end (the selection
-        // isn't carried over). The range is clamped on the next render/move.
-        self.preview_visual_anchor = None;
-        self.preview_visual_linewise = false;
+        // isn't carried over: `leave_tab_view` dropped it). The range is clamped on the next
+        // render/move.
         // For a plugin's file (CSV/TSV, an archive listing, a workbook), open it again, then
         // restore the saved cursor/scroll and clamp it (a worker's result clamps again when it
         // lands). A workbook is opened at the sheet this tab was showing: the tab's own page is
@@ -194,7 +289,21 @@ impl App {
         }
         // The representation this tab chose (`R`) is asked for when the plugin is opened (put
         // back above, before the windowed reader), as the page is.
+        //
         self.load_plugin();
+        // A document that failed inside this reload ends the wait of the landing this tab holds
+        // (the pending is not on `self.tab` while the reload runs, so the failure could not drop
+        // it): a later successful read must not land a position asked of the failed one.
+        if self.document_error().is_some()
+            && t.pending.as_ref().is_some_and(|p| {
+                p.kind_known && t.preview_path.as_deref() == Some(p.path.as_path())
+            })
+        {
+            t.pending = None;
+        }
+        // The reader opened on the file as it is now: its stamp, to compare with the one the
+        // position was saved with.
+        let win_stamp_now = self.tab.preview_win_stamp;
         // A source view that landed on the spot wrote its own temp file: keep that one, not the
         // path the saved tab held (the bulk restore below would put the stale one back).
         if self.holds_document() {
@@ -207,7 +316,51 @@ impl App {
                 t.page_count = self.tab.page_count;
             }
         }
-        self.tab = t;
+        self.restore_tab(t, covered);
+        let saved_stamp = std::mem::replace(&mut self.tab.preview_win_stamp, win_stamp_now);
+        if self.preview_win.is_some() || self.tab.mode == Mode::Preview {
+            self.settle_windowed_position(saved_stamp);
+        }
+        // A tab left while its kind was still being decided holds the provisional kind, and its
+        // reply was (or will be) dropped by the generation check: ask again, so the landing
+        // kept in the tab is applied when the answer comes.
+        // Only for the file preview that asked: a pending resolution of another path (or none)
+        // is not this tab's to ask about.
+        if self.tab.mode == Mode::Preview {
+            // The text that landed inside the reload above ran no landing (the tab was not
+            // restored yet): the one this tab waits with runs now.
+            self.land_pending_document();
+            let ask = self.tab.pending.as_ref().and_then(|p| {
+                (!p.kind_known && self.tab.preview_path.as_ref() == Some(&p.path))
+                    .then(|| p.path.clone())
+            });
+            if let Some(path) = ask {
+                self.resolve_preview_on_worker(&path);
+            }
+        }
+        self.clamp_table_cursor();
+        // The search the tab came back with is found again on the text it shows now (a text
+        // that is not here yet does it when it lands).
+        self.rescan_stale_search();
+
+        self.refresh_after_return();
+        // A diff comes back with the view, the page and the scroll it was left at (they are the
+        // tab's own, restored above); what is read again is the diff itself, from git (the
+        // freshness above dropped its caches, on a tab switch and on the return from a project
+        // screen alike). The block diff of a Rendered view is asked for once, here (its result is
+        // not the tab's).
+        if let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() {
+            let view = self.tab.diff_view;
+            self.apply_diff_view(view, &path);
+        }
+    }
+
+    /// The bulk restore of a tab that comes back (`put_tab_back`), whether its view is in front
+    /// or not, and the `App`-level state that follows the tab (the follow worker of another root,
+    /// the VCS of its watch).
+    fn restore_tab(&mut self, t: PerTab, covered: bool) {
+        let working = covered.then(|| std::mem::take(&mut self.tab));
+        self.tab = Self::restored(t, working);
         #[cfg(feature = "git")]
         if self.follow_root.as_ref() != Some(&self.tab.root) {
             self.follow_worker.cancel();
@@ -215,28 +368,158 @@ impl App {
         if let Some(cache) = &self.tab.vcs_watch {
             self.git_vcs = cache.kind;
         }
-        self.clamp_table_cursor();
+    }
 
-        // **Reload the tab that just became active from disk.** File watching only looks at the
-        // active root (rewatch), so external changes made while this tab sat in the background
-        // (file create/delete/rename, git status, the change gutter/diff) are still stale in the
-        // snapshot. Route it through the same refresh_fs path used for fs events, so the tree
-        // rebuild, git status, diff/gutter cache, changed filter, git view, and preview reload all
-        // catch up together. `false` = keep the cache for the heavy ignore set (gitignore) instead
-        // of rebuilding it (if the root changes, the next render's refresh_git_if_needed handles it
-        // via the per-workdir cache anyway = doesn't break the huge-repo perf work
-        // [[git-watch-feedback-loop-perf]]). The preview's display position is preserved by
-        // reload_preview (scroll/zoom/table cursor).
+    /// The `App`-level freshness of a return (`put_tab_back`), whether the tab's view is in front
+    /// or not. It runs before the restored view asks for its workers: it drops the diff caches and
+    /// the block diff and media diff asked before it, so an ask made before it was dropped and
+    /// asked again by the draw (every return computed the block diff twice).
+    ///
+    /// **Reload the tab that just became active from disk.** File watching only looks at the
+    /// active root (rewatch), so external changes made while this tab sat in the background
+    /// (file create/delete/rename, git status, the change gutter/diff) are still stale in the
+    /// snapshot. Route it through the same refresh_fs path used for fs events, so the tree
+    /// rebuild, git status, diff/gutter cache, changed filter and git view catch up together;
+    /// the routing leaves the view alone when a project screen covers it. The preview itself has
+    /// already been rebuilt from disk by the return, so it is **not reloaded again** here
+    /// (previously refresh_fs → reload_preview repeated the same work, running the full-row CSV
+    /// parse twice for a CSV tab). `false` = keep the cache for the heavy ignore set (gitignore)
+    /// instead of rebuilding it (if the root changes, the next render's refresh_git_if_needed
+    /// handles it via the per-workdir cache anyway = doesn't break the huge-repo perf work
+    /// [[git-watch-feedback-loop-perf]]).
+    fn refresh_after_return(&mut self) {
         // While this tab sat in the background it was outside fs watching, so its git status may
         // have missed an external change (for another tab on the same repo, the per-workdir cache
         // gets reused and the staleness lingers). Mark it dirty at the tab-switch checkpoint for
         // re-verification, and let the next render's refresh_git_if_needed refetch it (the same
-        // shape as back_to_tree; rapid h/l presses don't mark it dirty, so that optimization is preserved).
+        // shape as back_to_tree; rapid h/l presses don't mark it dirty, so that optimization is
+        // preserved).
         self.git_status_dirty = true;
-        // The preview itself has already been rebuilt from disk above, so **don't reload it again**
-        // here (previously refresh_fs → reload_preview repeated the same work, running the
-        // full-row CSV parse twice for a CSV tab).
         self.refresh_fs_after_tab_switch();
+    }
+
+    /// The live work of the screen a tab shows, dropped when that screen is left: by a tab switch
+    /// (`put_tab_back`, for the screen of the tab that was showing) and by a project screen that
+    /// covers it (`navigation_over_here`, `return_to_project`). What is dropped lives on `App` and
+    /// runs for the screen in front only: the plugin show and its queued work, the media and its
+    /// loads, the Word document, the filter-pool scan, the outline, the table cell popup, the
+    /// `<details>` state, the decoration cache and its items, the preview's visual selection, the
+    /// diff's follow scope, the diff target resolution, the block diff and the media diff on their
+    /// workers (with the media diff's queued want), and the animated pictures embedded in a
+    /// Markdown document. The tab's own fields are not touched (a tab that is left keeps them in
+    /// its saved copy); the return to the screen (`put_tab_back`) reads it again from the files.
+    pub(super) fn leave_tab_view(&mut self) {
+        // The parsed Word document is App-level (too big to clone into every tab snapshot): drop
+        // it and let the return re-read it on the worker. (A spreadsheet's sheet is the plugin
+        // show's, dropped by `release_image` below and opened again by `load_plugin`.)
+        self.set_document(None);
+        // The heading outline overlay is not carried across tabs.
+        self.close_outline();
+        // Same for the table-cell full-text popup (the meaning of the shown cell changes per tab).
+        self.table_cell_open = false;
+        // The <details> open/closed state is also per-document = not carried across tabs.
+        self.details_open.clear();
+        // The decoration cache isn't carried over (decorated_lines regenerates it), nor are the
+        // items built from it.
+        self.md_cache = None;
+        self.md_items.clear();
+        // A filter-pool scan started for the screen that is left must not land in another one:
+        // `filter_pool` is per-tab but the scan's bookkeeping is on `App`. The screen re-kicks its
+        // own scan when it is in front again (the `refresh_fs_after_tab_switch` at the end of
+        // `put_tab_back` re-collects while a filter is active).
+        self.invalidate_filter_pool_scan();
+        // A restored diff preview doesn't carry over the follow-origin mark: `diff_follow_scope`
+        // lives on `App` (not `PerTab`), so a restored GitDiff view is always shown in the
+        // ordinary full-diff scope, even if it happens to be the same file a follow jump opened.
+        // This is independent of the follow session/baseline themselves (also App-level, not
+        // per-tab) — those persist and stay valid for the active tab's root exactly as long as
+        // `follow_root` matches it (see its doc comment); `follow_note_change` recaptures them
+        // once it doesn't.
+        self.diff_follow_scope = false;
+        // The media and the plugin show (protocol/source image/GIF frames, the session and its
+        // queued work, the loads in flight by generation).
+        self.release_image();
+        // The preview's visual selection is not carried over.
+        self.preview_visual_anchor = None;
+        self.preview_visual_linewise = false;
+        // A diff target resolution asked for the screen that is left must not land in another
+        // one: a tab switch drops its answer because the next tab shows another kind, and a
+        // project screen over the same tab drops it here. The return resolves the target again.
+        self.drop_diff_target_resolution();
+        // The block diff (a Markdown diff's Rendered presentation, the preview's change gutter)
+        // and the media diff (an image / PDF / SVG diff) asked for the screen that is left: their
+        // results must not land behind another screen. A media diff that was waiting for the busy
+        // worker (its queued want) is that screen's too, and would be sent as soon as the busy one
+        // lands. The return asks for them again when it draws.
+        self.invalidate_md_diff();
+        self.invalidate_media_diff();
+        let _ = self.media_diff.take_queued();
+        // The animated pictures a Markdown document embeds advance on the run loop's timer
+        // (`animation_timers_due`) for as long as their entries hold frames: they go, and so do the
+        // entries whose decode answer is still owed (an answer that lands for a missing entry is
+        // stale, so a GIF decoded late is not filed behind the screen in front). The return
+        // decodes them again and plays them from their first frame, as the full-screen GIF does
+        // (`release_image` above). The canvas pictures of the plugin show went with it.
+        self.stop_md_animations();
+    }
+
+    classes! {
+            // Preview: everything that describes the preview of the tab: what is shown (the kind
+            // and its representation), its positions and carets, the table cursor and the search
+            // with its pending request, the pending landing, the one-shot reservations, the
+            // fence zoom, which open it came from (`preview_from_diff`: the diff's own Preview
+            // representation) and the baseline of its diff (`diff_read_context`). Already decided
+            // by the load rule when this runs (`adopt_preview`).
+            preview: [
+                preview_kind, preview_scroll, preview_hscroll, table_cur_row, table_cur_col,
+                table_top_row, table_left_col, diff_view, diff_view_choice, diff_media_page,
+                diff_scroll_pending, diff_answer_awaited, pending, preview_byte_top,
+                preview_top_line, preview_cursor_line, preview_cursor_col, image_view, page,
+                repr, deck_pending_slide, focused_item, fence_zoom, fence_center, fence_return,
+                preview_search, search_input, search_pending, preview_from_diff,
+                diff_read_context,
+            ],
+            // Tree: the tree part of the tab and the identity of its load. Not affected by the
+            // load rule: a project screen does not move them, the tab switch puts them back as
+            // saved. `mode`, `preview_path` and `load_id` are the load's identity itself (equal
+            // on both sides when the rule applies). `preview_viewport`, `preview_cols` and
+            // `preview_viewport_drawn` are the measure of the area (put back above from what was
+            // drawn last). `selection` and `visual_anchor` are the tree's file multi-select and
+            // visual range, not the preview's caret (`preview_visual_anchor` is on `App`).
+            // `changed_anchor_pending` is the pending cursor identity of the `C` list: the anchor,
+            // the row it stands for (`changed_anchor_row`) and the list it is an identity in
+            // (`entries`, `selected`, `changed_filter`) have one owner. At the return the tree is
+            // put back from the saved copy and rebuilt by the return's refresh, which finishes the
+            // saved anchor.
+            tree: [
+                id, root, open_dir, entries, selected, mode, preview_path, load_id,
+                preview_viewport, preview_cols, preview_viewport_drawn, selection,
+                visual_anchor, tree_filter, filter_input, changed_filter, changed_anchor_pending,
+                changed_anchor_row,
+            ],
+            // Live: state the tab keeps moving while it is covered, owned by the tab and not by
+            // what it showed. Never reverted to its value at the cover: the project detection
+            // and what hangs on it, the project work queued or consumed, the settings and measures
+            // of the tree. `filter_pool` is live, not derived: the return starts a scan of its
+            // own (`refresh_fs_after_tab_switch`), but that scan lands later on the worker, and
+            // until then the pool the tab shows is the one a scan delivered while covered, not
+            // the older one saved at the cover.
+            live: [
+                projects, project_navigation, project_return, project_enter_pending,
+                project_enter_op, project_effects, project_pending_acts, vcs_watch,
+                show_hidden, tree_viewport, filter_pool,
+            ],
+            // Derived, set by the restore itself from the current files before this runs: the
+            // reader's stamp, the generated output and the page count of what was read now.
+            derived_by_the_restore: [preview_win_stamp, command_out, page_count],
+            // Derived from the current content, never copied from the saved copy: the matches of
+            // a search are found again on the text shown now.
+            derived_again: [
+                search_matches => |_s| Vec::new(),
+                search_truncated => |_s| false,
+                search_idx => |_s| 0,
+                search_stale => |s| s.preview_search.is_some(),
+            ]
     }
 
     /// Test-only: true when tab `active_tab`'s slot in `self.tabs` currently holds
@@ -332,6 +615,7 @@ impl App {
         self.tab.project_return = None;
         self.tab.project_effects.clear();
         self.tab.project_enter_pending = false;
+        self.tab.project_enter_op = None;
         self.project_dialog = None;
         self.tab.open_dir = root.clone();
         self.tab.root = root;
@@ -347,6 +631,7 @@ impl App {
         // preview state).
         self.tab.mode = Mode::Tree;
         self.clear_image();
+        self.begin_preview_load();
         self.tab.preview_path = None;
         self.set_preview_kind(None);
         self.tab.preview_scroll = 0;
@@ -368,12 +653,6 @@ impl App {
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
         self.tab.fence_return = None;
-        // A new tab starts as a plain Tree with no git overlay (the current tab's git state was
-        // already preserved by save_active).
-        self.tab.git_view = false;
-        self.tab.git_view_sel = 0;
-        self.tab.git_view_entries.clear();
-        self.tab.came_from_git_view = false;
         // A new tab shows no Word document (the source tab's was snapshotted by save_active; it is
         // re-read on the worker when that tab is activated again). Its page starts at the first.
         self.set_document(None);
@@ -386,44 +665,9 @@ impl App {
         self.tab.diff_media_page = 1;
         self.tab.diff_scroll_pending = None;
         self.tab.preview_from_diff = false;
-        self.tab.git_log = None;
-        self.tab.git_log_sel = 0;
-        self.tab.git_detail = None;
-        self.tab.git_detail_meta = None;
-        self.tab.git_detail_title = None;
-        self.tab.git_detail_scroll = 0;
-        self.tab.git_detail_hscroll = 0;
-        self.tab.git_detail_viewport = 0;
-        self.tab.git_detail_total = 0;
-        self.tab.git_branches = None;
-        self.tab.git_branch_sel = 0;
-        self.tab.git_branch_filter.clear();
-        self.tab.git_branch_filtering = false;
-        self.tab.git_view_filter.clear();
-        self.tab.git_view_filtering = false;
-        self.tab.git_log_filter.clear();
-        self.tab.git_log_filtering = false;
-        self.tab.git_graph_filter.clear();
-        self.tab.git_graph_filtering = false;
-        self.tab.git_worktrees = None;
-        self.tab.git_worktree_sel = 0;
-        self.tab.git_worktree_filter.clear();
-        self.tab.git_worktree_filtering = false;
-        self.tab.git_graph = None;
-        self.tab.git_graph_sel = 0;
         // A new tab also starts the graph's decoration state (base/legend/visible branches/order)
         // and picker from scratch (the current tab's were already preserved in PerTab by the
         // preceding save_active). They get re-derived the next time it's opened.
-        self.tab.git_graph_base = None;
-        self.tab.git_graph_base_label = None;
-        self.tab.git_graph_visible.clear();
-        self.tab.git_graph_legend.clear();
-        self.tab.git_graph_hidden = 0;
-        self.tab.git_graph_order.clear();
-        self.git_graph_picker = false;
-        self.git_graph_picker_sel = 0;
-        self.git_graph_picker_set.clear();
-        self.git_graph_reordered = false;
         // A new tab starts selection / filter / preview search empty
         // (the current tab's were already preserved in PerTab by the preceding save_active).
         self.tab.selection.clear();
@@ -458,7 +702,9 @@ impl App {
     /// (mirroring `l`). No-op when the tree is empty.
     pub fn tab_new_from_selection(&mut self) -> Result<()> {
         if self.project_active() {
-            if let Some(path) = self.project_row_target() {
+            // The target the owner marked launchable: a deleted file's row opens nothing; a
+            // directory row (a worktree) keeps opening, decided from the same cached state.
+            if let Some(path) = self.project_launch_target() {
                 let is_dir = path.is_dir();
                 return self.tab_new_from_path(path, is_dir);
             }

@@ -67,6 +67,27 @@ pub struct ResizeChannel {
     rx: UnboundedReceiver<ResizeResult>,
     /// A resize came back as a failure since [`ResizeChannel::take_failed`] last said so.
     failed: bool,
+    #[cfg(any(test, feature = "test-hooks"))]
+    published: std::sync::mpsc::Receiver<()>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    waiting: Option<Sender<()>>,
+}
+
+/// Keep the real encoder unchanged and signal only after its result reaches the host's queue.
+#[cfg(any(test, feature = "test-hooks"))]
+fn publish_resize_replies_for_test(
+    destination: UnboundedSender<ResizeResult>,
+    published: Sender<()>,
+) -> UnboundedSender<ResizeResult> {
+    let (tx, mut results) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        while let Some(result) = results.blocking_recv() {
+            if destination.send(result).is_err() || published.send(()).is_err() {
+                break;
+            }
+        }
+    });
+    tx
 }
 
 impl ResizeChannel {
@@ -74,11 +95,20 @@ impl ResizeChannel {
     pub fn spawn() -> ResizeChannel {
         let (tx, req_rx) = tokio::sync::mpsc::unbounded_channel::<ResizeRequest>();
         let (resp_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ResizeResult>();
+        #[cfg(any(test, feature = "test-hooks"))]
+        let (resp_tx, published) = {
+            let (ready, published) = std::sync::mpsc::channel();
+            (publish_resize_replies_for_test(resp_tx, ready), published)
+        };
         std::thread::spawn(move || resize_worker(req_rx, resp_tx));
         ResizeChannel {
             tx,
             rx,
             failed: false,
+            #[cfg(any(test, feature = "test-hooks"))]
+            published,
+            #[cfg(any(test, feature = "test-hooks"))]
+            waiting: None,
         }
     }
 
@@ -88,6 +118,8 @@ impl ResizeChannel {
     pub fn spawn_held() -> (ResizeChannel, std::sync::mpsc::Sender<()>) {
         let (tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<ResizeRequest>();
         let (resp_tx, rx) = tokio::sync::mpsc::unbounded_channel::<ResizeResult>();
+        let (ready, published) = std::sync::mpsc::channel();
+        let resp_tx = publish_resize_replies_for_test(resp_tx, ready);
         let (go, go_rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             while let Some(req) = req_rx.blocking_recv() {
@@ -104,9 +136,34 @@ impl ResizeChannel {
                 tx,
                 rx,
                 failed: false,
+                published,
+                waiting: None,
             },
             go,
         )
+    }
+
+    /// Observe an actual fence wait so a test can release a held worker without a timing race.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn notify_waits_for_test(&mut self, waiting: Sender<()>) {
+        self.waiting = Some(waiting);
+    }
+
+    /// Wait for publication without consuming the result or changing failure bookkeeping.
+    /// Earlier notifications may belong to replies already consumed through `try_recv`.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn wait_for_publication_for_test(&mut self) {
+        if !self.rx.is_empty() {
+            return;
+        }
+        if let Some(waiting) = &self.waiting {
+            waiting.send(()).expect("resize publication wait observer");
+        }
+        while self.rx.is_empty() {
+            self.published
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("project idle fence: still picture resize publication");
+        }
     }
 
     /// The next finished resize, if one is waiting. A resize that failed is dropped (`None`
@@ -1195,6 +1252,51 @@ mod tests {
         // The viewer keeps its protocol (and so a sender) across `clear`, so drop it whole.
         drop(v);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn resize_publication_fence_keeps_the_reply_and_waits_past_consumed_replies() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (mut channel, go) = ResizeChannel::spawn_held();
+        let (waiting, waits) = std::sync::mpsc::channel();
+        channel.notify_waits_for_test(waiting);
+        let released = Arc::new(AtomicUsize::new(0));
+        let releases = released.clone();
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                waits
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("resize publication waiter");
+                releases.fetch_add(1, Ordering::SeqCst);
+                go.send(()).expect("held resize worker");
+            }
+        });
+        let (mut rig, unused) = Rig::halfblocks();
+        drop(unused);
+        rig.resize_tx = Some(channel.tx.clone());
+        let img = solid(800, 800, [10, 190, 30]);
+        let mut viewer = ImageViewer::new();
+        let mut state = ImageViewState::default();
+        for (step, rect) in [area(20, 10), area(32, 18)].into_iter().enumerate() {
+            let target = viewer
+                .prepare(&mut state, src(&img), &rig.backend(), rect)
+                .unwrap();
+            viewer.render(target, &mut Buffer::empty(rect));
+            assert!(
+                viewer.resize_pending(),
+                "step {step}: the large image must require a resize"
+            );
+            channel.wait_for_publication_for_test();
+            let reply = channel
+                .try_recv()
+                .expect("resize result is published before the fence returns");
+            assert!(
+                viewer.apply_resize(reply),
+                "the requested protocol must land"
+            );
+            assert!(!viewer.resize_pending());
+            assert_eq!(released.load(Ordering::SeqCst), step + 1);
+        }
     }
 
     // --- the kitty path -------------------------------------------------------------------

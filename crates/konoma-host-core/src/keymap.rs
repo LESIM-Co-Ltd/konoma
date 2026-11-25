@@ -345,6 +345,8 @@ pub enum CoreAction {
     CyclePathStyle,
     /// Toggle line wrapping of the text and document views.
     ToggleWrap,
+    /// `s` in a diff: cycle unified / side-by-side / auto (`[keys.diff]`).
+    CycleDiffLayout,
 }
 
 impl CoreAction {
@@ -373,6 +375,7 @@ impl CoreAction {
             CoreAction::CopyCodeBlock,
             CoreAction::CyclePathStyle,
             CoreAction::ToggleWrap,
+            CoreAction::CycleDiffLayout,
         ]);
         v.extend((0..9).map(CoreAction::TabGoto));
         for k in [
@@ -441,6 +444,7 @@ impl CoreAction {
             CoreAction::CopyCodeBlock => "copy_code_block",
             CoreAction::CyclePathStyle => "cycle_path_style",
             CoreAction::ToggleWrap => "toggle_wrap",
+            CoreAction::CycleDiffLayout => "cycle_diff_layout",
         };
         s.to_string()
     }
@@ -490,6 +494,7 @@ impl CoreAction {
             "copy_code_block" => CoreAction::CopyCodeBlock,
             "cycle_path_style" => CoreAction::CyclePathStyle,
             "toggle_wrap" => CoreAction::ToggleWrap,
+            "cycle_diff_layout" => CoreAction::CycleDiffLayout,
             _ => return None,
         })
     }
@@ -545,10 +550,16 @@ pub enum HostOp {
     LinkFocusPrev,
     /// Enter / Space on a focused item (a fixed key): open or fold it.
     ToggleFocusedItem,
+    /// Optional file-diff commands, read only by an explicitly extended keymap.
+    CycleDiffView,
+    DiffNextChange,
+    DiffPrevChange,
+    JumpNextChange,
+    JumpPrevChange,
 }
 
 impl HostOp {
-    /// Every operation, once: for tests that walk the whole set.
+    /// Every default-readable operation, once. File-diff extensions require opt-in.
     pub const ALL: [HostOp; 19] = [
         HostOp::SearchStart,
         HostOp::SearchNext,
@@ -593,11 +604,16 @@ impl HostOp {
             HostOp::LinkFocusNext => "link_focus_next",
             HostOp::LinkFocusPrev => "link_focus_prev",
             HostOp::ToggleFocusedItem => "toggle_focused_item",
+            HostOp::CycleDiffView => "cycle_diff_view",
+            HostOp::DiffNextChange => "diff_next_change",
+            HostOp::DiffPrevChange => "diff_prev_change",
+            HostOp::JumpNextChange => "jump_next_change",
+            HostOp::JumpPrevChange => "jump_prev_change",
         }
     }
 
-    /// The inverse of [`HostOp::name`]. The old name `toggle_markdown_raw` is an alias of
-    /// `cycle_representation`.
+    /// Read a default host operation name. Optional file-diff names are read only by
+    /// [`CoreKeys::with_config`]. The old `toggle_markdown_raw` aliases `cycle_representation`.
     pub fn from_name(s: &str) -> Option<HostOp> {
         if s == "toggle_markdown_raw" {
             return Some(HostOp::CycleRepresentation);
@@ -694,6 +710,8 @@ pub enum CoreContext {
     Table,
     /// A view the plugin draws itself; it inherits neither layer 1 nor a layer-2 table.
     Canvas,
+    /// A diff view: the file diff and the project's diffs (`[keys.diff]`).
+    Diff,
 }
 
 /// A layer-2 table: keys shared by the contexts that show the same kind of thing.
@@ -703,15 +721,21 @@ pub enum CoreViewType {
     Document,
     Table,
     Image,
+    Diff,
+    /// The layer-2 table of the project's list screens (changes, log, graph, branches,
+    /// worktrees). No shared context uses it yet: the per-screen contexts come with the
+    /// standalone app's state machine.
+    List,
 }
 
 impl CoreContext {
-    pub const ALL: [CoreContext; 5] = [
+    pub const ALL: [CoreContext; 6] = [
         CoreContext::Text,
         CoreContext::Document,
         CoreContext::Image,
         CoreContext::Table,
         CoreContext::Canvas,
+        CoreContext::Diff,
     ];
 
     /// The name used in `[keys.<name>]`.
@@ -722,6 +746,7 @@ impl CoreContext {
             CoreContext::Image => "image",
             CoreContext::Table => "table",
             CoreContext::Canvas => "canvas",
+            CoreContext::Diff => "diff",
         }
     }
 
@@ -737,6 +762,7 @@ impl CoreContext {
             CoreContext::Image => &[CoreViewType::Image],
             CoreContext::Table => &[CoreViewType::Table],
             CoreContext::Canvas => &[],
+            CoreContext::Diff => &[CoreViewType::Diff],
         }
     }
 
@@ -885,6 +911,18 @@ pub fn type_table(vt: CoreViewType, scheme: KeyScheme) -> CoreTable {
         CoreViewType::Text | CoreViewType::Table => scroll_table(scheme),
         // A document is also text, so lookup continues into the text table.
         CoreViewType::Document => CoreTable::new(),
+        // Every diff view shares scrolling, the layout switch and the page turn of a media diff.
+        CoreViewType::Diff => {
+            let mut m = scroll_table(scheme);
+            m.insert(KeyPress::ch('s'), run(CoreAction::CycleDiffLayout));
+            m.extend(page_turn_table());
+            m
+        }
+        // List screens: jump to the first / last row.
+        CoreViewType::List => CoreTable::from([
+            (KeyPress::ch('g'), nav(Motion::Top)),
+            (KeyPress::ch('G'), nav(Motion::Bottom)),
+        ]),
         CoreViewType::Image => {
             let mut m = CoreTable::new();
             m.insert(KeyPress::ch('h'), nav(Motion::Left));
@@ -904,6 +942,12 @@ pub fn type_table(vt: CoreViewType, scheme: KeyScheme) -> CoreTable {
 /// same keys taken.
 pub fn host_ops_table(ctx: CoreContext) -> CoreTable {
     let mut m = CoreTable::new();
+    // A diff has the project's screen and the reload only (the host adds its own VCS keys).
+    if ctx == CoreContext::Diff {
+        m.insert(KeyPress::ch('p'), host(HostOp::OpenGitView));
+        m.insert(KeyPress::ch('r'), host(HostOp::Refresh));
+        return m;
+    }
     // `p` is the project's screen on every context; the path style is in the `,` menu.
     m.insert(KeyPress::ch('p'), host(HostOp::OpenGitView));
     m.insert(KeyPress::ch('!'), host(HostOp::GitLaunchTool));
@@ -944,6 +988,7 @@ pub fn host_ops_table(ctx: CoreContext) -> CoreTable {
             m.insert(KeyPress::ch('R'), host(HostOp::CycleRepresentation));
             m.insert(KeyPress::ch('Y'), host(HostOp::PreviewCopySelectionRef));
         }
+        CoreContext::Diff => {}
     }
     m
 }
@@ -971,6 +1016,9 @@ pub fn own_table(ctx: CoreContext) -> CoreTable {
         CoreContext::Canvas => {
             m.extend(pages_table());
             m.insert(KeyPress::ch(' '), CoreBinding::Menu(CoreMenu::Actions));
+            m.insert(KeyPress::ch('y'), CoreBinding::Menu(CoreMenu::Copy));
+        }
+        CoreContext::Diff => {
             m.insert(KeyPress::ch('y'), CoreBinding::Menu(CoreMenu::Copy));
         }
     }
@@ -1213,7 +1261,7 @@ pub fn options_menu_default(ctx: CoreContext) -> Menu<CoreAction, CoreMsg> {
         CoreContext::Text | CoreContext::Document => {
             menu_of(CoreMsg::WkOptionsTitle, &[path, wrap])
         }
-        CoreContext::Image | CoreContext::Table | CoreContext::Canvas => {
+        CoreContext::Image | CoreContext::Table | CoreContext::Canvas | CoreContext::Diff => {
             menu_of(CoreMsg::WkOptionsTitle, &[path])
         }
     }
@@ -1272,6 +1320,8 @@ impl CoreKeys {
             CoreViewType::Document,
             CoreViewType::Table,
             CoreViewType::Image,
+            CoreViewType::Diff,
+            CoreViewType::List,
         ];
         CoreKeys {
             contexts: CoreContext::ALL
@@ -1304,8 +1354,20 @@ impl CoreKeys {
 
     /// As [`CoreKeys::from_keys_config`], from the raw tables.
     pub fn from_config(scheme: KeyScheme, cfg: &KeysFileConfig) -> CoreKeys {
-        let mut keys = CoreKeys::defaults(scheme);
-        let defaults = CoreKeys::defaults(scheme);
+        Self::defaults(scheme).with_config(cfg, &[], &[])
+    }
+
+    /// Apply overrides to supplied defaults, then validate against those same defaults.
+    /// Additional host operations and legacy context aliases are recognized only at this
+    /// opt-in entry point. Aliases retain the old-before-global-before-current ordering.
+    pub fn with_config(
+        self,
+        cfg: &KeysFileConfig,
+        additional_ops: &[HostOp],
+        context_aliases: &[(&str, CoreContext)],
+    ) -> CoreKeys {
+        let defaults = self.clone();
+        let mut keys = self;
 
         // Sorted, so the result is the same on every run.
         let mut names: Vec<&String> = cfg.surfaces.keys().collect();
@@ -1323,6 +1385,11 @@ impl CoreKeys {
                 new_tables.push((vec![Target::Context(c)], table));
             } else if let Some(cs) = old_surface_contexts(name) {
                 old_tables.push((cs.iter().map(|&c| Target::Context(c)).collect(), table));
+            } else if let Some((_, context)) = context_aliases
+                .iter()
+                .find(|(alias, _)| *alias == name.as_str())
+            {
+                old_tables.push((vec![Target::Context(*context)], table));
             }
             // Any other table belongs to a context this module does not have.
         }
@@ -1333,7 +1400,7 @@ impl CoreKeys {
             let mut entries: Vec<(&String, &String)> = table.iter().collect();
             entries.sort();
             for (chord, action) in entries {
-                keys.apply_one(&targets, chord, action);
+                keys.apply_one(&targets, chord, action, additional_ops);
             }
         }
         keys.validate(&defaults);
@@ -1343,7 +1410,13 @@ impl CoreKeys {
     /// Apply one (key string -> action string) to every target. A chord (`"y x"`) is an entry of
     /// a menu. Anything this module cannot honour is ignored: an invalid or fixed key, a chord
     /// whose prefix opens no menu, `tab_goto`, a name that is no core action.
-    fn apply_one(&mut self, targets: &[Target], key: &str, action: &str) {
+    fn apply_one(
+        &mut self,
+        targets: &[Target],
+        key: &str,
+        action: &str,
+        additional_ops: &[HostOp],
+    ) {
         let tokens: Vec<&str> = key.split_whitespace().collect();
         let keys: Vec<KeyPress> = match tokens.iter().map(|t| KeyPress::parse(t)).collect() {
             Ok(k) => k,
@@ -1353,7 +1426,9 @@ impl CoreKeys {
             None
         } else if let Some(a) = CoreAction::from_name(action) {
             Some(CoreBinding::Run(a))
-        } else if let Some(o) = HostOp::from_name(action) {
+        } else if let Some(o) = HostOp::from_name(action)
+            .or_else(|| additional_ops.iter().copied().find(|o| o.name() == action))
+        {
             Some(CoreBinding::Host(o))
         } else {
             return;
@@ -1704,6 +1779,104 @@ mod tests {
                 }
                 _ => assert_eq!(CoreAction::from_name(&a.name()), Some(a), "{}", a.name()),
             }
+        }
+    }
+
+    #[test]
+    fn the_diff_layout_action_round_trips_and_is_bound_to_s_in_diff_only() {
+        let a = CoreAction::CycleDiffLayout;
+        assert_eq!(a.name(), "cycle_diff_layout");
+        assert_eq!(CoreAction::from_name("cycle_diff_layout"), Some(a));
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let k = CoreKeys::defaults(scheme);
+            assert_eq!(at(&k, CoreContext::Diff, 's'), CoreResolution::Action(a));
+            for c in [
+                CoreContext::Text,
+                CoreContext::Document,
+                CoreContext::Image,
+                CoreContext::Table,
+                CoreContext::Canvas,
+            ] {
+                assert_ne!(at(&k, c, 's'), CoreResolution::Action(a), "{c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_list_view_type_table_is_first_and_last_row_only() {
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let t = type_table(CoreViewType::List, scheme);
+            let mut keys: Vec<_> = t.keys().map(|k| k.label()).collect();
+            keys.sort();
+            assert_eq!(keys, ["G", "g"]);
+            assert_eq!(
+                t[&KeyPress::ch('g')],
+                CoreBinding::Run(CoreAction::Navigate(Motion::Top))
+            );
+            assert_eq!(
+                t[&KeyPress::ch('G')],
+                CoreBinding::Run(CoreAction::Navigate(Motion::Bottom))
+            );
+            // No context looks into it yet: the per-screen contexts come with the state machine.
+            assert!(CoreContext::ALL
+                .iter()
+                .all(|c| !c.view_types().contains(&CoreViewType::List)));
+        }
+    }
+
+    #[test]
+    fn diff_resolves_defaults_remaps_noop_and_reserved_keys() {
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let k = CoreKeys::defaults(scheme);
+            let top = CoreResolution::Action(CoreAction::Navigate(Motion::Top));
+            assert_eq!(at(&k, CoreContext::Diff, 'g'), top);
+            assert_eq!(
+                at(&k, CoreContext::Diff, 'J'),
+                CoreResolution::Action(CoreAction::PageNext)
+            );
+            assert_eq!(
+                at(&k, CoreContext::Diff, 'q'),
+                CoreResolution::Action(CoreAction::PreviewBack)
+            );
+            // The paging keys follow the scheme.
+            let half = match scheme {
+                KeyScheme::Vim => KeyPress::ctrl_ch('d'),
+                KeyScheme::Less => KeyPress::ch('d'),
+            };
+            assert_eq!(
+                k.resolve(CoreContext::Diff, half),
+                CoreResolution::Action(CoreAction::Navigate(Motion::HalfDown))
+            );
+            // A remap, a noop and a reserved (global) key.
+            let m = CoreKeys::from_config(
+                scheme,
+                &cfg(&[
+                    (
+                        "diff",
+                        &[
+                            ("x", "cycle_diff_layout"),
+                            ("s", "noop"),
+                            ("Q", "page_next"),
+                        ],
+                    ),
+                    ("text", &[("g", "noop")]),
+                ]),
+            );
+            assert_eq!(
+                at(&m, CoreContext::Diff, 'x'),
+                CoreResolution::Action(CoreAction::CycleDiffLayout)
+            );
+            assert_eq!(at(&m, CoreContext::Diff, 's'), CoreResolution::Unbound);
+            assert_eq!(
+                at(&m, CoreContext::Diff, 'Q'),
+                CoreResolution::Action(CoreAction::Quit)
+            );
+            assert_eq!(at(&m, CoreContext::Text, 'g'), CoreResolution::Unbound);
+            assert_eq!(
+                at(&m, CoreContext::Diff, 'g'),
+                top,
+                "text's noop stays in text"
+            );
         }
     }
 

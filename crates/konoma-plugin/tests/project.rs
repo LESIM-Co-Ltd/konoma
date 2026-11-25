@@ -701,6 +701,7 @@ mod wire {
                 let mut view = View::List(ListView {
                     title: None,
                     bottom: None,
+                    heading: None,
                     rows: vec![row.clone()],
                 });
                 let WView::List(mut rows) = view_to_wire(&mut view, &mut Enc::new(&side)).unwrap()

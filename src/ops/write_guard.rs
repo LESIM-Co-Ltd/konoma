@@ -17,11 +17,9 @@ pub fn write_guard(app: &App, plugin: &str, writes: bool, repository: bool) -> G
             .manifest(plugin)
             .is_some_and(|manifest| manifest.read_only)
     });
-    if declared
-        || matches!(
-            app.cfg.plugins.get(plugin).and_then(|t| t.get("read_only")),
-            Some(toml::Value::Boolean(true))
-        )
+    let configured = app.cfg.plugins.get(plugin).and_then(|t| t.get("read_only"));
+    if konoma_plugin::host::acts::write_policy(writes, declared, configured)
+        == konoma_plugin::host::acts::WriteVerdict::PluginReadOnly
     {
         return Gate::Off(Some(Msg::PluginReadOnly));
     }

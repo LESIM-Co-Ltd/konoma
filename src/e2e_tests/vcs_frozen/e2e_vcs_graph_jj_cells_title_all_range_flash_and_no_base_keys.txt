@@ -1,0 +1,199 @@
+# frozen vcs frames: e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys
+case lang=en open
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@ Next 日 本 語                                                                                                               mzvwutvl · 作 者  Author · 2020-01-01|
+row 2 S|a1b7c1b1c1b1c1b110d12c1d1c1d20|
+row 3 T|◆ (main) Trunk 日 本 語                                                                                                       zsuskuln · 作 者  Author · 2020-01-01|
+row 3 S|e1c1f7c114g12c1g1c1g20|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en all=true
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@ Next 日 本 語                                                                                                               mzvwutvl · 作 者  Author · 2020-01-01|
+row 2 S|a1b7c1b1c1b1c1b110d12c1d1c1d20|
+row 3 T|◆ (main) Trunk 日 本 語                                                                                                       zsuskuln · 作 者  Author · 2020-01-01|
+row 3 S|e1c1f7c114g12c1g1c1g20|
+row 4 T|◆ c2                                                                                                                       kkmpptxz · 作 者  Author · 2020-01-01|
+row 4 S|e1c122g12c1g1c1g20|
+row 5 T|◆ c1                                                                                                                       qpvuntsm · 作 者  Author · 2020-01-01|
+row 5 S|e1c122g12c1g1c1g20|
+row 6 T|◆ root()                                                                                                                                              zzzzzzzz|
+row 6 S|e1c149g8|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=en all=false
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@ Next 日 本 語                                                                                                               mzvwutvl · 作 者  Author · 2020-01-01|
+row 2 S|a1b7c1b1c1b1c1b110d12c1d1c1d20|
+row 3 T|◆ (main) Trunk 日 本 語                                                                                                       zsuskuln · 作 者  Author · 2020-01-01|
+row 3 S|e1c1f7c114g12c1g1c1g20|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja open
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@ Next 日 本 語                                                                                                               mzvwutvl · 作 者  Author · 2020-01-01|
+row 2 S|a1b7c1b1c1b1c1b110d12c1d1c1d20|
+row 3 T|◆ (main) Trunk 日 本 語                                                                                                       zsuskuln · 作 者  Author · 2020-01-01|
+row 3 S|e1c1f7c114g12c1g1c1g20|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja all=true
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@ Next 日 本 語                                                                                                               mzvwutvl · 作 者  Author · 2020-01-01|
+row 2 S|a1b7c1b1c1b1c1b110d12c1d1c1d20|
+row 3 T|◆ (main) Trunk 日 本 語                                                                                                       zsuskuln · 作 者  Author · 2020-01-01|
+row 3 S|e1c1f7c114g12c1g1c1g20|
+row 4 T|◆ c2                                                                                                                       kkmpptxz · 作 者  Author · 2020-01-01|
+row 4 S|e1c122g12c1g1c1g20|
+row 5 T|◆ c1                                                                                                                       qpvuntsm · 作 者  Author · 2020-01-01|
+row 5 S|e1c122g12c1g1c1g20|
+row 6 T|◆ root()                                                                                                                                              zzzzzzzz|
+row 6 S|e1c149g8|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+case lang=ja all=false
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Yellow	Reset	NONE
+style g	DarkGray	Reset	NONE
+row 2 T|@ Next 日 本 語                                                                                                               mzvwutvl · 作 者  Author · 2020-01-01|
+row 2 S|a1b7c1b1c1b1c1b110d12c1d1c1d20|
+row 3 T|◆ (main) Trunk 日 本 語                                                                                                       zsuskuln · 作 者  Author · 2020-01-01|
+row 3 S|e1c1f7c114g12c1g1c1g20|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|

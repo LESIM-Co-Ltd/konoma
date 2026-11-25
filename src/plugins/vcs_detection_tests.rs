@@ -1,147 +1,24 @@
-use super::*;
+//! Discovery of the vcs plugins' projects with konoma's own readers (the discovery and the event
+//! fences themselves are tested in the SDK, `konoma_plugin::host::project`).
+
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+#[cfg(feature = "git")]
+use std::sync::Arc;
+
+use konoma_plugin::host::project::{affected, detect_directories, ProjectDeclaration};
+#[cfg(feature = "git")]
+use konoma_plugin::host::project::{detect, watch_targets};
+use konoma_plugin::Plugin;
+
 use crate::test_support::unique_tmp;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum WorkerCheckpoint {
-    AfterFence,
-    BeforeReceive,
-}
-
-pub(super) struct WorkerCheckpoints {
-    reached: mpsc::SyncSender<WorkerCheckpoint>,
-    resume: mpsc::Receiver<()>,
-}
-
-impl Slot {
-    pub(super) fn checkpoint(&self, checkpoint: WorkerCheckpoint) {
-        let checkpoints = self.checkpoints.lock().unwrap();
-        if let Some(checkpoints) = checkpoints.as_ref() {
-            if checkpoints.reached.send(checkpoint).is_ok() {
-                let _ = checkpoints.resume.recv();
-            }
-        }
-    }
-}
-
-#[test]
-fn project_event_fence_publishes_overflow_rescan_before_acknowledging() {
-    assert_late_overflow_fence(false);
-}
-
-#[test]
-fn project_event_fence_publishes_late_watch_failure_before_acknowledging() {
-    assert_late_overflow_fence(true);
-}
-
-fn assert_late_overflow_fence(failed: bool) {
-    let dir = unique_tmp("project_fence_late_overflow");
-    std::fs::create_dir_all(&dir).unwrap();
-    let root = dir.canonicalize().unwrap();
-    let registration = crate::plugins::test_plugins::register(
-        "project_fence_late_overflow",
-        Arc::new(konoma_vcs::Git),
-    );
-    let mut detection = ProjectDetection::default();
-    detection.ensure(&root, &[registration]);
-    detection.wait_for_result();
-    assert_eq!(detection.poll(), Some(false));
-    assert!(detection.projects.is_empty());
-    let worker = detection.worker.as_ref().unwrap().clone();
-    let events = worker.events.as_ref().unwrap();
-
-    // Hold the worker in a zero-capacity fence acknowledgement, then fill its only slot.
-    // The second send completes only once the worker has consumed the hold fence.
-    let (hold, release) = mpsc::sync_channel(0);
-    events.tx.send(WatchMessage::Settled(hold)).unwrap();
-    events.tx.send(WatchMessage::PathsChanged).unwrap();
-    let (reached, checkpoints) = mpsc::sync_channel(0);
-    let (resume, proceed) = mpsc::sync_channel(0);
-    *worker.slot.checkpoints.lock().unwrap() = Some(WorkerCheckpoints {
-        reached,
-        resume: proceed,
-    });
-    let checkpoint = |expected| {
-        assert_eq!(
-            checkpoints.recv_timeout(Duration::from_secs(30)).unwrap(),
-            expected,
-        );
-    };
-    let marker = root.join(".git");
-    std::fs::create_dir(&marker).unwrap();
-    enqueue_event(
-        &events.tx,
-        &events.overflow,
-        &events.failed,
-        Ok(notify::Event::new(notify::EventKind::Any).add_path(marker)),
-        || {
-            // Full has already been observed, but overflow has not been stored. Let the
-            // worker consume PathsChanged and check the still-false flag before receiving.
-            drop(release);
-            checkpoint(WorkerCheckpoint::AfterFence);
-            resume.send(()).unwrap();
-            checkpoint(WorkerCheckpoint::BeforeReceive);
-            resume.send(()).unwrap();
-            checkpoint(WorkerCheckpoint::BeforeReceive);
-        },
-    );
-    assert!(events.overflow.load(Ordering::Relaxed));
-    if failed {
-        // A callback error can also arrive after the worker's last flag check.
-        events.failed.store(true, Ordering::Relaxed);
-    }
-    let (settled, acknowledgement) = mpsc::sync_channel(1);
-    events.tx.send(WatchMessage::Settled(settled)).unwrap();
-    resume.send(()).unwrap();
-    acknowledgement
-        .recv_timeout(Duration::from_secs(30))
-        .expect("the fence must acknowledge after publishing");
-    // Stop before the next flag check: a scan after the acknowledgement must not
-    // race with our observation and accidentally make an immediate ack look correct.
-    checkpoint(WorkerCheckpoint::AfterFence);
-    assert_eq!(detection.poll(), Some(failed));
-    if failed {
-        assert!(
-            detection.projects.is_empty(),
-            "watch failure retains the last scan"
-        );
-    } else {
-        assert!(detection
-            .projects
-            .iter()
-            .any(|project| project.plugin == "git" && project.root == root));
-    }
-}
-impl ProjectDetection {
-    pub(crate) fn inject_event_with_pending_watch_update(
-        &self,
-        event: notify::Result<notify::Event>,
-    ) {
-        let events = self
-            .worker
-            .as_ref()
-            .and_then(|worker| worker.events.as_ref())
-            .expect("injected project events");
-        // A zero-capacity acknowledgement holds the worker while a path-update wake fills
-        // its one event slot. Sending the wake proves the worker consumed the hold message.
-        let (hold, release) = mpsc::sync_channel(0);
-        events.tx.send(WatchMessage::Settled(hold)).unwrap();
-        events.tx.send(WatchMessage::PathsChanged).unwrap();
-        drop(release);
-        // An ignored Access event fences the pending update without occupying the event slot.
-        // Named events must wait for it: a full queue correctly requests a conservative rescan.
-        self.inject_event(Ok(notify::Event::new(notify::EventKind::Access(
-            notify::event::AccessKind::Any,
-        ))));
-        self.inject_event(event);
-    }
-}
-
-fn vcs_declarations() -> Vec<Declaration> {
+fn vcs_declarations() -> Vec<ProjectDeclaration> {
     [&konoma_vcs::Git as &dyn Plugin, &konoma_vcs::Jj]
         .into_iter()
         .map(|plugin| {
             let manifest = plugin.manifest();
-            Declaration {
+            ProjectDeclaration {
                 plugin: manifest.id,
                 project: manifest.project.unwrap(),
             }
@@ -150,10 +27,105 @@ fn vcs_declarations() -> Vec<Declaration> {
 }
 
 #[test]
-fn vcs_projects_are_not_registered_as_standard_plugins_yet() {
+fn vcs_projects_are_registered_as_standard_plugins_when_the_backend_is_available() {
     let registry = crate::plugins::build_registry(&[]);
-    assert!(registry.manifest("git").is_none());
-    assert!(registry.manifest("jj").is_none());
+    for id in ["git", "jj"] {
+        assert_eq!(
+            registry.manifest(id).is_some(),
+            cfg!(feature = "git"),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn standard_vcs_registration_respects_disabled_replacements_and_backend_gates() {
+    use crate::plugins::{build_registry_with, statics::StaticSet};
+    use konoma_plugin::registry::PluginOrigin;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let manifest: toml::Table = include_str!("../../Cargo.toml").parse().unwrap();
+    let normal = &manifest["dependencies"]["konoma-vcs"];
+    assert_eq!(normal["default-features"].as_bool(), Some(false));
+    assert!(
+        normal.get("features").is_none_or(|features| !features
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f.as_str() == Some("app"))),
+        "konoma's normal dependency must not enable app"
+    );
+    assert!(manifest["dev-dependencies"]["konoma-vcs"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f.as_str() == Some("app")));
+    let features = manifest["features"].as_table().unwrap();
+    let mut pending = vec!["default"];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(feature) = pending.pop() {
+        assert!(
+            !matches!(feature, "konoma-vcs/app" | "konoma-vcs/default"),
+            "normal feature graph must not enable the standalone app"
+        );
+        if visited.insert(feature) {
+            if let Some(children) = features.get(feature) {
+                pending.extend(
+                    children
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_str().unwrap()),
+                );
+            }
+        }
+    }
+
+    let plain = build_registry_with(&[], None);
+    let linked = StaticSet {
+        standard: false,
+        added: Vec::new(),
+        replaced: BTreeMap::new(),
+    };
+    let without = build_registry_with(&[], Some(&linked));
+    for id in ["git", "jj"] {
+        assert!(
+            without.manifest(id).is_none(),
+            "standard=false must drop {id}"
+        );
+        assert_eq!(
+            plain.origin(id),
+            cfg!(feature = "git").then_some(PluginOrigin::Standard),
+            "{id}"
+        );
+        assert_eq!(
+            super::declarations(&[]).iter().any(|d| d.plugin == id),
+            cfg!(feature = "git")
+        );
+        assert!(!crate::plugins::build_registry(&[id.into()]).is_enabled(id));
+    }
+    let replaced = StaticSet {
+        standard: true,
+        added: Vec::new(),
+        replaced: BTreeMap::from([
+            ("git".into(), Arc::new(konoma_vcs::Git) as Arc<dyn Plugin>),
+            ("jj".into(), Arc::new(konoma_vcs::Jj) as Arc<dyn Plugin>),
+        ]),
+    };
+    let registry = build_registry_with(&[], Some(&replaced));
+    for id in ["git", "jj"] {
+        assert_eq!(
+            registry.origin(id),
+            cfg!(feature = "git").then_some(PluginOrigin::User),
+            "replacement {id}"
+        );
+        assert_eq!(
+            registry.ids().iter().position(|p| *p == id),
+            plain.ids().iter().position(|p| *p == id)
+        );
+        assert!(!build_registry_with(&[id.into()], Some(&replaced)).is_enabled(id));
+    }
 }
 
 #[test]
@@ -244,8 +216,10 @@ fn vcs_project_watch_targets_follow_a_linked_worktrees_gitdir_file() {
     let metadata = old
         .git_dir_watch()
         .expect("legacy host watches external gitdir");
-    let marker =
-        crate::plugins::test_plugins::register("vcs_watch_linked", Arc::new(konoma_vcs::Git));
+    let marker = crate::plugins::test_plugins::register_replacement(
+        "vcs_watch_linked",
+        Arc::new(konoma_vcs::Git),
+    );
     let mut host = crate::app::App::new(
         root.clone(),
         crate::plugins::test_plugins::marker_config(&marker),

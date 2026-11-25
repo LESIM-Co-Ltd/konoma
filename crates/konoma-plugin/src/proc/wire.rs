@@ -1607,6 +1607,8 @@ pub struct WListRow {
     pub checked: Option<bool>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub marked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counted: Option<bool>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -1688,7 +1690,16 @@ pub enum WView {
         rows: Vec<WListRow>,
         title: Option<WLine>,
         bottom: Option<WListStrip>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heading: Option<WListHeading>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WListHeading {
+    pub before: WLine,
+    pub after: WLine,
+    pub query_gap: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1709,6 +1720,8 @@ pub struct WDiffHunk {
 pub struct WDiffView {
     pub hunks: Vec<WDiffHunk>,
     pub header: Vec<WLine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<WLine>,
 }
 
 #[derive(Deserialize)]
@@ -1718,6 +1731,8 @@ enum WDiffCompat {
         hunks: Vec<WDiffHunk>,
         #[serde(default)]
         header: Vec<WLine>,
+        #[serde(default)]
+        title: Option<WLine>,
     },
     Legacy(Vec<Vec<WDiffLine>>),
 }
@@ -1725,13 +1740,22 @@ enum WDiffCompat {
 impl From<WDiffCompat> for WDiffView {
     fn from(value: WDiffCompat) -> Self {
         match value {
-            WDiffCompat::Current { hunks, header } => Self { hunks, header },
+            WDiffCompat::Current {
+                hunks,
+                header,
+                title,
+            } => Self {
+                hunks,
+                header,
+                title,
+            },
             WDiffCompat::Legacy(hunks) => Self {
                 hunks: hunks
                     .into_iter()
                     .map(|lines| WDiffHunk { lines, path: None })
                     .collect(),
                 header: Vec::new(),
+                title: None,
             },
         }
     }
@@ -2267,15 +2291,21 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
                             .transpose()?,
                         checked: r.checked,
                         marked: r.marked,
+                        counted: r.counted,
                     })
                 })
                 .collect::<Result<_, WireError>>()?;
-            if l.title.is_none() && l.bottom.is_none() {
+            if l.title.is_none() && l.bottom.is_none() && l.heading.is_none() {
                 WView::List(rows)
             } else {
                 WView::ListDecorated {
                     rows,
                     title: l.title.as_ref().map(line_to_wire),
+                    heading: l.heading.as_ref().map(|h| WListHeading {
+                        before: line_to_wire(&h.before),
+                        after: line_to_wire(&h.after),
+                        query_gap: h.query_gap,
+                    }),
                     bottom: l
                         .bottom
                         .as_ref()
@@ -2292,6 +2322,7 @@ pub fn view_to_wire(v: &mut View, enc: &mut Enc<'_>) -> Result<WView, WireError>
         }
         View::Diff(d) => WView::Diff(WDiffView {
             header: lines_to_wire(&d.header),
+            title: d.title.as_ref().map(line_to_wire),
             hunks: d
                 .hunks
                 .iter()
@@ -2439,6 +2470,7 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
                         .transpose()?,
                     checked: r.checked,
                     marked: r.marked,
+                    counted: r.counted,
                 });
             }
             View::List(ListView {
@@ -2450,6 +2482,7 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             rows,
             title,
             bottom,
+            heading,
         } => {
             if let Some(strip) = &bottom {
                 check_list_strip(strip.chips.len(), strip.estimated_width)?;
@@ -2458,6 +2491,11 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
                 unreachable!()
             };
             list.title = title.map(line_from_wire);
+            list.heading = heading.map(|h| {
+                crate::view::ListHeading::new(line_from_wire(h.before))
+                    .after(line_from_wire(h.after))
+                    .query_gap(h.query_gap)
+            });
             list.bottom = bottom.map(|strip| {
                 crate::view::ListStrip::new(lines_from_wire(strip.chips), strip.estimated_width)
             });
@@ -2493,6 +2531,7 @@ pub fn view_from_wire(v: WView, dec: &mut Dec<'_>) -> Result<View, WireError> {
             View::Diff(DiffView {
                 hunks: out,
                 header: lines_from_wire(diff.header),
+                title: diff.title.map(line_from_wire),
             })
         }
         WView::Canvas(c) => View::Canvas(canvas_from_wire(c, dec)?),

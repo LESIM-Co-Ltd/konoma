@@ -99,6 +99,7 @@ impl Session for ScrollPlugin {
             ),
             "diff" => View::Diff(PluginDiffView {
                 header: vec![],
+                title: None,
                 hunks: vec![DiffHunk {
                     path: None,
                     lines: (0..ROWS)
@@ -114,6 +115,7 @@ impl Session for ScrollPlugin {
             "list" => View::List(ListView {
                 title: None,
                 bottom: None,
+                heading: None,
                 rows: (0..ROWS)
                     .map(|i| {
                         ListRow::new("item", vec![Line::raw(Screen::List.label(i))])
@@ -263,7 +265,7 @@ fn e2e_project_diff_scroll_keeps_top_line_and_last_page_full() {
 
 #[test]
 fn e2e_project_diff_highlighter_reuses_unchanged_window_and_bounds_vertical_scroll() {
-    use crate::preview::gitdiff::highlight_calls_for_test;
+    use konoma_widgets::gitdiff::highlight_calls_for_test;
     let mut f = ScrollFixture::new("project_diff_cache", Screen::Diff);
     let before = highlight_calls_for_test();
     f.body();
@@ -283,7 +285,7 @@ fn e2e_project_diff_highlighter_reuses_unchanged_window_and_bounds_vertical_scro
 
 #[test]
 fn e2e_project_diff_large_draw_highlights_only_window_and_stacked_pan_reuses_it() {
-    use crate::preview::gitdiff::highlight_calls_for_test;
+    use konoma_widgets::gitdiff::highlight_calls_for_test;
     let mut f = ScrollFixture::new("project_large_diff_window", Screen::Lines);
     let before = highlight_calls_for_test();
     f.press(KeyCode::Char('c'));
@@ -402,7 +404,11 @@ fn e2e_project_diff_layout_is_independent_of_rendered_and_picture_origin() {
         f.press(KeyCode::Char('d'));
         assert!(f.sim.app.project_active());
         assert!(f.sim.app.diff_rendered_active());
-        assert_eq!(f.sim.app.media_diff_showing_pictures(), picture);
+        // Covering is leaving the tab: its media diff is not held behind the project screen
+        // (no landed result, no queued want). The return asks it again (below, after `q`).
+        assert!(f.sim.app.media_diff_for_test().outcome_for(&path).is_none());
+        assert!(!f.sim.app.media_diff_showing_pictures());
+        assert!(!f.sim.app.media_diff_busy_and_queued_for_test().1);
         assert!(!f.sim.app.diff_is_split(WIDTH - 2));
         f.press(KeyCode::Char('s'));
         assert!(f.sim.app.diff_is_split(WIDTH - 2));
@@ -414,6 +420,15 @@ fn e2e_project_diff_layout_is_independent_of_rendered_and_picture_origin() {
         assert!(f.sim.app.is_git_diff_preview());
         assert_eq!(f.sim.app.tab.preview_path.as_ref(), Some(&path));
         assert_eq!(f.sim.app.diff_view_for_test(), view);
+        assert_eq!(f.sim.app.media_diff_layout(), media_layout);
+        // The return asked the media diff again: the pictures are back, in the same layout.
+        f.sim.draw();
+        drain(&mut f.sim);
+        assert_eq!(f.sim.app.media_diff_showing_pictures(), picture);
+        assert_eq!(
+            f.sim.app.media_diff_for_test().outcome_for(&path).is_some(),
+            picture
+        );
         assert_eq!(f.sim.app.media_diff_layout(), media_layout);
     }
 }

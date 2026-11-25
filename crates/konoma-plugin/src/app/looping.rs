@@ -1,5 +1,16 @@
 //! The loop: ask the session for its view, draw it, wait for a key.
 
+#[path = "../host/project/diff_app.rs"]
+mod diff_app;
+
+#[cfg(test)]
+#[path = "inline_overlay_loop_tests.rs"]
+mod inline_overlay_loop_tests;
+
+#[cfg(test)]
+#[path = "file_loop_tests.rs"]
+mod file_loop_tests;
+
 use std::time::{Duration, Instant};
 
 use konoma_host_core::help::{
@@ -132,6 +143,267 @@ pub struct AppKeys {
 }
 
 impl AppKeys {
+    fn project_preview_values(
+        &self,
+        context: CoreContext,
+        state: konoma_host_core::preview_plan::PreviewState,
+        mut core: HelpFacts,
+        return_keys: &[KeyPress],
+        changes: bool,
+    ) -> crate::host::project::preview_presentation::PreviewValues {
+        use crate::host::project::preview_presentation::{PreviewBinding, PreviewValues};
+        use konoma_host_core::preview_plan::{footer_plan, help_order, PreviewOp, PvFoot};
+        core.label.retain(|(a, _)| *a != CoreAction::PreviewBack);
+        core.label
+            .push((CoreAction::PreviewBack, Some(CoreMsg::GitBack)));
+        core.help.retain(|(a, _)| *a != CoreAction::PreviewBack);
+        core.help
+            .push((CoreAction::PreviewBack, Some(CoreMsg::BackToTree)));
+        core.help.retain(|(a, _)| *a != CoreAction::Quit);
+        core.help.push((CoreAction::Quit, Some(CoreMsg::Quit)));
+        let mut ops = help_order(context, &state);
+        ops.extend(konoma_host_core::preview_plan::help_everywhere());
+        for entry in footer_plan(context, &state) {
+            match entry {
+                PvFoot::Op(op) | PvFoot::As(op, _) => ops.push(op),
+                PvFoot::Group(g, _) | PvFoot::GroupOp(g) | PvFoot::Union(g, _) => {
+                    ops.extend(g.ops())
+                }
+                _ => {}
+            }
+        }
+        let lookup = CoreLookup {
+            keys: &self.keys,
+            ctx: context,
+        };
+        let mut bindings: Vec<PreviewBinding> = Vec::new();
+        for op in ops {
+            if bindings.iter().any(|b| b.op == op) {
+                continue;
+            }
+            let (keys, enabled, label) = match op {
+                PreviewOp::Core(a) => (
+                    lookup.keys_of(HelpOp::Act(a)),
+                    !core.off.contains(&HelpOp::Act(a))
+                        && !matches!(
+                            a,
+                            CoreAction::ToggleFollow | CoreAction::TabPrev | CoreAction::TabNext
+                        ),
+                    if a == CoreAction::Quit {
+                        Some(
+                            if self.lang == Lang::Jp {
+                                "konoma を終了"
+                            } else {
+                                "quit konoma"
+                            }
+                            .into(),
+                        )
+                    } else if matches!(a, CoreAction::ImageZoomIn | CoreAction::ImageZoomOut) {
+                        Some(
+                            if a == CoreAction::ImageZoomIn {
+                                CoreMsg::MenuZoomIn
+                            } else {
+                                CoreMsg::MenuZoomOut
+                            }
+                            .tr(self.lang)
+                            .into(),
+                        )
+                    } else {
+                        konoma_host_core::help::default_label(context, a)
+                            .map(|m| m.tr(self.lang).into())
+                    },
+                ),
+                PreviewOp::Host(
+                    konoma_host_core::keymap::HostOp::CycleRepresentation
+                    | konoma_host_core::keymap::HostOp::ImageReturnToDiff,
+                ) => (return_keys.to_vec(), !return_keys.is_empty(), None),
+                PreviewOp::Host(
+                    op @ (konoma_host_core::keymap::HostOp::OpenGitView
+                    | konoma_host_core::keymap::HostOp::GitLaunchTool
+                    | konoma_host_core::keymap::HostOp::Refresh),
+                ) => {
+                    let mut keys: Vec<_> = self
+                        .keys
+                        .global
+                        .keys()
+                        .chain(self.keys.basic.keys())
+                        .chain(self.keys.contexts.values().flat_map(|t| t.keys()))
+                        .chain(self.keys.types.values().flat_map(|t| t.keys()))
+                        .copied()
+                        .filter(|k| self.keys.host_op(context, *k) == Some(op))
+                        .collect();
+                    keys.sort_by_key(|k| konoma_host_core::help::display_order(*k));
+                    keys.dedup();
+                    let jp = self.lang == Lang::Jp;
+                    let label = match op {
+                        konoma_host_core::keymap::HostOp::OpenGitView => Some(
+                            crate::host::project::preview_presentation::project_menu_label(
+                                self.lang,
+                            )
+                            .into(),
+                        ),
+                        konoma_host_core::keymap::HostOp::GitLaunchTool => {
+                            Some(if jp { "ツール" } else { "tool" }.into())
+                        }
+                        _ => Some(if jp { "再読込" } else { "refresh" }.into()),
+                    };
+                    (keys, true, label)
+                }
+                PreviewOp::Host(
+                    op @ (konoma_host_core::keymap::HostOp::SearchNext
+                    | konoma_host_core::keymap::HostOp::SearchPrev),
+                ) => {
+                    let mut keys: Vec<_> = self
+                        .keys
+                        .global
+                        .keys()
+                        .chain(self.keys.basic.keys())
+                        .chain(self.keys.contexts.values().flat_map(|t| t.keys()))
+                        .chain(self.keys.types.values().flat_map(|t| t.keys()))
+                        .copied()
+                        .filter(|k| self.keys.host_op(context, *k) == Some(op))
+                        .collect();
+                    keys.sort_by_key(|k| konoma_host_core::help::display_order(*k));
+                    keys.dedup();
+                    (
+                        keys,
+                        changes,
+                        Some(
+                            match (op, self.lang) {
+                                (konoma_host_core::keymap::HostOp::SearchNext, Lang::Jp) => {
+                                    "次の一致"
+                                }
+                                (konoma_host_core::keymap::HostOp::SearchPrev, Lang::Jp) => {
+                                    "前の一致"
+                                }
+                                (konoma_host_core::keymap::HostOp::SearchNext, _) => "next match",
+                                _ => "previous match",
+                            }
+                            .into(),
+                        ),
+                    )
+                }
+                PreviewOp::ToggleTableCell if context == CoreContext::Table => (
+                    vec![KeyPress::key(crossterm::event::KeyCode::Enter)],
+                    true,
+                    Some(CoreMsg::HintViewCell.tr(self.lang).into()),
+                ),
+                _ => (vec![], false, None),
+            };
+            let provided = match op {
+                PreviewOp::Core(
+                    CoreAction::ToggleOutline
+                    | CoreAction::ToggleFollow
+                    | CoreAction::TabPrev
+                    | CoreAction::TabNext,
+                ) => false,
+                PreviewOp::Core(
+                    CoreAction::ImageZoomIn | CoreAction::ImageZoomOut | CoreAction::ImageZoomReset,
+                ) => context == CoreContext::Image,
+                PreviewOp::Host(
+                    konoma_host_core::keymap::HostOp::CycleRepresentation
+                    | konoma_host_core::keymap::HostOp::ImageReturnToDiff,
+                ) => true,
+                PreviewOp::Host(
+                    konoma_host_core::keymap::HostOp::SearchNext
+                    | konoma_host_core::keymap::HostOp::SearchPrev
+                    | konoma_host_core::keymap::HostOp::OpenGitView
+                    | konoma_host_core::keymap::HostOp::GitLaunchTool
+                    | konoma_host_core::keymap::HostOp::Refresh,
+                ) => true,
+                PreviewOp::Core(_) | PreviewOp::ToggleTableCell | PreviewOp::Cancel => true,
+                _ => false,
+            };
+            let help = if let PreviewOp::Core(a) = op {
+                konoma_host_core::help::default_help(context, a).map(|m| m.tr(self.lang).into())
+            } else if op == PreviewOp::ToggleTableCell {
+                Some(CoreMsg::TableCellViewHelp.tr(self.lang).into())
+            } else if let PreviewOp::Host(op) = op {
+                use konoma_host_core::keymap::HostOp;
+                let jp = self.lang == Lang::Jp;
+                match op {
+                    HostOp::OpenGitView => Some(
+                        if jp {
+                            "Git 変更ハブ (ステージ/解除/破棄/コミット; b=ブランチ)"
+                        } else {
+                            "Git changes hub (stage/unstage/discard/commit; b=branch)"
+                        }
+                        .into(),
+                    ),
+                    HostOp::GitLaunchTool => Some(
+                        if jp {
+                            "外部 git ツール (lazygit)"
+                        } else {
+                            "external git tool (lazygit)"
+                        }
+                        .into(),
+                    ),
+                    HostOp::Refresh => Some(
+                        if jp {
+                            "一覧と git status を再読込"
+                        } else {
+                            "refresh listing & git status"
+                        }
+                        .into(),
+                    ),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let layers = keys
+                .iter()
+                .filter_map(|key| lookup.layer_of(*key).map(|layer| (*key, layer)))
+                .collect();
+            bindings.push(PreviewBinding {
+                op,
+                keys,
+                enabled,
+                provided,
+                label,
+                help,
+                launch: matches!(
+                    op,
+                    PreviewOp::Core(CoreAction::RequestEdit | CoreAction::OpenExternal)
+                ),
+                layers,
+            });
+        }
+        let change_keys = bindings
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b.op,
+                    PreviewOp::Host(
+                        konoma_host_core::keymap::HostOp::SearchNext
+                            | konoma_host_core::keymap::HostOp::SearchPrev
+                    )
+                )
+            })
+            .flat_map(|b| b.keys.iter())
+            .map(|k| konoma_host_core::help::footer_key(*k, false))
+            .collect::<Vec<_>>()
+            .join("/");
+        PreviewValues {
+            context,
+            state,
+            bindings,
+            core,
+            search_status: None,
+            change_status: (changes && !change_keys.is_empty()).then(|| {
+                format!(
+                    "{change_keys}:{}",
+                    if self.lang == Lang::Jp {
+                        "変更箇所"
+                    } else {
+                        "change"
+                    }
+                )
+            }),
+            copy_code: None,
+        }
+    }
+
     /// The keys for the `[keys]` table `keys` and the `ui.keys` paging style (`"vim"` | `"less"`).
     pub fn new(keys: &KeysConfig, ui_keys: &str) -> AppKeys {
         AppKeys {
@@ -241,7 +513,12 @@ impl AppKeys {
             // The sideways motions only act on text that does not wrap.
             HelpOp::Act(CoreAction::Navigate(
                 Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd,
-            )) => scrolls && (self.caret || !self.wrap),
+            )) => {
+                scrolls
+                    && crate::host::project::preview_presentation::horizontal_moves(
+                        self.wrap, self.caret,
+                    )
+            }
             HelpOp::Act(CoreAction::Navigate(_)) => scrolls,
             HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
                 true
@@ -282,6 +559,18 @@ impl AppKeys {
 
     /// [`AppKeys::footer_hints_paged`] over the text screen of key context `ctx`.
     pub fn footer_hints_in(&self, ctx: CoreContext, scrolls: bool, paged: bool) -> Vec<CoreToken> {
+        if ctx == CoreContext::Diff {
+            return self
+                .source_diff(paged, scrolls)
+                .footer_tokens()
+                .iter()
+                .map(|token| CoreToken {
+                    text: token.text.clone(),
+                    keys: token.keys.clone(),
+                    ops: token.ops.iter().filter_map(|op| op.core()).collect(),
+                })
+                .collect();
+        }
         let facts = self.facts_in(ctx, paged, true);
         let look = CoreLookup {
             keys: &self.keys,
@@ -362,7 +651,10 @@ impl AppKeys {
             None => self.menu_key_acts(ctx, key),
             // Sideways, the text moves only when it does not wrap (the open help does not).
             Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
-                scrolls && (self.caret || !self.wrap)
+                scrolls
+                    && crate::host::project::preview_presentation::horizontal_moves(
+                        self.wrap, self.caret,
+                    )
             }
             Some(Act::Move(_)) => scrolls,
             Some(_) => true,
@@ -412,6 +704,10 @@ impl AppKeys {
         paged: bool,
         scrolls: bool,
     ) -> Vec<CoreSection> {
+        if ctx == CoreContext::Diff {
+            let p = self.source_diff(paged, scrolls);
+            return p.help_sections(&[], &self.diff_help_menus(&p));
+        }
         let look = CoreLookup {
             keys: &self.keys,
             ctx,
@@ -469,7 +765,48 @@ impl AppKeys {
     /// The copy menu as the which-key line and the help list it (no code block is focused here,
     /// so `c` is not offered).
     fn copy_menu_view(&self, ctx: CoreContext, menu: CoreMenu) -> Option<MenuView> {
+        if ctx == CoreContext::Diff && menu == CoreMenu::Options {
+            let p = self.source_diff(false, true);
+            let view = menu_view(&self.keys, ctx, menu, self.lang, false)?;
+            let declaration: Vec<_> = view
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| konoma_host_core::menu::Item {
+                    key: item.key,
+                    action: crate::host::project::diff_presentation::DiffUiOp::from_core(
+                        HelpOp::Act(item.action),
+                    )
+                    .unwrap_or(
+                        crate::host::project::diff_presentation::DiffUiOp::Host(index),
+                    ),
+                    label: crate::host::acts::FixedMenuLabel {
+                        declared: Some(item.label.clone()),
+                        fallback: None,
+                    },
+                })
+                .collect();
+            let items = p
+                .options_menu(&declaration)
+                .into_iter()
+                .filter_map(|item| view.items.iter().find(|i| i.key == item.key).cloned())
+                .collect();
+            return Some(MenuView {
+                title: view.title,
+                items,
+            })
+            .filter(|v| !v.items.is_empty());
+        }
         menu_view(&self.keys, ctx, menu, self.lang, false).filter(|m| !m.items.is_empty())
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn options_op_for_test(
+        &self,
+        ctx: CoreContext,
+        key: KeyPress,
+    ) -> Option<CoreAction> {
+        self.copy_menu_view(ctx, CoreMenu::Options)?.find(key)
     }
 
     /// The which-key line of an open menu: the spans the host draws (a bold heading, dim items).
@@ -1111,6 +1448,24 @@ impl AppKeys {
         self.with_copy_section(CoreContext::Canvas, CoreMenu::Copy, secs)
     }
 
+    /// The Global section (`?`, `Q`) of the canvas help, for the project screens that draw
+    /// their own rows: the standalone has no layer-0 keys except these two.
+    pub(crate) fn canvas_global_sections(&self) -> Vec<CoreSection> {
+        // The `Q` row carries the same core text as the host's and the preview help's.
+        let mut facts = self.canvas_facts();
+        facts.help.retain(|(a, _)| *a != CoreAction::Quit);
+        facts.help.push((CoreAction::Quit, Some(CoreMsg::Quit)));
+        global_only(
+            core_sections(
+                CoreContext::Canvas,
+                &facts,
+                &self.canvas_lookup(),
+                self.lang,
+            ),
+            self.lang,
+        )
+    }
+
     /// Whether `key` opens the `Space` menu of `ctx`.
     fn opens_actions(&self, ctx: CoreContext, key: &Key) -> bool {
         key_press(key)
@@ -1124,9 +1479,28 @@ impl AppKeys {
         lang: &str,
         acts: &super::AppActs,
         act_ctx: &str,
-        windowed: bool,
+        screen: (
+            bool,
+            Option<&crate::host::project::preview_presentation::PreviewValues>,
+        ),
         enabled: impl Fn(&str) -> bool,
     ) -> Vec<konoma_host_core::menu::Item<super::space::SpaceOp, String>> {
+        let (windowed, preview) = screen;
+        if let Some(preview) = preview {
+            return super::space::items_with_preview(
+                &self.keys,
+                &self.defaults,
+                ctx,
+                self.lang,
+                lang,
+                acts,
+                act_ctx,
+                windowed,
+                &self.launch,
+                enabled,
+                Some(preview),
+            );
+        }
         super::space::items(
             &self.keys,
             &self.defaults,
@@ -1310,6 +1684,13 @@ impl AppKeys {
 /// The shared keys' context of a text screen: the decorated document (`Frame::Document`) is
 /// `Document`, source and plain text (and a page that failed to draw) are `Text`. The one place
 /// that decides it, as konoma's `key_context` is for the host.
+/// Only the Global section of core help sections: the rows true on every screen. One filter
+/// for the project-owned diff help and the project-screen help.
+pub(crate) fn global_only(sections: Vec<CoreSection>, lang: Lang) -> Vec<CoreSection> {
+    let global = CoreMsg::HelpGlobal.tr(lang);
+    sections.into_iter().filter(|s| s.title == global).collect()
+}
+
 fn text_ctx(base: &Frame) -> CoreContext {
     if matches!(base, Frame::Document(_)) {
         CoreContext::Document
@@ -1444,6 +1825,20 @@ pub enum Next {
 pub trait EventSource {
     /// The next event; `wait` is how long to wait for it (`None` = as long as it takes).
     fn next(&mut self, wait: Option<Duration>) -> Next;
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    fn project_fenced(&self) -> bool {
+        false
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    fn project_idle(
+        &mut self,
+        _: super::project::ProjectIdleSnapshot,
+        _: ratatui::buffer::Buffer,
+    ) -> Next {
+        unreachable!("only a fenced project source observes idle frames")
+    }
 }
 
 impl<I: Iterator<Item = AppEvent>> EventSource for I {
@@ -1538,6 +1933,7 @@ struct State {
     reopened_as: Option<ReopenedAs>,
     /// The first line shown of a text.
     scroll: usize,
+    change_at: Option<usize>,
     /// The text on screen has the caret (the file's text in the host's frame).
     caret_on: bool,
     /// The line and the column (a char index) of the caret.
@@ -1610,6 +2006,194 @@ struct State {
     act_queue: Vec<QueuedAct>,
 }
 
+/// Everything owned by one file loop, retained while its caller shows another screen.
+/// The original session and pictures remain owned by the caller.
+pub(in crate::app) struct FileLoopState {
+    st: State,
+    // Display options change the loop's keys without changing the caller's configuration.
+    own: AppKeys,
+    // A Reopen destination remains the active session for all subsequent entries.
+    swapped: Option<Box<dyn Session>>,
+    // A failed Reopen is remembered rather than retried at every key or resize.
+    reopen_failed: Option<crate::session::Failure>,
+    base: Frame<'static>,
+    view_due: Option<Instant>,
+    need_view: bool,
+    refresh_on_resume: bool,
+    launch_tx: std::sync::mpsc::Sender<Result<crate::launch::Opener, String>>,
+    launch_rx: std::sync::mpsc::Receiver<Result<crate::launch::Opener, String>>,
+    launching: usize,
+    /// Where the loop is put once its first view lands (`restore`).
+    back: Option<ViewPosition>,
+}
+
+/// Where the user is in a file screen, as plain data: the scroll, the caret, the search (the
+/// change block `n`/`N` stand on), the page, the table's cell cursor and scroll, and the display
+/// options. A file opened again (a Refresh, a tool's return, the return to a covered Preview) is
+/// put back there; nothing of the session, the laid-out page or the pictures is in it.
+#[derive(Clone)]
+pub(in crate::app) struct ViewPosition {
+    scroll: usize,
+    change_at: Option<usize>,
+    caret_on: bool,
+    caret_line: usize,
+    caret_col: usize,
+    hscroll: u16,
+    at_page: usize,
+    /// The table's cell cursor and scroll: put on the first table drawn, kept to its grid by the
+    /// table's own clamp (`TableFrame::clamp_cursor`), as a table read again keeps them.
+    table: Option<konoma_widgets::table::TableViewState>,
+    display: super::Display,
+    own: AppKeys,
+}
+
+impl FileLoopState {
+    /// The user's view position. Every field of the loop and of its state is named, so a new one
+    /// is decided here: kept for the file opened again, or dropped with this loop.
+    pub(in crate::app) fn position(&self) -> ViewPosition {
+        let Self {
+            st,
+            own,
+            // The session the file converted to, the remembered failure, the timers and the
+            // launches: this loop's own, they go with it (the file is opened again).
+            swapped: _,
+            reopen_failed: _,
+            // The page on screen: its table's cursor and scroll are the user's; the rest is laid
+            // out again.
+            base,
+            view_due: _,
+            need_view: _,
+            refresh_on_resume: _,
+            launch_tx: _,
+            launch_rx: _,
+            launching: _,
+            back,
+        } = self;
+        // Put back but not yet shown (no view landed since): that is still where the user is.
+        if let Some(back) = back {
+            return back.clone();
+        }
+        let State {
+            // The position itself.
+            scroll,
+            change_at,
+            caret_on,
+            caret_line,
+            caret_col,
+            hscroll,
+            at_page,
+            display,
+            // What the document turned out to be, its measures and its laid-out page: read again
+            // from the file opened again.
+            reload: _,
+            reopened_as: _,
+            file_text: _,
+            doc_edit: _,
+            lines: _,
+            text_rows: _,
+            counted: _,
+            win: _,
+            page: _,
+            total: _,
+            scrolls: _,
+            pages: _,
+            last_image: _,
+            image_failed: _,
+            turned: _,
+            table_failed: _,
+            table_sheets: _,
+            failed_body: _,
+            width: _,
+            half: _,
+            doc: _,
+            // What was open over the page or on its way (help, a menu, a note, typed keys): of
+            // this view, not of where the user is.
+            help: _,
+            menu: _,
+            flash: _,
+            input_left: _,
+            user_act: _,
+            key_queue: _,
+            act_queue: _,
+        } = st;
+        ViewPosition {
+            scroll: *scroll,
+            change_at: *change_at,
+            caret_on: *caret_on,
+            caret_line: *caret_line,
+            caret_col: *caret_col,
+            hscroll: *hscroll,
+            at_page: *at_page,
+            table: match base {
+                Frame::Table(table) => Some(table.state),
+                _ => None,
+            },
+            display: display.clone(),
+            own: own.clone(),
+        }
+    }
+    /// A new loop (its file just opened) is put at `p`. What its first view asks with (the page,
+    /// the display options, the keys) is set now; where it stands in the text and in the table
+    /// is put once the first view lands, after the file converted (`Reopen`, which starts its
+    /// document from the top), so the converted document is put there too.
+    pub(in crate::app) fn restore(&mut self, p: ViewPosition) {
+        self.st.at_page = p.at_page;
+        self.st.display = p.display.clone();
+        self.own = p.own.clone();
+        // The entry note is for a file first shown, not for one put back.
+        self.st.flash = None;
+        self.back = Some(p);
+    }
+    pub(in crate::app) fn display(&self) -> &super::Display {
+        &self.st.display
+    }
+    pub(in crate::app) fn new(cx: &AppCx, keys: &AppKeys) -> Self {
+        let (launch_tx, launch_rx) = std::sync::mpsc::channel();
+        Self {
+            st: State {
+                display: cx.display.clone(),
+                flash: crate::host::bind::key_notes_line(&cx.acts.notes, keys.lang()),
+                ..State::default()
+            },
+            own: keys.clone(),
+            swapped: None,
+            reopen_failed: None,
+            base: Frame::Lines(Vec::new()),
+            view_due: None,
+            need_view: true,
+            refresh_on_resume: true,
+            launch_tx,
+            launch_rx,
+            launching: 0,
+            back: None,
+        }
+    }
+}
+
+/// Why the file screen gave control back to its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum FileLoopExit {
+    Back,
+    Quit,
+    End,
+    Yield,
+    ReturnToSource,
+    Project,
+    Tool,
+    Refresh,
+}
+
+/// Availability on the screen underneath help. Options also offers the return key;
+/// the popup, a typing plugin and other menus consume it instead.
+fn preview_return_acts_on_screen(
+    preview: bool,
+    popup: bool,
+    capturing: bool,
+    menu: Option<CoreMenu>,
+) -> bool {
+    preview && !popup && !capturing && matches!(menu, None | Some(CoreMenu::Options))
+}
+
 /// The title of the frame: the path in the `style` the `,` menu chose, or the title the host gave
 /// when it launched no path.
 fn frame_name_of(cx: &AppCx, style: konoma_host_core::view_options::PathStyle) -> String {
@@ -1635,7 +2219,7 @@ fn retitle(frame: &mut Frame, name: &str) {
         Frame::Table(t) => t.name = name.to_string(),
         Frame::Image(i) => i.name = name.to_string(),
         Frame::Document(d) => d.name = name.to_string(),
-        Frame::Lines(_) | Frame::Canvas(_) | Frame::ImageFailed(_) => {}
+        Frame::Lines(_) | Frame::Canvas(_) | Frame::ImageFailed(_) | Frame::Diff(_) => {}
     }
 }
 
@@ -1674,44 +2258,86 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
     keys_in: &AppKeys,
     mut pictures: Option<Pictures>,
 ) -> Result<(), AppError> {
-    // The keys follow the options the `,` menu changes (whether the text wraps decides which
-    // sideways keys act), so the loop keeps its own copy.
-    let mut own = keys_in.clone();
     super::edit_line::clear();
-    let mut st = State {
-        display: cx.display.clone(),
-        // The mistakes in the user's `[keys.<id>]` are told at start, as konoma's footer does.
-        flash: crate::host::bind::key_notes_line(&cx.acts.notes, own.lang()),
-        ..State::default()
-    };
-    // The session a `Reopen` opened in place of `session` (the plugin that converted the file):
-    // from then on it is the one asked.
-    let mut swapped: Option<Box<dyn Session>> = None;
-    // A `Reopen` that failed: the converting session is still the one asked, and it would answer
-    // `Reopen` again at every key and resize; the failure is the answer from then on, so the
-    // destination is opened (and fails) once, as konoma's one load does.
-    let mut reopen_failed: Option<crate::session::Failure> = None;
+    let mut state = FileLoopState::new(cx, keys_in);
+    run_file_with(terminal, session, events, cx, &mut state, pictures.as_mut()).map(|_| ())
+}
+
+/// Run or resume the same file session, refreshing its view for the current terminal size.
+/// No terminal guard is entered and borrowed pictures and edit-line state are retained on exit.
+/// No placements are deleted on leave: the caller draws over their placeholder cells, and
+/// retaining the pictures keeps their caches, workers and image pose available on resume.
+pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    state: &mut FileLoopState,
+    pictures: Option<&mut Pictures>,
+) -> Result<FileLoopExit, AppError> {
+    run_file_with_preview(terminal, session, events, cx, state, pictures, None)
+}
+
+pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    state: &mut FileLoopState,
+    mut pictures: Option<&mut Pictures>,
+    mut preview: Option<&mut super::project::preview::PreviewGutter>,
+) -> Result<FileLoopExit, AppError> {
+    let FileLoopState {
+        st,
+        own,
+        swapped,
+        reopen_failed,
+        base,
+        view_due,
+        need_view,
+        refresh_on_resume,
+        launch_tx,
+        launch_rx,
+        launching,
+        back,
+    } = state;
+    // Refreshing on entry must not postpone a timer that was armed before leaving.
+    let mut resume_due = if *refresh_on_resume { *view_due } else { None };
+    // A resume refreshes the view as a resize does, without asking for a new session.
+    if std::mem::replace(refresh_on_resume, true) {
+        *need_view = true;
+    }
     macro_rules! sess {
         () => {
-            match swapped.as_deref_mut() {
-                Some(s) => s,
+            match swapped.as_mut() {
+                Some(s) => &mut **s as &mut dyn Session,
                 None => &mut *session,
             }
         };
     }
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
-    // The notices of the GUI chains `e` and `o` walk on a worker; `launching` counts those out.
-    let (launch_tx, launch_rx) =
-        std::sync::mpsc::channel::<Result<crate::launch::Opener, String>>();
-    let mut launching = 0usize;
-    // The frame of the last view, and when that view is due again (a wake for the pictures
-    // draws this frame again).
-    let mut base = Frame::Lines(Vec::new());
-    let mut view_due: Option<Instant> = None;
-    let mut need_view = true;
     loop {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if events.project_fenced() {
+            if let Some(preview) = preview.as_deref_mut() {
+                *need_view |= preview.settle_for_test();
+            }
+            if let Some(pictures) = pictures.as_deref_mut() {
+                pictures.settle_for_test();
+            }
+        }
+        if preview.as_deref_mut().is_some_and(|p| p.poll()) {
+            *need_view = true;
+        }
         let size = terminal.size().map_err(|e| terr(&e))?;
-        let body_rows = size.height.saturating_sub(1);
+        let project_owned = preview.as_ref().is_some_and(|p| p.project_owned);
+        let body_rows =
+            size.height
+                .saturating_sub(if project_owned && !st.display.combined_status {
+                    2
+                } else {
+                    1
+                });
         st.page = usize::from(body_rows).max(1);
         st.width = size.width;
         st.half = None;
@@ -1722,14 +2348,14 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             .as_ref()
             .is_some_and(|b| b.page == st.at_page)
         {
-            set_failed_paging(&mut st, usize::from(body_rows));
+            set_failed_paging(st, usize::from(body_rows));
         }
         if view_due.is_some_and(|d| Instant::now() >= d) {
-            need_view = true;
+            *need_view = true;
         }
         let mut view_wait = None;
         while let Ok(outcome) = launch_rx.try_recv() {
-            launching = launching.saturating_sub(1);
+            *launching = launching.saturating_sub(1);
             st.flash = Some(crate::host::launch::chain_notice(own.lang(), &outcome));
         }
         // The file is opened again with its plugin (an `Outcome::Reload`): the new session is the
@@ -1738,27 +2364,30 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         // file (`ReopenSource::with_file`) leaves a plain redraw.
         while std::mem::take(&mut st.reload) {
             if let Some(opened) = cx.reopen.as_ref().and_then(|r| r.reload(&cx.lang, cx.term)) {
-                reopen_failed = None;
+                resume_due = None;
+                *reopen_failed = None;
                 st.reopened_as = None;
                 match opened {
-                    Ok(fresh) => swapped = Some(fresh),
+                    Ok(fresh) => *swapped = Some(fresh),
                     // The reason is what the view shows, as a file that fails to open does.
-                    Err(f) => reopen_failed = Some(f),
+                    Err(f) => *reopen_failed = Some(f),
                 }
-                need_view = true;
+                *need_view = true;
                 // The keys and actions that waited for the new session go to it, in order.
-                if flush_jobs(sess!(), &mut st, cx) {
-                    need_view = true;
+                if flush_jobs(sess!(), st, cx) {
+                    *need_view = true;
                 }
             }
         }
-        if need_view {
+        if *need_view {
             let mut req = ViewReq::new(size.width, body_rows);
             if st.at_page > 0 {
                 req = req.page(st.at_page);
             }
-            let vcx = ViewCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
-            let mut viewed = match &reopen_failed {
+            let settings = preview.as_deref().map(|p| p.settings.clone());
+            let vcx = ViewCx::new(settings.as_ref().unwrap_or(Settings::empty()), &cx.lang)
+                .with_term(cx.term);
+            let mut viewed = match &*reopen_failed {
                 Some(f) => Err(f.clone()),
                 None => sess!().view(&req, &vcx),
             };
@@ -1768,7 +2397,15 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             // laid-out page and the pictures (a result the old document asked for lands on
             // nothing).
             if let Ok(View::Reopen(r)) = viewed {
+                resume_due = None;
                 let target = cx.reopen.as_ref().and_then(|s| s.target(&r.content_type));
+                if let Some(preview) = preview.as_deref_mut() {
+                    preview.cancel();
+                    preview.settings = target
+                        .as_ref()
+                        .map(|t| t.settings.clone())
+                        .unwrap_or_default();
+                }
                 viewed = match crate::reopen::reopen_document(
                     target.as_ref(),
                     REOPEN_ACCEPTS,
@@ -1778,9 +2415,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     cx.term,
                 ) {
                     Ok(opened) => {
-                        swapped = Some(opened.session);
-                        st = state_after_reopen(
-                            st,
+                        *swapped = Some(opened.session);
+                        *st = state_after_reopen(
+                            std::mem::take(st),
                             target.as_ref().map(|t| {
                                 let m = t.plugin.manifest();
                                 ReopenedAs {
@@ -1798,7 +2435,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         );
                         st.page = usize::from(body_rows).max(1);
                         st.width = size.width;
-                        if let Some(p) = pictures.as_mut() {
+                        if let Some(p) = pictures.as_deref_mut() {
                             p.forget();
                             p.forget_still();
                             p.reset_document();
@@ -1806,14 +2443,41 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         Ok(View::Document(opened.document))
                     }
                     Err(f) => {
-                        reopen_failed = Some(f.clone());
+                        *reopen_failed = Some(f.clone());
                         Err(f)
                     }
                 };
             }
             let frame_name = frame_name_of(cx, st.display.path_style);
+            // The table's part of a position put back: for the table this view draws.
+            let mut table_back = None;
             let shown = match viewed {
                 Ok(v) => {
+                    // The first view of a loop put back (after any conversion): where the user
+                    // was, once. The frame below keeps it to the text (`clamp`) and the table to
+                    // its grid (`clamp_cursor`).
+                    if let Some(p) = back.take() {
+                        let ViewPosition {
+                            scroll,
+                            change_at,
+                            caret_on,
+                            caret_line,
+                            caret_col,
+                            hscroll,
+                            table,
+                            // Set by `restore`, before the first view asked.
+                            at_page: _,
+                            display: _,
+                            own: _,
+                        } = p;
+                        st.scroll = scroll;
+                        st.change_at = change_at;
+                        st.caret_on = caret_on;
+                        st.caret_line = caret_line;
+                        st.caret_col = caret_col;
+                        st.hscroll = hscroll;
+                        table_back = table;
+                    }
                     st.table_failed = false;
                     st.image_failed = false;
                     st.failed_body = None;
@@ -1825,8 +2489,8 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 Err(f) => {
                     // What kind of paged page failed: what the plugin declares it shows, else
                     // what was on screen before (a first page that fails has nothing before it).
-                    let picture = failed_page_is_picture(cx, &st);
-                    note_failed_page(sess!(), cx, &mut st, picture);
+                    let picture = failed_page_is_picture(cx, st);
+                    note_failed_page(sess!(), cx, st, picture);
                     Err(Some(failure_frame(
                         image_failure_for(st.unavailable(cx), &f),
                         f.message.get(&cx.lang),
@@ -1834,22 +2498,41 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         cx,
                         own.lang(),
                         usize::from(body_rows),
-                        &mut st,
+                        st,
                     )))
                 }
             };
             let (mut frame, redraw_after) = match shown {
-                Ok(view) => frame_of(
-                    view,
-                    &mut st,
-                    usize::from(body_rows),
-                    (&cx.lang, own.lang()),
-                    &frame_name,
-                    pictures.as_mut(),
-                ),
+                Ok(view) => {
+                    if let Some(preview) = preview.as_deref_mut() {
+                        preview.prepare(&view);
+                    }
+                    match preview.as_deref_mut() {
+                        Some(preview) => frame_of_preview(
+                            view,
+                            st,
+                            usize::from(body_rows),
+                            (&cx.lang, own.lang()),
+                            &frame_name,
+                            pictures.as_deref_mut(),
+                            Some(preview),
+                        ),
+                        None => frame_of(
+                            view,
+                            st,
+                            usize::from(body_rows),
+                            (&cx.lang, own.lang()),
+                            &frame_name,
+                            pictures.as_deref_mut(),
+                        ),
+                    }
+                }
                 Err(Some(frame)) => (frame, None),
                 // The frame on screen stays.
-                Err(None) => (std::mem::replace(&mut base, Frame::Lines(Vec::new())), None),
+                Err(None) => (
+                    std::mem::replace(&mut *base, Frame::Lines(Vec::new())),
+                    None,
+                ),
             };
             // The typing: a canvas that asks for it after something the user did takes it back
             // after `Esc`; the show going (no canvas on screen) forgets the keys and the latch.
@@ -1863,9 +2546,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             if let Frame::Table(new) = &mut frame {
                 // A table read again (a resize, a page turn) keeps the cursor and the popup; a
                 // page turn has reset them before asking.
-                if let Frame::Table(old) = &mut base {
+                if let Frame::Table(old) = &mut *base {
                     new.state = old.state;
                     new.popup = old.popup.take();
+                } else if let Some(state) = table_back.take() {
+                    new.state = state;
                 }
                 new.clamp_cursor();
                 st.table_sheets = new.addressed;
@@ -1889,7 +2574,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 }
             }
             let turned = std::mem::take(&mut st.turned);
-            if let Some(p) = pictures.as_mut() {
+            if let Some(p) = pictures.as_deref_mut() {
                 match &frame {
                     Frame::Canvas(c) => {
                         p.submit(c);
@@ -1906,38 +2591,43 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 }
             }
             view_wait = redraw_after.map(|d| d.clamp(MIN_REDRAW, MAX_REDRAW));
-            view_due = view_wait.map(|d| Instant::now() + d);
-            base = frame;
+            let pending = resume_due.take();
+            *view_due = view_wait.map(|d| pending.unwrap_or_else(|| Instant::now() + d));
+            if pending.is_some() {
+                view_wait = None;
+            }
+            *base = frame;
         }
-        if let Some(p) = pictures.as_mut() {
+        if let Some(p) = pictures.as_deref_mut() {
             p.poll();
             // A picture's result changed what the page reserves: lay it out again before drawing.
             if matches!(base, Frame::Document(_)) && p.take_doc_relayout() {
-                need_view = true;
+                *need_view = true;
                 continue;
             }
         }
         // A picture whose decode failed is a page that failed to draw, as one whose `view`
         // failed: the same screen, footer and help (konoma's one `unavailable_body` serves both).
-        if let (Frame::Image(_), Some(why)) =
-            (&base, pictures.as_ref().and_then(Pictures::still_failure))
-        {
-            note_failed_page(sess!(), cx, &mut st, true);
-            base = failure_frame(
+        if let (Frame::Image(_), Some(why)) = (
+            &*base,
+            pictures.as_deref().and_then(Pictures::still_failure),
+        ) {
+            note_failed_page(sess!(), cx, st, true);
+            *base = failure_frame(
                 why,
                 "[can not preview]",
                 None,
                 cx,
                 own.lang(),
                 usize::from(body_rows),
-                &mut st,
+                st,
             );
         }
         // The sideways keys are named and act on the file's text (they move the caret) and on the
         // text of a failed page (the host names them there whether it wraps or not).
-        own.caret = windowed_text(&base) || failed_text(&base);
-        match &base {
-            Frame::Text(_) if windowed_text(&base) && st.file_text => {
+        own.caret = windowed_text(&*base) || failed_text(&*base);
+        match &*base {
+            Frame::Text(_) if windowed_text(&*base) && st.file_text => {
                 super::edit_line::publish_text(st.caret_line)
             }
             Frame::Document(d) => {
@@ -1950,9 +2640,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
             Some(lc) => lc.facts(st.verbs(cx), &cx.path),
             None => super::LaunchFacts::default(),
         };
-        let keys = &own;
-        let mode = shown_mode(&base, &st);
-        let image_mode = image_mode(&base, pictures.as_ref(), &st);
+        let keys = &*own;
+        let mode = shown_mode(&*base, st);
+        let image_mode = image_mode(&*base, pictures.as_deref(), st);
         let paged = image_mode.is_some_and(|m| m.paged);
         // After a page that failed and shows the file as text, or in the picture's own frame
         // (the host draws that as a text too), the screen is a text (the host's): its footer and
@@ -1985,22 +2675,87 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         } else if canvas_keys {
             CoreContext::Canvas
         } else {
-            text_ctx(&base)
+            text_ctx(&*base)
         };
         // Whether the text is the file's, in the host's frame (the footer plan's selection keys).
-        let windowed = windowed_text(&base);
+        let windowed = windowed_text(&*base);
+        let core_ctx = if project_owned && image_mode.is_some() && pictures.is_none() {
+            CoreContext::Text
+        } else {
+            core_ctx
+        };
+        let return_hint = preview
+            .as_ref()
+            .map(|_| {
+                super::project::preview::PreviewReturnHint::new(&keys.keys, core_ctx, keys.lang())
+            })
+            .filter(|h| !h.keys.is_empty());
         // The actions of the plugin whose session this is (the destination's after a `Reopen`).
         let acts = st.acts(cx).clone();
         let en: Vec<String> = enabled_ids(&*sess!(), &acts);
         let act_on = |a: &str| en.iter().any(|e| e == a);
-        let capturing = typing::is_capturing(
+        let capture_on_screen = typing::is_capturing(
             st.input_left,
-            st.help.is_none(),
-            matches!(&base, Frame::Canvas(c) if c.text_input),
+            true,
+            matches!(&*base, Frame::Canvas(c) if c.text_input),
         );
+        let capturing = st.help.is_none() && capture_on_screen;
+        let return_on_screen = preview_return_acts_on_screen(
+            preview.is_some(),
+            mode.is_some_and(|m| m.popup),
+            capture_on_screen,
+            st.menu.map(|(_, menu)| menu),
+        );
+        let return_acts_now = st.help.is_none() && return_on_screen;
+        let project_preview = project_owned.then(|| {
+            use konoma_host_core::preview_plan::PreviewState;
+            let core = match core_ctx {
+                CoreContext::Table => keys.table_facts(mode.unwrap()),
+                CoreContext::Image => keys.image_facts(paged),
+                CoreContext::Canvas => keys.canvas_facts(),
+                _ => keys.facts_in(core_ctx, paged, text_scrolls),
+            };
+            keys.project_preview_values(
+                core_ctx,
+                PreviewState {
+                    decorated: matches!(&*base, Frame::Document(_)),
+                    windowed,
+                    edit_named: keys.launch.edit_acts(),
+                    repr_text: true,
+                    returns_to_diff: true,
+                    ..Default::default()
+                },
+                core,
+                return_hint.as_ref().map_or(&[], |h| h.keys.as_slice()),
+                st.doc
+                    .as_ref()
+                    .is_some_and(|d| !d.change_blocks(st.page + 1).rows.is_empty())
+                    || preview
+                        .as_deref()
+                        .and_then(|p| p.line_marks())
+                        .is_some_and(|m| !m.is_empty()),
+            )
+        });
         let footer;
+        #[cfg(any(test, feature = "test-hooks"))]
+        let mut project_help = None;
         let mut panel: Option<HelpPanel> = None;
-        let width = terminal.size().map(|s| s.width).unwrap_or(0);
+        let whole_width = terminal.size().map(|s| s.width).unwrap_or(0);
+        let project_chrome = project_owned.then_some(draw::ProjectPreviewChrome {
+            lang: keys.lang(),
+            style: st.display.path_style,
+            combined: st.display.combined_status,
+            context: core_ctx,
+            help: st.help.is_some(),
+            image_zoom: (core_ctx == CoreContext::Image)
+                .then(|| pictures.as_deref().map_or(1.0, Pictures::still_zoom)),
+            image_page: (core_ctx == CoreContext::Image)
+                .then(|| st.pages.map(|count| (st.at_page as u32 + 1, count as u32)))
+                .flatten(),
+        });
+        let width = project_chrome.map_or(whole_width, |chrome| {
+            draw::status_footer_width(whole_width, chrome.combined, &draw::preview_context(chrome))
+        });
         let frame: &mut Frame = match st.help {
             Some(top) => {
                 let (mut secs, title) = match (mode, image_mode) {
@@ -2012,10 +2767,72 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         (keys.canvas_help_sections(), keys.canvas_help_title())
                     }
                     (None, _) => (
-                        keys.help_sections_in(text_ctx(&base), paged, text_scrolls),
-                        keys.help_title_in(text_ctx(&base)),
+                        keys.help_sections_in(text_ctx(&*base), paged, text_scrolls),
+                        keys.help_title_in(text_ctx(&*base)),
                     ),
                 };
+                if let Some(values) = &project_preview {
+                    use crate::host::project::preview_presentation::{
+                        PreviewHelpRow, PreviewHelpWords, PreviewSection,
+                    };
+                    let lookup = CoreLookup {
+                        keys: &keys.keys,
+                        ctx: core_ctx,
+                    };
+                    let extra = core_sections(core_ctx, &values.core, &lookup, keys.lang())
+                        .into_iter()
+                        .filter(|s| s.title == CoreMsg::HelpGlobal.tr(keys.lang()))
+                        .flat_map(|s| s.rows)
+                        .map(|(keys_text, description)| PreviewHelpRow {
+                            keys_text,
+                            description,
+                            section: PreviewSection::Global,
+                        })
+                        .collect();
+                    let menus = keys.with_copy_section(
+                        core_ctx,
+                        if mode.is_some() {
+                            CoreMenu::TableCopy
+                        } else {
+                            CoreMenu::Copy
+                        },
+                        vec![],
+                    );
+                    secs = values.help_sections(
+                        &PreviewHelpWords {
+                            search: if keys.lang() == Lang::Jp {
+                                "次 / 前の変更箇所"
+                            } else {
+                                "next / prev change"
+                            }
+                            .into(),
+                            tool: values
+                                .bindings
+                                .iter()
+                                .find(|b| {
+                                    b.op == konoma_host_core::preview_plan::PreviewOp::Host(
+                                        konoma_host_core::keymap::HostOp::GitLaunchTool,
+                                    )
+                                })
+                                .and_then(|b| b.help.clone())
+                                .unwrap_or_default(),
+                            ..Default::default()
+                        },
+                        &lookup,
+                        keys.lang(),
+                        extra,
+                        vec![],
+                        menus,
+                    );
+                }
+                if let Some(hint) = return_hint
+                    .as_ref()
+                    .filter(|_| !project_owned && return_on_screen)
+                {
+                    if let Some(section) = secs.first_mut() {
+                        section.rows.extend(hint.pairs());
+                    }
+                }
                 // The plugin's own keys: one section under its name, right after the screen's
                 // own (the host's order).
                 if let Some(own) = acts.help_section(act_ctx, &cx.lang, act_on) {
@@ -2026,7 +2843,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     &cx.lang,
                     &acts,
                     act_ctx,
-                    windowed_text(&base),
+                    (windowed_text(&*base), project_preview.as_ref()),
                     act_on,
                 );
                 keys.insert_actions_section(core_ctx, &items, &mut secs);
@@ -2042,21 +2859,32 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     screen,
                 )));
                 st.help = Some(top);
+                #[cfg(any(test, feature = "test-hooks"))]
+                if project_owned {
+                    project_help = Some(super::project::ProjectHelpSnapshot {
+                        sections: secs
+                            .iter()
+                            .map(|s| (s.title.clone(), s.rows.clone()))
+                            .collect(),
+                        scroll: top,
+                        title: title.clone(),
+                    });
+                }
                 footer = konoma_widgets::help_panel::fit_tokens(
                     &keys.help_footer_tokens(),
-                    screen.width,
+                    if project_owned { width } else { screen.width },
                 );
                 panel = Some(HelpPanel {
                     lines,
                     scroll: top as u16,
                     title,
                 });
-                &mut base
+                &mut *base
             }
             None => {
                 footer = match mode {
                     Some(m) => {
-                        if let Frame::Table(t) = &mut base {
+                        if let Frame::Table(t) = &mut *base {
                             if let Some(p) = t.popup.as_mut() {
                                 p.footer = keys
                                     .popup_tokens()
@@ -2080,7 +2908,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             paged: false,
                             zoomed: false,
                         });
-                        let zoom = match (m.shape, pictures.as_ref()) {
+                        let zoom = match (m.shape, pictures.as_deref()) {
                             (StillShape::Ready, Some(p)) => {
                                 format!("  x{:.2}", p.still_zoom())
                             }
@@ -2098,7 +2926,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             String::new()
                         };
                         let busy = pictures
-                            .as_ref()
+                            .as_deref()
                             .and_then(Pictures::still_busy)
                             .map(|g| format!("{g} "))
                             .unwrap_or_default();
@@ -2125,7 +2953,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                 keys.document_footer_tokens(st.scrolls)
                             } else {
                                 keys.footer_hints_in(
-                                    text_ctx(&base),
+                                    text_ctx(&*base),
                                     st.scrolls || (failed_text_screen && text_scrolls),
                                     paged,
                                 )
@@ -2135,15 +2963,43 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             },
                         ),
                         &cx.title,
-                        &base,
+                        &*base,
                         st.scroll,
                         st.scrolls,
                         width,
                     ),
                 };
-                &mut base
+                &mut *base
             }
         };
+        let mut footer = footer;
+        if let Some(values) = project_preview
+            .as_ref()
+            .filter(|_| st.help.is_none() && !mode.is_some_and(|m| m.popup))
+        {
+            let tokens: Vec<_> = values
+                .footer(
+                    &CoreLookup {
+                        keys: &keys.keys,
+                        ctx: core_ctx,
+                    },
+                    keys.lang(),
+                )
+                .into_iter()
+                .map(|t| t.text)
+                .collect();
+            footer = konoma_widgets::help_panel::fit_tokens(&tokens, width);
+        }
+        if !project_owned && return_acts_now && !footer.ends_with('…') {
+            if let Some(hint) = &return_hint {
+                use unicode_width::UnicodeWidthStr;
+                let token = hint.footer();
+                if footer.width() + token.width() + 2 <= usize::from(width) {
+                    footer.push_str("  ");
+                    footer.push_str(&token);
+                }
+            }
+        }
         // What the last key did, or the menu waiting for its key, takes the footer over.
         // The hints are dim, the notice bold and the menu's line a bold heading with dim items:
         // the host's footer, spans and all.
@@ -2155,23 +3011,95 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     CoreMsg::StPluginInputHint.tr(keys.lang()),
                 ))]
             }
+            (None, _) if project_owned && st.help.is_some() => {
+                vec![ratatui::style::Stylize::bold(ratatui::text::Span::from(
+                    footer,
+                ))]
+            }
             (None, Some((c, CoreMenu::Actions))) => keys.space_line(
-                &keys.space_items(c, &cx.lang, &acts, act_ctx, windowed, act_on),
+                &keys.space_items(
+                    c,
+                    &cx.lang,
+                    &acts,
+                    act_ctx,
+                    (windowed, project_preview.as_ref()),
+                    act_on,
+                ),
                 width,
             ),
+            (None, Some((c, CoreMenu::Options))) if project_preview.is_some() => {
+                let values = project_preview.as_ref().unwrap();
+                let view = keys.copy_menu_view(c, CoreMenu::Options).unwrap();
+                let declaration: Vec<_> = view
+                    .items
+                    .iter()
+                    .map(|item| konoma_host_core::menu::Item {
+                        key: item.key,
+                        action: item.action,
+                        label: crate::host::acts::FixedMenuLabel {
+                            declared: Some(item.label.clone()),
+                            fallback: None,
+                        },
+                    })
+                    .collect();
+                let items = values.options_menu(
+                    &declaration,
+                    |a| Some(konoma_host_core::preview_plan::PreviewOp::Core(a)),
+                    |a| matches!(a, CoreAction::CyclePathStyle | CoreAction::ToggleWrap),
+                );
+                konoma_widgets::footer_line::which_key_spans(
+                    &view.title,
+                    &items
+                        .iter()
+                        .map(|i| (konoma_host_core::help::help_key(i.key), i.label.clone()))
+                        .collect::<Vec<_>>(),
+                    width,
+                )
+            }
+            (None, Some((c, CoreMenu::Options))) if return_acts_now && return_hint.is_some() => {
+                let hint = return_hint.as_ref().unwrap();
+                let mut pairs = keys
+                    .copy_menu_view(c, CoreMenu::Options)
+                    .map(|v| v.pairs())
+                    .unwrap_or_default();
+                pairs.extend(hint.keys.iter().map(|k| (*k, hint.label.to_string())));
+                konoma_widgets::footer_line::which_key_spans(
+                    CoreMsg::HintOptions.tr(keys.lang()),
+                    &konoma_host_core::help::which_key_items(&pairs),
+                    width,
+                )
+            }
             (None, Some((c, m))) => keys
                 .which_key_line(c, m, width)
                 .unwrap_or_else(|| hint_spans(footer)),
             (None, None) => hint_spans(footer),
         };
-        draw_frame(
-            terminal,
-            frame,
-            &footer,
-            st.display.bg(),
-            pictures.as_mut(),
-            panel,
-        )?;
+        #[cfg(any(test, feature = "test-hooks"))]
+        if events.project_fenced() {
+            if let Some(snapshot) = preview.as_deref_mut().and_then(|p| p.idle.as_mut()) {
+                snapshot.state_generation += 1;
+            }
+        }
+        if project_owned {
+            draw_frame_with_header(
+                terminal,
+                frame,
+                &footer,
+                st.display.bg(),
+                pictures.as_deref_mut(),
+                panel,
+                project_chrome,
+            )?;
+        } else {
+            draw_frame(
+                terminal,
+                frame,
+                &footer,
+                st.display.bg(),
+                pictures.as_deref_mut(),
+                panel,
+            )?;
+        }
 
         // How long to wait: the view's own timer, or sooner for the pictures. A timeout that
         // came from the pictures' shorter wake leaves the view as it is.
@@ -2182,38 +3110,160 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
         // The canvas under the open help is still drawn (the host draws it too) but not animated:
         // nothing wakes the loop for it.
         let pic_wait = pictures
-            .as_ref()
+            .as_deref()
             .and_then(Pictures::wake_in)
             .filter(|_| st.help.is_none());
         // A chain on a worker is waited for in short steps: its notice is drawn when it lands.
-        let pic_wait = match (pic_wait, launching > 0) {
+        let pic_wait = match (pic_wait, *launching > 0) {
             (_, false) => pic_wait,
             (Some(p), true) => Some(p.min(LAUNCH_WAKE)),
             (None, true) => Some(LAUNCH_WAKE),
         };
-        let picture_first = match (view_left, pic_wait) {
-            (Some(v), Some(p)) => p < v,
-            (None, Some(_)) => true,
-            _ => false,
+        let preview_wait = preview.as_deref().and_then(|p| p.wake_in());
+        let wait = [view_left, pic_wait, preview_wait]
+            .into_iter()
+            .flatten()
+            .min();
+        let view_first = match (view_left, wait) {
+            (Some(view), Some(wait)) => view <= wait,
+            (None, Some(_)) => false,
+            _ => true,
         };
-        let wait = if picture_first { pic_wait } else { view_left };
         // A key and a resize ask for a new view; a timeout does unless the pictures woke the loop.
-        need_view = true;
-        match events.next(wait) {
-            Next::End => return Ok(()),
-            Next::Timeout => need_view = !picture_first,
-            Next::Event(AppEvent::Resize) => need_view = true,
+        *need_view = true;
+        #[cfg(any(test, feature = "test-hooks"))]
+        let fenced =
+            if events.project_fenced() || preview.as_deref().is_some_and(|p| p.probe.is_some()) {
+                let preview = preview.as_deref_mut().expect("project Preview fence");
+                // Runtime and launch publication belong to the project owner. A frame fence
+                // must yield to that owner before waiting for the file's own work.
+                if preview.owner_wake.is_some() {
+                    *refresh_on_resume = false;
+                    return Ok(FileLoopExit::Yield);
+                }
+                if let Some(detection) = &preview.detection {
+                    detection.fence_watch_for_test();
+                    if !detection.watch_settled_for_test() {
+                        *refresh_on_resume = false;
+                        return Ok(FileLoopExit::Yield);
+                    }
+                }
+                let mut snapshot = preview.idle.clone().expect("project owner snapshot");
+                snapshot.preview = preview.wake_in().is_none();
+                snapshot.pictures = pictures.as_deref().is_none_or(Pictures::settled_for_test);
+                if events.project_fenced() && (!snapshot.preview || !snapshot.pictures) {
+                    *need_view = false;
+                    continue;
+                }
+                snapshot.drawn_generation = snapshot.state_generation;
+                preview.idle = Some(snapshot.clone());
+                if let Some(slot) = &preview.observed {
+                    let mut slot = slot.lock().unwrap();
+                    if let Some(state) = slot.as_mut() {
+                        // The preview's own `Space` menu, item by item (the diff screen reports
+                        // its own list the same way).
+                        state.diff_actions = match st.menu {
+                            Some((c, CoreMenu::Actions)) => keys
+                                .space_items(
+                                    c,
+                                    &cx.lang,
+                                    &acts,
+                                    act_ctx,
+                                    (windowed, project_preview.as_ref()),
+                                    act_on,
+                                )
+                                .iter()
+                                .map(|i| (konoma_host_core::help::help_key(i.key), i.label.clone()))
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        state.menu = st.menu.map(|(_, menu)| {
+                            match menu {
+                                CoreMenu::Options => "options",
+                                CoreMenu::Copy => "copy",
+                                CoreMenu::Actions => "actions",
+                                _ => "other",
+                            }
+                            .into()
+                        });
+                        state.notice = st.flash.clone();
+                        if let Some(media) = state.media.as_mut() {
+                            media.cache = pictures
+                                .as_deref()
+                                .map_or_else(Vec::new, Pictures::media_cache_for_test);
+                            media.paints.clear();
+                        }
+                    }
+                    if let Some(diff) = slot.as_mut().and_then(|s| s.diff.as_mut()) {
+                        diff.help = project_help;
+                        diff.effective = konoma_host_core::project::DiffView::Preview;
+                        diff.next_representation = None;
+                        diff.split_drawn = None;
+                        diff.wrap = st.display.wrap;
+                        diff.scroll = match &*base {
+                            Frame::Document(d) => d.scroll,
+                            _ => st.scroll,
+                        };
+                        diff.hscroll = st.hscroll;
+                        diff.editor_line = super::edit_line::edit_line();
+                        diff.first_change = st
+                            .doc
+                            .as_ref()
+                            .and_then(super::document::DocCache::first_change)
+                            .or_else(|| {
+                                preview
+                                    .line_marks()?
+                                    .keys()
+                                    .min()
+                                    .map(|n| n.saturating_sub(1) as usize)
+                            });
+                        diff.source_lines.clear();
+                        diff.baseline_text = preview.baseline_text_for_test();
+                        diff.preview_context = Some(format!("{core_ctx:?}"));
+                    }
+                }
+                if let Some(probe) = &preview.probe {
+                    let observed = preview
+                        .observed
+                        .as_ref()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap();
+                    probe.capture(snapshot.clone(), draw::test_frame(), observed);
+                }
+                events
+                    .project_fenced()
+                    .then(|| events.project_idle(snapshot, draw::test_frame()))
+            } else {
+                None
+            };
+        #[cfg(any(test, feature = "test-hooks"))]
+        let next = fenced.unwrap_or_else(|| events.next(wait));
+        #[cfg(not(any(test, feature = "test-hooks")))]
+        let next = events.next(wait);
+        match next {
+            Next::End => return Ok(FileLoopExit::End),
+            Next::Timeout => {
+                *need_view = view_first;
+                if preview.as_deref().is_some_and(|p| p.yield_on_timeout) {
+                    *refresh_on_resume = false;
+                    return Ok(FileLoopExit::Yield);
+                }
+            }
+            Next::Event(AppEvent::Resize) => *need_view = true,
             Next::Event(AppEvent::Paste(text)) => {
                 // Only a canvas that takes the typing gets a paste; elsewhere it does nothing.
-                need_view = false;
+                *need_view = false;
                 if capturing {
                     st.flash = None;
                     let admitted = typing::admit_paste(&mut st.key_queue, text);
                     if let Some(n) = admitted.notice {
                         st.flash = Some(notice_text(n, keys.lang()));
                     }
-                    if admitted.queued && flush_jobs(sess!(), &mut st, cx) {
-                        need_view = true;
+                    if admitted.queued && flush_jobs(sess!(), st, cx) {
+                        *need_view = true;
                     }
                 }
             }
@@ -2225,13 +3275,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                 if let Some(n) = admitted.notice {
                     st.flash = Some(notice_text(n, keys.lang()));
                 }
-                need_view = false;
-                if admitted.queued && flush_jobs(sess!(), &mut st, cx) {
-                    need_view = true;
+                *need_view = false;
+                if admitted.queued && flush_jobs(sess!(), st, cx) {
+                    *need_view = true;
                 }
                 // The footer changes when the typing is left.
                 if st.input_left {
-                    need_view = true;
+                    *need_view = true;
                 }
             }
             Next::Event(AppEvent::Key(key)) => {
@@ -2248,13 +3298,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         // as the `,` menu's do, the others as the key of the operation would
                         // (below); any other key only closes the menu.
                         in_menu = true;
-                        need_view = false;
+                        *need_view = false;
                         let items = keys.space_items(
                             ctx,
                             &cx.lang,
                             &acts,
                             act_ctx,
-                            windowed_text(&base),
+                            (windowed_text(&*base), project_preview.as_ref()),
                             act_on,
                         );
                         match key_press(&key)
@@ -2270,8 +3320,17 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         }
                     }
                     Some((ctx, menu)) => {
+                        if !project_owned
+                            && return_acts_now
+                            && menu == CoreMenu::Options
+                            && return_hint.as_ref().is_some_and(|h| {
+                                key_press(&key).is_some_and(|k| h.keys.contains(&k))
+                            })
+                        {
+                            return Ok(FileLoopExit::ReturnToSource);
+                        }
                         in_menu = true;
-                        need_view = false;
+                        *need_view = false;
                         item =
                             key_press(&key).and_then(|kp| keys.copy_menu_view(ctx, menu)?.find(kp));
                     }
@@ -2298,13 +3357,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             st.doc = None;
                             st.failed_body = None;
                             own.wrap = o.wrap;
-                            need_view = true;
+                            *need_view = true;
                         }
                         if effect.retitle {
-                            retitle(&mut base, &frame_name_of(cx, o.path_style));
+                            retitle(&mut *base, &frame_name_of(cx, o.path_style));
                         }
                     } else if let Some(action) = item {
-                        let table = match &base {
+                        let table = match &*base {
                             Frame::Table(t) => Some(&**t),
                             _ => None,
                         };
@@ -2319,8 +3378,106 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     }
                     continue;
                 }
-                let table_mode = table_mode(&base, st.pages);
+                let table_mode = table_mode(&*base, st.pages);
                 let popup_open = table_mode.is_some_and(|m| m.popup);
+                if project_owned && st.help.is_none() && !popup_open && st.menu.is_none() {
+                    let op = match picked {
+                        Some(space::SpaceOp::Preview(op)) => Some(op),
+                        _ => key_press(&key).and_then(|k| keys.keys.host_op(core_ctx, k)),
+                    };
+                    match op {
+                        Some(konoma_host_core::keymap::HostOp::OpenGitView) => {
+                            return Ok(FileLoopExit::Project)
+                        }
+                        Some(konoma_host_core::keymap::HostOp::GitLaunchTool) => {
+                            return Ok(FileLoopExit::Tool)
+                        }
+                        Some(konoma_host_core::keymap::HostOp::Refresh) => {
+                            return Ok(FileLoopExit::Refresh)
+                        }
+                        _ => {}
+                    }
+                    if matches!(
+                        op,
+                        Some(
+                            konoma_host_core::keymap::HostOp::CycleRepresentation
+                                | konoma_host_core::keymap::HostOp::ImageReturnToDiff
+                        )
+                    ) {
+                        return Ok(FileLoopExit::ReturnToSource);
+                    }
+                    if let Some(
+                        op @ (konoma_host_core::keymap::HostOp::SearchNext
+                        | konoma_host_core::keymap::HostOp::SearchPrev),
+                    ) = op
+                    {
+                        use crate::host::project::diff_blocks::{
+                            step_change_block, DiffBlockCursor,
+                        };
+                        let raw = st.caret_on && st.file_text;
+                        let blocks = if raw {
+                            crate::host::project::diff_blocks::DiffBlocks {
+                                rows: preview
+                                    .as_deref()
+                                    .and_then(|p| p.line_marks())
+                                    .map(
+                                        crate::host::project::diff_blocks::marked_line_block_starts,
+                                    )
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|n| n.saturating_sub(1) as usize)
+                                    .collect(),
+                                max_v: usize::MAX,
+                            }
+                        } else {
+                            st.doc
+                                .as_ref()
+                                .map(|d| d.change_blocks(st.page + 1))
+                                .unwrap_or_default()
+                        };
+                        if let Some(target) = step_change_block(
+                            &blocks,
+                            DiffBlockCursor {
+                                scroll: if raw { st.caret_line } else { st.scroll },
+                                block: if raw { None } else { st.change_at },
+                            },
+                            if op == konoma_host_core::keymap::HostOp::SearchNext {
+                                1
+                            } else {
+                                -1
+                            },
+                        ) {
+                            if raw {
+                                let position =
+                                    crate::host::project::preview_gutter::first_change_position(
+                                        target.scroll,
+                                    );
+                                st.scroll = position.top;
+                                st.caret_line = position.caret;
+                            } else {
+                                st.scroll = target.scroll;
+                                st.change_at = target.block;
+                            }
+                        } else {
+                            st.flash = Some(
+                                if keys.lang() == Lang::Jp {
+                                    "このファイルに変更はありません"
+                                } else {
+                                    "no changes in this file"
+                                }
+                                .into(),
+                            );
+                        }
+                        continue;
+                    }
+                }
+                if return_acts_now
+                    && return_hint
+                        .as_ref()
+                        .is_some_and(|h| key_press(&key).is_some_and(|k| h.keys.contains(&k)))
+                {
+                    return Ok(FileLoopExit::ReturnToSource);
+                }
                 // After a failed page the message is on screen, but the table keys stay (the page
                 // keys turn on, as the host's do).
                 let table_keys = table_mode.is_some() || st.table_failed;
@@ -2360,11 +3517,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     _ if st.help.is_some() => keys.help_act(&key),
                     (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
                     (false, Some(_)) if failed_text => keys
-                        .act_in(text_ctx(&base), &key)
+                        .act_in(text_ctx(&*base), &key)
                         .or_else(|| keys.image_act(&key).filter(|a| matches!(a, Act::Page(_)))),
                     (false, Some(_)) => keys.image_act(&key),
                     (false, None) if canvas_keys => keys.canvas_act(&key),
-                    (false, None) => keys.act_in(text_ctx(&base), &key),
+                    (false, None) => keys.act_in(text_ctx(&*base), &key),
                 };
                 // A key over a table never asks the session again, but a page turn: a
                 // spreadsheet is read again on every `view`. Nor does a key over a picture: the
@@ -2377,7 +3534,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     .is_some_and(|b| b.page == st.at_page)
                     && matches!(base, Frame::Lines(_) | Frame::Text(_));
                 if table_keys || image_keys || kept_failure {
-                    need_view = false;
+                    *need_view = false;
                 }
                 // The copy menu opens on the key bound to it, where a key acts (not in the help
                 // or the cell popup).
@@ -2389,7 +3546,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     && keys.opens_actions(core_ctx, &key)
                 {
                     st.menu = Some((core_ctx, CoreMenu::Actions));
-                    need_view = false;
+                    *need_view = false;
                 } else if act.is_none() && declared.is_none() && st.help.is_none() && !popup_open {
                     let ctx = if table_keys {
                         CoreContext::Table
@@ -2398,12 +3555,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     } else if canvas_keys {
                         CoreContext::Canvas
                     } else {
-                        text_ctx(&base)
+                        text_ctx(&*base)
                     };
                     if let Some(menu) = keys.copy_menu_of(ctx, &key) {
                         if keys.copy_menu_view(ctx, menu).is_some() {
                             st.menu = Some((ctx, menu));
-                            need_view = false;
+                            *need_view = false;
                         }
                     }
                 }
@@ -2415,7 +3572,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         hacts::ActGate::Off => {}
                         hacts::ActGate::ReadOnly => {
                             st.flash = Some(CoreMsg::PluginReadOnly.tr(keys.lang()).to_string());
-                            need_view = false;
+                            *need_view = false;
                         }
                         hacts::ActGate::On => {
                             st.user_act = true;
@@ -2425,7 +3582,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                 st.flash = Some(notice_text(n, keys.lang()));
                             }
                             // A view is asked for again only when the answer says so.
-                            need_view = admitted.queued && flush_jobs(sess!(), &mut st, cx);
+                            *need_view = admitted.queued && flush_jobs(sess!(), st, cx);
                         }
                     }
                 }
@@ -2435,11 +3592,12 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (Some(Act::Back), Some(_)) => st.help = None,
                     // The popup is closed first; the app is left from the table.
                     (Some(Act::Back), None) if popup_open => {
-                        if let Frame::Table(t) = &mut base {
+                        if let Frame::Table(t) = &mut *base {
                             t.popup = None;
                         }
                     }
-                    (Some(Act::Quit | Act::Back), _) => return Ok(()),
+                    (Some(Act::Back), _) => return Ok(FileLoopExit::Back),
+                    (Some(Act::Quit), _) => return Ok(FileLoopExit::Quit),
                     (Some(Act::Help), Some(_)) => st.help = None,
                     (Some(Act::Help), None) => st.help = Some(0),
                     (Some(Act::Move(m)), Some(top)) => {
@@ -2455,10 +3613,10 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             _ => top,
                         })
                     }
-                    (Some(Act::Move(m)), None) => match &mut base {
+                    (Some(Act::Move(m)), None) => match &mut *base {
                         Frame::Table(t) => table_move(t, m),
                         Frame::Image(_) => {
-                            if let Some(p) = pictures.as_mut() {
+                            if let Some(p) = pictures.as_deref_mut() {
                                 let (dx, dy) = match m {
                                     Motion::Left => (-1.0, 0.0),
                                     Motion::Right => (1.0, 0.0),
@@ -2469,11 +3627,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                 p.still_pan(dx, dy);
                             }
                         }
-                        _ if st.scrolls => scroll_by(m, &mut st),
+                        _ if st.scrolls => scroll_by(m, st),
                         _ => {}
                     },
                     (Some(Act::Cell), None) => {
-                        if let Frame::Table(t) = &mut base {
+                        if let Frame::Table(t) = &mut *base {
                             t.popup = match t.popup {
                                 Some(_) => None,
                                 None if t.grid.ncols() > 0 => Some(PopupState::default()),
@@ -2489,7 +3647,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                         ) {
                             st.at_page = to as usize - 1;
                             // The new sheet starts at its top left with no popup.
-                            if let Frame::Table(t) = &mut base {
+                            if let Frame::Table(t) = &mut *base {
                                 t.state = Default::default();
                                 // Never reached while a popup is open (no `Page` comes then);
                                 // kept for when J/K are made to work inside the popup too.
@@ -2497,19 +3655,19 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             }
                             // A picture stays on screen until the new page's picture lands.
                             st.turned = on_image;
-                            if let (true, Some(p)) = (on_image, pictures.as_mut()) {
+                            if let (true, Some(p)) = (on_image, pictures.as_deref_mut()) {
                                 p.still_turn_page();
                             }
-                            need_view = true;
+                            *need_view = true;
                         }
                     }
                     (Some(Act::Zoom(d)), None) => {
-                        if let Some(p) = pictures.as_mut() {
+                        if let Some(p) = pictures.as_deref_mut() {
                             p.still_zoom_steps(d);
                         }
                     }
                     (Some(Act::ZoomReset), None) => {
-                        if let Some(p) = pictures.as_mut() {
+                        if let Some(p) = pictures.as_deref_mut() {
                             p.still_zoom_reset();
                         }
                     }
@@ -2529,7 +3687,7 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     &cx.path,
                                     super::edit_line::edit_line(),
                                     own.lang(),
-                                    &launch_tx,
+                                    launch_tx,
                                     &mut redraw,
                                 )
                             } else {
@@ -2538,13 +3696,13 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                                     &verbs,
                                     &cx.path,
                                     own.lang(),
-                                    &launch_tx,
+                                    launch_tx,
                                     &mut redraw,
                                 )
                             };
                             if lc.worker && done.notice.is_none() && !done.handed && !done.reload {
                                 // A chain was handed to a worker (or nothing was started).
-                                launching += 1;
+                                *launching += 1;
                             }
                             if done.notice.is_some() {
                                 st.flash = done.notice;
@@ -2554,13 +3712,11 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                             }
                             if done.handed {
                                 // The terminal was another program's meanwhile: the pictures
-                                // placed on it are drawn again.
-                                if let Some(p) = pictures.as_mut() {
-                                    p.forget();
-                                    p.forget_still();
-                                    p.reset_document();
+                                // placed on it are drawn again, the still one in its pose.
+                                if let Some(p) = pictures.as_deref_mut() {
+                                    p.after_hand_off();
                                 }
-                                need_view = true;
+                                *need_view = true;
                             }
                         }
                     }
@@ -2568,9 +3724,9 @@ pub fn run_with_pictures<B: Backend, E: EventSource>(
                     (Some(Act::Edit | Act::Open), Some(_)) => {}
                     (None, _) => {}
                 }
-                if kept_failure && !need_view {
+                if kept_failure && !*need_view {
                     let name = frame_name_of(cx, st.display.path_style);
-                    base = failed_window(&mut st, usize::from(body_rows), &name, own.lang());
+                    *base = failed_window(st, usize::from(body_rows), &name, own.lang());
                 }
             }
         }
@@ -2789,8 +3945,20 @@ fn draw_frame<B: Backend>(
     frame: &mut Frame,
     footer: &[ratatui::text::Span<'static>],
     bg: Option<ratatui::style::Color>,
+    pictures: Option<&mut Pictures>,
+    panel: Option<HelpPanel>,
+) -> Result<(), AppError> {
+    draw_frame_with_header(terminal, frame, footer, bg, pictures, panel, None)
+}
+
+fn draw_frame_with_header<B: Backend>(
+    terminal: &mut Terminal<B>,
+    frame: &mut Frame,
+    footer: &[ratatui::text::Span<'static>],
+    bg: Option<ratatui::style::Color>,
     mut pictures: Option<&mut Pictures>,
     panel: Option<HelpPanel>,
+    project_header: Option<draw::ProjectPreviewChrome>,
 ) -> Result<(), AppError> {
     let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
     let on_canvas = matches!(frame, Frame::Canvas(_));
@@ -2802,15 +3970,39 @@ fn draw_frame<B: Backend>(
     for pass in 0..2 {
         terminal
             .draw(|f| {
-                draw::draw(f, frame, footer, bg);
-                let body = draw::body_of(f.area());
+                let body = if let Some(chrome) = project_header {
+                    draw::project_preview_body(f.area(), chrome.combined)
+                } else {
+                    draw::body_of(f.area())
+                };
+                if project_header.is_some() {
+                    draw::draw_in(f, frame, &[], bg, body);
+                } else {
+                    draw::draw(f, frame, footer, bg);
+                }
+                if let Some(chrome) = project_header {
+                    let whole = f.area();
+                    draw::draw_project_status(
+                        f.buffer_mut(),
+                        whole,
+                        chrome.combined,
+                        draw::preview_context(chrome),
+                        footer,
+                    );
+                }
                 if let Some(p) = pictures.as_deref_mut() {
                     p.draw(f.buffer_mut(), body, on_canvas);
                     let doc = match &*frame {
                         Frame::Document(d) => Some((&*d.laid, d.scroll)),
                         _ => None,
                     };
-                    p.draw_document(f.buffer_mut(), super::document::DocFrame::inner(body), doc);
+                    p.draw_document(
+                        f.buffer_mut(),
+                        super::document::DocFrame::inner(body),
+                        doc,
+                        0,
+                        None,
+                    );
                 }
                 if let Some(lang) = image {
                     let inner = draw::image_inner(body);
@@ -2836,6 +4028,7 @@ fn draw_frame<B: Backend>(
                         h.title.clone(),
                     );
                 }
+                draw::finish_frame(f.buffer_mut());
             })
             .map_err(|e| terr(&e))?;
         let moved = pictures.as_deref_mut().is_some_and(Pictures::take_moved);
@@ -2926,7 +4119,19 @@ fn frame_of(
     (lang_code, lang): (&str, Lang),
     name: &str,
     pictures: Option<&mut Pictures>,
-) -> (Frame, Option<Duration>) {
+) -> (Frame<'static>, Option<Duration>) {
+    frame_of_preview(view, st, rows, (lang_code, lang), name, pictures, None)
+}
+
+fn frame_of_preview(
+    view: View,
+    st: &mut State,
+    rows: usize,
+    (lang_code, lang): (&str, Lang),
+    name: &str,
+    pictures: Option<&mut Pictures>,
+    mut preview: Option<&mut super::project::preview::PreviewGutter>,
+) -> (Frame<'static>, Option<Duration>) {
     use crate::view::TextSource;
     st.scrolls = false;
     st.caret_on = false;
@@ -2965,12 +4170,22 @@ fn frame_of(
             st.text_rows = rows;
             st.page = rows.saturating_sub(1).max(1);
             st.half = Some((rows / 2).max(1));
-            let framed = |st: &mut State, lines: Vec<Line>, extent| {
-                text_frame(st, lines, Some((name, lang, Some(extent))), true)
-            };
             // Text a plugin made has a line in the file only if the plugin says so (the host's
             // `text_plugin_lines_are_file_lines`): that decides whether `e` opens at the caret.
             st.file_text = t.file_lines;
+            if t.file_lines {
+                if let Some(position) = preview
+                    .as_deref_mut()
+                    .and_then(|p| p.take_position(None, false))
+                {
+                    st.scroll = position.top;
+                    st.caret_line = position.caret;
+                }
+            }
+            let marks = preview.as_deref().and_then(|p| p.line_marks());
+            let framed = |st: &mut State, lines: Vec<Line>, extent| {
+                text_frame_with_gutter(st, lines, Some((name, lang, Some(extent))), true, marks)
+            };
             let frame = match t.source {
                 TextSource::Owned(s) => {
                     let lens: Vec<u64> = s.split_inclusive('\n').map(|l| l.len() as u64).collect();
@@ -3044,15 +4259,28 @@ fn frame_of(
             let inner_w = st.width.saturating_sub(2);
             let inner_h = rows.saturating_sub(2);
             let mut doc_pics = pictures.map(Pictures::doc_pics);
-            let laid = super::document::DocCache::get(
-                &mut st.doc,
-                &dv,
-                inner_w,
-                u16::try_from(rows).unwrap_or(u16::MAX),
-                lang,
-                doc_pics.as_deref_mut(),
-                &st.display,
-            );
+            let laid = if let Some(preview) = preview.as_deref() {
+                super::document::DocCache::get_with_gutter(
+                    &mut st.doc,
+                    &dv,
+                    inner_w,
+                    u16::try_from(rows).unwrap_or(u16::MAX),
+                    lang,
+                    doc_pics.as_deref_mut(),
+                    &st.display,
+                    preview.document_gutter(),
+                )
+            } else {
+                super::document::DocCache::get(
+                    &mut st.doc,
+                    &dv,
+                    inner_w,
+                    u16::try_from(rows).unwrap_or(u16::MAX),
+                    lang,
+                    doc_pics.as_deref_mut(),
+                    &st.display,
+                )
+            };
             // A converted document cut at a budget, or a slide that had to leave something out,
             // says so in the title; a Markdown file cut at the display limit says so in its
             // text (see `document::lay_out`).
@@ -3062,6 +4290,13 @@ fn frame_of(
             };
             let cut = matches!(dv.origin, crate::input::Origin::Converted { .. })
                 && (dv.truncated || doc_pics.as_deref().is_some_and(|d| d.render_truncated()));
+            let first_change = st
+                .doc
+                .as_ref()
+                .and_then(super::document::DocCache::first_change);
+            if let Some(position) = preview.and_then(|p| p.take_position(first_change, true)) {
+                st.scroll = position.top;
+            }
             clamp(st, laid.rows(), inner_h);
             // The host's vertical scroll is a `u16`: a document taller than that scrolls no further.
             st.scroll = st.scroll.min(super::document::MAX_DOC_SCROLL);
@@ -3147,7 +4382,7 @@ fn failure_frame(
     lang: Lang,
     rows: usize,
     st: &mut State,
-) -> Frame {
+) -> Frame<'static> {
     use crate::canvas_pictures::{raw_file_body, unavailable_text};
     st.failed_body = None;
     // A converted document (Word, a presentation) that did not load is told as konoma tells it, with
@@ -3212,7 +4447,7 @@ fn set_failed_paging(st: &mut State, rows: usize) -> usize {
 /// The kept text of a failed page, scrolled as the host scrolls it: the whole text is drawn
 /// and moved up by the scroll, which counts drawn rows (the wrapped rows while wrapping, so a
 /// long line takes several), clamped against the same count the host uses.
-fn failed_window(st: &mut State, rows: usize, name: &str, lang: Lang) -> Frame {
+fn failed_window(st: &mut State, rows: usize, name: &str, lang: Lang) -> Frame<'static> {
     let rows = set_failed_paging(st, rows);
     let body = st.failed_body.take();
     let all: Vec<Line> = body
@@ -3277,7 +4512,19 @@ fn text_frame(
     lines: Vec<Line>,
     framed: Option<(&str, Lang, Option<konoma_widgets::scroll::ScrollExtent>)>,
     caret: bool,
-) -> Frame {
+) -> Frame<'static> {
+    text_frame_with_gutter(st, lines, framed, caret, None)
+}
+
+fn text_frame_with_gutter(
+    st: &mut State,
+    lines: Vec<Line>,
+    framed: Option<(&str, Lang, Option<konoma_widgets::scroll::ScrollExtent>)>,
+    caret: bool,
+    marks: Option<
+        &std::collections::HashMap<u32, crate::host::project::preview_gutter::GutterMark>,
+    >,
+) -> Frame<'static> {
     // The tabs become the host's mark and tab stops (the one function it uses, with the same
     // `[ui] tab_width`), before the width of the widest line is measured.
     let lines = konoma_widgets::text::expand_tabs(
@@ -3305,6 +4552,7 @@ fn text_frame(
     } else {
         lines
     };
+    let lines = super::document::lay_out_lines(lines, st.scroll, marks);
     let max_cols = lines
         .iter()
         .map(|l| {
@@ -3525,7 +4773,7 @@ mod windowed_text_tests {
     use super::*;
     use crate::app::draw::{TextBorder, TextFrame};
 
-    fn text(border: bool) -> Frame {
+    fn text(border: bool) -> Frame<'static> {
         Frame::Text(TextFrame {
             lines: Vec::new(),
             wrap: false,

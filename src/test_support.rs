@@ -6,6 +6,29 @@
 //! `main.rs` (as `watch_test_unique_tmp`), and `e2e_tests.rs` (inlined into `sandbox()`).
 
 use std::cell::{Cell, RefCell};
+
+/// A media job's final answer, applying any layout announcements that precede it.
+#[track_caller]
+pub(crate) fn recv_media_final(
+    app: &mut crate::app::App,
+    rx: &std::sync::mpsc::Receiver<crate::app::MediaResult>,
+    timeout: std::time::Duration,
+    step: &str,
+) -> crate::app::MediaResult {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or_else(|| panic!("{step}: media job did not finish"));
+        let result = rx
+            .recv_timeout(left)
+            .unwrap_or_else(|e| panic!("{step}: media worker did not answer: {e:?}"));
+        if !result.is_layout_only() {
+            return result;
+        }
+        app.apply_media(result);
+    }
+}
 pub(crate) mod command {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -91,6 +114,87 @@ pub(crate) fn count_apply_diff_view_calls<T>(f: impl FnOnce() -> T) -> (T, usize
     )
 }
 
+thread_local! {
+    /// How many diff target resolutions `App::resolve_diff_on_worker` asked of its worker **on
+    /// this thread** (thread-local for the same reason as `STAT_CALLS`).
+    static DIFF_RESOLUTION_ASKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `App::resolve_diff_on_worker` when it starts a resolution.
+pub(crate) fn note_diff_resolution_ask() {
+    let _ = DIFF_RESOLUTION_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many diff target resolutions were asked while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_diff_resolution_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = DIFF_RESOLUTION_ASKS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        DIFF_RESOLUTION_ASKS
+            .with(|c| c.get())
+            .saturating_sub(before),
+    )
+}
+
+thread_local! {
+    /// How many times the view of the tab in front started reading its file again **on this
+    /// thread**: `App::reload_preview_named`, `App::open_plugin`, `App::start_media_load` and
+    /// `App::setup_windowed` (the windowed reader). Thread-local for the same reason as
+    /// `STAT_CALLS`.
+    static TAB_VIEW_LOADS: Cell<usize> = const { Cell::new(0) };
+    /// How many filter-pool scans of the tree were asked for **on this thread**
+    /// (`App::kick_filter_pool_start`, `App::kick_filter_pool_refresh`, whether the refresh then
+    /// runs a walk or records the request for the walk already out).
+    static FILTER_POOL_ASKS: Cell<usize> = const { Cell::new(0) };
+    /// How many block diffs (a Markdown diff's Rendered presentation, the preview's change
+    /// gutter) were asked of the block-diff worker **on this thread** (`App::kick_md_diff`).
+    static MD_DIFF_ASKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called where a block diff is asked of its worker (see `MD_DIFF_ASKS`).
+pub(crate) fn note_md_diff_ask() {
+    let _ = MD_DIFF_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many block diffs were asked for while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_md_diff_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = MD_DIFF_ASKS.with(|c| c.get());
+    let out = f();
+    (out, MD_DIFF_ASKS.with(|c| c.get()).saturating_sub(before))
+}
+
+/// Called where the tab view starts reading its file again (see `TAB_VIEW_LOADS`).
+pub(crate) fn note_tab_view_load() {
+    let _ = TAB_VIEW_LOADS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many tab view loads started while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_tab_view_loads<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = TAB_VIEW_LOADS.with(|c| c.get());
+    let out = f();
+    (out, TAB_VIEW_LOADS.with(|c| c.get()).saturating_sub(before))
+}
+
+/// Called where a filter-pool scan is asked for (see `FILTER_POOL_ASKS`).
+pub(crate) fn note_filter_pool_ask() {
+    let _ = FILTER_POOL_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many filter-pool scans were asked for while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_filter_pool_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = FILTER_POOL_ASKS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        FILTER_POOL_ASKS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
 // The `diff_align` call counter lives in `konoma-widgets` (the function does); the host's tests
 // reach it through this path.
 #[allow(unused_imports)]
@@ -149,6 +253,25 @@ pub(crate) fn count_plugin_id_reads<T>(f: impl FnOnce() -> T) -> (T, usize) {
         out,
         PLUGIN_ID_READS.with(|c| c.get()).saturating_sub(before),
     )
+}
+
+thread_local! {
+    /// How many times the idle-child reaper was asked to run (`plugins::external::reap_if_due`,
+    /// before its throttle) **on this thread**.
+    static REAP_ASKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `plugins::external::reap_if_due` on entry, before the throttle decides.
+pub(crate) fn note_reap_ask() {
+    let _ = REAP_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times the reaper was asked to run while it did)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_reap_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = REAP_ASKS.with(|c| c.get());
+    let out = f();
+    (out, REAP_ASKS.with(|c| c.get()).saturating_sub(before))
 }
 
 thread_local! {
@@ -394,7 +517,66 @@ pub(crate) fn buffer_dump(buf: &ratatui::buffer::Buffer) -> String {
     format!("{rows}--- styles ---\n{runs}")
 }
 
+/// The top edge of a framed project list (the one implementation is in `konoma-test-support`,
+/// shared with the standalone app's tests).
+pub(crate) use konoma_test_support::top_edge;
+
 // ---------------------------------------------------------------------------------------------
+/// A terminal's grid with the semantics the buffer diff has to be right about: a symbol written
+/// over the first half of a wide character blanks its second half, and a wide symbol covers the
+/// cell after it.
+#[cfg(feature = "git")]
+pub(crate) struct TermModel {
+    rows: Vec<Vec<(String, bool)>>,
+}
+
+#[cfg(feature = "git")]
+impl TermModel {
+    pub(crate) fn new(width: u16, height: u16) -> Self {
+        Self {
+            rows: vec![vec![(" ".to_string(), false); usize::from(width)]; usize::from(height)],
+        }
+    }
+
+    fn write(&mut self, x: u16, y: u16, symbol: &str) {
+        use unicode_width::UnicodeWidthStr;
+        let (x, w) = (usize::from(x), symbol.width().max(1));
+        let row = &mut self.rows[usize::from(y)];
+        // Overwriting the second half of a wide character blanks its first half.
+        if row[x].1 && x > 0 {
+            row[x - 1] = (" ".to_string(), false);
+        }
+        // Overwriting the first half of a wide character blanks its second half.
+        if row[x].0.width() > 1 && x + 1 < row.len() {
+            row[x + 1] = (" ".to_string(), false);
+        }
+        row[x] = (symbol.to_string(), false);
+        for k in 1..w {
+            if x + k < row.len() {
+                // A wide character that loses its first cell here loses its second half too.
+                if row[x + k].0.width() > 1 && x + k + 1 < row.len() {
+                    row[x + k + 1] = (" ".to_string(), false);
+                }
+                row[x + k] = (" ".to_string(), true);
+            }
+        }
+    }
+
+    pub(crate) fn apply(&mut self, prev: &ratatui::buffer::Buffer, next: &ratatui::buffer::Buffer) {
+        for (x, y, cell) in prev.diff(next) {
+            self.write(x, y, cell.symbol());
+        }
+    }
+
+    pub(crate) fn row(&self, y: u16) -> String {
+        self.rows[usize::from(y)]
+            .iter()
+            .filter(|(_, hidden)| !hidden)
+            .map(|(s, _)| s.as_str())
+            .collect()
+    }
+}
+
 // Regression guard: nothing outside this module should call `std::env::temp_dir()` to build a
 // *fixed*-name path ever again (that's exactly the bug this module was written to fix — see the
 // module doc). Scans `src/**/*.rs`'s own text, so it catches a reintroduced fixed name wherever it

@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
@@ -20,6 +20,7 @@ use crate::i18n::tr;
 use crate::preview::image::ImageFailureMessage;
 use crate::preview::text;
 use crate::preview::PreviewKind;
+use konoma_plugin::host::project::diff_frame;
 
 /// Context spans for the Preview view (top-left of the status bar). Chip + (when an image) zoom factor.
 pub fn context(app: &App) -> Vec<Span<'static>> {
@@ -121,7 +122,11 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     // final kind-summary match below instead.
     // A spreadsheet parsing on the worker shows the same spinner (a *re*load keeps the previous
     // sheet on screen instead — `is_sheet_loading` is only true while nothing is showing yet).
-    if app.is_sheet_loading() || app.is_document_loading() || app.is_plugin_loading() {
+    if app.is_file_preview_resolving()
+        || app.is_sheet_loading()
+        || app.is_document_loading()
+        || app.is_plugin_loading()
+    {
         render_media_loading(frame, app, area);
         return;
     }
@@ -392,19 +397,14 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
 #[cfg(feature = "git")]
 fn render_diff_rendered(frame: &mut Frame, app: &mut App, area: Rect) {
     render_decorated_body(frame, app, area, |app| {
-        let pos = app
-            .diff_change_position()
-            .map(|(i, n)| format!(" ({i}/{n})"))
-            .unwrap_or_default();
-        let scope = app
-            .follow_diff_scope_msg()
-            .map(|m| format!(" · {}", tr(app.lang, m)))
-            .unwrap_or_default();
-        app.tab
-            .preview_path
-            .clone()
-            .map(|p| format!(" diff ⟨rendered⟩: {}{pos}{scope} ", app.format_path(&p)))
-            .unwrap_or_else(|| " diff ".to_string())
+        let path = app.tab.preview_path.as_ref().map(|p| app.format_path(p));
+        diff_frame::DiffTitleValues {
+            path: path.as_deref(),
+            position: app.diff_change_position(),
+            scope: app.follow_diff_scope_msg().map(|m| tr(app.lang, m)),
+            representation: Some("rendered"),
+        }
+        .title(false)
     });
 }
 
@@ -417,92 +417,66 @@ fn render_diff_rendered(frame: &mut Frame, app: &mut App, area: Rect) {
 /// summary line when there is no picker (images disabled/unsupported terminal).
 #[cfg(feature = "git")]
 fn render_gitdiff_media(frame: &mut Frame, app: &mut App, area: Rect) {
-    let pos = app
-        .diff_change_position()
-        .map(|(i, n)| format!(" ({i}/{n})"))
-        .unwrap_or_default();
-    let scope = app
-        .follow_diff_scope_msg()
-        .map(|m| format!(" · {}", tr(app.lang, m)))
-        .unwrap_or_default();
-    let title = app
-        .tab
-        .preview_path
-        .clone()
-        .map(|p| format!(" diff ⟨side by side⟩: {}{pos}{scope} ", app.format_path(&p)))
-        .unwrap_or_else(|| " diff ".to_string());
+    use crate::i18n::Msg;
+    use konoma_plugin::host::project::media_diff as media;
     let inner = Block::bordered().inner(area);
     app.tab.preview_viewport = inner.height;
-    frame.render_widget(Block::bordered().title(title), area);
-
     let Some(PreviewKind::GitDiff(path)) = app.tab.preview_kind.clone() else {
         return;
     };
-
-    match resolve_media_diff_render_state(app, &path, inner) {
-        MediaDiffRenderState::Centered(text) => draw_media_centered(frame, inner, text),
-        MediaDiffRenderState::Ready {
-            page,
-            cell_px,
-            base,
-            same_bytes,
-            old,
-            new,
-        } => {
-            let old_px = media_side_natural_px(&old);
-            let new_px = media_side_natural_px(&new);
-            let geom = crate::preview::media_diff::layout(
-                old_px,
-                new_px,
-                cell_px,
-                inner,
-                app.media_diff_layout(),
-            );
-            draw_media_caption(
-                frame,
-                app,
-                geom.old.caption,
-                &old,
-                MediaCaptionCtx {
-                    is_old: true,
-                    base,
-                    identical: false,
-                    page,
-                },
-            );
-            draw_media_caption(
-                frame,
-                app,
-                geom.new.caption,
-                &new,
-                MediaCaptionCtx {
-                    is_old: false,
-                    base,
-                    identical: same_bytes,
-                    page,
-                },
-            );
-            draw_media_separator(frame, &geom);
-            draw_media_side(frame, app, &geom.old, &old, true);
-            draw_media_side(frame, app, &geom.new, &new, false);
+    let (outcome, cell_px) = resolve_media_diff_render_state(app, &path, inner);
+    let base = match &outcome {
+        Some(crate::app::MediaDiffOutcome::Ready { base, .. }) => *base,
+        _ => crate::app::MediaBase::Head,
+    };
+    let state = media::media_diff_draw_state(
+        outcome.as_ref(),
+        cell_px.is_some(),
+        media::MediaDiffStateWords {
+            computing: tr(app.lang, Msg::DiffComputing),
+            no_changes: tr(app.lang, Msg::GitNoChanges),
+            summary: binary_summary_words(app.lang),
+        },
+        crate::fileops::human_size,
+    );
+    let path = app.tab.preview_path.as_ref().map(|p| app.format_path(p));
+    let values = media::MediaDiffDrawValues {
+        state: &state,
+        title: diff_frame::DiffTitleValues {
+            path: path.as_deref(),
+            position: app.diff_change_position(),
+            scope: app.follow_diff_scope_msg().map(|m| tr(app.lang, m)),
+            representation: Some("side by side"),
+        },
+        cell_px: cell_px.unwrap_or((1, 1)),
+        layout: app.media_diff_layout(),
+        page: app.diff_media_page(),
+        old_label: tr(app.lang, App::media_base_msg(base)),
+        new_label: if matches!(state, media::MediaDiffRenderState::Ready { .. }) {
+            tr(app.lang, app.media_new_side_msg())
+        } else {
+            ""
+        },
+        words: media::MediaDiffWords {
+            before: tr(app.lang, Msg::MediaDiffBefore),
+            after: tr(app.lang, Msg::MediaDiffAfter),
+            identical: tr(app.lang, Msg::MediaDiffIdentical),
+            absent_old: tr(app.lang, Msg::MediaDiffAbsentOld),
+            absent_new: tr(app.lang, Msg::MediaDiffAbsentNew),
+            cannot_display: tr(app.lang, Msg::MediaDiffCannotDisplay),
+            page_missing: tr(app.lang, Msg::MediaDiffPageMissing),
+        },
+        format_size: crate::fileops::human_size,
+    };
+    media::draw_media_diff(frame.buffer_mut(), area, values, |key, r, buf| {
+        app.ensure_md_image(key, r.cols, r.rows, r.row_offset, r.visible_rows);
+        if let Some(img) = app.md_image_proto(key, r.cols, r.rows, r.row_offset, r.visible_rows) {
+            img.render(r.target, buf);
+            true
+        } else {
+            false
         }
-    }
-}
-
-/// What `render_gitdiff_media`'s drawing half needs: either a single centered line (no picker, still
-/// computing, "no changes", or a non-picture kind's binary summary), or everything the `Ready` case
-/// needs to lay out and draw both sides.
-#[cfg(feature = "git")]
-enum MediaDiffRenderState {
-    Centered(String),
-    Ready {
-        page: u32,
-        cell_px: (u32, u32),
-        base: crate::app::MediaBase,
-        same_bytes: bool,
-        old: crate::app::MediaDiffSide,
-        new: crate::app::MediaDiffSide,
-    },
+    });
 }
 
 /// `render_gitdiff_media`'s state-resolution half: the picker check, `raster_px` computation, the
@@ -514,18 +488,13 @@ fn resolve_media_diff_render_state(
     app: &mut App,
     path: &Path,
     inner: Rect,
-) -> MediaDiffRenderState {
-    // No picker at all (a terminal with no graphics protocol, or images disabled): the summary line,
-    // computed from the worker exactly like `empty_diff_body_text`'s own binary-summary case (any
-    // raster target works here, since no picture will ever actually be decoded to screen size;
-    // `(64, 64)` is a harmless placeholder).
+) -> (Option<crate::app::MediaDiffOutcome>, Option<(u32, u32)>) {
+    // No picker: retain the same placeholder raster box and skip the stale-picture check.
     let Some(cell_px) = app.picker_cell_px() else {
-        let text = match app.poll_media_diff(path, app.diff_media_page(), (64, 64)) {
-            None => tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
-            Some(outcome) => media_summary_line(app.lang, &outcome)
-                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string()),
-        };
-        return MediaDiffRenderState::Centered(text);
+        return (
+            app.poll_media_diff(path, app.diff_media_page(), (64, 64)),
+            None,
+        );
     };
     let raster_px =
         media_diff_raster_px(app, inner).unwrap_or_else(|| (cell_px.0 * 40, cell_px.1 * 20));
@@ -546,62 +515,13 @@ fn resolve_media_diff_render_state(
         }
     }
 
-    match outcome {
-        None => MediaDiffRenderState::Centered(
-            tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
-        ),
-        Some(crate::app::MediaDiffOutcome::Unavailable) => {
-            MediaDiffRenderState::Centered(tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string())
-        }
-        Some(ref outcome @ crate::app::MediaDiffOutcome::Summary { .. }) => {
-            let text = media_summary_line(app.lang, outcome)
-                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string());
-            MediaDiffRenderState::Centered(text)
-        }
-        Some(crate::app::MediaDiffOutcome::Ready {
-            kind: _,
-            base,
-            same_bytes,
-            old,
-            new,
-        }) => MediaDiffRenderState::Ready {
-            page,
-            cell_px,
-            base,
-            same_bytes,
-            old,
-            new,
-        },
-    }
+    (outcome, Some(cell_px))
 }
 
-/// A single centered line of text, for `render_gitdiff_media`'s non-`Ready` bodies (computing/
-/// summary/unavailable) — mirrors `render_gitdiff_source`'s own empty-diff placement.
-#[cfg(feature = "git")]
-fn draw_media_centered(frame: &mut Frame, inner: Rect, text: String) {
-    if inner.height == 0 {
-        return;
-    }
-    let y = inner.y + inner.height / 2;
-    let rect = Rect {
-        x: inner.x,
-        y,
-        width: inner.width,
-        height: 1,
-    };
-    frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), rect);
-}
-
-/// A pane's own pixel size for `preview::media_diff::layout`'s sizing — `None` for anything but a
-/// landed `Picture` (nothing to size a pane around). Returns `p.natural_px`, the picture's
-/// **intrinsic** size, never the decoded raster's own pixel dimensions — see
-/// `MediaDiffPictureDecoded::natural_px`'s own doc comment for why that distinction matters.
-#[cfg(feature = "git")]
+/// Retain the existing test seam while the SDK owns conversion to intrinsic drawing values.
+#[cfg(all(test, feature = "git"))]
 fn media_side_natural_px(side: &crate::app::MediaDiffSide) -> Option<(u32, u32)> {
-    match side {
-        crate::app::MediaDiffSide::Picture(p) => Some(p.natural_px),
-        _ => None,
-    }
+    konoma_plugin::host::project::media_diff::media_side_view(side).natural_px()
 }
 
 #[cfg(all(test, feature = "git"))]
@@ -631,145 +551,6 @@ mod media_side_natural_px_tests {
             None
         );
         assert_eq!(media_side_natural_px(&MediaDiffSide::PageMissing), None);
-    }
-}
-
-/// The per-side bits `draw_media_caption` needs beyond `(rect, side)` itself — bundled into one
-/// struct rather than four more function parameters (`clippy::too_many_arguments`).
-#[cfg(feature = "git")]
-struct MediaCaptionCtx {
-    is_old: bool,
-    base: crate::app::MediaBase,
-    /// Whether to append "identical content" — only ever `true` on the **new** side (the caller
-    /// never sets it for the old side, `render_gitdiff_media`'s own call sites).
-    identical: bool,
-    page: u32,
-}
-
-/// One side's caption row: "Before/After · base · WxH · size[ · p. N/M][ · identical]" — or, for a
-/// side with no picture, "Before/After · base" alone (the placeholder message itself is drawn
-/// centered in the picture area by `draw_media_side`, not squeezed into this one row). Truncated to
-/// the pane's own width by display width (CJK-safe).
-#[cfg(feature = "git")]
-fn draw_media_caption(
-    frame: &mut Frame,
-    app: &App,
-    rect: Rect,
-    side: &crate::app::MediaDiffSide,
-    ctx: MediaCaptionCtx,
-) {
-    if rect.height == 0 || rect.width == 0 {
-        return;
-    }
-    let lang = app.lang;
-    let mut parts = vec![
-        tr(
-            lang,
-            if ctx.is_old {
-                crate::i18n::Msg::MediaDiffBefore
-            } else {
-                crate::i18n::Msg::MediaDiffAfter
-            },
-        )
-        .to_string(),
-        if ctx.is_old {
-            tr(lang, crate::app::App::media_base_msg(ctx.base)).to_string()
-        } else {
-            tr(lang, app.media_new_side_msg()).to_string()
-        },
-    ];
-    if let crate::app::MediaDiffSide::Picture(p) = side {
-        parts.push(format!("{}×{}", p.natural_px.0, p.natural_px.1));
-        parts.push(crate::fileops::human_size(p.bytes));
-        if let Some(pc) = p.page_count {
-            parts.push(format!("p. {}/{pc}", ctx.page));
-        }
-    }
-    if ctx.identical {
-        parts.push(tr(lang, crate::i18n::Msg::MediaDiffIdentical).to_string());
-    }
-    let text = crate::ui::status::truncate_display(&parts.join(" · "), rect.width as usize);
-    frame.render_widget(Paragraph::new(text).dim(), rect);
-}
-
-/// The 1-cell separator between the two panes — `│` for side-by-side, `─` for stacked.
-#[cfg(feature = "git")]
-fn draw_media_separator(frame: &mut Frame, geom: &crate::preview::media_diff::MediaDiffGeometry) {
-    use crate::preview::media_diff::MediaDiffOrientation;
-    let rect = geom.separator;
-    if rect.width == 0 || rect.height == 0 {
-        return;
-    }
-    let ch = match geom.orientation {
-        MediaDiffOrientation::Side => "│",
-        MediaDiffOrientation::Stack => "─",
-    };
-    let line = ch.repeat(rect.width as usize);
-    for y in rect.y..rect.y + rect.height {
-        let row = Rect {
-            x: rect.x,
-            y,
-            width: rect.width,
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new(line.clone()).dim(), row);
-    }
-}
-
-/// One side's picture area: draws the decoded picture (via the Markdown inline-image machinery,
-/// keyed on the landed `media-diff://` cache key) into `pane.image` when there is one, or a centered
-/// placeholder message for `Absent`/`Failed`/`PageMissing` into `pane.area`.
-///
-/// The placeholder is centered in `pane.area` — the whole area below the caption — **not**
-/// `pane.image`: `image` is always zero-sized for these three variants (`layout`'s own contract,
-/// `MediaDiffPane`'s doc comment), and drawing into a zero-sized rect is silently discarded before
-/// ever rendering — an untracked file's old side, a deleted file's new side, and a page beyond one
-/// side's own PDF page count must all still show their placeholder message, not just the caption.
-#[cfg(feature = "git")]
-fn draw_media_side(
-    frame: &mut Frame,
-    app: &mut App,
-    pane: &crate::preview::media_diff::MediaDiffPane,
-    side: &crate::app::MediaDiffSide,
-    is_old: bool,
-) {
-    match side {
-        crate::app::MediaDiffSide::Picture(p) => {
-            let rect = pane.image;
-            if rect.width == 0 || rect.height == 0 {
-                return;
-            }
-            let key = p.cache_key.to_string_lossy().to_string();
-            app.ensure_md_image(&key, rect.width, rect.height, 0, rect.height);
-            if let Some(img) = app.md_image_proto(&key, rect.width, rect.height, 0, rect.height) {
-                img.render(rect, frame.buffer_mut());
-            }
-        }
-        crate::app::MediaDiffSide::Absent => {
-            let msg = if is_old {
-                crate::i18n::Msg::MediaDiffAbsentOld
-            } else {
-                crate::i18n::Msg::MediaDiffAbsentNew
-            };
-            draw_media_centered(frame, pane.area, tr(app.lang, msg).to_string());
-        }
-        crate::app::MediaDiffSide::Failed { reason } => {
-            draw_media_centered(
-                frame,
-                pane.area,
-                format!(
-                    "{}: {reason}",
-                    tr(app.lang, crate::i18n::Msg::MediaDiffCannotDisplay)
-                ),
-            );
-        }
-        crate::app::MediaDiffSide::PageMissing => {
-            draw_media_centered(
-                frame,
-                pane.area,
-                tr(app.lang, crate::i18n::Msg::MediaDiffPageMissing).to_string(),
-            );
-        }
     }
 }
 
@@ -828,48 +609,36 @@ fn render_decorated_body(
         }
     }
 
-    // The end of the scroll range: the last page, or for a presentation the last slide's heading.
-    let max_v = app
-        .slide_scroll_limit(total_rows, inner.height as usize)
-        .min(u16::MAX as usize) as u16;
-    app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
+    let update = diff_frame::clamp_decorated_scroll(diff_frame::DecoratedScrollValues {
+        vertical_limit: app.slide_scroll_limit(total_rows, inner.height as usize),
+        max_line_cols,
+        inner_width: inner.width,
+        viewport: inner.height,
+        scroll: app.tab.preview_scroll,
+        hscroll: app.tab.preview_hscroll,
+        wrap,
+    });
+    app.tab.preview_scroll = update.scroll;
+    app.tab.preview_hscroll = update.hscroll;
     app.tab.preview_viewport = inner.height;
-    // Remember the wrapped-row total so `e` can map the scroll position back to an approximate source
-    // line (preview_edit_line). Same value preview_scroll is clamped against, so the fraction lines up.
+    // The wrapped total maps the scroll position back to a source line for preview editing.
     app.md_view_rows = total_rows;
 
-    // Horizontal scroll: unneeded while wrapping. Only while not wrapping, up to where the longest line fits.
-    let max_h = if wrap {
-        0
-    } else {
-        max_line_cols.saturating_sub(inner.width as usize) as u16
-    };
-    app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-
-    // Everything here counts wrapped display rows, the unit this view scrolls in.
-    let extent = ScrollExtent::new(
-        app.tab.preview_scroll as u64,
-        max_v as u64,
-        inner.height as u64,
-    );
     let title = title_for(app);
-    let block = Block::bordered()
-        .title(title)
-        .title(scroll_title(app.lang, extent));
-
-    // The visible slice (with focus already inverted) + the remaining scroll from the slice's
-    // start. Wrapping is independent per line (ratatui's Wrap does not span lines), so the slice's
-    // rendered result matches the whole document.
     let (lines, local_scroll) = app.md_slice(app.tab.preview_scroll, inner.height);
-    let mut para = Paragraph::new(Text::from(lines)).block(block);
-    if wrap {
-        para = para.wrap(Wrap { trim: false });
-    }
-    let para = para.scroll((local_scroll, app.tab.preview_hscroll));
-    frame.render_widget(para, area);
-    // Before the inline images: the bar lives on the border column, which is outside every image
-    // rect (they are centered inside `inner`), so the two never share a cell in either order.
-    render_scrollbar(frame, area, extent);
+    diff_frame::draw_decorated_frame(
+        frame.buffer_mut(),
+        area,
+        diff_frame::DecoratedFrameValues {
+            lines,
+            local_scroll,
+            hscroll: app.tab.preview_hscroll,
+            wrap,
+            extent: update.extent,
+            title: &title,
+            scroll_words: scroll_words(app.lang),
+        },
+    );
 
     // Overlay block-level inline images (kitty graphics) over their reserved placeholder rows.
     // A partially-scrolled image is clipped to the viewport (only its visible band is drawn).
@@ -879,188 +648,90 @@ fn render_decorated_body(
 /// Draw decoded inline Markdown images over their reserved rows. While an image is still decoding,
 /// its placeholder rows remain visible. A partially-scrolled image is drawn clipped to the viewport
 /// (its visible vertical band is cropped and encoded), so large images are not hidden while scrolling.
-fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
-    let placements = app.md_images();
-    if placements.is_empty() {
+pub(crate) fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
+    use konoma_widgets::picture_overlay::{
+        draw_inline_pictures, InlineOverlayValues, InlinePicturePlacement, PicturePaintKind,
+    };
+    let images = app.md_images();
+    if images.is_empty() {
         return;
     }
-    // `App::md_slice` prepends a 1-cell change-gutter column to every line whenever the current
-    // cache carries any mark at all (`App::md_gutter_active` — `docs/FEATURE-MD-RENDERED-DIFF.md`
-    // §2/§3), which shifts the whole text body one column right; `p.col` was measured against the
-    // *un-shifted* layout (`render_doc`'s own placeholder text has no notion of a gutter), so every
-    // placement needs the identical +1 to land back under its own placeholder row.
-    let gutter = if app.md_gutter_active() { 1 } else { 0 };
-    // One pass = one "frame" for inline-image slot bookkeeping. Every `ensure_md_image` below
-    // stamps this number onto the slot it wants, which is how `reserve_proto_slot` tells a slot the
-    // picture on screen right now needs (never recycle it) from one left over at an old size.
-    app.begin_md_image_frame();
-    // A signature of the draw position + focus state (for change detection). Hash only the
-    // on-screen rects of images **actually drawn in this frame**: while every image is off-screen,
-    // record no signature = don't trigger a full redraw (placeholder debris cleanup) on every
-    // scroll key over the text portion. Cleanup is only needed on the frames where a placeholder
-    // did/does exist in the grid (appearing, moving, leaving). Trigger it not just on position
-    // changes but also **on focus/zoom changes**: in Ghostty, the frame that draws the focus border
-    // can disturb the compositing of an adjacent placeholder row, so the grid is rebuilt on the very
-    // frame the state changes (an immediate fix).
-    use std::hash::{Hash, Hasher};
-    let mut sig = std::collections::hash_map::DefaultHasher::new();
-    (inner.x, inner.y, inner.width, inner.height).hash(&mut sig);
-    let focused_mermaid = app.focused_mermaid_ordinal();
-    focused_mermaid.hash(&mut sig);
-    ((app.fence_zoom_level() * 1000.0) as u64).hash(&mut sig);
-    let mut drawn = 0usize;
-    // Resolved once per frame, not per image: the focus frame below reads it, and re-parsing two
-    // config strings inside the draw loop would be needless work on every redraw.
-    let image_align = app.doc_block_aligns().image;
-    let scroll = app.tab.preview_scroll as i32;
-    let top_bound = inner.y as i32;
-    let bottom_bound = (inner.y + inner.height) as i32;
-    for p in placements {
-        let is_mermaid = crate::preview::markdown::is_mermaid_fence_url(&p.url);
-        // Match focus using the **source ordinal** (fence_ord) carried by the placement. Counting
-        // by draw order drifts from focused_mermaid_ordinal when a loading/text-degraded fence
-        // exists upstream.
-        let this_focused = is_mermaid && p.fence_ord.is_some() && focused_mermaid == p.fence_ord;
-        // p.line is the (logical) index of a decorated line, while preview_scroll is the visual row
-        // after wrapping. While wrapping, the image would shift up by exactly the upstream wrap
-        // count (= a megacell would overlap the inverted caption line and the placeholder row would
-        // become an ID-color bar), so always convert to a visual row before subtracting.
-        let vis_line = app.md_visual_span(p.line).0 as i32;
-        let top = top_bound + vis_line - scroll; // block's first row on screen
-                                                 // Visible screen band for this image (clipped to the viewport top/bottom).
-        let vis_top = top.max(top_bound);
-        let vis_bottom = (top + p.rows as i32).min(bottom_bound);
-        if vis_bottom <= vis_top {
-            continue; // fully off-screen
-        }
-        let row_off = (vis_top - top) as u16; // image rows scrolled above the viewport
-        let vis_rows = (vis_bottom - vis_top) as u16;
-        let cols = p.cols.min(inner.width);
-        if cols == 0 || vis_rows == 0 {
-            continue;
-        }
-        // `p.col` is the offset `render_doc` baked into the placeholder text (see
-        // `ImagePlacement.col`'s own doc comment): at the top level this is measured from the same
-        // origin as `inner.x` — the only call site (`App::ensure_md_cache`, via
-        // `App::md_layout(inner.width)`) always renders at `width == inner.width`. Several images
-        // sharing one row (the badge-row idiom) are packed left to right by `render_image_group`, so
-        // `p.col` already places each one at its own column within that shared row; clamped against
-        // `inner.width - cols` the same defensive way the old always-centered formula was implicitly
-        // bounded, in case a placement's own `cols` alone already exceeds the pane (a very narrow pane
-        // or an unusually wide single image).
-        let x = inner.x + gutter + p.col.min(inner.width.saturating_sub(cols));
-        let target = Rect {
-            x,
-            y: vis_top as u16,
-            width: cols,
-            height: vis_rows,
-        };
-        // Reaching here = an image actually drawn in this frame. Record its on-screen rect into the signature.
-        (
-            p.url.as_str(),
-            target.x,
-            target.y,
-            target.width,
-            target.height,
+    let placements: Vec<_> = images
+        .iter()
+        .map(|p| InlinePicturePlacement {
+            url: &p.url,
+            visual_row: app.md_visual_span(p.line).0,
+            col: p.col,
+            cols: p.cols,
+            rows: p.rows,
+            fence_ord: p.fence_ord,
+        })
+        .collect();
+    let zoom = app.fence_zoom_level();
+    // Translation and title formatting remain host-owned.
+    let title = if zoom > 1.001 {
+        format!(
+            " ◇ mermaid  x{zoom:.1} — {} ",
+            tr(app.lang, crate::i18n::Msg::MermaidPanAffordance)
         )
-            .hash(&mut sig);
-        drawn += 1;
-        // kitty's placeholder row assumes it's "printed in a clean SGR state" (a megacell only
-        // embeds fg=ID and does not clear reverse/dim). If a cell inherits the underlying text's
-        // style, a reversed cell exposes an ID-color bar as its background, so the image region's
-        // cells always have their **attributes and fg** reset to plain. The background color is
-        // preserved: a transparent diagram is composited over the cell background, so clearing it
-        // would float a panel in the terminal's default color — rather than the theme
-        // background — behind the diagram.
-        {
-            let buf = frame.buffer_mut();
-            konoma_widgets::inline_images::reset_cells_under_picture(buf, target);
-        }
-        // For a focused fence diagram, draw the selection border **outside the image** (the caption
-        // line is the top edge, the bottom margin row is the bottom edge, and the sides are blank
-        // columns). Since kitty graphics overlays the image on top of the text, the border sits
-        // outside the image region = it's always visible even on a real terminal. Only when the
-        // whole block is on-screen (no partial border; when focus moves, md_focus_move scrolls the
-        // whole block into the visible range).
-        if this_focused {
-            let btop = top - 1; // caption line
-            let bbot = top + p.rows as i32 + 1; // the row after the bottom margin row (exclusive)
-                                                // Border width = whichever is wider, the image width or the title width (+corners).
-                                                // Fully covers the text layer's (centered) caption = the title never overflows
-                                                // the border, and the text below never leaks past its right edge.
-            let z = app.fence_zoom_level();
-            let lang = app.lang;
-            // The border title covers the text layer's caption (prevents overflow). The affordance is also i18n'd.
-            let title = if z > 1.001 {
-                format!(
-                    " ◇ mermaid  x{z:.1} — {} ",
-                    tr(lang, crate::i18n::Msg::MermaidPanAffordance)
-                )
-            } else {
-                format!(
-                    " ◇ mermaid — {}  {} ",
-                    tr(lang, crate::i18n::Msg::MermaidCaption),
-                    tr(lang, crate::i18n::Msg::MermaidZoomAffordance)
-                )
-            };
-            let tw = Span::from(title.as_str()).width() as u16 + 2;
-            let bw = (cols + 2).max(tw).min(inner.width);
-            // The frame is placed by the **same** rule the diagram itself was
-            // (`[ui] md_image_align`, via `markdown::mermaid_diagram_col` in the renderer), never by
-            // a second centering formula of its own — see `mermaid_focus_border_x`. For the default
-            // `center` this is the identical `(inner.width - bw) / 2` this line always computed;
-            // `mermaid_diagram_col` keeps one column free on the aligned side for a left/right
-            // diagram, so the frame never lands under the picture.
-            let bx = inner.x
-                + crate::preview::markdown::mermaid_focus_border_x(image_align, inner.width, bw);
-            if btop >= top_bound && bbot <= bottom_bound {
-                use ratatui::style::{Color as C, Modifier as M, Style as S};
-                // A four-sided selection border (the caption line = top edge/title, the margin row
-                // = bottom edge, the sides = blank columns outside the image). The border is
-                // unrelated to the "colored bar" issue (see the vis_line conversion above and the
-                // image region's Style::reset for that bar's root cause).
-                let brect = Rect {
-                    x: bx,
-                    y: btop as u16,
-                    width: bw,
-                    height: (bbot - btop) as u16,
-                };
-                let border = Block::bordered()
-                    .border_style(S::new().fg(C::Cyan))
-                    .title(title)
-                    .title_style(S::new().fg(C::Cyan).add_modifier(M::REVERSED));
-                frame.render_widget(border, brect);
+    } else {
+        format!(
+            " ◇ mermaid — {}  {} ",
+            tr(app.lang, crate::i18n::Msg::MermaidCaption),
+            tr(app.lang, crate::i18n::Msg::MermaidZoomAffordance)
+        )
+    };
+    let values = InlineOverlayValues {
+        inner,
+        scroll: usize::from(app.tab.preview_scroll),
+        gutter: u16::from(app.md_gutter_active()),
+        focused_ordinal: app.focused_mermaid_ordinal(),
+        zoom,
+        image_align: app.doc_block_aligns().image,
+        focus_title: &title,
+    };
+    app.begin_md_image_frame();
+    let sig = draw_inline_pictures(
+        frame.buffer_mut(),
+        placements,
+        values,
+        |url, r, buf| match r.kind {
+            PicturePaintKind::Density => {
+                app.ensure_md_fence_density(url, r.cols, r.rows);
+                false
             }
-        }
-        // In-place zoom for a focused fence: keep the reserved area as-is and draw a zoomed crop
-        // inside it (only when the whole block is on-screen; falls back to normal display while
-        // partially scrolled).
-        let zoomed =
-            this_focused && app.fence_zoom_level() > 1.001 && row_off == 0 && vis_rows >= p.rows;
-        // If the display size (mermaid_rows) is larger than the base raster, follow up to a higher density (even while not zoomed).
-        if is_mermaid {
-            app.ensure_md_fence_density(&p.url, cols, p.rows);
-        }
-        // On a kitty terminal this is konoma's own compressed transmit on a fixed image id (so a
-        // GIF re-encoding every frame *replaces* its picture in the terminal instead of piling up
-        // one per frame); everywhere else it is the ratatui-image protocol, unchanged.
-        if zoomed {
-            app.ensure_md_fence_zoom(&p.url, cols, p.rows);
-            if let Some(img) = app.md_fence_zoom_proto(&p.url, cols, p.rows) {
-                img.render(target, frame.buffer_mut());
-                continue;
+            PicturePaintKind::Zoom => {
+                app.ensure_md_fence_zoom(url, r.cols, r.rows);
+                if let Some(img) = app.md_fence_zoom_only_proto(url, r.cols, r.rows) {
+                    img.render(r.target, buf);
+                    true
+                } else {
+                    false
+                }
             }
-        }
-        app.ensure_md_image(&p.url, cols, p.rows, row_off, vis_rows);
-        if let Some(img) = app.md_image_proto(&p.url, cols, p.rows, row_off, vis_rows) {
-            img.render(target, frame.buffer_mut());
-        }
-    }
-    // A frame that drew nothing at all is not recorded (None) = only when something was drawn up
-    // until just before does the finish side fire cleanup once as a "departure", and it does not
-    // fire again for further off-screen scrolling.
-    if drawn > 0 {
-        app.note_md_overlay(sig.finish());
+            PicturePaintKind::UnzoomedFallback => {
+                if let Some(img) = app.md_fence_unzoomed_proto(url) {
+                    img.render(r.target, buf);
+                    true
+                } else {
+                    false
+                }
+            }
+            PicturePaintKind::Normal => {
+                app.ensure_md_image(url, r.cols, r.rows, r.row_offset, r.visible_rows);
+                if let Some(img) =
+                    app.md_image_proto(url, r.cols, r.rows, r.row_offset, r.visible_rows)
+                {
+                    img.render(r.target, buf);
+                    true
+                } else {
+                    false
+                }
+            }
+        },
+    );
+    if let Some(sig) = sig {
+        app.note_md_overlay(sig);
     }
 }
 
@@ -1089,222 +760,71 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
     render_gitdiff_source(frame, app, area);
 }
 
-/// The classic unified/split diff — `render_gitdiff`'s pre-existing body, extracted so
-/// `render_diff_rendered` can fall back into it directly (same frame) when the `Rendered`
-/// presentation's own cache build has to give up and round down to `Source` (§5).
+/// The Source dispatch builds drawing values and applies scroll corrections. Rendered has its
+/// own decorated dispatch; it never falls back to Source in the same frame.
 fn render_gitdiff_source(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Auto is resolved by the inner width. Estimate the frame's inner width first.
-    let split = app.diff_is_split(Block::bordered().inner(area).width);
-    app.diff_split_drawn = split;
-    let mode_tag = if split { " ⇆" } else { "" };
-    // The position `(2/5)` within the set of changed files (the current spot for n/N cycling; not shown if outside the set).
-    let pos = app
-        .diff_change_position()
-        .map(|(i, n)| format!(" ({i}/{n})"))
-        .unwrap_or_default();
-    // For a follow-opened diff, make the "since follow-start / full" range explicit (prevents confusion since the boundary is invisible).
-    let scope = app
-        .follow_diff_scope_msg()
-        .map(|m| format!(" · {}", tr(app.lang, m)))
-        .unwrap_or_default();
-    // The title carries the scroll label, which isn't known until the row count below has been
-    // computed, so build the title last. The inner rect doesn't depend on it (the title is drawn on
-    // the top border row).
     let inner = Block::bordered().inner(area);
-    let titled = |app: &App, e: ScrollExtent| {
-        let title = app
-            .tab
-            .preview_path
-            .clone()
-            .map(|p| format!(" diff{mode_tag}: {}{pos}{scope} ", app.format_path(&p)))
-            .unwrap_or_else(|| " diff ".to_string());
-        Block::bordered()
-            .title(title)
-            .title(scroll_title(app.lang, e))
-    };
     app.tab.preview_viewport = inner.height;
-
-    let diff = app.git_diff_lines();
-    if diff.is_empty() {
-        // Nothing to scroll: `All` + a full-length thumb, exactly like any content that fits.
-        let extent = ScrollExtent::new(0, 0, inner.height as u64);
-        frame.render_widget(titled(app, extent), area);
-        let msg = empty_diff_body_text(app, inner);
-        let y = inner.y + inner.height / 2;
-        let line_area = Rect {
-            x: inner.x,
-            y,
-            width: inner.width,
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new(msg).alignment(Alignment::Center), line_area);
-        render_scrollbar(frame, area, extent);
-        return;
-    }
-
-    // Syntax-color the body by extension. Reuse the code theme from config.
-    let ext = app.current_preview_ext().to_string();
-    let theme = app.cfg.ui.theme.code_theme.clone();
-    let iw = inner.width as usize;
-    let ih = inner.height as usize;
-    // Horizontal scroll: stacked layout uses Paragraph's horizontal offset; side-by-side shifts
-    // **each column's body text only** internally (the gutter/separator stay fixed). Both use the
-    // same preview_hscroll, operated with h/l·0/$.
-    //
-    // Only the rows actually on screen are ever syntax-highlighted (`highlight_line_by_ext`, via
-    // `diff_lines_range`/`diff_lines_side_by_side_range`) — that's the expensive step (measured
-    // ~60µs/row; ~400–760ms for a real 6,500-row diff when the whole document was highlighted on
-    // every keypress, vs. a ~60ms render budget). The total row count (needed to clamp vertical
-    // scroll *before* slicing which rows to render) and the horizontal scroll ceiling both come
-    // from highlight-free layout passes (`side_by_side_row_count`/`unified_max_hscroll`/
-    // `side_by_side_max_hscroll`), so per-frame cost stays O(viewport) instead of O(diff size).
-    let (lines, para_hscroll, max_v) = if split {
-        let max_h = crate::preview::gitdiff::side_by_side_max_hscroll(&diff, iw) as u16;
-        app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-        let total_rows = crate::preview::gitdiff::side_by_side_row_count(&diff, &ext);
-        let max_v = total_rows.saturating_sub(ih) as u16;
-        app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
-        let lines = crate::preview::gitdiff::diff_lines_side_by_side_range(
-            &diff,
-            &ext,
-            &theme,
-            iw,
-            app.tab.preview_hscroll as usize,
-            app.tab.preview_scroll as usize,
-            ih,
-        );
-        (lines, 0, max_v)
+    let lines = app.git_diff_lines();
+    // Polling an empty diff's worker remains on the host, before the pure drawing call.
+    let empty_text = if lines.is_empty() {
+        empty_diff_body_text(app, inner)
     } else {
-        let total_rows = diff.len(); // one DiffLine = one unified row, headers included
-        let max_v = total_rows.saturating_sub(ih) as u16;
-        app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
-        let max_h = crate::preview::gitdiff::unified_max_hscroll(&diff, iw) as u16;
-        app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-        let lines = crate::preview::gitdiff::diff_lines_range(
-            &diff,
-            &ext,
-            &theme,
-            iw,
-            app.tab.preview_scroll as usize,
-            ih,
-        );
-        (lines, app.tab.preview_hscroll, max_v)
+        String::new()
     };
-
-    // Vertical scroll is already applied by slicing to the visible window above (unlike before,
-    // when the full document was handed to Paragraph and Paragraph's own scroll clipped it).
-    let extent = ScrollExtent::new(app.tab.preview_scroll as u64, max_v as u64, ih as u64);
-    let para = Paragraph::new(Text::from(lines))
-        .block(titled(app, extent))
-        .scroll((0, para_hscroll));
-    frame.render_widget(para, area);
-    render_scrollbar(frame, area, extent);
+    let path = app.tab.preview_path.as_ref().map(|p| app.format_path(p));
+    let values = diff_frame::SourceDiffValues {
+        lines: &lines,
+        extension: app.current_preview_ext(),
+        theme: &app.cfg.ui.theme.code_theme,
+        layout: app.source_diff_layout(),
+        scroll: app.tab.preview_scroll,
+        hscroll: app.tab.preview_hscroll,
+        title: diff_frame::DiffTitleValues {
+            path: path.as_deref(),
+            position: app.diff_change_position(),
+            scope: app.follow_diff_scope_msg().map(|m| tr(app.lang, m)),
+            representation: None,
+        },
+        empty_text: &empty_text,
+        scroll_words: scroll_words(app.lang),
+    };
+    let update = diff_frame::draw_source_diff(frame.buffer_mut(), area, values);
+    app.tab.preview_scroll = update.scroll;
+    app.tab.preview_hscroll = update.hscroll;
+    app.diff_split_drawn = update.diff_split_drawn;
 }
 
-/// Round `px` up to the next multiple of `step` (never below `step`) — used to quantize the media-
-/// diff raster target so a one-pixel terminal resize doesn't kick a fresh SVG/PDF raster request
-/// every frame (`docs/FEATURE-MEDIA-DIFF.md` §3's own note on this).
-fn quantize_px(px: u32, step: u32) -> u32 {
-    px.div_ceil(step).max(1) * step
-}
-
-/// The pixel box `render_gitdiff_media` asks the media-diff worker to rasterize an SVG/PDF side
-/// into — the whole diff body's own box (`inner`), not each pane's smaller one: which orientation
-/// (and therefore how big each pane actually is) depends on the sides' own natural size, not known
-/// until *after* they're decoded, so this deliberately over-asks using the full body as an upper
-/// bound (`layout`'s "never enlarge, only shrink to fit" contract means over-asking costs a slightly
-/// bigger raster, never a wrong-looking one). `None` when there is no picker at all
-/// (`App::picker_cell_px`) — degrades to the binary summary line before this is ever called.
+/// Read picker values on the host; the shared drawing module owns pure raster-box math.
 fn media_diff_raster_px(app: &App, inner: Rect) -> Option<(u32, u32)> {
-    let (cw, ch) = app.picker_cell_px()?;
-    let w = quantize_px((inner.width as u32).max(1) * cw.max(1), 64);
-    let h = quantize_px((inner.height as u32).max(1) * ch.max(1), 64);
-    Some((w, h))
+    app.picker_cell_px()
+        .map(|cell_px| konoma_widgets::media_diff::media_raster_box(inner, cell_px))
+}
+
+fn binary_summary_words(lang: crate::i18n::Lang) -> diff_frame::BinarySummaryWords<'static> {
+    use crate::i18n::Msg;
+    diff_frame::BinarySummaryWords {
+        binary_file: tr(lang, Msg::MediaDiffBinaryFile),
+        none: tr(lang, Msg::MediaDiffNone),
+        same_size_different_content: tr(lang, Msg::MediaDiffSameSizeDifferentContent),
+        byte_unit: tr(lang, Msg::MediaDiffByteUnit),
+    }
 }
 
 /// The binary-summary-line text for a landed media-diff outcome — `None` when the outcome doesn't
 /// call for one at all: a genuine "(no changes)" (either shape with `same_bytes`), or `Unavailable`
 /// (the worker panicked/gave up — the caller keeps its own existing "(no changes)" text rather than
 /// claiming a binary change it can't actually back up with sizes).
-fn media_summary_line(
+pub(crate) fn media_summary_line(
     lang: crate::i18n::Lang,
     outcome: &crate::app::MediaDiffOutcome,
 ) -> Option<String> {
-    use crate::app::{MediaDiffOutcome, MediaDiffSide};
-    let (same_bytes, old_len, new_len) = match outcome {
-        MediaDiffOutcome::Summary {
-            same_bytes,
-            old_len,
-            new_len,
-            ..
-        } => (*same_bytes, *old_len, *new_len),
-        MediaDiffOutcome::Ready {
-            same_bytes,
-            old,
-            new,
-            ..
-        } => {
-            let side_len = |s: &MediaDiffSide| match s {
-                MediaDiffSide::Picture(p) => Some(p.bytes),
-                _ => None,
-            };
-            (*same_bytes, side_len(old), side_len(new))
-        }
-        MediaDiffOutcome::Unavailable => return None,
-    };
-    if same_bytes {
-        return None;
-    }
-    let fmt = |n: Option<u64>| match n {
-        Some(b) => crate::fileops::human_size(b),
-        None => tr(lang, crate::i18n::Msg::MediaDiffNone).to_string(),
-    };
-    // The rounded `human_size` alone can make a real, confirmed-different (`!same_bytes`) change
-    // read as "unchanged" — a 2-byte-larger 81.3 KB file still prints "81.3 KB → 81.3 KB" (real bug:
-    // the byte-for-byte comparison already *knows* it changed; the display just never said how).
-    // Appended only when both sides' sizes are known — with one side `Absent`, there is nothing to
-    // take a delta *of*, and the bare "(なし) → 22.3 KB" already says everything a delta could.
-    let delta = match (old_len, new_len) {
-        (Some(o), Some(n)) if o == n => {
-            Some(tr(lang, crate::i18n::Msg::MediaDiffSameSizeDifferentContent).to_string())
-        }
-        (Some(o), Some(n)) => Some(format_byte_delta(lang, n as i64 - o as i64)),
-        _ => None,
-    };
-    let mut line = format!(
-        "{}: {} → {}",
-        tr(lang, crate::i18n::Msg::MediaDiffBinaryFile),
-        fmt(old_len),
-        fmt(new_len)
-    );
-    if let Some(delta) = delta {
-        line.push_str(&format!(" ({delta})"));
-    }
-    Some(line)
-}
-
-/// The signed byte delta for `media_summary_line`'s "(+2 B)"/"(-2 B)" suffix — thousands-separated
-/// so a large delta (a multi-MB binary change) stays readable, e.g. "+1,234,567 B".
-fn format_byte_delta(lang: crate::i18n::Lang, delta: i64) -> String {
-    let sign = if delta >= 0 { '+' } else { '-' };
-    format!(
-        "{sign}{} {}",
-        thousands_separated(delta.unsigned_abs()),
-        tr(lang, crate::i18n::Msg::MediaDiffByteUnit)
+    let values = diff_frame::binary_summary_values(outcome)?;
+    diff_frame::binary_summary(
+        values,
+        binary_summary_words(lang),
+        crate::fileops::human_size,
     )
-}
-
-/// `1234567` → `"1,234,567"`.
-fn thousands_separated(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out.chars().rev().collect()
 }
 
 /// The centered body text for `render_gitdiff_source`'s empty-diff branch — the plain "(no changes)"

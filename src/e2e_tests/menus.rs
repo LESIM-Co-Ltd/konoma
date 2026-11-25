@@ -314,45 +314,6 @@ fn e2e_space_in_the_tree_is_the_file_menu() {
     s.see("File");
 }
 
-/// `y` opens the copy menu of the context: the tree's paths, a table's cell/row/column, a commit's
-/// fields, a branch's name.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_y_opens_a_different_menu_in_each_context() {
-    let dir = sandbox("menus_y");
-    seed_repo(&dir);
-    std::fs::write(dir.join("t.csv"), "a,b\n1,2\n").unwrap();
-    let mut s = Sim::new(&canon(&dir));
-    let mut seen: Vec<Vec<String>> = Vec::new();
-    let mut open = |s: &mut Sim, want: LeaderId| {
-        s.key('y');
-        assert_eq!(s.app.pending_leader, Some(want));
-        let ctx = s.app.key_context().unwrap();
-        seen.push(items(s, ctx, want).iter().map(|(k, _)| k.clone()).collect());
-        s.esc();
-        assert_eq!(s.app.pending_leader, None);
-    };
-    open(&mut s, LeaderId::Copy);
-    s.select("t.csv");
-    s.enter();
-    open(&mut s, LeaderId::TableCopy);
-    s.key('q');
-    s.key('p');
-    s.key('b');
-    assert!(s.app.is_git_branches());
-    open(&mut s, LeaderId::BranchCopy);
-    s.key('h');
-    s.app.open_git_log();
-    assert!(s.app.is_git_log());
-    open(&mut s, LeaderId::GitCopy);
-    // Four contexts, four menus.
-    for (i, a) in seen.iter().enumerate() {
-        for b in &seen[i + 1..] {
-            assert_ne!(a, b);
-        }
-    }
-}
-
 /// A chord in `[keys.<context>]` changes the menu of that context only; the old `[keys.global]`
 /// spelling keeps reaching every context.
 #[test]
@@ -594,42 +555,6 @@ fn e2e_space_menu_follows_the_footer_order_and_labels_in_the_previews() {
         s.key('q');
     }
     assert_eq!(checked.len(), 4);
-}
-
-/// The same for a diff and the version-control screens.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_space_menu_follows_the_footer_order_and_labels_in_git() {
-    use crate::keymap::Screen;
-    let dir = sandbox("menus_space_order_git");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    let mut checked: Vec<Context> = Vec::new();
-    s.select("a.rs");
-    s.key('d');
-    checked.push(check_space_menu_like_the_footer(&s)); // diff
-    s.key('q');
-    s.key('p');
-    checked.push(check_space_menu_like_the_footer(&s)); // changes
-    for _ in 0..4 {
-        s.tab();
-        checked.push(check_space_menu_like_the_footer(&s)); // log, graph, branches, worktrees
-    }
-    assert!(checked.contains(&Context::Diff));
-    for screen in [
-        Screen::Changes,
-        Screen::Log,
-        Screen::Graph,
-        Screen::Branches,
-        Screen::Worktrees,
-    ] {
-        assert!(
-            checked
-                .iter()
-                .any(|c| matches!(c, Context::Screen(_, sc) if *sc == screen)),
-            "{screen:?} was not checked"
-        );
-    }
 }
 
 /// The overlay lists have no footer; their `Space` menu leads with what the list is for (go to the

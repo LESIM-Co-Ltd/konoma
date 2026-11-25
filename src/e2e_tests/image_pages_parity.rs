@@ -6,7 +6,8 @@
 //! depends on timing.
 
 use super::image_parity::{
-    app_zoom, host_zoom, image_section, shot, Shot, WhenIdle, HOST_ONLY, HOST_ONLY_ROWS,
+    app_zoom, await_media, host_zoom, image_section, shot, Shot, WhenIdle, HOST_ONLY,
+    HOST_ONLY_ROWS,
 };
 use super::table_parity::{help_lines, hints, panel_lines, presses, same_row, APP_H, HOST_H, W};
 use super::*;
@@ -123,9 +124,7 @@ fn host_pdf_walk_impl(
     }
     s.select(file);
     s.enter();
-    if picker {
-        s.drain_media();
-    }
+    await_media(&mut s, file, "<open>");
     let mut settle = |s: &mut Sim, req_rx: &mut tokio::sync::mpsc::UnboundedReceiver<_>| {
         if let Some(cache) = cache.as_mut() {
             cache.settle(s, &root.join(file));
@@ -141,13 +140,9 @@ fn host_pdf_walk_impl(
     settle(&mut s, &mut req_rx);
     at_frame(&s, 0);
     for (n, (code, mods)) in presses(spec).into_iter().enumerate() {
-        let before = s.app.page_indicator();
         s.press(code, mods);
         assert!(!s.quit, "the host ended early: {spec}");
-        // A turn that moved asks for the new page's picture: wait for it.
-        if picker && s.app.page_indicator() != before {
-            s.drain_media();
-        }
+        await_media(&mut s, file, &format!("{code:?} {mods:?}"));
         settle(&mut s, &mut req_rx);
         at_frame(&s, n + 1);
     }

@@ -121,44 +121,6 @@ fn e2e_project_plugin_write_uses_the_guard_and_hides_its_hint() {
     }
 }
 
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_read_only_stops_checkout_enter_before_starting_a_job() {
-    let dir = sandbox("e2e_git_read_only_checkout_enter");
-    seed_repo(&dir);
-    let mut cfg = cfg_en();
-    cfg.plugins.insert(
-        "git".into(),
-        toml::Table::from_iter([("read_only".into(), true.into())]),
-    );
-    let mut s = Sim::with_config(&canon(&dir), cfg).with_async_git_ops();
-    s.key('p');
-    s.key('b');
-    assert!(s.app.is_git_branches());
-    let want = s
-        .app
-        .git_branch_view()
-        .iter()
-        .position(|b| b.name == "feature-x")
-        .unwrap();
-    while s.app.git_branch_sel() != want {
-        s.key(if s.app.git_branch_sel() > want {
-            'k'
-        } else {
-            'j'
-        });
-    }
-    s.dont_see("checkout");
-    s.enter();
-    assert_eq!(
-        s.app.flash.as_deref(),
-        Some(crate::i18n::tr(s.app.lang, Msg::PluginReadOnly))
-    );
-    assert!(!s.app.git_op_running());
-    assert!(s.app.is_git_branches());
-    assert!(s.app.busy_jobs().is_empty());
-}
-
 fn navigation_session(
     name: &str,
     asynchronous: bool,
