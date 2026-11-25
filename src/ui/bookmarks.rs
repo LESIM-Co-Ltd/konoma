@@ -3,12 +3,13 @@
 //! reversed. A plain letter jumps straight to that bookmark; `↵` = jump to selection /
 //! `Ctrl-e` = edit / `Ctrl-d` = delete / `'`/`q`/`Esc` = close. Follows the help popup.
 
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::Block;
 use ratatui::Frame;
 
+use crate::app::list_filter::ListId;
 use crate::app::App;
 use crate::i18n::tr;
 
@@ -22,7 +23,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(tr(app.lang, crate::i18n::Msg::BmEmpty)).dim());
     } else {
         let mut last: Option<bool> = None;
+        // The `/` filter narrows the rows that are drawn; `sel` indexes all of `items`.
+        let shown = app.list_visible(ListId::Bookmarks);
         for (i, (is_local, key, path)) in items.iter().enumerate() {
+            if shown.as_ref().is_some_and(|v| v.binary_search(&i).is_err()) {
+                continue;
+            }
             if last != Some(*is_local) {
                 let header = if *is_local {
                     format!(
@@ -38,7 +44,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             }
             // Local = context-relative display / global = absolute (~-shortened) display. Avoids the
             // unreadable `../../..` a global bookmark pointing outside the tree would otherwise get.
-            let row = format!("  {key}  {}", app.bookmark_display_path(*is_local, path));
+            let row = format!("  {}", app.bookmark_row_text(*is_local, *key, path));
             if i == sel {
                 sel_line = lines.len() as u16;
                 lines.push(Line::from(row).reversed());
@@ -71,15 +77,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .saturating_sub(inner_h.saturating_sub(1))
         .min(max_scroll);
 
-    let title = tr(app.lang, crate::i18n::Msg::BmTitle);
+    // A query shows as " /<query>" after the title.
+    let q = app.list_filter_query(ListId::Bookmarks);
+    let title = if q.is_empty() {
+        tr(app.lang, crate::i18n::Msg::BmTitle).to_string()
+    } else {
+        format!(
+            "{} /{q} ",
+            tr(app.lang, crate::i18n::Msg::BmTitle).trim_end()
+        )
+    };
     let block = Block::bordered()
         .title(title)
         .border_style(Style::new().fg(Color::Cyan));
-    let para = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll, 0))
-        .alignment(Alignment::Left);
-
-    frame.render_widget(Clear, popup); // clear the backdrop before drawing
-    frame.render_widget(para, popup);
+    konoma_widgets::overlay::clear_overlay(frame.buffer_mut(), popup);
+    super::list::render(frame, popup, lines, scroll, block);
 }

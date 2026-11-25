@@ -1,0 +1,18 @@
+[package]
+name = "konoma-demo-clock"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A demo konoma plugin that runs as a program of its own: a clock canvas drawn with ratatui widgets, shown for *.konoma-demo files"
+publish = false
+
+[dependencies]
+# `proc`: the SDK side of the child-process transport (`export!`).
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0", features = ["proc"] }
+konoma-plugin-ratatui = { path = "../konoma-plugin-ratatui", version = "0.1.0" }
+
+[[bin]]
+name = "konoma-demo-clock"
+path = "src/main.rs"

@@ -1,0 +1,385 @@
+/// Source files that were deleted whole: they must stay absent and hold none of their old tests.
+/// Any other listed file must exist, so a mistyped path fails instead of passing silently.
+pub(crate) const DELETED_OLD_TEST_FILES: &[&str] = &["src/ui/git.rs"];
+
+/// The text of an old-test file, or empty for a file listed as deleted (which must not exist).
+fn old_test_source(root: &Path, file: &str) -> String {
+    if DELETED_OLD_TEST_FILES.contains(&file) {
+        assert!(
+            !root.join(file).exists(),
+            "file listed as deleted exists again: {file}"
+        );
+        return String::new();
+    }
+    std::fs::read_to_string(root.join(file))
+        .unwrap_or_else(|e| panic!("cannot read old-test file {file}: {e}"))
+}
+
+// Old tests of the removed VCS hub, kept as data: each is deleted from its file, and every one
+// is named by `port_map()` rows that point at its replacements.
+const IN_SCOPE_OLD_TESTS: &[(&str, &[&str])] = &[
+    (
+        "src/e2e_tests.rs",
+        &[
+            "e2e_git_commit_detail_shows_full_message",
+            "e2e_git_commit_copy_values",
+            "e2e_git_copy_leader_all_subkeys_consume_from_log",
+            "e2e_git_copy_leader_opens_in_graph_and_detail",
+            "e2e_git_log_navigate_open_detail_and_back",
+            "e2e_git_graph_branch_picker_toggles",
+            "e2e_git_graph_navigates_commit_rows",
+            "e2e_git_graph_picker_current_only_then_all",
+            "e2e_ui_graph_max_branches_caps_legend_entries",
+            "e2e_ui_graph_base_branches_config_auto_selects_base",
+            "e2e_git_hub_to_log_shows_commit_subject",
+            "e2e_git_graph_shows_commit_nodes",
+            "e2e_git_graph_set_and_clear_base",
+            "e2e_git_graph_toggle_all_differs_between_git_and_jj",
+            "e2e_git_graph_set_base_keeps_selection_then_clear",
+            "e2e_ui_commit_meta_align_right_vs_inline_moves_author_column",
+            "e2e_git_branches_view_lists_branches",
+            "e2e_jj_write_actions_are_gated_by_the_read_only_backend",
+            "e2e_jj_write_gate_holds_in_a_colocated_repository_pinned_to_jj",
+            "e2e_ui_keeps_responding_while_a_git_commit_is_blocked",
+            "e2e_quit_during_a_git_write_asks_for_confirmation",
+            "e2e_git_branches_filter_narrows_and_clears",
+            "e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list",
+            "e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing",
+            "e2e_diff_view_preview_representation_q_returns_to_hub",
+            "e2e_git_hub_stage_and_diff",
+            "e2e_git_branch_create_switches_to_it",
+            "e2e_git_branch_delete_removes_feature_branch",
+            "e2e_jj_sync_full_round_trip_confirms_and_reports_completion",
+            "e2e_git_worktrees_view_lists_and_enter_switches_root",
+            "e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched",
+            "e2e_git_worktree_create_switches_into_it",
+            "e2e_git_worktrees_refuses_bare_and_prunable_targets",
+            "e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub",
+            "e2e_git_worktree_show_changes_opens_detail_with_title_and_returns_to_list",
+            "e2e_git_worktree_show_changes_works_on_the_currently_active_worktree",
+            "e2e_git_worktree_show_changes_refuses_bare_worktree",
+            "e2e_git_worktree_diff_toggle_layout_and_back",
+            "e2e_git_stage_then_commit_appears_in_log",
+            "e2e_git_stage_and_commit_through_the_background_runner",
+            "e2e_git_stage_unstage_roundtrip",
+            "e2e_git_stage_all_then_unstage_all",
+        ],
+    ),
+    (
+        "src/e2e_tests/project_host.rs",
+        &["e2e_git_read_only_stops_checkout_enter_before_starting_a_job"],
+    ),
+    (
+        "src/speed_tests.rs",
+        &["git_views_and_large_diff_render_is_bounded"],
+    ),
+    (
+        "src/e2e_tests/ops_keys.rs",
+        &[
+            "e2e_enter_on_a_jj_bookmark_list_is_refused_like_every_other_write",
+            "e2e_enter_on_a_git_branch_list_still_checks_out",
+        ],
+    ),
+    (
+        "src/lib.rs",
+        &[
+            "help_opens_in_git_view_and_shows_git_keys",
+            "tab_keys_per_tab_git_mode_and_literal_in_filter",
+        ],
+    ),
+    (
+        "src/e2e_tests/default_keys.rs",
+        &[
+            "e2e_s_stages_in_a_git_hub_and_syncs_in_a_jj_hub_and_h_l_open_and_close",
+            "e2e_branch_list_y_menu_copies_the_name_and_c_creates",
+            "e2e_worktree_list_c_creates_and_n_does_not",
+            "e2e_graph_x_clears_the_base_and_zero_does_not",
+            "e2e_graph_panel_c_is_current_only_and_l_applies",
+            "e2e_the_hub_g_and_l_are_the_list_keys_not_the_log_and_the_graph",
+            "e2e_the_tree_s_and_o_and_p_changes",
+        ],
+    ),
+    (
+        "src/e2e_tests/newkeys.rs",
+        &[
+            "e2e_p_and_bang_work_from_the_tree_and_every_preview",
+            "e2e_slash_filters_the_changes_list_and_the_operations_follow_the_row",
+            "e2e_slash_filter_moves_over_the_shown_rows_only",
+            "e2e_slash_filters_the_log_by_the_text_shown",
+            "e2e_slash_filters_the_graph_and_hides_the_connectors",
+            "e2e_tab_walks_the_git_screens_both_ways",
+            "e2e_tab_skips_the_worktrees_in_a_jj_repository",
+            "e2e_branch_and_worktree_filters_are_the_same_component",
+            "e2e_r_reads_the_lists_again",
+            "e2e_e_o_and_ctrl_t_act_on_the_row_of_the_changes_list",
+            "e2e_a_deleted_row_offers_neither_e_nor_o",
+        ],
+    ),
+    (
+        "src/ui/git.rs",
+        &[
+            "vcs_file_status_colors_preserve_legacy_colors",
+            "graph_legend_preserves_each_branch_node_color",
+            "graph_cells_preserve_legacy_text_colors_and_modifiers",
+            "changes_and_log_titles_gate_branch_marker_by_icons",
+            "git_view_renders_marker_and_filename",
+            "git_log_render_shows_commit_summary",
+            "git_branches_render_shows_current_marker",
+            "jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker",
+            "vcs_color_mapping_preserves_every_legacy_color",
+            "commit_header_shows_full_multiline_message",
+            "right_meta_aligns_pads_and_degrades",
+            "graph_picker_renders_panel_title_and_branches",
+            "graph_title_gates_base_marker_without_duplicating_base_word",
+            "graph_legend_head_and_base_markers_are_spaced_and_gated_by_icons",
+            "graph_picker_marker_column_gated_by_icons_and_alignment_preserved",
+            "changes_hub_help_shows_jj_section_and_hides_git_write_keys",
+            "graph_help_shows_jj_section_and_all_revisions_row",
+            "git_detail_render_shows_diff",
+        ],
+    ),
+    (
+        "src/ui/mod.rs",
+        &["git_graph_renders_lanes_refs_and_detail"],
+    ),
+    (
+        "src/e2e_tests/vcs_graph.rs",
+        &[
+            "e2e_vcs_graph_jj_title_matches_hub_in_both_languages",
+            "e2e_vcs_graph_jj_cells_title_all_range_flash_and_no_base_keys",
+            "e2e_vcs_graph_picker_jj_git_branch_source_empty_and_colocated_and_hints",
+            "e2e_vcs_graph_jj_repository_tests_guard_optional_binary",
+            "e2e_vcs_graph_changelog_records_tab_cache_and_shared_list_differences",
+            "e2e_vcs_graph_base_reload_detail_copy_and_cursor_return_match_the_hub",
+            "e2e_vcs_graph_picker_opens_over_shared_branch_key_and_matches_cells",
+            "e2e_vcs_graph_picker_toggles_head_all_current_reorders_and_moves_like_legacy",
+            "e2e_vcs_graph_picker_has_no_filter",
+            "e2e_vcs_graph_picker_apply_rebuilds_and_reorder_derives_base",
+            "e2e_vcs_graph_picker_cancel_discards_tentative_and_retains_order",
+            "e2e_vcs_graph_cells_open_move_filter_inline_width_legend_cap_and_priority",
+            "e2e_vcs_graph_picker_applied_visible_set_is_per_tab",
+            "e2e_vcs_graph_picker_tab_change_closes_panel_and_discards_tentative_like_legacy",
+            "e2e_vcs_graph_base_visible_order_and_view_cache_are_per_tab",
+            "e2e_vcs_graph_git_h_and_left_return_like_the_old_hub",
+            "e2e_vcs_graph_jj_h_and_left_return_like_the_old_hub",
+            "e2e_vcs_graph_tab_close_discards_only_closed_tabs_cached_views",
+            "e2e_vcs_graph_picker_footer_and_help_match_legacy_in_both_languages",
+            "e2e_vcs_graph_help_and_footer_follow_legacy_labels_and_priorities_in_both_languages",
+        ],
+    ),
+    (
+        "src/e2e_tests/vcs_changes.rs",
+        &[
+            "e2e_vcs_changes_nested_tree_and_launch_directory_path_styles_match_the_hub",
+            "e2e_vcs_changes_linked_worktree_external_index_event_refreshes_the_session",
+            "e2e_vcs_changes_git_body_cell_parity_with_staged_unstaged_rename_delete_cjk_and_empty",
+            "e2e_vcs_changes_git_enter_opens_same_file_and_head_baseline_even_when_staged",
+            "e2e_vcs_changes_jj_and_colocated_body_cell_parity_and_enter_parent_baseline",
+        ],
+    ),
+    (
+        "src/e2e_tests/vcs_log.rs",
+        &[
+            "e2e_vcs_log_jj_and_both_colocated_backends_match_the_selected_legacy_backend",
+            "e2e_vcs_log_exit_returns_to_origin_and_h_goes_back_like_q",
+            "e2e_vcs_copy_log_and_detail_clipboard_and_flash_match_old_hub_for_all_six_items",
+            "e2e_vcs_copy_menu_cells_help_footer_and_space_membership_match_the_declaration",
+            "e2e_vcs_copy_empty_log_and_screen_without_copy_acts_do_nothing_without_hints",
+            "e2e_vcs_copy_hints_disappear_when_the_menu_prefix_is_unbound",
+            "e2e_vcs_copy_clipboard_failure_matches_old_hub_without_writing",
+            "e2e_vcs_copy_empty_subject_is_written_on_log_and_detail",
+            "e2e_vcs_copy_detail_uses_the_metadata_it_shows_and_log_missing_commit_flashes",
+            "e2e_vcs_copy_reopened_cached_details_keep_each_displayed_commit",
+            "e2e_vcs_detail_cells_motions_layout_empty_and_less_match_legacy",
+            "e2e_vcs_detail_pushed_screen_is_absent_from_tabs_cycle_and_empty_row_open",
+            "e2e_vcs_detail_missing_commit_empty_without_header_matches_legacy_and_r_reloads",
+            "e2e_vcs_log_git_cells_alignments_boundaries_cjk_ellipsis_and_scrolling",
+            "e2e_vcs_log_filter_uses_legacy_text_and_cursor_for_every_query",
+            "e2e_vcs_log_r_refreshes_current_screen_and_remaps_filtered_identity",
+            "e2e_vcs_log_head_and_refs_injected_watch_events_refresh_active_log",
+            "e2e_vcs_log_limit_matches_hub_at_200_and_omits_201st",
+            "e2e_vcs_project_list_right_opens_changes_like_enter_and_respects_remaps",
+            "e2e_vcs_detail_layout_remap_uses_diff_context_for_detail_changes_and_file",
+            "e2e_vcs_log_unborn_empty_cells_and_fixed_tab_order",
+        ],
+    ),
+    (
+        "src/e2e_tests/vcs_branches.rs",
+        &[
+            "e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths",
+            "e2e_vcs_branches_jj_bookmark_cells_copy_and_no_write_hints",
+            "e2e_vcs_branches_help_marks_and_filter_follow_each_project_list_declaration",
+            "e2e_vcs_branches_copy_menu_clipboard_footer_and_help_match_legacy_acts",
+            "e2e_vcs_branches_checkout_current_and_other_branch_reload_and_tree_status",
+            "e2e_vcs_branches_create_success_blank_and_failure_keeps_typed_input",
+            "e2e_vcs_branches_delete_dialog_safe_force_cancel_and_current_guard",
+            "e2e_vcs_branches_read_only_guard_precedes_all_prompts_and_writes",
+            "e2e_vcs_branches_empty_allows_create_and_has_no_row_actions",
+        ],
+    ),
+    (
+        "src/e2e_tests/vcs_writes.rs",
+        &[
+            "e2e_vcs_writes_stage_unstage_modified_new_deleted_renamed_cjk_and_path_styles",
+            "e2e_vcs_writes_all_and_empty_guards_match_without_running_git",
+            "e2e_vcs_writes_empty_file_keys_never_invoke_git_or_flash",
+            "e2e_vcs_writes_discard_confirmation_and_failures",
+            "e2e_vcs_writes_discard_cancel_n_matches_legacy_flash_and_closes",
+            "e2e_vcs_writes_discard_cancel_escape_matches_legacy_flash_and_closes",
+            "e2e_vcs_writes_discard_enter_does_nothing_and_uppercase_y_confirms",
+            "e2e_vcs_writes_commit_success_empty_and_failed_hook_preserves_prompt",
+            "e2e_vcs_writes_read_only_refuses_every_git_write_before_prompt_or_dispatch",
+            "e2e_vcs_writes_refresh_current_screen_tree_status_and_commit_chip",
+            "e2e_vcs_writes_footer_help_exact_except_empty_inert_file_keys",
+            "e2e_vcs_writes_jj_sync_confirmation_cancel_enter_and_uppercase_y",
+            "e2e_vcs_writes_jj_sync_setting_false_snapshots_without_prompt",
+            "e2e_vcs_writes_jj_sync_read_only_refuses_before_prompt_or_snapshot",
+        ],
+    ),
+    (
+        "src/e2e_tests/vcs_worktrees.rs",
+        &[
+            "e2e_vcs_worktrees_create_dialog_blank_and_git_failure_flash_without_reopen",
+            "e2e_vcs_worktrees_create_switches_to_legacy_target_with_slash_existing_branch_and_custom_directory",
+            "e2e_vcs_worktrees_enter_each_kind_matches_legacy_root_open_dir_and_flash_including_l",
+            "e2e_vcs_worktrees_ctrl_t_directory_root_open_dir_preserves_original_and_file_target_still_previews",
+            "e2e_vcs_worktree_filter_ignores_control_chords_like_legacy_and_keeps_shift_text",
+            "e2e_vcs_worktree_switch_vanished_after_plugin_check_keeps_screen_and_root",
+            "e2e_vcs_worktrees_ctrl_t_without_target_does_nothing_and_has_no_help_or_footer_hint",
+            "e2e_vcs_worktrees_cells_open_move_filter_hit_and_empty_main_and_linked_both_widths_and_languages",
+            "e2e_vcs_worktrees_diff_header_body_cells_layout_motion_and_back_match_legacy",
+            "e2e_vcs_worktrees_help_matches_legacy_action_texts_in_both_languages_with_only_target_exception",
+            "e2e_vcs_project_footer_log_changes_and_worktrees_have_one_entry_per_key",
+            "e2e_vcs_project_log_and_changes_help_filter_and_marks_match_key_behavior",
+            "e2e_vcs_worktrees_footer_preserves_legacy_action_priority_and_labels",
+            "e2e_vcs_worktrees_create_works_on_empty_filter_and_blank_does_not_reopen",
+            "e2e_vcs_worktrees_diff_empty_and_refused_rows_flash_without_push",
+            "e2e_vcs_worktrees_read_only_blocks_create_before_prompt_but_all_navigation_and_diff_work",
+        ],
+    ),
+    (
+        "src/e2e_tests/menus.rs",
+        &[
+            "e2e_y_opens_a_different_menu_in_each_context",
+            "e2e_space_menu_follows_the_footer_order_and_labels_in_git",
+        ],
+    ),
+    (
+        "src/e2e_tests/key_context.rs",
+        &[
+            "e2e_diff_navigation_and_back_work_without_a_repository",
+            "e2e_key_context_of_the_version_control_screens_follows_the_backend",
+            "e2e_a_backend_binding_fires_only_for_that_backend",
+        ],
+    ),
+    (
+        "src/ui/status.rs",
+        &[
+            "jj_changes_hub_footer_uses_jj_words_never_git_write_words",
+            "jj_graph_footer_shows_jj_hint_not_git_base_pin_hint",
+            "jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops",
+            "jj_chip_shows_in_git_view_for_jj_not_for_git",
+            "bookmark_chip_shows_for_jj_list_branch_chip_for_git_list",
+            "copy_menu_relabels_short_hash_to_change_id_for_jj_not_git",
+        ],
+    ),
+    (
+        "src/app/tests.rs",
+        &[
+            "open_git_view_lists_changes_and_stage_reloads",
+            "refresh_in_git_view_refetches_entries",
+            "git_view_stage_all_then_unstage_all",
+            "git_diff_discard_confirm_reverts_and_returns_to_view",
+            "git_view_unstage_single_file_reloads",
+            "git_view_start_discard_opens_confirm_without_destroying",
+            "git_branches_list_checkout_and_create",
+            "worktree_create_flow_creates_a_new_branch_and_switches_into_it",
+            "worktree_create_flow_checks_out_an_existing_branch_without_creating_a_duplicate",
+            "worktree_create_flow_fails_with_gits_message_when_branch_is_already_checked_out_elsewhere",
+            "git_commit_flow_creates_commit_with_message",
+            "git_commit_empty_message_is_rejected",
+            "git_op_runs_in_background_when_runner_attached",
+            "git_op_falls_back_to_synchronous_without_a_runner",
+            "stale_git_op_result_is_dropped",
+            "git_op_result_does_not_disturb_another_tab",
+            "failed_git_op_keeps_gits_fatal_line_first_and_reopens_the_dialog",
+            "failed_git_op_does_not_clobber_a_dialog_opened_meanwhile",
+            "failed_commit_reopens_the_dialog_with_the_message",
+            "failed_commit_does_not_clobber_a_dialog_opened_meanwhile",
+            "git_status_is_revalidated_after_a_git_write",
+            "refused_git_op_puts_the_typed_text_back",
+            "failed_git_op_does_not_restore_over_an_active_filter",
+            "worktree_add_never_relocates_a_tab_that_did_not_ask",
+            "same_root_tab_is_refreshed_even_though_it_is_not_the_origin",
+            "ui_confirm_jj_sync_gates_the_only_write",
+            "second_git_op_is_rejected_while_one_is_in_flight",
+            "diff_from_tree_and_worktree_detail_and_cycle",
+            "git_branch_move_extremes_no_panic",
+            "git_graph_move_extremes_no_panic",
+            "git_log_move_extremes_no_panic",
+            "git_view_move_extremes_no_panic",
+            "stale_listing_chip_shows_in_the_git_view",
+            "graph_config_base_branches_drive_base_order_and_picker_reorder",
+            "graph_legend_caps_branches_head_first_and_picker_toggles",
+            "open_git_view_noop_when_not_a_repo",
+            "git_log_lists_commits_and_detail_has_diff_lines",
+            "open_git_log_noop_when_no_commits",
+            "current_commit_meta_resolves_per_surface_and_none_in_tree",
+            "git_copy_branch_name_copies_current_branch",
+            "git_branch_filter_commit_and_backspace",
+            "graph_base_set_clear_and_detail_scroll_hscroll",
+            "graph_picker_move_jump_toggle_current_only_and_cancel",
+            "close_git_graph_returns_to_git_view",
+            "git_view_branch_re_verifies_when_switching_to_a_different_repo",
+            "repeated_ui_renders_of_the_changes_hub_do_not_rescan_git_status",
+            "external_git_disabled_flashes_distinct_message_and_tree_renders",
+            "open_git_view_reports_a_missing_git_binary_distinctly",
+            "jj_hub_opens_even_when_the_git_binary_is_missing",
+            "jj_hub_opens_even_when_the_git_integration_is_switched_off",
+            "git_diff_opens_from_view_and_esc_returns_to_view",
+            "diff_view_n_switches_changed_files_and_keeps_return_target",
+        ],
+    ),
+    (
+        "src/app/write_guard_tests.rs",
+        &[
+            "guard_refuses_every_git_job_even_without_an_action_declaration_or_a_repository",
+            "guard_refuses_jj_sync_before_a_dialog_or_backend_detection",
+            "dialog_submit_rechecks_the_guard_and_keeps_the_unexecuted_commit_message",
+        ],
+    ),
+    (
+        "src/app/follow_worker.rs",
+        &["jj_follow_worker_does_not_interrupt_a_paused_surface"],
+    ),
+];
+#[test]
+fn vcs_port_inventory_old_tests_are_gone_and_every_one_is_mapped() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let table = port_map();
+    let mut total = 0;
+    for (file, tests) in IN_SCOPE_OLD_TESTS {
+        let source = old_test_source(root, file);
+        let functions = names(&source);
+        for name in *tests {
+            // The old test drove the removed hub: it must be deleted, not renamed away.
+            assert!(
+                !functions.contains(name),
+                "old test still present: {file}/{name}"
+            );
+            assert!(
+                !source.contains(&format!("fn {name}")),
+                "old test still present under another form: {file}/{name}"
+            );
+            assert!(
+                table.iter().any(|(old, _, _)| old == name),
+                "unregistered scoped old test {file}/{name}"
+            );
+            total += 1;
+        }
+    }
+    // The count of deleted old tests is a literal: removing a name from the list above cannot
+    // silently shrink the record (the breakdown by unit is kept in the git history).
+    assert_eq!(total, 237, "frozen B/C/E/H/S inventory");
+    eprintln!("U9 inventory: {total} old tests are gone; {} port_map rows name them", table.len());
+}

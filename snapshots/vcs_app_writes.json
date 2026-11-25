@@ -1,0 +1,46 @@
+{
+  "en": {
+    "readonly_empty_changes": {
+      "host": "d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+      "app": "d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
+    },
+    "branches": {
+      "host": "{nav}:nav  l/Enter:checkout  c:new  d:delete  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "{nav}:nav  l/Enter:checkout  c:new  d:delete  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
+    },
+    "readonly_changes": {
+      "host": "l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+      "app": "l/Enter:diff  d:diff-all  b:branch  w:worktrees  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
+    },
+    "readonly_branches": {
+      "host": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:back",
+      "app": "{nav}:nav  /:search  Tab/⇧Tab:screens  h/q/Esc:quit"
+    },
+    "readonly_jj_changes": {
+      "host": "l/Enter:diff  d:diff-all  b:bookmarks  !:tool  /:search  Tab/⇧Tab:screens  h/q:close",
+      "app": "l/Enter:diff  d:diff-all  b:bookmarks  !:tool  /:search  Tab/⇧Tab:screens  h/q:quit"
+    }
+  },
+  "ja": {
+    "readonly_empty_changes": {
+      "host": "d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+      "app": "d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
+    },
+    "branches": {
+      "host": "{nav}:移動  l/Enter:切替  c:新規  d:削除  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+      "app": "{nav}:移動  l/Enter:切替  c:新規  d:削除  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
+    },
+    "readonly_changes": {
+      "host": "l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+      "app": "l/Enter:差分  d:全差分  b:ブランチ  w:ワークツリー  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
+    },
+    "readonly_branches": {
+      "host": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:戻る",
+      "app": "{nav}:移動  /:検索  Tab/⇧Tab:画面  h/q/Esc:終了"
+    },
+    "readonly_jj_changes": {
+      "host": "l/Enter:差分  d:全差分  b:ブックマーク  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:閉じる",
+      "app": "l/Enter:差分  d:全差分  b:ブックマーク  !:ツール  /:検索  Tab/⇧Tab:画面  h/q:終了"
+    }
+  }
+}

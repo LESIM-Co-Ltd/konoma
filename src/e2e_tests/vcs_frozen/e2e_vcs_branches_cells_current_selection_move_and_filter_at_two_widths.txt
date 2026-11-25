@@ -1,0 +1,1037 @@
+# frozen vcs frames: e2e_vcs_branches_cells_current_selection_move_and_filter_at_two_widths
+case width=80 lang=en open
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Green	Reset	BOLD | REVERSED
+row 2 T|  alpha                                                                       |
+row 2 S|a2b76|
+row 3 T|* main                                                                        |
+row 3 S|c2d4b72|
+row 4 T|  日 本 語                                                                       |
+row 4 S|a2b76|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=en move
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Green	Reset	REVERSED
+style e	Reset	Reset	REVERSED
+row 2 T|  alpha                                                                       |
+row 2 S|a2b76|
+row 3 T|* main                                                                        |
+row 3 S|a2c4b72|
+row 4 T|  日 本 語                                                                       |
+row 4 S|d2e1b1e1b1e1b71|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=en query="ALP"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  alpha                                                                       |
+row 2 S|a2b5c71|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case width=80 lang=en query="日本"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  日 本 語                                                                       |
+row 2 S|a2b1c1b1c1b1c71|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case width=80 lang=en query="missing"
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no branches)                                                               |
+row 2 S|a15b63|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=en query="*"
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no branches)                                                               |
+row 2 S|a15b63|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=en query="  "
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no branches)                                                               |
+row 2 S|a15b63|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=ja open
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Green	Reset	BOLD | REVERSED
+row 2 T|  alpha                                                                       |
+row 2 S|a2b76|
+row 3 T|* main                                                                        |
+row 3 S|c2d4b72|
+row 4 T|  日 本 語                                                                       |
+row 4 S|a2b76|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=ja move
+region x=0..78 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Green	Reset	REVERSED
+style e	Reset	Reset	REVERSED
+row 2 T|  alpha                                                                       |
+row 2 S|a2b76|
+row 3 T|* main                                                                        |
+row 3 S|a2c4b72|
+row 4 T|  日 本 語                                                                       |
+row 4 S|d2e1b1e1b1e1b71|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=ja query="ALP"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  alpha                                                                       |
+row 2 S|a2b5c71|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case width=80 lang=ja query="日本"
+region x=0..78 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  日 本 語                                                                       |
+row 2 S|a2b1c1b1c1b1c71|
+row 3 T|                                                                              |
+row 3 S|c78|
+row 4 T|                                                                              |
+row 4 S|c78|
+row 5 T|                                                                              |
+row 5 S|c78|
+row 6 T|                                                                              |
+row 6 S|c78|
+row 7 T|                                                                              |
+row 7 S|c78|
+row 8 T|                                                                              |
+row 8 S|c78|
+row 9 T|                                                                              |
+row 9 S|c78|
+row 10 T|                                                                              |
+row 10 S|c78|
+row 11 T|                                                                              |
+row 11 S|c78|
+row 12 T|                                                                              |
+row 12 S|c78|
+row 13 T|                                                                              |
+row 13 S|c78|
+row 14 T|                                                                              |
+row 14 S|c78|
+row 15 T|                                                                              |
+row 15 S|c78|
+row 16 T|                                                                              |
+row 16 S|c78|
+row 17 T|                                                                              |
+row 17 S|c78|
+case width=80 lang=ja query="missing"
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ブ ラ ン チ な し )                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b62|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=ja query="*"
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ブ ラ ン チ な し )                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b62|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=80 lang=ja query="  "
+region x=0..78 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ブ ラ ン チ な し )                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b62|
+row 3 T|                                                                              |
+row 3 S|b78|
+row 4 T|                                                                              |
+row 4 S|b78|
+row 5 T|                                                                              |
+row 5 S|b78|
+row 6 T|                                                                              |
+row 6 S|b78|
+row 7 T|                                                                              |
+row 7 S|b78|
+row 8 T|                                                                              |
+row 8 S|b78|
+row 9 T|                                                                              |
+row 9 S|b78|
+row 10 T|                                                                              |
+row 10 S|b78|
+row 11 T|                                                                              |
+row 11 S|b78|
+row 12 T|                                                                              |
+row 12 S|b78|
+row 13 T|                                                                              |
+row 13 S|b78|
+row 14 T|                                                                              |
+row 14 S|b78|
+row 15 T|                                                                              |
+row 15 S|b78|
+row 16 T|                                                                              |
+row 16 S|b78|
+row 17 T|                                                                              |
+row 17 S|b78|
+case width=160 lang=en open
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Green	Reset	BOLD | REVERSED
+row 2 T|  alpha                                                                                                                                                       |
+row 2 S|a2b156|
+row 3 T|* main                                                                                                                                                        |
+row 3 S|c2d4b152|
+row 4 T|  日 本 語                                                                                                                                                       |
+row 4 S|a2b156|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=en move
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Green	Reset	REVERSED
+style e	Reset	Reset	REVERSED
+row 2 T|  alpha                                                                                                                                                       |
+row 2 S|a2b156|
+row 3 T|* main                                                                                                                                                        |
+row 3 S|a2c4b152|
+row 4 T|  日 本 語                                                                                                                                                       |
+row 4 S|d2e1b1e1b1e1b151|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=en query="ALP"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  alpha                                                                                                                                                       |
+row 2 S|a2b5c151|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case width=160 lang=en query="日本"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  日 本 語                                                                                                                                                       |
+row 2 S|a2b1c1b1c1b1c151|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case width=160 lang=en query="missing"
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no branches)                                                                                                                                               |
+row 2 S|a15b143|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=en query="*"
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no branches)                                                                                                                                               |
+row 2 S|a15b143|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=en query="  "
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (no branches)                                                                                                                                               |
+row 2 S|a15b143|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=ja open
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	REVERSED
+style d	Green	Reset	BOLD | REVERSED
+row 2 T|  alpha                                                                                                                                                       |
+row 2 S|a2b156|
+row 3 T|* main                                                                                                                                                        |
+row 3 S|c2d4b152|
+row 4 T|  日 本 語                                                                                                                                                       |
+row 4 S|a2b156|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=ja move
+region x=0..158 y=2..18
+style a	Green	Reset	NONE
+style b	Reset	Reset	NONE
+style c	Green	Reset	BOLD
+style d	Green	Reset	REVERSED
+style e	Reset	Reset	REVERSED
+row 2 T|  alpha                                                                                                                                                       |
+row 2 S|a2b156|
+row 3 T|* main                                                                                                                                                        |
+row 3 S|a2c4b152|
+row 4 T|  日 本 語                                                                                                                                                       |
+row 4 S|d2e1b1e1b1e1b151|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=ja query="ALP"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  alpha                                                                                                                                                       |
+row 2 S|a2b5c151|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case width=160 lang=ja query="日本"
+region x=0..158 y=2..18
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Reset	Reset	NONE
+row 2 T|  日 本 語                                                                                                                                                       |
+row 2 S|a2b1c1b1c1b1c151|
+row 3 T|                                                                                                                                                              |
+row 3 S|c158|
+row 4 T|                                                                                                                                                              |
+row 4 S|c158|
+row 5 T|                                                                                                                                                              |
+row 5 S|c158|
+row 6 T|                                                                                                                                                              |
+row 6 S|c158|
+row 7 T|                                                                                                                                                              |
+row 7 S|c158|
+row 8 T|                                                                                                                                                              |
+row 8 S|c158|
+row 9 T|                                                                                                                                                              |
+row 9 S|c158|
+row 10 T|                                                                                                                                                              |
+row 10 S|c158|
+row 11 T|                                                                                                                                                              |
+row 11 S|c158|
+row 12 T|                                                                                                                                                              |
+row 12 S|c158|
+row 13 T|                                                                                                                                                              |
+row 13 S|c158|
+row 14 T|                                                                                                                                                              |
+row 14 S|c158|
+row 15 T|                                                                                                                                                              |
+row 15 S|c158|
+row 16 T|                                                                                                                                                              |
+row 16 S|c158|
+row 17 T|                                                                                                                                                              |
+row 17 S|c158|
+case width=160 lang=ja query="missing"
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ブ ラ ン チ な し )                                                                                                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b142|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=ja query="*"
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ブ ラ ン チ な し )                                                                                                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b142|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|
+case width=160 lang=ja query="  "
+region x=0..158 y=2..18
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+row 2 T|  (ブ ラ ン チ な し )                                                                                                                                              |
+row 2 S|a4b1a1b1a1b1a1b1a1b1a1b1a1b142|
+row 3 T|                                                                                                                                                              |
+row 3 S|b158|
+row 4 T|                                                                                                                                                              |
+row 4 S|b158|
+row 5 T|                                                                                                                                                              |
+row 5 S|b158|
+row 6 T|                                                                                                                                                              |
+row 6 S|b158|
+row 7 T|                                                                                                                                                              |
+row 7 S|b158|
+row 8 T|                                                                                                                                                              |
+row 8 S|b158|
+row 9 T|                                                                                                                                                              |
+row 9 S|b158|
+row 10 T|                                                                                                                                                              |
+row 10 S|b158|
+row 11 T|                                                                                                                                                              |
+row 11 S|b158|
+row 12 T|                                                                                                                                                              |
+row 12 S|b158|
+row 13 T|                                                                                                                                                              |
+row 13 S|b158|
+row 14 T|                                                                                                                                                              |
+row 14 S|b158|
+row 15 T|                                                                                                                                                              |
+row 15 S|b158|
+row 16 T|                                                                                                                                                              |
+row 16 S|b158|
+row 17 T|                                                                                                                                                              |
+row 17 S|b158|

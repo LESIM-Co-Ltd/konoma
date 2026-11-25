@@ -1,42 +1,188 @@
 // konoma keymap layer (Run2: the low-level pure-data layer of the key-system redesign).
 //
-// Role: hold a declarative "Surface × KeyPress → Action (command)" map as the built-in
-// default, override/add/disable it via config (`[keys.<surface>]`), and detect conflicts at
+// Role: hold a declarative "Context × KeyPress → Action (command)" map as the built-in
+// default, override/add/disable it via config (`[keys.<context>]`), and detect conflicts at
 // startup, falling back to the default when they occur.
-// Touches no App state at all (the surface is passed in as an argument); it only references
+// Touches no App state at all (the context is passed in as an argument); it only references
 // crossterm's KeyCode/KeyModifiers.
+//
+// A key is looked up in layers: the context's own table, the tables of its view type (text,
+// table, image, diff, list), the basic table shared by everything with a cursor, then `global`.
+// `Surface` (what receives keys: a dialog, an overlay, a full screen) is still the type the
+// dispatcher and the UI stack speak; `Context` (what is on screen, finer than a surface) is the
+// unit of key tables and of `[keys.<context>]`. `App::key_context` maps one to the other.
 //
 // The caller (main::handle_key / dispatch_action) executes the `Action` resolved here.
 
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
 
 #[cfg(feature = "git")]
 use crate::app::GitCopyKind;
 use crate::app::{CopyKind, SortKey, TableCopyKind};
 use crate::i18n::Msg;
 
-// =============================================================================
-// Motion (shared movement/scroll amount). Per-Surface interpretation lives on the dispatch_action side (Stage 3).
-// =============================================================================
+#[cfg(test)]
+mod context_tests;
+#[cfg(test)]
+mod defaults_snapshot;
+#[cfg(test)]
+mod defaults_tests;
+#[cfg(test)]
+mod diff_list_agreement;
+#[cfg(all(test, feature = "git"))]
+mod file_diff_keys_bridge;
+#[cfg(test)]
+mod host_op_agreement;
+#[cfg(test)]
+mod menu_agreement;
+#[cfg(test)]
+mod override_resolution;
+#[cfg(test)]
+mod shared_agreement;
 
-/// Abstract amount of cursor movement / scrolling, mapped to concrete behavior per surface (§1.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Motion {
-    Up,
-    Down,
-    Top,
-    Bottom,
-    PageUp,
-    PageDown,
-    HalfUp,
-    HalfDown,
-    Left,
-    Right,
-    LineHome,
-    LineEnd,
+// The key types of layers 0-3 live in `konoma_host_core::keymap`, shared with the standalone
+// plugin app: the host builds those layers of its tables from the shared ones.
+use konoma_host_core::keymap::{
+    basic_table, default_menus, global_table, is_fixed_key, menu_label, own_table, type_table,
+    verbs_table, CoreAction, CoreBinding, CoreContext, CoreMenu, CoreTable, CoreViewType, HostOp,
+    MenuScope, MenuSet,
+};
+pub use konoma_host_core::keymap::{scheme_from_str, KeyPress, KeyScheme, Motion};
+
+impl From<CoreAction> for Action {
+    fn from(a: CoreAction) -> Action {
+        match a {
+            CoreAction::Navigate(m) => Action::Navigate(m),
+            CoreAction::Quit => Action::Quit,
+            CoreAction::ToggleFollow => Action::ToggleFollow,
+            CoreAction::TabNewAfter => Action::TabNewAfter,
+            CoreAction::ToggleTabList => Action::ToggleTabList,
+            CoreAction::PasteJump => Action::PasteJump,
+            CoreAction::TabPrev => Action::TabPrev,
+            CoreAction::TabNext => Action::TabNext,
+            CoreAction::TabGoto(i) => Action::TabGoto(i),
+            CoreAction::ToggleHelp => Action::ToggleHelp,
+            CoreAction::PreviewBack => Action::PreviewBack,
+            CoreAction::ImageZoomIn => Action::ImageZoomIn,
+            CoreAction::ImageZoomOut => Action::ImageZoomOut,
+            CoreAction::ImageZoomReset => Action::ImageZoomReset,
+            CoreAction::PageNext => Action::PageNext,
+            CoreAction::PagePrev => Action::PagePrev,
+            CoreAction::ToggleOutline => Action::ToggleOutline,
+            CoreAction::ToggleTableCell => Action::ToggleTableCell,
+            CoreAction::RequestEdit => Action::RequestEdit,
+            CoreAction::OpenExternal => Action::OpenExternal,
+            CoreAction::CopyPath(k) => Action::CopyPath(k),
+            CoreAction::TableCopy(k) => Action::TableCopy(k),
+            CoreAction::SortSet(k) => Action::SortSet(k),
+            CoreAction::CopyCodeBlock => Action::CopyCodeBlock,
+            CoreAction::CyclePathStyle => Action::CyclePathStyle,
+            CoreAction::ToggleWrap => Action::ToggleWrap,
+            CoreAction::CycleDiffLayout => Action::CycleDiffLayout,
+        }
+    }
+}
+
+impl Action {
+    /// The shared (layer 0-3) command this action is, if it is one.
+    pub fn core(self) -> Option<CoreAction> {
+        Some(match self {
+            Action::Navigate(m) => CoreAction::Navigate(m),
+            Action::Quit => CoreAction::Quit,
+            Action::ToggleFollow => CoreAction::ToggleFollow,
+            Action::TabNewAfter => CoreAction::TabNewAfter,
+            Action::ToggleTabList => CoreAction::ToggleTabList,
+            Action::PasteJump => CoreAction::PasteJump,
+            Action::TabPrev => CoreAction::TabPrev,
+            Action::TabNext => CoreAction::TabNext,
+            Action::TabGoto(i) => CoreAction::TabGoto(i),
+            Action::ToggleHelp => CoreAction::ToggleHelp,
+            Action::PreviewBack => CoreAction::PreviewBack,
+            Action::ImageZoomIn => CoreAction::ImageZoomIn,
+            Action::ImageZoomOut => CoreAction::ImageZoomOut,
+            Action::ImageZoomReset => CoreAction::ImageZoomReset,
+            Action::PageNext => CoreAction::PageNext,
+            Action::PagePrev => CoreAction::PagePrev,
+            Action::ToggleOutline => CoreAction::ToggleOutline,
+            Action::ToggleTableCell => CoreAction::ToggleTableCell,
+            Action::RequestEdit => CoreAction::RequestEdit,
+            Action::OpenExternal => CoreAction::OpenExternal,
+            Action::CopyPath(k) => CoreAction::CopyPath(k),
+            Action::TableCopy(k) => CoreAction::TableCopy(k),
+            Action::SortSet(k) => CoreAction::SortSet(k),
+            Action::CopyCodeBlock => CoreAction::CopyCodeBlock,
+            Action::CyclePathStyle => CoreAction::CyclePathStyle,
+            Action::ToggleWrap => CoreAction::ToggleWrap,
+            Action::CycleDiffLayout => CoreAction::CycleDiffLayout,
+            _ => return None,
+        })
+    }
+}
+
+/// The host's action for an operation only the full app runs. `None` for the one konoma does not
+/// have in this build (the project's tool needs the `git` feature).
+pub(crate) fn host_op_action(o: HostOp) -> Option<Action> {
+    Some(match o {
+        HostOp::SearchStart => Action::SearchStart,
+        HostOp::SearchNext => Action::SearchNext,
+        HostOp::SearchPrev => Action::SearchPrev,
+        HostOp::PreviewEnterVisual => Action::PreviewEnterVisual,
+        HostOp::PreviewEnterVisualLine => Action::PreviewEnterVisualLine,
+        HostOp::PreviewCopySelectionRef => Action::PreviewCopySelectionRef,
+        HostOp::MarkSet => Action::MarkSet,
+        HostOp::MarkJump => Action::MarkJump,
+        HostOp::Refresh => Action::Refresh,
+        HostOp::OpenGitView => Action::OpenGitView,
+        #[cfg(feature = "git")]
+        HostOp::GitLaunchTool => Action::GitLaunchTool,
+        #[cfg(not(feature = "git"))]
+        HostOp::GitLaunchTool => return None,
+        HostOp::CycleRepresentation => Action::CycleRepresentation,
+        HostOp::ImageReturnToDiff => Action::ImageReturnToDiff,
+        HostOp::PreviewFileNext => Action::PreviewFileNext,
+        HostOp::PreviewFilePrev => Action::PreviewFilePrev,
+        HostOp::OpenLinkNewTab => Action::OpenLinkNewTab,
+        HostOp::LinkFocusNext => Action::LinkFocusNext,
+        HostOp::LinkFocusPrev => Action::LinkFocusPrev,
+        HostOp::ToggleFocusedItem => Action::ToggleFocusedItem,
+        #[cfg(feature = "git")]
+        HostOp::CycleDiffView => Action::CycleDiffView,
+        #[cfg(feature = "git")]
+        HostOp::DiffNextChange => Action::DiffNextChange,
+        #[cfg(feature = "git")]
+        HostOp::DiffPrevChange => Action::DiffPrevChange,
+        #[cfg(not(feature = "git"))]
+        HostOp::CycleDiffView | HostOp::DiffNextChange | HostOp::DiffPrevChange => return None,
+        HostOp::JumpNextChange => Action::JumpNextChange,
+        HostOp::JumpPrevChange => Action::JumpPrevChange,
+    })
+}
+
+impl From<CoreBinding> for Binding {
+    fn from(b: CoreBinding) -> Binding {
+        match b {
+            CoreBinding::Run(a) => Binding::Run(a.into()),
+            CoreBinding::Host(o) => host_op_action(o).map_or(Binding::Unbound, Binding::Run),
+            CoreBinding::Menu(CoreMenu::Actions) => Binding::Leader(LeaderId::Actions),
+            CoreBinding::Menu(CoreMenu::Copy) => Binding::Leader(LeaderId::Copy),
+            CoreBinding::Menu(CoreMenu::TableCopy) => Binding::Leader(LeaderId::TableCopy),
+            CoreBinding::Menu(CoreMenu::Options) => Binding::Leader(LeaderId::Options),
+            CoreBinding::Unbound => Binding::Unbound,
+        }
+    }
+}
+
+/// A shared table as the host's table type.
+/// A key bound to an operation this build does not have is left out (not turned into `Unbound`,
+/// which would hide what a lower layer gives the key).
+fn host_table(t: CoreTable) -> ContextMap {
+    t.into_iter()
+        .filter(|(_, b)| !matches!(b, CoreBinding::Host(o) if host_op_action(*o).is_none()))
+        .map(|(k, b)| (k, b.into()))
+        .collect()
 }
 
 // =============================================================================
@@ -81,8 +227,14 @@ pub enum Action {
     TreeActivate,
     TreeLeave,
     ToggleHidden,
+    /// Toggle line wrapping of the text and document preview for this session (`[ui] wrap` says
+    /// the start-up value). Lives in the `,` menu.
+    ToggleWrap,
     ToggleInfo,
     RequestEdit,
+    /// `o`: open the file in another app (layer 3, the `open` verb of the plugin that shows it:
+    /// an Office app for Office files, else the OS default application). Runs on a worker.
+    OpenExternal,
     OpenGitView,
     Refresh,
     CyclePathStyle,
@@ -136,11 +288,13 @@ pub enum Action {
     PreviewCopySelectionRef,
     /// `v`/`V`/`q` (in preview-visual): exit selection without copying.
     PreviewExitVisual,
-    /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source (selectable).
-    ToggleMarkdownRaw,
+    /// `R`: cycle the representation of the preview — a Markdown document between its decorated
+    /// render and its raw source, a slide deck between pictures and text, a diff between its
+    /// presentations. (Named `toggle_markdown_raw` before; that name is still read.)
+    CycleRepresentation,
     /// `R` in `Surface::PreviewImage`: returns to the diff while this image/PDF/SVG preview *is*
     /// its own `Preview` representation, and is a no-op otherwise — `App::image_return_to_diff`'s
-    /// own doc comment on why this is a separate action from `ToggleMarkdownRaw`.
+    /// own doc comment on why this is a separate action from `CycleRepresentation`.
     ImageReturnToDiff,
     /// Tab/BackTab/Enter (triggered as fixed keys; not listed in the keymap).
     LinkFocusNext,
@@ -180,7 +334,6 @@ pub enum Action {
     // --- Preview: gitdiff / GitDetail shared ---
     #[cfg(feature = "git")]
     GitDiffDiscard,
-    #[cfg(feature = "git")]
     CycleDiffLayout,
     /// `R` in `Surface::PreviewGitDiff`: cycles the diff's three presentations (source/rendered/
     /// preview) — `docs/FEATURE-MD-RENDERED-DIFF.md` §4.
@@ -189,7 +342,15 @@ pub enum Action {
     /// In a follow-opened diff: toggle between the diff since follow-start and the full git diff.
     #[cfg(feature = "git")]
     ToggleFollowDiffScope,
-    // --- Git changes hub (o) ---
+    /// `n` / `N` in a diff (when it is not the media side-by-side view): scroll to the next /
+    /// previous change block of the file. (In a text or decorated preview `n` / `N` are
+    /// `SearchNext` / `SearchPrev`, which jump to the next / previous change while no search is
+    /// active.)
+    #[cfg(feature = "git")]
+    DiffNextChange,
+    #[cfg(feature = "git")]
+    DiffPrevChange,
+    // --- Git changes hub (p) ---
     #[cfg(feature = "git")]
     GitStage,
     #[cfg(feature = "git")]
@@ -250,6 +411,17 @@ pub enum Action {
     /// Graph branch panel: move the cursor row down one in priority order (`J`).
     #[cfg(feature = "git")]
     GitGraphPickerMoveDown,
+
+    /// `Tab` / `Shift-Tab` on a version-control list screen: switch to the next / previous screen
+    /// of the cycle (changes, log, graph, branches, worktrees; jj has no worktrees).
+    #[cfg(feature = "git")]
+    GitScreenNext,
+    #[cfg(feature = "git")]
+    GitScreenPrev,
+    /// `/` on a list: filter the rows by the text they show. The changes, log and graph screens
+    /// and the overlay lists (outline / page list, tab list, bookmark list) share one filter (the
+    /// branch and worktree lists have their own `BranchFilterStart` / `WorktreeFilterStart`).
+    ListFilterStart,
 
     // --- Git branches ---
     #[cfg(feature = "git")]
@@ -330,31 +502,46 @@ pub enum Action {
     /// inside the popup closes it via this same action) and round-trips through
     /// `action_from_str`/`action_name`.
     ToggleTableCell,
+
+    // --- The default operation of the fixed keys (`Enter`, `Esc`, `Space`; plugin stage 2 / B2) ---
+    // These keys cannot be rebound, but they run through `dispatch_action` like every other key so
+    // that the same guard applies (`ops::write_guard`) and so that the help
+    // and the footer can name them from the same declaration.
+    /// `Esc`: leave / cancel / clear whatever the frontmost context calls "the thing I am in"
+    /// (close an overlay, clear a search or filter, go back one screen). What it does in each
+    /// context is `handle_esc` in main.rs.
+    Cancel,
+    /// `Enter` in the tab list: switch to the selected tab.
+    TabListActivate,
+    /// `Enter` in the heading outline: jump to the selected heading.
+    OutlineJump,
+    /// `Enter` in the graph's branch panel: apply the visibility choice.
+    #[cfg(feature = "git")]
+    GitGraphPickerApply,
+    /// `Space` in a decorated document: toggle the focused checkbox or `<details>`.
+    ToggleFocusedItem,
+    /// An action the open plugin declared (`Manifest::actions`). It has no config name: its key
+    /// is the plugin's own (`[keys.<plugin id>]`), and it is always reachable from `Space`.
+    Plugin(crate::plugins::PluginAct),
+    /// A control of the project canvas (search, the screen cycle, back) as a `Space` menu item.
+    /// It has no config name and no key of its own: only the canvas menu builds it, and running
+    /// it presses the control's key through the canvas's own key handler.
+    ProjectControl(ProjectMenuControl),
 }
 
-#[cfg(feature = "git")]
-impl Action {
-    /// Whether running this changes the repository.
-    ///
-    /// Not every backend can take one: konoma reads a jj repository and never writes to it, so a
-    /// write asked of jj is answered with an explanation instead of a failure. Keeping the list
-    /// here means a new write action is refused by default rather than by remembering to guard it.
-    pub fn writes_repository(self) -> bool {
-        matches!(
-            self,
-            Action::GitStage
-                | Action::GitUnstage
-                | Action::GitStageAll
-                | Action::GitUnstageAll
-                | Action::GitDiscard
-                | Action::GitDiffDiscard
-                | Action::GitCommit
-                | Action::BranchCheckout
-                | Action::BranchCreate
-                | Action::BranchDelete
-                | Action::WorktreeCreate
-        )
-    }
+/// The canvas controls the project canvas's `Space` menu lists. A host enum rather than
+/// `ProjectControlId`: the screen cycle is one presentation control with two keys, and the menu
+/// lists its two directions as two items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectMenuControl {
+    /// The filter key (`/`).
+    Search,
+    /// The first key of the screens control (`Tab`).
+    NextScreen,
+    /// The second key of the screens control (`Shift-Tab`).
+    PrevScreen,
+    /// The back key (`h`, or `q`).
+    Back,
 }
 
 // =============================================================================
@@ -370,10 +557,9 @@ pub enum Surface {
     Filter,
     Search,
     Mark,
-    #[cfg(feature = "git")]
-    BranchFilter,
-    #[cfg(feature = "git")]
-    WorktreeFilter,
+    /// The `/` filter of a list that shares the one list filter: the outline / page list, the tab
+    /// list or the bookmark list (which one is `App::filtering_list`).
+    ListFilter,
 
     // --- Confirm modal (y/n/c/m/! fixed) ---
     DialogConfirmDelete,
@@ -386,7 +572,6 @@ pub enum Surface {
 
     // --- Overlays (keymap-driven) ---
     Help,
-    Sort,
     Bookmarks,
     /// Tab-list overlay (`T`): j/k + Enter switch, `w` closes the selected tab.
     Tabs,
@@ -396,21 +581,6 @@ pub enum Surface {
     /// Full-cell popup (`Enter` in a table preview): the cursor cell's untruncated text, wrapped
     /// and scrollable (`j`/`k`/`g`/`G`/PageUp/PageDown), `q`/Esc/Enter close it.
     TableCell,
-    #[cfg(feature = "git")]
-    GitDetail,
-    #[cfg(feature = "git")]
-    GitLog,
-    #[cfg(feature = "git")]
-    GitGraph,
-    #[cfg(feature = "git")]
-    GitGraphPicker,
-    #[cfg(feature = "git")]
-    GitBranches,
-    #[cfg(feature = "git")]
-    GitChanges,
-    /// The linked-worktree list (`w` from the changes hub).
-    #[cfg(feature = "git")]
-    GitWorktrees,
 
     // --- Basic full-screen surfaces (keymap-driven) ---
     Visual,
@@ -421,21 +591,26 @@ pub enum Surface {
     PreviewImage,
     /// CSV/TSV table preview (cell cursor + `y→` cell/row/column copy).
     PreviewTable,
-    #[cfg(feature = "git")]
+    /// A plugin's free-drawing view (`View::Canvas`): the host keeps only a few keys here.
+    PreviewCanvas,
+    /// A plugin's canvas that asked for text input (`CanvasView::text_input`): every key but
+    /// `Esc` (and every paste) goes to the plugin, none is looked up in the keymap.
+    PluginInput,
     PreviewGitDiff,
 }
 
 impl Surface {
     /// Whether this is a text-input surface (intercepts character/editing keys and does not apply the keymap).
     pub fn is_text_input(self) -> bool {
-        match self {
-            Surface::DialogInput | Surface::Filter | Surface::Search | Surface::Mark => true,
-            #[cfg(feature = "git")]
-            Surface::BranchFilter => true,
-            #[cfg(feature = "git")]
-            Surface::WorktreeFilter => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Surface::DialogInput
+                | Surface::Filter
+                | Surface::Search
+                | Surface::Mark
+                | Surface::PluginInput
+                | Surface::ListFilter
+        )
     }
 
     /// Whether this is a confirm-modal surface (handles y/n/c/m/! as fixed keys).
@@ -450,7 +625,9 @@ impl Surface {
         )
     }
 
-    /// Whether this surface inherits the Global-layer keys such as tabs/help (= a keymap/Global-driven surface).
+    /// Whether this surface inherits the Global-layer keys such as tabs/help (= a keymap/Global-driven
+    /// surface). Equivalent to `Context::of_surface(..).is_some()`; the old keymap's lookup used it.
+    #[cfg(test)]
     pub fn allows_tabs(self) -> bool {
         !self.is_text_input() && !self.is_modal_confirm()
     }
@@ -460,108 +637,16 @@ impl Surface {
     /// resolve does not use this; it is kept to spell out the spec and as a test invariant.
     #[allow(dead_code)]
     pub fn inherits_copy_leader(self) -> bool {
-        match self {
-            Surface::Tree | Surface::PreviewText | Surface::PreviewImage => true,
-            #[cfg(feature = "git")]
-            Surface::PreviewGitDiff => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            Surface::Tree | Surface::PreviewText | Surface::PreviewImage | Surface::PreviewGitDiff
+        )
     }
 }
 
 // =============================================================================
 // KeyPress / KeyChord / Binding
 // =============================================================================
-
-/// Normalized representation of a single keystroke. SHIFT is folded into the uppercase char and ALT is unused, so it holds only CONTROL (§1.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyPress {
-    pub code: KeyCode,
-    pub ctrl: bool,
-}
-
-impl KeyPress {
-    /// A character key (no modifiers).
-    pub fn ch(c: char) -> KeyPress {
-        KeyPress {
-            code: KeyCode::Char(c),
-            ctrl: false,
-        }
-    }
-    /// Ctrl + a character key.
-    pub fn ctrl_ch(c: char) -> KeyPress {
-        KeyPress {
-            code: KeyCode::Char(c),
-            ctrl: true,
-        }
-    }
-    /// A special key (no modifiers).
-    pub fn key(code: KeyCode) -> KeyPress {
-        KeyPress { code, ctrl: false }
-    }
-
-    /// Normalize a crossterm key event (extracting only CONTROL).
-    pub fn norm(ev: &KeyEvent) -> KeyPress {
-        KeyPress {
-            code: ev.code,
-            ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
-        }
-    }
-
-    /// Parse one config-string token. Handles the `ctrl-x`/`c-x` modifier, `space`, literals `0 $ ! …`,
-    /// named keys (`tab enter up …`), and single characters (uppercase = SHIFT included).
-    pub fn parse(s: &str) -> Result<KeyPress> {
-        let s = s.trim();
-        if s.is_empty() {
-            bail!("empty key token");
-        }
-        let (ctrl, rest) = if let Some(r) = s.strip_prefix("ctrl-") {
-            (true, r)
-        } else if let Some(r) = s.strip_prefix("c-") {
-            (true, r)
-        } else {
-            (false, s)
-        };
-        if rest.is_empty() {
-            bail!("missing key after modifier: {s}");
-        }
-        let code = Self::parse_code(rest)?;
-        Ok(KeyPress { code, ctrl })
-    }
-
-    fn parse_code(s: &str) -> Result<KeyCode> {
-        let lower = s.to_ascii_lowercase();
-        let code = match lower.as_str() {
-            "space" => KeyCode::Char(' '),
-            "tab" => KeyCode::Tab,
-            "backtab" => KeyCode::BackTab,
-            "enter" | "return" => KeyCode::Enter,
-            "esc" | "escape" => KeyCode::Esc,
-            "backspace" => KeyCode::Backspace,
-            "delete" | "del" => KeyCode::Delete,
-            "up" => KeyCode::Up,
-            "down" => KeyCode::Down,
-            "left" => KeyCode::Left,
-            "right" => KeyCode::Right,
-            "home" => KeyCode::Home,
-            "end" => KeyCode::End,
-            "pageup" | "pgup" => KeyCode::PageUp,
-            "pagedown" | "pgdn" | "pagedn" => KeyCode::PageDown,
-            _ => {
-                // A single character (keeps its original case). Multiple characters is an invalid token.
-                let mut chars = s.chars();
-                let c = chars
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("empty key token"))?;
-                if chars.next().is_some() {
-                    bail!("unknown key token: {s}");
-                }
-                KeyCode::Char(c)
-            }
-        };
-        Ok(code)
-    }
-}
 
 /// A single keystroke or a two-keystroke chord (leader). In config it is 1-2 whitespace-separated tokens (§1.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -590,6 +675,11 @@ impl KeyChord {
 pub enum Binding {
     Run(Action),
     Leader(LeaderId),
+    /// Only in a context's own table: this key is deliberately unbound in that context, so the
+    /// binding it would inherit from layer 1 or 2 does not apply. (`global` still does.) Written
+    /// by `noop`/`disabled` in config and for the few places where a context lacks a key its
+    /// layers give.
+    Unbound,
 }
 
 // =============================================================================
@@ -608,10 +698,20 @@ pub enum LeaderId {
     /// `y` commit-info copy (git log/graph/detail).
     #[cfg(feature = "git")]
     GitCopy,
+    /// `y` copy of the branch list (the selected branch's name).
+    #[cfg(feature = "git")]
+    BranchCopy,
+    /// `,` sorting and display options. Its content depends on where you are (the tree sorts, a
+    /// preview wraps, a diff follows), so each context has its own menu.
+    Options,
+    /// `Space` outside the tree: every operation that acts in the context. Built from the
+    /// operation declarations and `ops::gate` when it opens (`ops::menu`), not stored.
+    Actions,
 }
 
 /// One leader-menu item (suffix key + command + i18n label).
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct LeaderItem {
     pub key: KeyPress,
     pub action: Action,
@@ -620,6 +720,7 @@ pub struct LeaderItem {
 
 /// The whole menu shown in the which-key popup.
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct LeaderMenu {
     /// This menu's kind (redundant with the HashMap key, but kept for self-description).
     #[allow(dead_code)]
@@ -657,42 +758,20 @@ impl LeaderMenu {
 /// Per-surface "key → value" table.
 pub type ContextMap = HashMap<KeyPress, Binding>;
 
-/// Paging profile. Corresponds to "vim"/"less" of `ui.keys` (§2 scheme).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum KeyScheme {
-    #[default]
-    Vim,
-    Less,
-}
-
-/// Choose the profile from the `ui.keys` string (anything but "less" is vim).
-pub fn scheme_from_str(s: &str) -> KeyScheme {
-    if s.eq_ignore_ascii_case("less") {
-        KeyScheme::Less
-    } else {
-        KeyScheme::Vim
-    }
-}
-
-/// Raw representation of the config file's `[keys.<surface>]` (surface name → (chord string → action string)).
-/// In Stage 2, config/mod.rs uses serde to populate this type and passes it to App. The keymap layer does not depend on serde.
-#[derive(Debug, Clone, Default)]
-pub struct KeysFileConfig {
-    /// Surface name (snake_case; including "global") → (chord string → action string).
-    pub surfaces: HashMap<String, HashMap<String, String>>,
-}
+pub use konoma_host_core::keys::KeysFileConfig;
 
 /// One key conflict detected at startup (#17 / FR-8).
-/// The current startup flash only summarizes the count (`App::keymap_report`). The fields are kept for
-/// future detailed display (the conflict breakdown in which-key/help).
+/// The startup flash (`App::keymap_report`) shows the count and the first conflict's key, `kept`
+/// and `dropped`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct KeyConflict {
+    /// The surface of the context the conflict is in (a context is finer; `dropped` names it).
     pub surface: Surface,
     pub key: KeyPress,
     /// Description of the kept side (the default).
     pub kept: String,
-    /// Description of the dropped override.
+    /// Description of the dropped override, with the `[keys.<context>]` table it was written in.
     pub dropped: String,
     pub reason: ConflictKind,
 }
@@ -717,29 +796,524 @@ pub enum Resolution {
 }
 
 /// The whole resolvable keymap. Built once at startup (off the draw path; §5 performance requirement).
+///
+/// Keys are looked up in layers, most specific first: the context's own table (`contexts`), the
+/// tables of its view types (`types`, layer 2), the basic table (`basic`, layer 1), then `global`
+/// (layer 0). See [`Context`]. Layer 3 (verbs shared by every context: `e`, `o`, ...) is not
+/// materialized yet because today no verb key is bound identically in all the contexts that would
+/// inherit it; B3 introduces it together with the new default keys.
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct KeyMap {
-    pub per_surface: HashMap<Surface, ContextMap>,
-    /// Tabs/help etc. `allows_tabs()` surfaces inherit these as a fallback.
+    /// Each context's own table (layer 4 in the design's numbering): what it adds to, or does
+    /// differently from, the layers below it.
+    pub contexts: HashMap<Context, ContextMap>,
+    /// The keys the config wrote for a plugin's screen (`[keys."git.changes"]`, and the old
+    /// `git_changes` for both backends), kept apart from the defaults of `contexts`. A project
+    /// canvas has the canvas's defaults, not the old per-screen ones; the user's own keys for
+    /// its screen sit on top ([`KeyMap::resolve_on`] and the other `*_on` lookups).
+    #[cfg(feature = "git")]
+    pub screen_keys: HashMap<Context, ContextMap>,
+    /// Layer 2: keys shared by the contexts that show the same kind of thing.
+    pub types: HashMap<ViewType, ContextMap>,
+    /// Layer 1: keys every context with a cursor shares ([`Context::inherits_basic`]).
+    pub basic: ContextMap,
+    /// Layer 0: tabs/help etc. Every context inherits these as a fallback.
     pub global: ContextMap,
+    /// The menus every context that opens them shares: `y`'s copy menus and the tree's `Space`
+    /// file menu.
     pub leaders: HashMap<LeaderId, LeaderMenu>,
+    /// A context's own version of a menu: the `,` menus (which differ per context) and the
+    /// copies made when `[keys.<context>]` writes `y x` or `space x` for one context only. It
+    /// wins over `leaders`; see [`KeyMap::menu`].
+    /// For the preview contexts' Copy, TableCopy and Options menus, `preview_menus` is the source
+    /// of truth and `sync_preview_menus` copies it here, so writing here directly is overwritten by the next sync.
+    pub ctx_menus: HashMap<(Context, LeaderId), LeaderMenu>,
+    /// The menus of the preview contexts (`y`'s two and their `,` menus), kept in the shared
+    /// form: the defaults and the editing rules are the standalone app's
+    /// (`konoma_host_core::keymap::MenuSet`). `leaders` and `ctx_menus` hold their copy for the
+    /// preview contexts (and the tree's `y`), refreshed after each edit (`sync_preview_menus`).
+    preview_menus: MenuSet<Action, Msg>,
+    /// The operations each context has by default, whatever the config did to their keys: the
+    /// `Space` menu lists them even when a key was moved away or lost to a conflict.
+    pub default_ops: HashMap<Context, Vec<Action>>,
     pub conflicts: Vec<KeyConflict>,
-    /// Warnings for ignored config such as unknown surface names/actions or fixed-key rebinds (for the startup flash).
+    /// Warnings for ignored config such as unknown context names/actions or fixed-key rebinds (for the startup flash).
     pub warnings: Vec<String>,
+    /// Old `[keys.<surface>]` names that were read, each with the context header(s) it is now
+    /// written as: `("[keys.preview_text]", "[keys.text] + [keys.document]")`. For the startup flash.
+    pub renames: Vec<(String, String)>,
+}
+
+// =============================================================================
+// Context (the unit of `[keys.<context>]` and of key lookup) and the layers it inherits.
+// =============================================================================
+
+/// Which version-control backend a git-family screen is open for. The same screen can be opened
+/// for git or for jj and the two get separate key tables (`git.changes` / `jj.changes`), so a key
+/// can mean different things in the two later on.
+#[cfg(feature = "git")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Backend {
+    Git,
+    Jj,
+}
+
+#[cfg(feature = "git")]
+impl Backend {
+    pub const ALL: [Backend; 2] = [Backend::Git, Backend::Jj];
+
+    /// The id used as the first half of a dotted context name (`git.changes`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Backend::Git => "git",
+            Backend::Jj => "jj",
+        }
+    }
+
+    /// The backend whose plugin id is `id` (the reverse of [`Backend::id`]).
+    pub fn from_id(id: &str) -> Option<Backend> {
+        Backend::ALL.into_iter().find(|b| b.id() == id)
+    }
+}
+
+/// The screens of the version-control views (the second half of `git.changes`).
+#[cfg(feature = "git")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Screen {
+    Changes,
+    Log,
+    Graph,
+    GraphPicker,
+    Branches,
+    Worktrees,
+    Detail,
+}
+
+#[cfg(feature = "git")]
+impl Screen {
+    pub const ALL: [Screen; 7] = [
+        Screen::Changes,
+        Screen::Log,
+        Screen::Graph,
+        Screen::GraphPicker,
+        Screen::Branches,
+        Screen::Worktrees,
+        Screen::Detail,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Screen::Changes => "changes",
+            Screen::Log => "log",
+            Screen::Graph => "graph",
+            Screen::GraphPicker => "graph_picker",
+            Screen::Branches => "branches",
+            Screen::Worktrees => "worktrees",
+            Screen::Detail => "detail",
+        }
+    }
+
+    /// The screen named `name` (the reverse of [`Screen::name`]).
+    pub fn from_name(name: &str) -> Option<Screen> {
+        Screen::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// The old (pre-context) surface name of this screen: `git_changes` for [`Screen::Changes`].
+    fn old_name(self) -> String {
+        format!("git_{}", self.name())
+    }
+}
+
+/// A key context: the unit of a `[keys.<context>]` table and of key lookup (layer 4 of the key
+/// design, `docs/FEATURE-PLUGIN-ARCHITECTURE.md` §10-3). It is what the user is looking at, finer
+/// than a [`Surface`]: the text preview is one `Surface` but two contexts (`text` for source and
+/// plain text, `document` for a decorated Markdown / Word / slide view), and the git screens are
+/// one `Surface` each but get a context per backend.
+///
+/// The lookup order for a key is: the context's own table, then the tables of its view type
+/// (layer 2, [`Context::view_types`]), then the basic table (layer 1, if
+/// [`Context::inherits_basic`]), then `global` (layer 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Context {
+    Tree,
+    TreeVisual,
+    /// Windowed source / plain text, and previews that cannot be shown.
+    Text,
+    /// A decorated view: rendered Markdown, a Word document, slides, a mermaid diagram as text.
+    Document,
+    TextVisual,
+    Image,
+    Table,
+    /// A view the plugin draws itself (cells and pictures). The host keeps layer 0, the verbs,
+    /// `q`, `Esc`, `Space`, `,`, `R` / `J` / `K` / `O` and the base keys that are not motion
+    /// (`y` `Y` `m` `'` `r` `Ctrl-n` `Ctrl-p` `Ctrl-t`: `keys::reserved("canvas")`), bound in its
+    /// own table. It inherits neither the motion keys of layer 1 (`j` `k` are the plugin's) nor a
+    /// layer-2 table.
+    Canvas,
+    TableCell,
+    Bookmarks,
+    Tabs,
+    Outline,
+    Info,
+    Help,
+    /// A diff view, including project screens and the file-diff preview.
+    Diff,
+    /// One screen of the version-control views for one backend.
+    #[cfg(feature = "git")]
+    Screen(Backend, Screen),
+}
+
+/// A layer-2 table: keys shared by the contexts that show the same kind of thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewType {
+    Text,
+    /// Keys of decorated documents. A document is also text, so its lookup continues into
+    /// [`ViewType::Text`].
+    Document,
+    Table,
+    Image,
+    Diff,
+    /// The version-control list screens.
+    #[cfg(feature = "git")]
+    List,
+}
+
+impl ViewType {
+    #[cfg(test)]
+    pub fn all() -> Vec<ViewType> {
+        #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+        let mut v = vec![
+            ViewType::Text,
+            ViewType::Document,
+            ViewType::Table,
+            ViewType::Image,
+            ViewType::Diff,
+        ];
+        #[cfg(feature = "git")]
+        {
+            v.push(ViewType::List);
+        }
+        v
+    }
+}
+
+impl Context {
+    /// Every context of this build, in a stable order.
+    pub fn all() -> Vec<Context> {
+        #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+        let mut v = vec![
+            Context::Tree,
+            Context::TreeVisual,
+            Context::Text,
+            Context::Document,
+            Context::TextVisual,
+            Context::Image,
+            Context::Table,
+            Context::Canvas,
+            Context::TableCell,
+            Context::Bookmarks,
+            Context::Tabs,
+            Context::Outline,
+            Context::Info,
+            Context::Help,
+            Context::Diff,
+        ];
+        #[cfg(feature = "git")]
+        {
+            for b in Backend::ALL {
+                for s in Screen::ALL {
+                    v.push(Context::Screen(b, s));
+                }
+            }
+        }
+        v
+    }
+
+    /// The name used in `[keys.<name>]` (dotted for a backend screen: `git.changes`). Exhaustive
+    /// on purpose: a new context does not compile until it has a name.
+    pub fn name(self) -> String {
+        match self {
+            Context::Tree => "tree".into(),
+            Context::TreeVisual => "tree_visual".into(),
+            Context::Text => "text".into(),
+            Context::Document => "document".into(),
+            Context::TextVisual => "text_visual".into(),
+            Context::Image => "image".into(),
+            Context::Table => "table".into(),
+            Context::Canvas => "canvas".into(),
+            Context::TableCell => "table_cell".into(),
+            Context::Bookmarks => "bookmarks".into(),
+            Context::Tabs => "tabs".into(),
+            Context::Outline => "outline".into(),
+            Context::Info => "info".into(),
+            Context::Help => "help".into(),
+            Context::Diff => "diff".into(),
+            #[cfg(feature = "git")]
+            Context::Screen(b, s) => format!("{}.{}", b.id(), s.name()),
+        }
+    }
+
+    /// The reverse of [`Context::name`]. Unknown names (including the old surface names, see
+    /// [`old_surface_contexts`]) return `None`.
+    pub fn from_name(name: &str) -> Option<Context> {
+        Context::all().into_iter().find(|c| c.name() == name)
+    }
+
+    /// The `[keys.<name>]` header as it must be written in TOML (a dotted name needs quotes).
+    pub fn header(self) -> String {
+        let n = self.name();
+        if n.contains('.') {
+            format!("[keys.\"{n}\"]")
+        } else {
+            format!("[keys.{n}]")
+        }
+    }
+
+    /// The layer-2 tables this context looks into, most specific first.
+    pub fn view_types(self) -> &'static [ViewType] {
+        match self {
+            Context::Text | Context::TextVisual => &[ViewType::Text],
+            Context::Document => &[ViewType::Document, ViewType::Text],
+            Context::Image => &[ViewType::Image],
+            Context::Table => &[ViewType::Table],
+            Context::Tree
+            | Context::TreeVisual
+            | Context::Canvas
+            | Context::TableCell
+            | Context::Bookmarks
+            | Context::Tabs
+            | Context::Outline
+            | Context::Info
+            | Context::Help => &[],
+            Context::Diff => &[ViewType::Diff],
+            #[cfg(feature = "git")]
+            Context::Screen(_, Screen::Detail) => &[ViewType::Text],
+            #[cfg(feature = "git")]
+            Context::Screen(..) => &[ViewType::List],
+        }
+    }
+
+    /// Whether the basic table (layer 1) applies. Everything that has a cursor does; the info
+    /// popup is a one-shot picker without one.
+    pub fn inherits_basic(self) -> bool {
+        !matches!(self, Context::Info | Context::Canvas)
+    }
+
+    /// The keymap [`Surface`] this context is a refinement of (the surface that [`Context::of_surface`]
+    /// maps to it; a version-control screen is only an old table name and reports the project
+    /// canvas that shows it).
+    pub fn surface(self) -> Surface {
+        match self {
+            Context::Tree => Surface::Tree,
+            Context::TreeVisual => Surface::Visual,
+            Context::Text | Context::Document => Surface::PreviewText,
+            Context::TextVisual => Surface::PreviewTextVisual,
+            Context::Image => Surface::PreviewImage,
+            Context::Table => Surface::PreviewTable,
+            Context::Canvas => Surface::PreviewCanvas,
+            Context::TableCell => Surface::TableCell,
+            Context::Bookmarks => Surface::Bookmarks,
+            Context::Tabs => Surface::Tabs,
+            Context::Outline => Surface::Outline,
+            Context::Info => Surface::Info,
+            Context::Help => Surface::Help,
+            Context::Diff => Surface::PreviewGitDiff,
+            // The screens are shown on the project canvas.
+            #[cfg(feature = "git")]
+            Context::Screen(..) => Surface::PreviewCanvas,
+        }
+    }
+
+    /// The context for the frontmost `sfc`, or `None` for a surface that does not use the keymap
+    /// (text input and confirm modals). `document` says the text preview is a decorated view.
+    /// **The one place that decides the context**: `App::key_context` supplies the fact and key
+    /// lookup (`handle_key`) uses nothing else. Exhaustive over `Surface` on purpose.
+    pub fn of_surface(sfc: Surface, document: bool) -> Option<Context> {
+        Some(match sfc {
+            Surface::DialogInput
+            | Surface::Filter
+            | Surface::Search
+            | Surface::Mark
+            | Surface::PluginInput
+            | Surface::DialogConfirmDelete
+            | Surface::DialogConfirmDrop
+            | Surface::DialogRenamePreview
+            | Surface::DialogConfirmQuit
+            | Surface::DialogConfirmBookmark => return None,
+            Surface::ListFilter => return None,
+            Surface::Help => Context::Help,
+            Surface::Bookmarks => Context::Bookmarks,
+            Surface::Tabs => Context::Tabs,
+            Surface::Outline => Context::Outline,
+            Surface::Info => Context::Info,
+            Surface::TableCell => Context::TableCell,
+            Surface::Visual => Context::TreeVisual,
+            Surface::Tree => Context::Tree,
+            Surface::PreviewText => {
+                if document {
+                    Context::Document
+                } else {
+                    Context::Text
+                }
+            }
+            Surface::PreviewTextVisual => Context::TextVisual,
+            Surface::PreviewImage => Context::Image,
+            Surface::PreviewTable => Context::Table,
+            Surface::PreviewCanvas => Context::Canvas,
+            Surface::PreviewGitDiff => Context::Diff,
+        })
+    }
+}
+
+/// Whether `[keys.<name>]` is a table of the host (a context, `global`, the old `sort`, or an old
+/// surface name) rather than the keys of a plugin of that name.
+pub fn is_host_key_table(name: &str) -> bool {
+    name == "global"
+        || name == "sort"
+        || Context::from_name(name).is_some()
+        || old_surface_contexts(name).is_some()
+}
+
+/// The contexts an **old** (pre-context) `[keys.<surface>]` name stands for, for the names that
+/// changed. A table under an old name is read as if it were written under each of these. Names
+/// that did not change (`tree`, `sort`, ...) are ordinary context names and are not listed.
+fn old_surface_contexts(name: &str) -> Option<Vec<Context>> {
+    match name {
+        "preview_text" => return Some(vec![Context::Text, Context::Document]),
+        "preview_text_visual" => return Some(vec![Context::TextVisual]),
+        "preview_image" => return Some(vec![Context::Image]),
+        "preview_table" => return Some(vec![Context::Table]),
+        "preview_git_diff" => return Some(vec![Context::Diff]),
+        _ => {}
+    }
+    #[cfg(feature = "git")]
+    for s in Screen::ALL {
+        if name == s.old_name() {
+            return Some(
+                Backend::ALL
+                    .iter()
+                    .map(|&b| Context::Screen(b, s))
+                    .collect(),
+            );
+        }
+    }
+    None
+}
+
+/// The version-control screen an old `[keys.<backend>.<screen>]` context stands for (`None` for
+/// every other context): the part of a conflict's identity that its surface no longer carries.
+fn conflict_screen(ctx: Context) -> Option<&'static str> {
+    match ctx {
+        #[cfg(feature = "git")]
+        Context::Screen(_, s) => Some(s.name()),
+        _ => None,
+    }
 }
 
 impl KeyMap {
-    /// Build the built-in default keymap (§2). `scheme` only swaps the page/half rows of the Preview surfaces.
+    /// Build the built-in default keymap (§2). `scheme` only swaps the page/half rows of the
+    /// scrolling contexts.
+    ///
+    /// The default keys follow the layers of the key design (`docs/FEATURE-PLUGIN-ARCHITECTURE.md`
+    /// §10-3): layer 1 (`basic`) holds what every context with a cursor shares, layer 2 (`types`)
+    /// what contexts showing the same kind of thing share, and each context's own table holds the
+    /// rest. `defaults_tests` pins the result key by key.
+    ///
+    /// The table is a pure function of `scheme`, so it is built once per thread and cloned.
     pub fn defaults(scheme: KeyScheme) -> KeyMap {
+        (*Self::shared_defaults(scheme)).clone()
+    }
+
+    /// The built-in defaults for `scheme`, built once per thread (see [`KeyMap::defaults`]).
+    fn shared_defaults(scheme: KeyScheme) -> std::rc::Rc<KeyMap> {
+        thread_local! {
+            static CACHE: std::cell::RefCell<Vec<(KeyScheme, std::rc::Rc<KeyMap>)>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            if let Some((_, m)) = c.iter().find(|(s, _)| *s == scheme) {
+                return std::rc::Rc::clone(m);
+            }
+            let m = std::rc::Rc::new(Self::build_defaults(scheme));
+            c.push((scheme, std::rc::Rc::clone(&m)));
+            m
+        })
+    }
+
+    fn build_defaults(scheme: KeyScheme) -> KeyMap {
         let nav = |m: Motion| Binding::Run(Action::Navigate(m));
         let run = |a: Action| Binding::Run(a);
 
-        let mut per_surface: HashMap<Surface, ContextMap> = HashMap::new();
+        // =====================================================================
+        // Layer 1: the same in every context that has a cursor (`inherits_basic`).
+        // =====================================================================
+        let basic: ContextMap = host_table(basic_table());
+
+        // =====================================================================
+        // Layer 2: per view type.
+        // =====================================================================
+        let mut types: HashMap<ViewType, ContextMap> = HashMap::new();
+
+        // Text (text, document, text_visual, the commit detail): the scrolling keys.
+        types.insert(
+            ViewType::Text,
+            host_table(type_table(CoreViewType::Text, scheme)),
+        );
+        // Document: nothing of its own yet (a document is also text, so lookup continues into
+        // Text). B3 puts the document keys (outline, focus, representation cycle) here.
+        types.insert(
+            ViewType::Document,
+            host_table(type_table(CoreViewType::Document, scheme)),
+        );
+        // Table: the cell cursor moves with the scrolling keys.
+        types.insert(
+            ViewType::Table,
+            host_table(type_table(CoreViewType::Table, scheme)),
+        );
+
+        // Image: pan with h/l (j/k from layer 1), zoom, and the page of a multi-page file.
+        types.insert(
+            ViewType::Image,
+            host_table(type_table(CoreViewType::Image, scheme)),
+        );
+
+        // Every diff view shares scrolling, the layout switch and the page turn (the shared
+        // table). J/K turn a media diff's PDF page (both sides at once): a no-op outside a
+        // multi-page PDF side-by-side view (`App::media_diff_page_turn`'s own gate) — PageDown/
+        // PageUp are *not* rebound here: `dispatch_navigate`'s `PreviewGitDiff` arm reroutes them
+        // to the same handler only while the media diff is active, and keeps their ordinary
+        // scroll meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
+        let mut diff: ContextMap = host_table(type_table(CoreViewType::Diff, scheme));
+        #[cfg(feature = "git")]
+        diff.extend(host_table(
+            konoma_plugin::host::project::diff_keys::file_diff_type_keys(),
+        ));
+        // Without the git feature the host has never had the page turn on a diff.
+        #[cfg(not(feature = "git"))]
+        {
+            diff.remove(&KeyPress::ch('J'));
+            diff.remove(&KeyPress::ch('K'));
+        }
+        types.insert(ViewType::Diff, diff);
+        #[cfg(feature = "git")]
+        {
+            // List screens: jump to the first / last row.
+            let mut list: ContextMap = HashMap::new();
+            list.insert(KeyPress::ch('g'), nav(Motion::Top));
+            list.insert(KeyPress::ch('G'), nav(Motion::Bottom));
+            types.insert(ViewType::List, list);
+        }
+
+        // =====================================================================
+        // The contexts' own tables.
+        // =====================================================================
+        let mut contexts: HashMap<Context, ContextMap> = HashMap::new();
 
         // --- Tree (normal) ---
         let mut tree: ContextMap = HashMap::new();
-        tree.insert(KeyPress::ch('j'), nav(Motion::Down));
-        tree.insert(KeyPress::ch('k'), nav(Motion::Up));
+        tree.extend(host_table(verbs_table()));
         tree.insert(KeyPress::ch('g'), nav(Motion::Top));
         tree.insert(KeyPress::ch('G'), nav(Motion::Bottom));
         tree.insert(KeyPress::ctrl_ch('d'), nav(Motion::HalfDown));
@@ -754,14 +1328,21 @@ impl KeyMap {
         tree.insert(KeyPress::ch('/'), run(Action::FilterStart));
         tree.insert(KeyPress::ch('.'), run(Action::ToggleHidden));
         tree.insert(KeyPress::ch('r'), run(Action::Refresh));
-        tree.insert(KeyPress::ch('s'), run(Action::OpenSortMenu));
+        // `s` (sort menu) and `p` (path style) have no default key: both live in the `,` menu.
+        // The actions stay for `[keys]`: `open_sort_menu` opens the `,` menu, `cycle_path_style`
+        // runs the path style.
+        tree.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         tree.insert(KeyPress::ch('i'), run(Action::ToggleInfo));
-        tree.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        tree.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
+        // `o` = open in another app (layer 3): the Office apps for an Office file, else the OS
+        // default. `e` edits, `o` opens.
         tree.insert(KeyPress::ch('m'), run(Action::MarkSet));
         tree.insert(KeyPress::ch('\''), run(Action::MarkJump));
         tree.insert(KeyPress::ch('d'), run(Action::OpenGitDiffCursor));
-        tree.insert(KeyPress::ch('o'), run(Action::OpenGitView));
+        // `p` = the project's screen (the Git hub for now); it was `o`.
+        tree.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+        // `!` = the project's own tool (lazygit / lazyjj), from the tree as from a preview.
+        #[cfg(feature = "git")]
+        tree.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
         tree.insert(KeyPress::ch('a'), run(Action::SetAnchor));
         tree.insert(KeyPress::ch('A'), run(Action::ResetAnchor));
         tree.insert(KeyPress::ch('v'), run(Action::EnterVisual));
@@ -776,12 +1357,10 @@ impl KeyMap {
         // new tab's root). Same key/meaning ("open this in a new tab") as preview's OpenLinkNewTab
         // — paired with global t (new tab).
         tree.insert(KeyPress::ctrl_ch('t'), run(Action::OpenInNewTab));
-        per_surface.insert(Surface::Tree, tree);
+        contexts.insert(Context::Tree, tree);
 
         // --- Tree:Visual ---
         let mut visual: ContextMap = HashMap::new();
-        visual.insert(KeyPress::ch('j'), nav(Motion::Down));
-        visual.insert(KeyPress::ch('k'), nav(Motion::Up));
         visual.insert(KeyPress::ch('g'), nav(Motion::Top));
         visual.insert(KeyPress::ch('G'), nav(Motion::Bottom));
         visual.insert(KeyPress::ctrl_ch('d'), nav(Motion::HalfDown));
@@ -792,449 +1371,372 @@ impl KeyMap {
         visual.insert(KeyPress::ch('a'), run(Action::VisualSelectSiblings));
         visual.insert(KeyPress::ch('A'), run(Action::VisualSelectAll));
         visual.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::File));
-        visual.insert(KeyPress::ch('q'), run(Action::Quit)); // preserves the old Visual q=quit (regression guard)
-        per_surface.insert(Surface::Visual, visual);
+        // `q` cancels the selection, like `Esc` (it used to quit the app: the one exception to
+        // layer 1's "q = go back one step").
+        visual.insert(KeyPress::ch('q'), run(Action::Cancel));
+        contexts.insert(Context::TreeVisual, visual);
 
-        // --- Preview: text/markdown ---
-        let mut ptext: ContextMap = HashMap::new();
-        ptext.insert(KeyPress::ch('q'), run(Action::PreviewBack));
-        ptext.insert(KeyPress::ch('/'), run(Action::SearchStart));
-        ptext.insert(KeyPress::ch('n'), run(Action::SearchNext));
-        ptext.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        ptext.insert(KeyPress::ch('j'), nav(Motion::Down));
-        ptext.insert(KeyPress::ch('k'), nav(Motion::Up));
-        ptext.insert(KeyPress::ch('g'), nav(Motion::Top));
-        ptext.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-        ptext.insert(KeyPress::ch('l'), nav(Motion::Right));
-        ptext.insert(KeyPress::ch('h'), nav(Motion::Left));
-        ptext.insert(KeyPress::ch('0'), nav(Motion::LineHome));
-        ptext.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
-        ptext.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
-        ptext.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
-        ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
-        ptext.insert(KeyPress::ch('R'), run(Action::ToggleMarkdownRaw));
-        // Ctrl-t = open the focused Markdown link in a new tab (Enter still opens in the same tab).
-        // Consistent with the TUI convention (fzf/Telescope's Ctrl-t = new tab) + konoma's t = new
-        // tab. Ctrl+letter is reliable in every terminal + tmux (unlike Ctrl+Enter, no kitty
-        // protocol required). No-op when no link is focused.
-        ptext.insert(KeyPress::ctrl_ch('t'), run(Action::OpenLinkNewTab));
-        // Ctrl-n/Ctrl-p = preview the next/previous file in tree display order (file paging). J/K
-        // conflict with the image surface's PDF page paging, and Ctrl-j is indistinguishable from
-        // Enter (LF) on legacy terminals/tmux, so neither is used.
-        ptext.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        ptext.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        // Y = copy an @path#L reference for the caret line (hands the location to Claude Code). If
-        // there's a selection, the range is used instead (Y in the visual surface).
-        ptext.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
-        // +/-/= : zoom/reset the focused inline mermaid diagram in place (the display area stays
-        // fixed). No-op when no diagram is focused (guarded on the image_zoom_by side). `0` is kept
-        // as-is for LineHome (go to line start).
-        ptext.insert(KeyPress::ch('+'), run(Action::ImageZoomIn));
-        ptext.insert(KeyPress::ch('-'), run(Action::ImageZoomOut));
-        ptext.insert(KeyPress::ch('='), run(Action::ImageZoomReset));
-        ptext.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
-        ptext.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
-        apply_scheme_paging(&mut ptext, scheme);
-        ptext.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
-        // Bookmarks: `m` registers the previewed file, `'` opens the list (same action as the tree).
-        ptext.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
-        // Heading outline (Markdown preview). `o` toggles it open/closed.
-        ptext.insert(KeyPress::ch('o'), run(Action::ToggleOutline));
-        // J/K = next/previous slide of a presentation (the same keys as the PDF page / sheet turn;
-        // `App::page_turn` does nothing for any other text preview).
-        ptext.insert(KeyPress::ch('J'), run(Action::PageNext));
-        ptext.insert(KeyPress::ch('K'), run(Action::PagePrev));
-        per_surface.insert(Surface::PreviewText, ptext);
+        // --- Preview: text / markdown. `text` and `document` carry the same keys for now (they
+        // were one table); B3 tells them apart. The keys of the operations only konoma runs
+        // (search, bookmarks, reload, file paging, ...) come with the shared table
+        // (`konoma_host_core::keymap::host_ops_table`). ---
+        let ptext: ContextMap = host_table(own_table(CoreContext::Text));
+        contexts.insert(Context::Document, ptext.clone());
+        contexts.insert(Context::Text, ptext);
 
         // --- Preview: text/code visual selection (v charwise / V linewise) ---
         // h/j/k/l move the 2D caret to extend the range, `y` copies it, and v/V/q/Esc exit.
         let mut pvis: ContextMap = HashMap::new();
-        pvis.insert(KeyPress::ch('j'), nav(Motion::Down));
-        pvis.insert(KeyPress::ch('k'), nav(Motion::Up));
-        pvis.insert(KeyPress::ch('g'), nav(Motion::Top));
-        pvis.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-        pvis.insert(KeyPress::ch('l'), nav(Motion::Right));
-        pvis.insert(KeyPress::ch('h'), nav(Motion::Left));
-        pvis.insert(KeyPress::ch('0'), nav(Motion::LineHome));
-        pvis.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
-        pvis.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
-        pvis.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
-        apply_scheme_paging(&mut pvis, scheme);
         pvis.insert(KeyPress::ch('y'), run(Action::PreviewCopySelection));
         pvis.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
         pvis.insert(KeyPress::ch('v'), run(Action::PreviewExitVisual));
         pvis.insert(KeyPress::ch('V'), run(Action::PreviewExitVisual));
         pvis.insert(KeyPress::ch('q'), run(Action::PreviewExitVisual));
-        per_surface.insert(Surface::PreviewTextVisual, pvis);
+        contexts.insert(Context::TextVisual, pvis);
 
         // --- Preview: image ---
-        let mut pimg: ContextMap = HashMap::new();
-        pimg.insert(KeyPress::ch('q'), run(Action::PreviewBack));
-        // R: while this image/PDF/SVG preview *is* the diff's own `Preview` representation
-        // (`PerTab::preview_from_diff`), returns to the diff; a no-op otherwise
-        // (`App::image_return_to_diff`'s own doc comment — **not** `Action::ToggleMarkdownRaw`,
-        // whose non-diff fallthrough (`toggle_md_raw`) is a real, if unadvertised, bug on this
-        // surface for a standalone `.mmd` image preview, `docs/FEATURE-MEDIA-DIFF.md` §6).
-        pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
-        pimg.insert(KeyPress::ch('+'), run(Action::ImageZoomIn));
-        pimg.insert(KeyPress::ch('-'), run(Action::ImageZoomOut));
-        pimg.insert(KeyPress::ch('0'), run(Action::ImageZoomReset));
-        pimg.insert(KeyPress::ch('='), run(Action::ImageZoomReset));
-        pimg.insert(KeyPress::ch('h'), nav(Motion::Left));
-        pimg.insert(KeyPress::ch('l'), nav(Motion::Right));
-        pimg.insert(KeyPress::ch('k'), nav(Motion::Up));
-        pimg.insert(KeyPress::ch('j'), nav(Motion::Down));
-        // PDF page paging (shared across the image surfaces; the handler no-ops for non-PDF).
-        // lowercase jk = pan within the page / uppercase JK = move to the next/previous page.
-        pimg.insert(KeyPress::ch('J'), run(Action::PageNext));
-        pimg.insert(KeyPress::ch('K'), run(Action::PagePrev));
-        pimg.insert(KeyPress::key(KeyCode::PageDown), run(Action::PageNext));
-        pimg.insert(KeyPress::key(KeyCode::PageUp), run(Action::PagePrev));
-        pimg.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
-        pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
-        pimg.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        pimg.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        pimg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
-        pimg.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        pimg.insert(KeyPress::ch('\''), run(Action::MarkJump));
-        per_surface.insert(Surface::PreviewImage, pimg);
+        // `R` here is `ImageReturnToDiff` (shared table), not `CycleRepresentation`: the latter's
+        // non-diff fallthrough (`toggle_md_raw`) is wrong for a standalone `.mmd` picture
+        // (`docs/FEATURE-MEDIA-DIFF.md` §6).
+        let pimg: ContextMap = host_table(own_table(CoreContext::Image));
+        contexts.insert(Context::Image, pimg);
 
         // --- Preview: table (csv/tsv) ---
         // hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last column / y→ = copy
-        // the cell/row/column.
-        let mut ptbl: ContextMap = HashMap::new();
-        ptbl.insert(KeyPress::ch('q'), run(Action::PreviewBack));
-        ptbl.insert(KeyPress::ch('j'), nav(Motion::Down));
-        ptbl.insert(KeyPress::ch('k'), nav(Motion::Up));
-        ptbl.insert(KeyPress::ch('h'), nav(Motion::Left));
-        ptbl.insert(KeyPress::ch('l'), nav(Motion::Right));
-        ptbl.insert(KeyPress::ch('g'), nav(Motion::Top));
-        ptbl.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-        ptbl.insert(KeyPress::ch('0'), nav(Motion::LineHome));
-        ptbl.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
-        ptbl.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
-        ptbl.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
-        apply_scheme_paging(&mut ptbl, scheme);
-        // J/K = next/previous sheet of a spreadsheet (the same keys as the PDF page turn; the
-        // handler no-ops unless the workbook has 2+ visible sheets, so CSV/archive tables ignore them).
-        ptbl.insert(KeyPress::ch('J'), run(Action::PageNext));
-        ptbl.insert(KeyPress::ch('K'), run(Action::PagePrev));
-        ptbl.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
-        ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        // Ctrl-n/Ctrl-p = file paging (same keys as text/image).
-        ptbl.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
-        ptbl.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        // In-table search (same `/` n N as the text preview). The cursor jumps to the matching cell.
-        ptbl.insert(KeyPress::ch('/'), run(Action::SearchStart));
-        ptbl.insert(KeyPress::ch('n'), run(Action::SearchNext));
-        ptbl.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        ptbl.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::TableCopy));
-        ptbl.insert(KeyPress::ch('m'), run(Action::MarkSet));
-        ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
-        per_surface.insert(Surface::PreviewTable, ptbl);
+        // the cell/row/column. J/K/O (sheets) and `/` n N (in-table search) come from the shared
+        // tables; the handlers no-op where they do not apply.
+        let ptbl: ContextMap = host_table(own_table(CoreContext::Table));
+        contexts.insert(Context::Table, ptbl);
 
-        // --- Git-related surfaces (feature gate) ---
+        // --- Preview: a plugin's canvas ---
+        // A key means the same thing everywhere: the host keeps layer 0 (the `global` table), the
+        // base keys every file preview shares that are not motion (`y` `Y` copy, `m` `'`
+        // bookmarks, `r` reload, `Ctrl-n` / `Ctrl-p` file paging, `Ctrl-t`), the verbs (`e` `o` `p`
+        // `!`), `q`, `Esc` (a fixed key), `Space` (the menu of the plugin's operations), `,`, and
+        // `R` `J` `K` `O` (a canvas that is one representation or one page can be left). It gives
+        // up the type layer (scrolling, searching, selecting) and the navigation fixed keys
+        // (arrows, Home / End, PageUp / PageDown, Enter, Tab) to the plugin: that is
+        // `keys::reserved("canvas")`. The context does not inherit the basic table (`j` `k` are
+        // the plugin's).
+        let pcvs: ContextMap = host_table(own_table(CoreContext::Canvas));
+        contexts.insert(Context::Canvas, pcvs);
+
+        // The file diff is shared with project plugins in every build. Only native VCS
+        // operations depend on the git feature; leaving, reloading and file verbs do not.
+        // Leaving, the file verbs, `p`, `r`, the `,` menu and `y` are the shared table's
+        // (`own_table(CoreContext::Diff)`); what follows is only the host's.
+        // The follow scope has no default key: it lives in the `,` menu when git is enabled.
+        #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+        let mut pgit: ContextMap = host_table(own_table(CoreContext::Diff));
         #[cfg(feature = "git")]
         {
-            // Preview: gitdiff
-            let mut pgit: ContextMap = HashMap::new();
-            pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
-            pgit.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
-            pgit.insert(KeyPress::ch('R'), run(Action::CycleDiffView));
-            // f = toggle the range of a follow-opened diff (since follow-start ⇄ full). No-op for
-            // a non-follow diff.
-            pgit.insert(KeyPress::ch('f'), run(Action::ToggleFollowDiffScope));
-            // J/K: turn a media diff's PDF page (both sides at once). No-op outside a multi-page
-            // PDF side-by-side view (`App::media_diff_page_turn`'s own gate) — PageDown/PageUp are
-            // *not* rebound here: `dispatch_navigate`'s `PreviewGitDiff` arm reroutes them to the
-            // same handler only while the media diff is active, and keeps their ordinary scroll
-            // meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
-            pgit.insert(KeyPress::ch('J'), run(Action::PageNext));
-            pgit.insert(KeyPress::ch('K'), run(Action::PagePrev));
-            pgit.insert(KeyPress::ch('j'), nav(Motion::Down));
-            pgit.insert(KeyPress::ch('k'), nav(Motion::Up));
-            pgit.insert(KeyPress::ch('l'), nav(Motion::Right));
-            pgit.insert(KeyPress::ch('h'), nav(Motion::Left));
-            pgit.insert(KeyPress::ch('0'), nav(Motion::LineHome));
-            pgit.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
-            pgit.insert(KeyPress::ch('g'), nav(Motion::Top));
-            pgit.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-            pgit.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
-            pgit.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
-            apply_scheme_paging(&mut pgit, scheme);
-            // n/N = switch to the next/previous changed file's diff (cycle through changes without
-            // leaving the view; same meaning as the tree's n/N).
-            pgit.insert(KeyPress::ch('n'), run(Action::JumpNextChange));
-            pgit.insert(KeyPress::ch('N'), run(Action::JumpPrevChange));
-            pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
-            per_surface.insert(Surface::PreviewGitDiff, pgit);
+            pgit.extend(host_table(
+                konoma_plugin::host::project::diff_keys::file_diff_own_keys(),
+            ));
+        }
+        contexts.insert(Context::Diff, pgit);
 
-            // Git changes hub (o). Enter→GitOpenSelectedDiff fires as a fixed key.
-            let mut gchg: ContextMap = HashMap::new();
-            gchg.insert(KeyPress::ch('j'), nav(Motion::Down));
-            gchg.insert(KeyPress::ch('k'), nav(Motion::Up));
-            gchg.insert(KeyPress::ch('s'), run(Action::GitStage));
-            gchg.insert(KeyPress::ch('u'), run(Action::GitUnstage));
-            gchg.insert(KeyPress::ch('S'), run(Action::GitStageAll));
-            gchg.insert(KeyPress::ch('U'), run(Action::GitUnstageAll));
-            gchg.insert(KeyPress::ch('x'), run(Action::GitDiscard));
-            gchg.insert(KeyPress::ch('c'), run(Action::GitCommit));
-            gchg.insert(KeyPress::ch('d'), run(Action::GitWorktreeDiff));
-            gchg.insert(KeyPress::ch('b'), run(Action::GitOpenBranches));
-            gchg.insert(KeyPress::ch('w'), run(Action::GitOpenWorktrees));
-            gchg.insert(KeyPress::ch('l'), run(Action::GitOpenLog));
-            gchg.insert(KeyPress::ch('g'), run(Action::GitOpenGraph));
-            gchg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-            gchg.insert(KeyPress::ch('R'), run(Action::JjSync));
-            gchg.insert(KeyPress::ch('q'), run(Action::GitClose));
-            // y→ copies the selected changed file's path (reuses the same path-copy menu as the tree).
-            gchg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
-            per_surface.insert(Surface::GitChanges, gchg);
+        // --- Version-control contexts (feature gate) ---
+        #[cfg(feature = "git")]
+        {
+            // The version-control screens: git and jj start with the same tables.
+            for backend in Backend::ALL {
+                // Changes hub. Enter→GitOpenSelectedDiff fires as a fixed key.
+                let mut gchg: ContextMap = host_table(verbs_table());
+                gchg.insert(KeyPress::ch('s'), run(Action::GitStage));
+                gchg.insert(KeyPress::ch('u'), run(Action::GitUnstage));
+                gchg.insert(KeyPress::ch('S'), run(Action::GitStageAll));
+                gchg.insert(KeyPress::ch('U'), run(Action::GitUnstageAll));
+                gchg.insert(KeyPress::ch('x'), run(Action::GitDiscard));
+                gchg.insert(KeyPress::ch('c'), run(Action::GitCommit));
+                gchg.insert(KeyPress::ch('d'), run(Action::GitWorktreeDiff));
+                gchg.insert(KeyPress::ch('b'), run(Action::GitOpenBranches));
+                gchg.insert(KeyPress::ch('w'), run(Action::GitOpenWorktrees));
+                // The log and the graph have no default key here: `g` / `l` are layer 1's
+                // top and open (the screens' `Tab` cycle reaches them). The actions stay
+                // (`git_open_log`, `git_open_graph`) for `[keys]`.
+                // `l` opens the selected file's diff (`Enter`'s operation), `h` goes back.
+                gchg.insert(KeyPress::ch('l'), run(Action::GitOpenSelectedDiff));
+                gchg.insert(KeyPress::ch('h'), run(Action::GitClose));
+                gchg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
+                // The row is a file: edit it, open it in another app, in a new tab; filter rows.
+                gchg.insert(KeyPress::ctrl_ch('t'), run(Action::OpenInNewTab));
+                gchg.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
+                gchg.insert(KeyPress::ch('r'), run(Action::Refresh));
+                // jj has no staging area, and its changes screen syncs (fetch + rebase) on `s`
+                // where git stages: the same key, a different meaning per backend.
+                if backend == Backend::Jj {
+                    gchg.insert(KeyPress::ch('s'), run(Action::JjSync));
+                }
+                gchg.insert(KeyPress::ch('q'), run(Action::GitClose));
+                // y→ copies the selected changed file's path (reuses the same path-copy menu as the tree).
+                gchg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
+                contexts.insert(Context::Screen(backend, Screen::Changes), gchg);
 
-            // Git log / graph (identical). Enter→GitOpenDetail is a fixed key.
-            let mut glog: ContextMap = HashMap::new();
-            glog.insert(KeyPress::ch('j'), nav(Motion::Down));
-            glog.insert(KeyPress::ch('k'), nav(Motion::Up));
-            glog.insert(KeyPress::ch('g'), nav(Motion::Top));
-            glog.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-            glog.insert(KeyPress::ch('l'), run(Action::GitOpenDetail));
-            glog.insert(KeyPress::ch('q'), run(Action::GitClose));
-            // y→ copy commit info (short/full hash, subject, full message, author, date). Shared by
-            // log/graph.
-            glog.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::GitCopy));
-            // The graph has base-branch pinning (Phase 2): s = set / x = clear / b = branch
-            // visibility panel. log has none of this, hence a separate map.
-            let mut ggraph = glog.clone();
-            ggraph.insert(KeyPress::ch('s'), run(Action::GitGraphSetBase));
-            ggraph.insert(KeyPress::ch('a'), run(Action::GitGraphToggleAll));
-            ggraph.insert(KeyPress::ch('x'), run(Action::GitGraphClearBase));
-            // `0` also clears it (the vim feel of "line-home = return to the anchor". Coexists with
-            // `x`; both resolve to the same Action).
-            ggraph.insert(KeyPress::ch('0'), run(Action::GitGraphClearBase));
-            ggraph.insert(KeyPress::ch('b'), run(Action::GitGraphOpenPicker));
-            per_surface.insert(Surface::GitGraph, ggraph);
-            per_surface.insert(Surface::GitLog, glog);
+                // Git log / graph (identical). Enter→GitOpenDetail is a fixed key.
+                let mut glog: ContextMap = HashMap::new();
+                glog.insert(KeyPress::ch('l'), run(Action::GitOpenDetail));
+                glog.insert(KeyPress::ch('h'), run(Action::GitClose));
+                glog.insert(KeyPress::ch('q'), run(Action::GitClose));
+                glog.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
+                glog.insert(KeyPress::ch('r'), run(Action::Refresh));
+                // y→ copy commit info (short/full hash, subject, full message, author, date). Shared by
+                // log/graph.
+                glog.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::GitCopy));
+                // The graph has base-branch pinning (Phase 2): s = set / x = clear / b = branch
+                // visibility panel. log has none of this, hence a separate map.
+                let mut ggraph = glog.clone();
+                ggraph.insert(KeyPress::ch('s'), run(Action::GitGraphSetBase));
+                ggraph.insert(KeyPress::ch('a'), run(Action::GitGraphToggleAll));
+                // `x` only: `0` is layer 1's line start (it used to clear the base too).
+                ggraph.insert(KeyPress::ch('x'), run(Action::GitGraphClearBase));
+                ggraph.insert(KeyPress::ch('b'), run(Action::GitGraphOpenPicker));
+                contexts.insert(Context::Screen(backend, Screen::Graph), ggraph);
+                contexts.insert(Context::Screen(backend, Screen::Log), glog);
 
-            // The graph's branch visibility panel: j/k/g/G navigate + Space:toggle / a:all /
-            // n:current-only. Enter:apply / q·Esc:cancel are fixed keys.
-            let mut gpick: ContextMap = HashMap::new();
-            gpick.insert(KeyPress::ch('j'), nav(Motion::Down));
-            gpick.insert(KeyPress::ch('k'), nav(Motion::Up));
-            gpick.insert(KeyPress::ch('g'), nav(Motion::Top));
-            gpick.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-            gpick.insert(KeyPress::ch(' '), run(Action::GitGraphPickerToggle));
-            gpick.insert(KeyPress::ch('a'), run(Action::GitGraphPickerAll));
-            gpick.insert(KeyPress::ch('n'), run(Action::GitGraphPickerCurrentOnly));
-            // Reorder priority (uppercase J/K). Lowercase j/k move the cursor.
-            gpick.insert(KeyPress::ch('K'), run(Action::GitGraphPickerMoveUp));
-            gpick.insert(KeyPress::ch('J'), run(Action::GitGraphPickerMoveDown));
-            gpick.insert(KeyPress::ch('q'), run(Action::GitClose));
-            per_surface.insert(Surface::GitGraphPicker, gpick);
+                // The graph's branch visibility panel: j/k/g/G navigate + x:toggle / a:all /
+                // c:current-only (it was `n`, which is layer 1's next match). Enter and `l`:apply,
+                // `q` and `h`: cancel (Esc is a fixed key). The toggle was `Space`, which is the
+                // operation menu everywhere now.
+                let mut gpick: ContextMap = HashMap::new();
+                gpick.insert(KeyPress::ch('x'), run(Action::GitGraphPickerToggle));
+                gpick.insert(KeyPress::ch('a'), run(Action::GitGraphPickerAll));
+                gpick.insert(KeyPress::ch('c'), run(Action::GitGraphPickerCurrentOnly));
+                gpick.insert(KeyPress::ch('l'), run(Action::GitGraphPickerApply));
+                gpick.insert(KeyPress::ch('h'), run(Action::GitClose));
+                // Reorder priority (uppercase J/K). Lowercase j/k move the cursor.
+                gpick.insert(KeyPress::ch('K'), run(Action::GitGraphPickerMoveUp));
+                gpick.insert(KeyPress::ch('J'), run(Action::GitGraphPickerMoveDown));
+                gpick.insert(KeyPress::ch('q'), run(Action::GitClose));
+                contexts.insert(Context::Screen(backend, Screen::GraphPicker), gpick);
 
-            // Git branches. Enter→BranchCheckout is a fixed key.
-            let mut gbr: ContextMap = HashMap::new();
-            gbr.insert(KeyPress::ch('j'), nav(Motion::Down));
-            gbr.insert(KeyPress::ch('k'), nav(Motion::Up));
-            gbr.insert(KeyPress::ch('g'), nav(Motion::Top));
-            gbr.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-            gbr.insert(KeyPress::ch('/'), run(Action::BranchFilterStart));
-            gbr.insert(KeyPress::ch('l'), run(Action::BranchCheckout));
-            gbr.insert(KeyPress::ch('n'), run(Action::BranchCreate));
-            gbr.insert(KeyPress::ch('d'), run(Action::BranchDelete));
-            gbr.insert(KeyPress::ch('q'), run(Action::GitClose));
-            // y→ copy the selected branch name (there's only one target, so it copies directly with
-            // no menu).
-            gbr.insert(KeyPress::ch('y'), run(Action::CopyBranchName));
-            per_surface.insert(Surface::GitBranches, gbr);
+                // Git branches. Enter→BranchCheckout is a fixed key.
+                let mut gbr: ContextMap = HashMap::new();
+                gbr.insert(KeyPress::ch('/'), run(Action::BranchFilterStart));
+                gbr.insert(KeyPress::ch('r'), run(Action::Refresh));
+                gbr.insert(KeyPress::ch('l'), run(Action::BranchCheckout));
+                // `c` = create (`n` is layer 1's next match).
+                gbr.insert(KeyPress::ch('c'), run(Action::BranchCreate));
+                gbr.insert(KeyPress::ch('d'), run(Action::BranchDelete));
+                gbr.insert(KeyPress::ch('h'), run(Action::GitClose));
+                gbr.insert(KeyPress::ch('q'), run(Action::GitClose));
+                // y→ the copy menu, whose one item is the selected branch's name.
+                gbr.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::BranchCopy));
+                contexts.insert(Context::Screen(backend, Screen::Branches), gbr);
 
-            // Git worktrees (`w` from the changes hub). `Enter`→worktree_goto and `Esc`→
-            // worktree_close (via handle_esc) are fixed keys (same idiom as branches' Enter→
-            // checkout); `WorktreeGoto` has no default key binding here, same as
-            // `GitOpenSelectedDiff` — it still round-trips through action_from_str/action_name so a
-            // user can rebind another key to it. Ctrl-t (config-rebindable, unlike Enter) opens the
-            // selection in a new tab. `n` opens the "new worktree" input dialog, same idiom as
-            // `BranchCreate`'s `n` in `[keys.git_branches]` below.
-            let mut gwt: ContextMap = HashMap::new();
-            gwt.insert(KeyPress::ch('j'), nav(Motion::Down));
-            gwt.insert(KeyPress::ch('k'), nav(Motion::Up));
-            gwt.insert(KeyPress::ch('g'), nav(Motion::Top));
-            gwt.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-            gwt.insert(KeyPress::ch('/'), run(Action::WorktreeFilterStart));
-            gwt.insert(KeyPress::ch('n'), run(Action::WorktreeCreate));
-            gwt.insert(KeyPress::ctrl_ch('t'), run(Action::WorktreeGotoNewTab));
-            gwt.insert(KeyPress::ch('d'), run(Action::WorktreeShowChanges));
-            gwt.insert(KeyPress::ch('q'), run(Action::WorktreeClose));
-            per_surface.insert(Surface::GitWorktrees, gwt);
+                // Git worktrees (`w` from the changes hub). `Enter`→worktree_goto and `Esc`→
+                // worktree_close (via handle_esc) are fixed keys (same idiom as branches' Enter→
+                // checkout); `WorktreeGoto` has no default key binding here, same as
+                // `GitOpenSelectedDiff` — it still round-trips through action_from_str/action_name so a
+                // user can rebind another key to it. Ctrl-t (config-rebindable, unlike Enter) opens the
+                // selection in a new tab. `c` opens the "new worktree" input dialog, same idiom as
+                // `BranchCreate`'s `c` in `[keys."git.branches"]` above. `l` goes to the selected
+                // worktree (`Enter`'s operation) and `h` back.
+                let mut gwt: ContextMap = HashMap::new();
+                gwt.insert(KeyPress::ch('/'), run(Action::WorktreeFilterStart));
+                gwt.insert(KeyPress::ch('r'), run(Action::Refresh));
+                gwt.insert(KeyPress::ch('c'), run(Action::WorktreeCreate));
+                gwt.insert(KeyPress::ch('l'), run(Action::WorktreeGoto));
+                gwt.insert(KeyPress::ch('h'), run(Action::WorktreeClose));
+                gwt.insert(KeyPress::ctrl_ch('t'), run(Action::WorktreeGotoNewTab));
+                gwt.insert(KeyPress::ch('d'), run(Action::WorktreeShowChanges));
+                gwt.insert(KeyPress::ch('q'), run(Action::WorktreeClose));
+                contexts.insert(Context::Screen(backend, Screen::Worktrees), gwt);
 
-            // Git detail (all Motions enabled; page/half are swapped per scheme).
-            let mut gdet: ContextMap = HashMap::new();
-            gdet.insert(KeyPress::ch('j'), nav(Motion::Down));
-            gdet.insert(KeyPress::ch('k'), nav(Motion::Up));
-            gdet.insert(KeyPress::ch('l'), nav(Motion::Right));
-            gdet.insert(KeyPress::ch('h'), nav(Motion::Left));
-            gdet.insert(KeyPress::ch('0'), nav(Motion::LineHome));
-            gdet.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
-            gdet.insert(KeyPress::ch('g'), nav(Motion::Top));
-            gdet.insert(KeyPress::ch('G'), nav(Motion::Bottom));
-            gdet.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
-            gdet.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
-            gdet.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
-            gdet.insert(KeyPress::ch('q'), run(Action::GitClose));
-            // y→ copy commit info (can copy while reading the full message).
-            gdet.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::GitCopy));
-            apply_scheme_paging(&mut gdet, scheme);
-            per_surface.insert(Surface::GitDetail, gdet);
+                // Git detail (the scrolling keys come from the text layer; page/half are swapped per scheme).
+                let mut gdet: ContextMap = HashMap::new();
+                gdet.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
+                gdet.insert(KeyPress::ch('q'), run(Action::GitClose));
+                // y→ copy commit info (can copy while reading the full message).
+                gdet.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::GitCopy));
+                contexts.insert(Context::Screen(backend, Screen::Detail), gdet);
+            }
         }
 
-        // --- Sort menu (scheme-independent) ---
-        let mut sort: ContextMap = HashMap::new();
-        sort.insert(KeyPress::ch('n'), run(Action::SortSet(SortKey::Name)));
-        sort.insert(KeyPress::ch('s'), run(Action::SortSet(SortKey::Size)));
-        sort.insert(KeyPress::ch('m'), run(Action::SortSet(SortKey::Modified)));
-        sort.insert(KeyPress::ch('e'), run(Action::SortSet(SortKey::Ext)));
-        sort.insert(KeyPress::ch('r'), run(Action::SortToggleReverse));
-        sort.insert(KeyPress::ch('.'), run(Action::SortToggleDirsFirst));
-        per_surface.insert(Surface::Sort, sort);
-
         // --- Bookmark list. Enter→BookmarkJump is a fixed key. Plain letters are reserved for
-        // bookmark-name jumps (main's Unbound fallback), so edit/delete are placed on Ctrl-modified
-        // keys instead. ---
+        // bookmark-name jumps (main's Unbound fallback), so editing is on a Ctrl-modified key and
+        // deleting is only in the `Space` menu. ---
         let mut bm: ContextMap = HashMap::new();
-        bm.insert(KeyPress::ch('j'), nav(Motion::Down));
-        bm.insert(KeyPress::ch('k'), nav(Motion::Up));
         bm.insert(KeyPress::ctrl_ch('e'), run(Action::BookmarkEdit));
-        bm.insert(KeyPress::ctrl_ch('d'), run(Action::BookmarkDelete));
+        // Deleting a bookmark is in the list's `Space` menu (`d`): `Ctrl-d` is layer 1's half page.
         bm.insert(KeyPress::ch('q'), run(Action::BookmarkClose));
         bm.insert(KeyPress::ch('\''), run(Action::BookmarkClose));
-        per_surface.insert(Surface::Bookmarks, bm);
+        // `/` filters the rows, like on every list. `h` and `l` stay *unbound* here, unlike the
+        // other lists (layer 1's back / open): in this list every plain letter is the name of a
+        // bookmark and jumps straight to it, and `h` / `l` can be bookmark names too.
+        bm.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
+        contexts.insert(Context::Bookmarks, bm);
 
         // --- Tab list (`T` toggles it open/closed. Enter=switch is a fixed key; T closes it via
         // Global inheritance) ---
         let mut tl: ContextMap = HashMap::new();
-        tl.insert(KeyPress::ch('j'), nav(Motion::Down));
-        tl.insert(KeyPress::ch('k'), nav(Motion::Up));
         tl.insert(KeyPress::ch('d'), run(Action::TabListClose));
         tl.insert(KeyPress::ch('q'), run(Action::ToggleTabList));
-        per_surface.insert(Surface::Tabs, tl);
+        // Layer 1 on a list: `l` = open (`Enter`'s operation), `h` = back (`q`), `/` = filter.
+        tl.insert(KeyPress::ch('l'), run(Action::TabListActivate));
+        tl.insert(KeyPress::ch('h'), run(Action::ToggleTabList));
+        tl.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
+        contexts.insert(Context::Tabs, tl);
 
-        // --- Heading outline list (`o` toggles it open/closed. Enter=jump is a fixed key) ---
+        // --- Heading outline list (`O` toggles it open/closed. Enter=jump is a fixed key) ---
         let mut outline: ContextMap = HashMap::new();
-        outline.insert(KeyPress::ch('j'), nav(Motion::Down));
-        outline.insert(KeyPress::ch('k'), nav(Motion::Up));
         outline.insert(KeyPress::ch('g'), nav(Motion::Top));
         outline.insert(KeyPress::ch('G'), nav(Motion::Bottom));
         outline.insert(KeyPress::ch('q'), run(Action::ToggleOutline));
-        outline.insert(KeyPress::ch('o'), run(Action::ToggleOutline));
-        per_surface.insert(Surface::Outline, outline);
+        outline.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
+        // Layer 1 on a list: `l` = go to the heading / page (`Enter`'s operation), `h` = back
+        // (`q`), `/` = filter.
+
+        outline.insert(KeyPress::ch('l'), run(Action::OutlineJump));
+        outline.insert(KeyPress::ch('h'), run(Action::ToggleOutline));
+        outline.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
+        contexts.insert(Context::Outline, outline);
 
         // --- Info ---
         let mut info: ContextMap = HashMap::new();
         info.insert(KeyPress::ch('i'), run(Action::InfoClose));
         info.insert(KeyPress::ch('q'), run(Action::InfoClose));
-        per_surface.insert(Surface::Info, info);
+        contexts.insert(Context::Info, info);
 
         // --- Table cell full-text popup (`Enter` in a table preview opens it; fixed key, see
         // handle_enter). j/k/g/G/PageUp/PageDown scroll the (possibly wrapped/long) cell text.
         // `q` closes (Enter/Esc also close via the fixed-key path). ---
         let mut tcell: ContextMap = HashMap::new();
-        tcell.insert(KeyPress::ch('j'), nav(Motion::Down));
-        tcell.insert(KeyPress::ch('k'), nav(Motion::Up));
         tcell.insert(KeyPress::ch('g'), nav(Motion::Top));
         tcell.insert(KeyPress::ch('G'), nav(Motion::Bottom));
         tcell.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
         tcell.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         tcell.insert(KeyPress::ch('q'), run(Action::ToggleTableCell));
-        per_surface.insert(Surface::TableCell, tcell);
+        contexts.insert(Context::TableCell, tcell);
 
         // --- Help (?/Esc close it via Global/fixed keys. `q` closes it here too) ---
         let mut help: ContextMap = HashMap::new();
-        help.insert(KeyPress::ch('j'), nav(Motion::Down));
-        help.insert(KeyPress::ch('k'), nav(Motion::Up));
         help.insert(KeyPress::ch('g'), nav(Motion::Top));
         help.insert(KeyPress::ch('G'), nav(Motion::Bottom));
         help.insert(KeyPress::ch('q'), run(Action::ToggleHelp));
-        per_surface.insert(Surface::Help, help);
+        contexts.insert(Context::Help, help);
 
-        // --- Global (inherited by allows_tabs surfaces) ---
-        let mut global: ContextMap = HashMap::new();
-        // Q = quit the whole app. Every allows_tabs() surface (all but text-input/confirm-modal)
-        // inherits global, so Q exits from any surface. Changeable via `[keys.global]`; conflicts
-        // are detected by validate() at startup.
-        global.insert(KeyPress::ch('Q'), run(Action::Quit));
-        // F = follow mode (auto-jump to externally changed files). Global so it can be toggled from
-        // either Tree or Preview.
-        global.insert(KeyPress::ch('F'), run(Action::ToggleFollow));
-        global.insert(KeyPress::ch('t'), run(Action::TabNew));
-        // I = "insert" a new tab next to this one (tab_new_after), landing right of the active
-        // tab instead of at the end. Chosen because it's a letter no tab-allowing surface uses
-        // for anything else, so it's never shadowed by a surface-specific binding; `t` keeps
-        // appending at the end (unchanged for every existing caller).
-        global.insert(KeyPress::ch('I'), run(Action::TabNewAfter));
-        global.insert(KeyPress::ch('T'), run(Action::ToggleTabList));
-        // P = read a path/GitHub link from the clipboard and jump there (reveal + preview). Global
-        // so it works from either Tree or Preview. Changeable via `[keys.global]`.
-        global.insert(KeyPress::ch('P'), run(Action::PasteJump));
-        // No default binding is placed on `w`: vim's word-motion habit makes it easy to trigger by
-        // accident, so closing a tab is consolidated onto the tree's `q` (CloseTabOrQuit) (user
-        // decision, 2026-07-07). The `tab_close` action itself still exists, so it can be revived
-        // via `[keys.global] w = "tab_close"`.
-        global.insert(KeyPress::ch('['), run(Action::TabPrev));
-        global.insert(KeyPress::ch(']'), run(Action::TabNext));
-        for i in 1..=9u8 {
-            let c = char::from(b'0' + i);
-            global.insert(KeyPress::ch(c), run(Action::TabGoto(i - 1)));
-        }
-        global.insert(KeyPress::ch('?'), run(Action::ToggleHelp));
+        // =====================================================================
+        // Layer 0: global (inherited by every context).
+        // =====================================================================
+        let global: ContextMap = host_table(global_table());
 
         // --- Leaders ---
         let mut leaders: HashMap<LeaderId, LeaderMenu> = HashMap::new();
-        leaders.insert(LeaderId::Copy, copy_leader_default());
         leaders.insert(LeaderId::File, file_leader_default());
-        leaders.insert(LeaderId::TableCopy, table_copy_leader_default());
         #[cfg(feature = "git")]
         leaders.insert(LeaderId::GitCopy, git_copy_leader_default());
+        #[cfg(feature = "git")]
+        leaders.insert(LeaderId::BranchCopy, branch_copy_leader_default());
 
-        KeyMap {
-            per_surface,
+        // The `,` menus: one per context that has one.
+        let mut ctx_menus: HashMap<(Context, LeaderId), LeaderMenu> = HashMap::new();
+        for (c, menu) in options_menus_default() {
+            ctx_menus.insert((c, LeaderId::Options), menu);
+        }
+
+        let mut km = KeyMap {
+            contexts,
+            #[cfg(feature = "git")]
+            screen_keys: HashMap::new(),
+            types,
+            basic,
             global,
             leaders,
+            ctx_menus,
+            preview_menus: default_menus().map(&|a: CoreAction| Action::from(a), &Msg::from_core),
+            default_ops: HashMap::new(),
             conflicts: Vec::new(),
             warnings: Vec::new(),
-        }
+            renames: Vec::new(),
+        };
+        km.sync_preview_menus();
+        km.default_ops = Context::all()
+            .into_iter()
+            .map(|c| (c, km.bound_actions(c).into_iter().map(|(_, a)| a).collect()))
+            .collect();
+        km
     }
 
     /// defaults → merge config → validate conflicts (§6/§7). Always falls back and returns green (never panics).
+    ///
+    /// A `[keys.<name>]` table is read under its context name. The names from before contexts
+    /// (`preview_text`, `git_changes`, ...) are still read: each is applied to every context it
+    /// now covers, and noted in `renames` so the startup flash can say what to write instead. When a
+    /// context is configured both ways, the new name wins.
     pub fn from_config(scheme: KeyScheme, cfg: &KeysFileConfig) -> KeyMap {
+        let defaults = KeyMap::shared_defaults(scheme); // kept aside for rollback.
         let mut map = KeyMap::defaults(scheme);
-        let defaults = KeyMap::defaults(scheme); // kept aside for rollback.
         let mut warnings: Vec<String> = Vec::new();
+        let mut renames: Vec<(String, String)> = Vec::new();
 
-        for (sfc_name, table) in &cfg.surfaces {
-            let target = match key_target_from_name(sfc_name) {
-                Some(t) => t,
-                None => {
-                    warnings.push(format!("unknown key surface: {sfc_name}"));
-                    continue;
-                }
-            };
-            for (chord_str, action_str) in table {
-                map.apply_one(target, chord_str, action_str, &mut warnings);
+        // Sorted, so the warnings and notes come out in the same order every run.
+        let mut names: Vec<&String> = cfg.surfaces.keys().collect();
+        names.sort();
+        let mut old_tables: Vec<(Vec<KeyTarget>, &HashMap<String, String>)> = Vec::new();
+        let mut new_tables: Vec<(Vec<KeyTarget>, &HashMap<String, String>)> = Vec::new();
+        for name in names {
+            let table = &cfg.surfaces[name];
+            if name == "global" {
+                new_tables.push((vec![KeyTarget::Global], table));
+            } else if name == "sort" {
+                old_tables.push((vec![KeyTarget::OldSort], table));
+            } else if let Some(c) = Context::from_name(name) {
+                new_tables.push((vec![KeyTarget::Context(c)], table));
+            } else if let Some(cs) = old_surface_contexts(name) {
+                let now = cs
+                    .iter()
+                    .map(|c| c.header())
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                renames.push((format!("[keys.{name}]"), now));
+                old_tables.push((cs.into_iter().map(KeyTarget::Context).collect(), table));
+            } else {
+                warnings.push(format!("unknown key surface: {name}"));
+            }
+        }
+        // Old names first, so a table written under the new name overrides them. `global` goes
+        // before the contexts: a menu entry in `global` reaches every copy of the menu, and a
+        // context's own entry for the same key must come after it to win.
+        new_tables.sort_by_key(|(targets, _)| !targets.contains(&KeyTarget::Global));
+        for (targets, table) in old_tables.into_iter().chain(new_tables) {
+            let mut entries: Vec<(&String, &String)> = table.iter().collect();
+            entries.sort();
+            for (chord_str, action_str) in entries {
+                map.apply_one(&targets, chord_str, action_str, &mut warnings);
             }
         }
 
+        // An old operation name that was renamed (not merely aliased by a merge): say what to write.
+        if cfg
+            .surfaces
+            .values()
+            .any(|t| t.values().any(|a| a == "toggle_markdown_raw"))
+        {
+            renames.push((
+                "toggle_markdown_raw".to_string(),
+                "cycle_representation".to_string(),
+            ));
+        }
+        if cfg.surfaces.get("sort").is_some_and(|t| !t.is_empty()) {
+            renames.push((
+                "[keys.sort]".to_string(),
+                "the `,` menu (e.g. [keys.tree] \", n\" = \"sort_name\")".to_string(),
+            ));
+        }
         map.validate(&defaults);
         map.warnings = warnings;
+        map.renames = renames;
         map
     }
 
-    /// Apply one (chord string → action string) (§6 step ③). On failure, warn and ignore.
+    /// Apply one (chord string → action string) to every target (§6 step ③). The entry is parsed
+    /// and checked once, so a table that covers several contexts warns once, not once per
+    /// context. On failure, warn and ignore.
     fn apply_one(
         &mut self,
-        target: KeyTarget,
+        targets: &[KeyTarget],
         chord_str: &str,
         action_str: &str,
         warnings: &mut Vec<String>,
@@ -1270,289 +1772,635 @@ impl KeyMap {
                     warnings.push(format!("cannot rebind fixed key: {chord_str:?}"));
                     return;
                 }
-                let cmap = self.context_mut(target);
-                match action {
-                    Some(a) => {
-                        cmap.insert(kp, Binding::Run(a));
-                    }
-                    None => {
-                        cmap.remove(&kp);
+                for &target in targets {
+                    self.set_key(target, kp, action);
+                    // The old `[keys.sort]` table re-letters the sort menu; that menu is now the
+                    // tree's `,` menu, so its sort entries (and removals) carry over to it.
+                    if target == KeyTarget::OldSort
+                        && action.is_none_or(|a| {
+                            matches!(
+                                a,
+                                Action::SortSet(_)
+                                    | Action::SortToggleReverse
+                                    | Action::SortToggleDirsFirst
+                            )
+                        })
+                    {
+                        let _ = self.set_menu_entry(
+                            KeyTarget::Context(Context::Tree),
+                            KeyPress::ch(','),
+                            kp,
+                            action,
+                        );
                     }
                 }
             }
             KeyChord::Chord(pre, suf) => {
-                let lead = match leader_for_prefix(pre) {
-                    Some(l) => l,
-                    None => {
-                        warnings.push(format!(
-                            "unsupported chord prefix (only `space`/`y` leaders are supported): {chord_str:?}"
-                        ));
-                        return;
+                if prefix_menu(pre).is_none() {
+                    warnings.push(format!(
+                        "unsupported chord prefix (only `space`, `y` and `,` open menus): {chord_str:?}"
+                    ));
+                    return;
+                }
+                // One entry may cover several contexts (an old table name does): it is refused
+                // only when it reached none of them, and then it says so once.
+                let mut reached = false;
+                let mut why = String::new();
+                for &target in targets {
+                    match self.set_menu_entry(target, pre, suf, action) {
+                        Ok(()) => reached = true,
+                        Err(w) => why = w,
                     }
-                };
-                let menu = match self.leaders.get_mut(&lead) {
-                    Some(m) => m,
-                    None => return,
-                };
-                match action {
-                    Some(a) => menu.set(suf, a),
-                    None => menu.remove(suf),
+                }
+                if !reached {
+                    warnings.push(format!("{why}: {chord_str:?}"));
                 }
             }
         }
     }
 
-    fn context_mut(&mut self, target: KeyTarget) -> &mut ContextMap {
+    /// Put `suf` (or remove it, `None`) in the menu that `pre` opens, for `target`. `global`
+    /// changes the shared menu and every context's own copy of it (what `[keys.global] "y x"`
+    /// always did); a context changes only its own copy of the menu `pre` opens *there* — the
+    /// `y` of the tree and the `y` of a table are different menus.
+    fn set_menu_entry(
+        &mut self,
+        target: KeyTarget,
+        pre: KeyPress,
+        suf: KeyPress,
+        action: Option<Action>,
+    ) -> std::result::Result<(), String> {
+        let edit = |m: &mut LeaderMenu| match action {
+            Some(a) => m.set(suf, a),
+            None => m.remove(suf),
+        };
+        let entry = action.map(|a| (a, leader_label(a)));
         match target {
-            KeyTarget::Global => &mut self.global,
-            KeyTarget::Surface(s) => self.per_surface.entry(s).or_default(),
+            KeyTarget::OldSort => Err(format!("`{}` opens no menu in [keys.sort]", pre.label())),
+            KeyTarget::Global => {
+                let id = prefix_menu(pre).ok_or_else(|| "no such menu".to_string())?;
+                if let Some(cm) = core_menu(id) {
+                    // The shared menus (the preview contexts' and the tree's `y`).
+                    let _ = self.preview_menus.edit(MenuScope::Global, cm, suf, entry);
+                    self.sync_preview_menus();
+                } else if let Some(m) = self.leaders.get_mut(&id) {
+                    edit(m);
+                }
+                // The menus only konoma's own contexts have (the tree's `,` menu, ...).
+                for ((c, mid), m) in self.ctx_menus.iter_mut() {
+                    if *mid == id && core_context(*c).is_none() {
+                        edit(m);
+                    }
+                }
+                Ok(())
+            }
+            KeyTarget::Context(c) => {
+                let id = match self.local(c, pre) {
+                    Some(Binding::Leader(id)) => *id,
+                    _ => return Err(format!("`{}` opens no menu in {}", pre.label(), c.header())),
+                };
+                if id == LeaderId::Actions {
+                    return Err(format!(
+                        "the Space menu of {} lists its operations itself (bind the operation to a key there instead)",
+                        c.header()
+                    ));
+                }
+                if let (Some(cc), Some(cm)) = (core_context(c), core_menu(id)) {
+                    self.preview_menus
+                        .edit(MenuScope::Context(cc), cm, suf, entry)
+                        .map_err(|_| format!("{} has no menu to change", c.header()))?;
+                    self.sync_preview_menus();
+                    return Ok(());
+                }
+                let base = self
+                    .ctx_menus
+                    .get(&(c, id))
+                    .or_else(|| self.leaders.get(&id))
+                    .cloned()
+                    .ok_or_else(|| format!("{} has no menu to change", c.header()))?;
+                edit(self.ctx_menus.entry((c, id)).or_insert(base));
+                Ok(())
+            }
         }
+    }
+
+    /// Refresh `leaders` / `ctx_menus` from the shared preview menus.
+    fn sync_preview_menus(&mut self) {
+        for (cm, menu) in &self.preview_menus.shared {
+            let id = leader_id(*cm);
+            self.leaders.insert(id, leader_menu(id, menu));
+        }
+        for ((cc, cm), menu) in &self.preview_menus.per_context {
+            let id = leader_id(*cm);
+            let hc = host_context(*cc);
+            // The host's diff keeps its own `,` menu: it adds the follow scope (`f`) in front of
+            // the shared items, and `core_context` leaves the diff out so edits stay on it.
+            if core_context(hc).is_some() {
+                self.ctx_menus.insert((hc, id), leader_menu(id, menu));
+            }
+        }
+    }
+
+    /// Bind `kp` to `action` in `target`'s own table, or unbind it there (`None`). Unbinding must
+    /// also hide what the context inherits from layers 1-2, hence the explicit
+    /// [`Binding::Unbound`] mark; layer 0 still applies, as it did when the key was merely absent
+    /// from a surface's table.
+    fn set_key(&mut self, target: KeyTarget, kp: KeyPress, action: Option<Action>) {
+        match target {
+            KeyTarget::OldSort => {}
+            KeyTarget::Global => match action {
+                Some(a) => {
+                    self.global.insert(kp, Binding::Run(a));
+                }
+                None => {
+                    self.global.remove(&kp);
+                }
+            },
+            KeyTarget::Context(c) => {
+                #[cfg(feature = "git")]
+                if matches!(c, Context::Screen(..)) {
+                    let own = self.screen_keys.entry(c).or_default();
+                    own.insert(kp, action.map_or(Binding::Unbound, Binding::Run));
+                }
+                let inherited = self.inherited(c, kp).is_some();
+                let table = self.contexts.entry(c).or_default();
+                match action {
+                    Some(a) => {
+                        table.insert(kp, Binding::Run(a));
+                    }
+                    None if inherited => {
+                        table.insert(kp, Binding::Unbound);
+                    }
+                    None => {
+                        table.remove(&kp);
+                    }
+                }
+            }
+        }
+    }
+
+    /// What layers 1-2 give `kp` in `ctx` (ignoring the context's own table and `global`).
+    fn inherited(&self, ctx: Context, kp: KeyPress) -> Option<&Binding> {
+        for vt in ctx.view_types() {
+            if let Some(b) = self.types.get(vt).and_then(|m| m.get(&kp)) {
+                return Some(b);
+            }
+        }
+        if ctx.inherits_basic() {
+            return self.basic.get(&kp);
+        }
+        None
+    }
+
+    /// The binding `kp` has in `ctx` before `global`: the context's own table, then layers 2 and 1.
+    /// `None` when it has none or the context unbound it ([`Binding::Unbound`]).
+    fn local(&self, ctx: Context, kp: KeyPress) -> Option<&Binding> {
+        match self.contexts.get(&ctx).and_then(|m| m.get(&kp)) {
+            Some(Binding::Unbound) => None,
+            Some(b) => Some(b),
+            None => self.inherited(ctx, kp),
+        }
+    }
+
+    /// Every key that has an entry in `ctx`'s own table, its layers 2 and 1 (not `global`).
+    fn local_keys(&self, ctx: Context) -> Vec<KeyPress> {
+        let mut keys: Vec<KeyPress> = Vec::new();
+        if let Some(m) = self.contexts.get(&ctx) {
+            keys.extend(m.keys().copied());
+        }
+        for vt in ctx.view_types() {
+            if let Some(m) = self.types.get(vt) {
+                keys.extend(m.keys().copied());
+            }
+        }
+        if ctx.inherits_basic() {
+            keys.extend(self.basic.keys().copied());
+        }
+        keys.sort_by_key(|k| format!("{k:?}"));
+        keys.dedup();
+        keys
     }
 
     /// Detect post-merge conflicts and revert conflicting overrides to the defaults (§7). `defaults` is the kept default copy.
     fn validate(&mut self, defaults: &KeyMap) {
-        let mut conflicts: Vec<KeyConflict> = Vec::new();
-        let global_keys: Vec<KeyPress> = self.global.keys().copied().collect();
-        let surfaces: Vec<Surface> = self.per_surface.keys().copied().collect();
+        let mut conflicts: Vec<(Option<&'static str>, KeyConflict)> = Vec::new();
+        let mut global_keys: Vec<KeyPress> = self.global.keys().copied().collect();
+        global_keys.sort_by_key(|k| format!("{k:?}"));
+        let mut ctxs: Vec<Context> = self.contexts.keys().copied().collect();
+        ctxs.sort_by_key(|c| c.name());
 
-        for sfc in surfaces {
+        for ctx in ctxs {
             // --- PrefixVsSingle: a key that defaulted to a leader prefix was stolen by a Run ---
             let leader_keys: Vec<(KeyPress, LeaderId)> = defaults
-                .per_surface
-                .get(&sfc)
-                .map(|m| {
-                    m.iter()
-                        .filter_map(|(k, b)| match b {
-                            Binding::Leader(id) => Some((*k, *id)),
-                            _ => None,
-                        })
-                        .collect()
+                .local_keys(ctx)
+                .into_iter()
+                .filter_map(|k| match defaults.local(ctx, k) {
+                    Some(Binding::Leader(id)) => Some((k, *id)),
+                    _ => None,
                 })
-                .unwrap_or_default();
+                .collect();
             for (k, id) in leader_keys {
-                let cur = self.per_surface.get(&sfc).and_then(|m| m.get(&k)).cloned();
-                if let Some(Binding::Run(a)) = cur {
-                    conflicts.push(KeyConflict {
-                        surface: sfc,
-                        key: k,
-                        kept: format!("leader:{}", leader_name(id)),
-                        dropped: action_name(a),
-                        reason: ConflictKind::PrefixVsSingle,
-                    });
-                    self.per_surface
-                        .get_mut(&sfc)
-                        .expect("surface present")
+                if let Some(Binding::Run(a)) = self.local(ctx, k).cloned() {
+                    conflicts.push((
+                        conflict_screen(ctx),
+                        KeyConflict {
+                            surface: ctx.surface(),
+                            key: k,
+                            kept: format!("leader:{}", leader_name(id)),
+                            dropped: format!("{} in {}", action_name(a), ctx.header()),
+                            reason: ConflictKind::PrefixVsSingle,
+                        },
+                    ));
+                    self.contexts
+                        .entry(ctx)
+                        .or_default()
                         .insert(k, Binding::Leader(id));
                 }
             }
 
-            // --- GlobalShadow: an allows_tabs surface stole a Global default key for another Action ---
-            // A per-surface specialization that the default map itself has (e.g. the tab list's
+            // --- GlobalShadow: a context stole a Global default key for another Action ---
+            // A context-specific binding that the default map itself has (e.g. the tab list's
             // `w` = close the selected tab) is legitimate. Only correct it when the user config
             // steals a Global key **in a way that differs from the default**, restoring the
-            // default's per-surface binding if one exists, or Global otherwise.
-            if sfc.allows_tabs() {
-                let shadows: Vec<(KeyPress, String, String, Option<Binding>)> = {
-                    let cmap = match self.per_surface.get(&sfc) {
-                        Some(m) => m,
-                        None => continue,
+            // default's context binding if one exists, or Global otherwise.
+            let shadows: Vec<(KeyPress, String, String, Option<Binding>)> = global_keys
+                .iter()
+                .filter_map(|gk| {
+                    let local = self.local(ctx, *gk)?;
+                    let global = self.global.get(gk);
+                    if Some(local) == global {
+                        return None;
+                    }
+                    let default_local = defaults.local(ctx, *gk);
+                    if Some(local) == default_local {
+                        return None; // context specialization matching the default
+                    }
+                    let restore = default_local.cloned();
+                    let kept = match &restore {
+                        Some(b) => binding_name(b),
+                        None => global.map(binding_name).unwrap_or_default(),
                     };
-                    let dmap = defaults.per_surface.get(&sfc);
-                    global_keys
-                        .iter()
-                        .filter_map(|gk| {
-                            let local = cmap.get(gk)?;
-                            let global = self.global.get(gk);
-                            if Some(local) == global {
-                                return None;
-                            }
-                            let default_local = dmap.and_then(|m| m.get(gk));
-                            if Some(local) == default_local {
-                                return None; // per-surface specialization matching the default
-                            }
-                            let restore = default_local.cloned();
-                            let kept = match &restore {
-                                Some(b) => binding_name(b),
-                                None => global.map(binding_name).unwrap_or_default(),
-                            };
-                            Some((*gk, kept, binding_name(local), restore))
-                        })
-                        .collect()
-                };
-                for (gk, kept, dropped, restore) in shadows {
-                    conflicts.push(KeyConflict {
-                        surface: sfc,
+                    Some((
+                        *gk,
+                        kept,
+                        format!("{} in {}", binding_name(local), ctx.header()),
+                        restore,
+                    ))
+                })
+                .collect();
+            for (gk, kept, dropped, restore) in shadows {
+                conflicts.push((
+                    conflict_screen(ctx),
+                    KeyConflict {
+                        surface: ctx.surface(),
                         key: gk,
                         kept,
                         dropped,
                         reason: ConflictKind::GlobalShadow,
-                    });
-                    let m = self.per_surface.get_mut(&sfc).expect("surface present");
-                    match restore {
-                        Some(b) => {
-                            m.insert(gk, b);
-                        }
-                        None => {
-                            m.remove(&gk);
-                        }
+                    },
+                ));
+                match restore {
+                    Some(b) => {
+                        self.contexts.entry(ctx).or_default().insert(gk, b);
                     }
+                    None => self.set_key(KeyTarget::Context(ctx), gk, None),
                 }
             }
         }
 
-        self.conflicts = conflicts;
+        // One context-less table can stand for several contexts (a table under the old name
+        // `preview_text` covers `text` and `document`), and both would report the same thing:
+        // count it once, as it was when there was one surface.
+        // The screens of an old table all report the canvas surface, so the screen name keeps
+        // two screens' conflicts on one key apart (one each, as when each had its own surface).
+        let mut seen: Vec<(Option<&'static str>, Surface, KeyPress, ConflictKind)> = Vec::new();
+        conflicts.retain(|(screen, c)| {
+            let id = (*screen, c.surface, c.key, c.reason);
+            if seen.contains(&id) {
+                false
+            } else {
+                seen.push(id);
+                true
+            }
+        });
+        self.conflicts = conflicts.into_iter().map(|(_, c)| c).collect();
     }
 
-    /// surface + (leader pending) + keystroke → resolution (§1.5). One input = 1-2 HashMap lookups.
-    pub fn resolve(&self, sfc: Surface, pending: Option<LeaderId>, kp: KeyPress) -> Resolution {
-        if let Some(id) = pending {
-            return match self.leaders.get(&id).and_then(|m| m.find(kp)) {
-                Some(a) => Resolution::Action(a),
-                None => Resolution::Unbound,
-            };
+    /// The menu `id` is in `ctx`: the context's own copy when it has one, else the shared one.
+    /// `None` for a menu that is built when it opens (`LeaderId::Actions`, see `ops::menu`) and
+    /// for a context that has no such menu.
+    pub fn menu(&self, ctx: Context, id: LeaderId) -> Option<&LeaderMenu> {
+        self.ctx_menus
+            .get(&(ctx, id))
+            .or_else(|| self.leaders.get(&id))
+    }
+
+    /// The command a key runs inside the open menu `id` of `ctx`. (The `Space` menu outside the
+    /// tree is built from the app's state: `ops::menu::find` answers for it.)
+    pub fn resolve_leader(&self, ctx: Context, id: LeaderId, kp: KeyPress) -> Resolution {
+        match self.menu(ctx, id).and_then(|m| m.find(kp)) {
+            Some(a) => Resolution::Action(a),
+            None => Resolution::Unbound,
         }
-        if let Some(b) = self.per_surface.get(&sfc).and_then(|m| m.get(&kp)) {
+    }
+
+    /// context + (leader pending) + keystroke → resolution (§1.5). One input = a few HashMap lookups.
+    ///
+    /// With a leader pending, only the leader's menu is consulted (an unknown suffix is `Unbound`,
+    /// it does not fall through). Otherwise: the context's own table, its layer-2 tables, the basic
+    /// layer, then `global`.
+    pub fn resolve(&self, ctx: Context, pending: Option<LeaderId>, kp: KeyPress) -> Resolution {
+        if let Some(id) = pending {
+            return self.resolve_leader(ctx, id, kp);
+        }
+        if let Some(b) = self.local(ctx, kp) {
             return binding_to_resolution(b);
         }
-        if sfc.allows_tabs() {
-            if let Some(b) = self.global.get(&kp) {
-                return binding_to_resolution(b);
-            }
+        if let Some(b) = self.global.get(&kp) {
+            return binding_to_resolution(b);
         }
         Resolution::Unbound
     }
+
+    /// The keys the config wrote for the plugin screen `screen` (`Context::Screen(..)`, from
+    /// `App::canvas_screen`), if the canvas shows one. The one place the canvas's screen keys are
+    /// read: every `*_on` lookup below (key handling and every hint) goes through it.
+    #[cfg(feature = "git")]
+    fn screen_table(&self, screen: Option<Context>) -> Option<&ContextMap> {
+        self.screen_keys.get(&screen?)
+    }
+
+    #[cfg(not(feature = "git"))]
+    fn screen_table(&self, _screen: Option<Context>) -> Option<&ContextMap> {
+        None
+    }
+
+    /// Whether the canvas's own fixed key `kp` (`q` leaves, `/` filters; they are not in the
+    /// keymap) still acts as its fixed operation on the project canvas that shows `screen`. It
+    /// does unless the config wrote `kp` for that screen: unbound (`noop`) or bound to an action
+    /// that is not one of `own` (the spellings of the fixed operation, which the released hub
+    /// bound by default). A rebound key then acts as its new action through the `*_on` lookups.
+    /// This is the one answer for the key handling and the footer / help hints alike.
+    pub fn fixed_key_acts_on(&self, screen: Option<Context>, kp: KeyPress, own: &[Action]) -> bool {
+        match self.screen_table(screen).and_then(|m| m.get(&kp)) {
+            None => true,
+            Some(Binding::Run(action)) => own.contains(action),
+            Some(_) => false,
+        }
+    }
+
+    /// [`KeyMap::resolve`] (no leader pending) on a project canvas that shows `screen`: the keys
+    /// the config wrote for that screen sit on top of `ctx`'s layers. The screen has no default
+    /// table of its own here (the canvas's keys and the plugin's actions are the defaults), so a
+    /// key written for `git.changes` acts on the git changes screen only. A `noop` / `disabled`
+    /// entry hides the layers below it like an `Unbound` mark in a context's own table: `global` still
+    /// applies.
+    pub fn resolve_on(&self, ctx: Context, screen: Option<Context>, kp: KeyPress) -> Resolution {
+        match self.screen_table(screen).and_then(|m| m.get(&kp)) {
+            Some(Binding::Unbound) => match self.global.get(&kp) {
+                Some(b) => binding_to_resolution(b),
+                None => Resolution::Unbound,
+            },
+            Some(b) => binding_to_resolution(b),
+            None => self.resolve(ctx, None, kp),
+        }
+    }
+
+    /// Every key that runs `action` in `ctx` right now (config applied; `screen` is the canvas's
+    /// plugin screen or `None`, see [`KeyMap::resolve_on`]), in a fixed display order: plain
+    /// characters first, then Ctrl-chords, then named keys. A key counts only if it *resolves* to
+    /// the action, so a key shadowed by a more specific layer is not listed. The fixed keys
+    /// (`Enter`, `Esc`, ...) are not in the keymap; `ops::keys` adds them.
+    pub fn keys_of_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+        action: Action,
+    ) -> Vec<KeyPress> {
+        let want = Binding::Run(action);
+        let mut out: Vec<KeyPress> = Vec::new();
+        self.each_key_of_on(ctx, screen, |k, b| {
+            if *b == want
+                && !out.contains(&k)
+                && self.resolve_on(ctx, screen, k) == Resolution::Action(action)
+            {
+                out.push(k);
+            }
+        });
+        out.sort_by_key(|k| display_order(*k));
+        out
+    }
+
+    /// [`KeyMap::bound_actions`] on a canvas that shows `screen` (see [`KeyMap::resolve_on`]).
+    pub fn bound_actions_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+    ) -> Vec<(KeyPress, Action)> {
+        let mut out: Vec<(KeyPress, Action)> = Vec::new();
+        self.each_key_of_on(ctx, screen, |k, b| {
+            if let Binding::Run(a) = b {
+                if self.resolve_on(ctx, screen, k) == Resolution::Action(*a)
+                    && !out.iter().any(|(o, _)| *o == k)
+                {
+                    out.push((k, *a));
+                }
+            }
+        });
+        out.sort_by_key(|(k, _)| display_order(*k));
+        out
+    }
+
+    /// [`KeyMap::leader_keys_of`] on a canvas that shows `screen` (see [`KeyMap::resolve_on`]).
+    pub fn leader_keys_of_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+    ) -> Vec<(KeyPress, LeaderId)> {
+        let mut out: Vec<(KeyPress, LeaderId)> = Vec::new();
+        self.each_key_of_on(ctx, screen, |k, b| {
+            if let Binding::Leader(id) = b {
+                if !out.iter().any(|(o, _)| *o == k)
+                    && self.resolve_on(ctx, screen, k) == Resolution::EnterLeader(*id)
+                {
+                    out.push((k, *id));
+                }
+            }
+        });
+        out.sort_by_key(|(k, _)| display_order(*k));
+        out
+    }
+
+    /// [`KeyMap::layer_of_key`] on a canvas that shows `screen` (see [`KeyMap::resolve_on`]).
+    pub fn layer_of_key_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+        kp: KeyPress,
+    ) -> Option<KeyLayer> {
+        match self.screen_table(screen).and_then(|m| m.get(&kp)) {
+            Some(Binding::Unbound) => self.global.contains_key(&kp).then_some(KeyLayer::Global),
+            Some(_) => Some(KeyLayer::View),
+            None => self.layer_of_key(ctx, kp),
+        }
+    }
+
+    /// [`KeyMap::each_key_of`] plus the keys the config wrote for `screen`.
+    fn each_key_of_on(
+        &self,
+        ctx: Context,
+        screen: Option<Context>,
+        mut f: impl FnMut(KeyPress, &Binding),
+    ) {
+        if let Some(m) = self.screen_table(screen) {
+            m.iter().for_each(|(k, b)| f(*k, b));
+        }
+        self.each_key_of(ctx, f);
+    }
 }
+
+impl KeyMap {
+    /// Every `(key, operation)` pair that resolves in `ctx` right now (config applied), in the
+    /// order of `display_order`. Menus, `Unbound` marks and shadowed keys are left out.
+    pub fn bound_actions(&self, ctx: Context) -> Vec<(KeyPress, Action)> {
+        self.bound_actions_on(ctx, None)
+    }
+
+    /// The keys that open a leader menu in `ctx` (`y`, `Space`, ...), with the menu each opens.
+    pub fn leader_keys_of(&self, ctx: Context) -> Vec<(KeyPress, LeaderId)> {
+        self.leader_keys_of_on(ctx, None)
+    }
+
+    /// Visit every `(key, binding)` of the tables `ctx` looks into: its own, its view types',
+    /// the basic one and `global`. Allocation-free; the footer asks every frame.
+    fn each_key_of(&self, ctx: Context, mut f: impl FnMut(KeyPress, &Binding)) {
+        if let Some(m) = self.contexts.get(&ctx) {
+            m.iter().for_each(|(k, b)| f(*k, b));
+        }
+        for vt in ctx.view_types() {
+            if let Some(m) = self.types.get(vt) {
+                m.iter().for_each(|(k, b)| f(*k, b));
+            }
+        }
+        if ctx.inherits_basic() {
+            self.basic.iter().for_each(|(k, b)| f(*k, b));
+        }
+        self.global.iter().for_each(|(k, b)| f(*k, b));
+    }
+}
+
+pub use konoma_host_core::help::KeyLayer;
+
+impl KeyMap {
+    /// Where `kp` is defined for `ctx` (`None` = not bound there). The same lookup order as
+    /// [`KeyMap::resolve`].
+    pub fn layer_of_key(&self, ctx: Context, kp: KeyPress) -> Option<KeyLayer> {
+        if let Some(b) = self.contexts.get(&ctx).and_then(|m| m.get(&kp)) {
+            return (*b != Binding::Unbound).then_some(KeyLayer::View);
+        }
+        for vt in ctx.view_types() {
+            if self.types.get(vt).is_some_and(|m| m.contains_key(&kp)) {
+                return Some(KeyLayer::View);
+            }
+        }
+        if ctx.inherits_basic() && self.basic.contains_key(&kp) {
+            return Some(KeyLayer::Basic);
+        }
+        self.global.contains_key(&kp).then_some(KeyLayer::Global)
+    }
+}
+
+use konoma_host_core::help::display_order;
 
 fn binding_to_resolution(b: &Binding) -> Resolution {
     match b {
         Binding::Run(a) => Resolution::Action(*a),
         Binding::Leader(id) => Resolution::EnterLeader(*id),
+        Binding::Unbound => Resolution::Unbound,
     }
 }
 
-/// The target of a config `[keys.<name>]` surface name.
+/// What a `[keys.<name>]` table writes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyTarget {
     Global,
-    Surface(Surface),
+    Context(Context),
+    /// The old `[keys.sort]` table of the sort overlay, which no longer exists: it owns no keys,
+    /// and its sort letters re-letter the tree's `,` menu (see `apply_one`).
+    OldSort,
 }
 
-/// Config-file name (snake_case) for `sfc`'s `[keys.<name>]` section, if it has one.
-/// **Exhaustive over `Surface`, no wildcard arm** — the Surface-axis counterpart of the
-/// `action_from_str`/`action_name` round trip (v0.17.0 fixed the same class of bug for `Action`,
-/// where a graph-panel action existed but had no string name reachable from config). Adding a new
-/// `Surface` variant is now a compile error here until this match explicitly decides `Some(name)`
-/// (configurable) or `None` (fixed-key surface — `Surface::is_text_input()` /
-/// `Surface::is_modal_confirm()` — never reachable through the declarative keymap at all).
-/// `Surface::GitGraphPicker` regressed into exactly this bug: it is registered in `per_surface`
-/// (`KeyMap::defaults`, so its 5 branch-panel actions are live/bindable) but had no entry in
-/// `key_target_from_name`, so `[keys.git_graph_picker]` in config had nowhere to land and silently
-/// did nothing. `key_target_from_name` below is the reverse (name → Surface) lookup config parsing
-/// actually uses; `keymap_names_cover_every_bindable_surface` (in `mod tests`) cross-checks that
-/// every `Surface` registered in `per_surface` has a name here, so the two cannot silently drift
-/// apart again. Only referenced from `mod tests` below (so it is `#[cfg(test)]`), but that means the
-/// exhaustiveness check — and therefore the "adding a `Surface` variant is a compile error" property
-/// — is enforced on every `cargo test` run, which this project always runs before a commit lands.
-#[cfg(test)]
-fn surface_config_name(sfc: Surface) -> Option<&'static str> {
-    match sfc {
-        // --- Fixed text input (is_text_input): not configurable ---
-        Surface::DialogInput => None,
-        Surface::Filter => None,
-        Surface::Search => None,
-        Surface::Mark => None,
-        #[cfg(feature = "git")]
-        Surface::BranchFilter => None,
-        #[cfg(feature = "git")]
-        Surface::WorktreeFilter => None,
-        // --- Confirm modal (is_modal_confirm): not configurable ---
-        Surface::DialogConfirmDelete => None,
-        Surface::DialogConfirmDrop => None,
-        Surface::DialogRenamePreview => None,
-        Surface::DialogConfirmQuit => None,
-        Surface::DialogConfirmBookmark => None,
-        // --- Overlays (keymap-driven): configurable ---
-        Surface::Help => Some("help"),
-        Surface::Sort => Some("sort"),
-        Surface::Bookmarks => Some("bookmarks"),
-        Surface::Tabs => Some("tabs"),
-        Surface::Outline => Some("outline"),
-        Surface::Info => Some("info"),
-        Surface::TableCell => Some("table_cell"),
-        #[cfg(feature = "git")]
-        Surface::GitDetail => Some("git_detail"),
-        #[cfg(feature = "git")]
-        Surface::GitLog => Some("git_log"),
-        #[cfg(feature = "git")]
-        Surface::GitGraph => Some("git_graph"),
-        #[cfg(feature = "git")]
-        Surface::GitGraphPicker => Some("git_graph_picker"),
-        #[cfg(feature = "git")]
-        Surface::GitBranches => Some("git_branches"),
-        #[cfg(feature = "git")]
-        Surface::GitChanges => Some("git_changes"),
-        #[cfg(feature = "git")]
-        Surface::GitWorktrees => Some("git_worktrees"),
-        // --- Basic full-screen surfaces (keymap-driven): configurable ---
-        Surface::Visual => Some("tree_visual"),
-        Surface::Tree => Some("tree"),
-        Surface::PreviewText => Some("preview_text"),
-        Surface::PreviewTextVisual => Some("preview_text_visual"),
-        Surface::PreviewImage => Some("preview_image"),
-        Surface::PreviewTable => Some("preview_table"),
-        #[cfg(feature = "git")]
-        Surface::PreviewGitDiff => Some("preview_git_diff"),
-    }
-}
-
-/// Surface name (snake_case) → target. Unknown names return None (the caller warns). Git names are
-/// None when the feature is off. Must resolve every name `surface_config_name` hands out for a
-/// `per_surface`-registered `Surface` (see `keymap_names_cover_every_bindable_surface`).
-fn key_target_from_name(name: &str) -> Option<KeyTarget> {
-    let s = match name {
-        "global" => return Some(KeyTarget::Global),
-        "tree" => Surface::Tree,
-        "tree_visual" => Surface::Visual,
-        "preview_text" => Surface::PreviewText,
-        "preview_text_visual" => Surface::PreviewTextVisual,
-        "preview_image" => Surface::PreviewImage,
-        "preview_table" => Surface::PreviewTable,
-        "sort" => Surface::Sort,
-        "bookmarks" => Surface::Bookmarks,
-        "tabs" => Surface::Tabs,
-        "outline" => Surface::Outline,
-        "info" => Surface::Info,
-        "table_cell" => Surface::TableCell,
-        "help" => Surface::Help,
-        #[cfg(feature = "git")]
-        "preview_git_diff" => Surface::PreviewGitDiff,
-        #[cfg(feature = "git")]
-        "git_changes" => Surface::GitChanges,
-        #[cfg(feature = "git")]
-        "git_log" => Surface::GitLog,
-        #[cfg(feature = "git")]
-        "git_graph" => Surface::GitGraph,
-        #[cfg(feature = "git")]
-        "git_graph_picker" => Surface::GitGraphPicker,
-        #[cfg(feature = "git")]
-        "git_branches" => Surface::GitBranches,
-        #[cfg(feature = "git")]
-        "git_worktrees" => Surface::GitWorktrees,
-        #[cfg(feature = "git")]
-        "git_detail" => Surface::GitDetail,
-        _ => return None,
-    };
-    Some(KeyTarget::Surface(s))
-}
-
-/// Leader prefix key → LeaderId (only Space/y are accepted).
-fn leader_for_prefix(kp: KeyPress) -> Option<LeaderId> {
+/// The key that opens a menu, as `[keys.global]` writes it in a chord → the menu it changes
+/// there: `space x` is the file menu, `y x` the copy menu, `, x` the `,` menu. In one context's
+/// table the menu is whatever the key opens *in that context* (`KeyMap::set_menu_entry`).
+fn prefix_menu(kp: KeyPress) -> Option<LeaderId> {
     if kp == KeyPress::ch(' ') {
         Some(LeaderId::File)
     } else if kp == KeyPress::ch('y') {
         Some(LeaderId::Copy)
+    } else if kp == KeyPress::ch(',') {
+        Some(LeaderId::Options)
     } else {
         None
+    }
+}
+
+/// The shared menu a leader is, if it is one the shared tables define.
+fn core_menu(id: LeaderId) -> Option<CoreMenu> {
+    match id {
+        LeaderId::Copy => Some(CoreMenu::Copy),
+        LeaderId::TableCopy => Some(CoreMenu::TableCopy),
+        LeaderId::Options => Some(CoreMenu::Options),
+        _ => None,
+    }
+}
+
+fn leader_id(m: CoreMenu) -> LeaderId {
+    match m {
+        CoreMenu::Actions => LeaderId::Actions,
+        CoreMenu::Copy => LeaderId::Copy,
+        CoreMenu::TableCopy => LeaderId::TableCopy,
+        CoreMenu::Options => LeaderId::Options,
+    }
+}
+
+/// The shared context a context is, if the shared tables define it.
+fn core_context(c: Context) -> Option<CoreContext> {
+    Some(match c {
+        Context::Text => CoreContext::Text,
+        Context::Document => CoreContext::Document,
+        Context::Image => CoreContext::Image,
+        Context::Table => CoreContext::Table,
+        Context::Canvas => CoreContext::Canvas,
+        _ => return None,
+    })
+}
+
+/// The host context a shared context is.
+fn host_context(c: CoreContext) -> Context {
+    match c {
+        CoreContext::Text => Context::Text,
+        CoreContext::Document => Context::Document,
+        CoreContext::Image => Context::Image,
+        CoreContext::Table => Context::Table,
+        CoreContext::Canvas => Context::Canvas,
+        CoreContext::Diff => Context::Diff,
+    }
+}
+
+fn leader_menu(id: LeaderId, m: &konoma_host_core::keymap::Menu<Action, Msg>) -> LeaderMenu {
+    LeaderMenu {
+        id,
+        title: m.title,
+        items: m
+            .items
+            .iter()
+            .map(|it| LeaderItem {
+                key: it.key,
+                action: it.action,
+                label: it.label,
+            })
+            .collect(),
     }
 }
 
@@ -1563,143 +2411,10 @@ fn leader_name(id: LeaderId) -> &'static str {
         LeaderId::TableCopy => "table_copy",
         #[cfg(feature = "git")]
         LeaderId::GitCopy => "git_copy",
-    }
-}
-
-/// Fixed keys that cannot be rebound (§3). A config rebind of these is warned and ignored.
-/// Character keys are not treated as fixed (the fixedness of text-input surfaces is handled separately per Surface).
-fn is_fixed_key(kp: KeyPress) -> bool {
-    matches!(
-        kp.code,
-        KeyCode::Esc
-            | KeyCode::Enter
-            | KeyCode::Backspace
-            | KeyCode::Delete
-            | KeyCode::Tab
-            | KeyCode::BackTab
-            | KeyCode::Home
-            | KeyCode::End
-            | KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::Left
-            | KeyCode::Right
-    )
-}
-
-/// Swap the page/half rows of the Preview surfaces according to scheme (§2 scheme). Not called for Tree (always vim).
-fn apply_scheme_paging(m: &mut ContextMap, scheme: KeyScheme) {
-    match scheme {
-        KeyScheme::Vim => {
-            m.insert(
-                KeyPress::ctrl_ch('f'),
-                Binding::Run(Action::Navigate(Motion::PageDown)),
-            );
-            m.insert(
-                KeyPress::ctrl_ch('b'),
-                Binding::Run(Action::Navigate(Motion::PageUp)),
-            );
-            m.insert(
-                KeyPress::ctrl_ch('d'),
-                Binding::Run(Action::Navigate(Motion::HalfDown)),
-            );
-            m.insert(
-                KeyPress::ctrl_ch('u'),
-                Binding::Run(Action::Navigate(Motion::HalfUp)),
-            );
-        }
-        KeyScheme::Less => {
-            m.insert(
-                KeyPress::ch('f'),
-                Binding::Run(Action::Navigate(Motion::PageDown)),
-            );
-            m.insert(
-                KeyPress::ch(' '),
-                Binding::Run(Action::Navigate(Motion::PageDown)),
-            );
-            m.insert(
-                KeyPress::ch('b'),
-                Binding::Run(Action::Navigate(Motion::PageUp)),
-            );
-            m.insert(
-                KeyPress::ch('d'),
-                Binding::Run(Action::Navigate(Motion::HalfDown)),
-            );
-            m.insert(
-                KeyPress::ch('u'),
-                Binding::Run(Action::Navigate(Motion::HalfUp)),
-            );
-        }
-    }
-}
-
-fn copy_leader_default() -> LeaderMenu {
-    LeaderMenu {
-        id: LeaderId::Copy,
-        title: Msg::WkCopyPathTitle,
-        items: vec![
-            LeaderItem {
-                key: KeyPress::ch('n'),
-                action: Action::CopyPath(CopyKind::Name),
-                label: Msg::WkName,
-            },
-            LeaderItem {
-                key: KeyPress::ch('r'),
-                action: Action::CopyPath(CopyKind::Relative),
-                label: Msg::WkRelative,
-            },
-            LeaderItem {
-                key: KeyPress::ch('f'),
-                action: Action::CopyPath(CopyKind::Full),
-                label: Msg::WkFull,
-            },
-            LeaderItem {
-                key: KeyPress::ch('p'),
-                action: Action::CopyPath(CopyKind::Parent),
-                label: Msg::WkParent,
-            },
-            LeaderItem {
-                key: KeyPress::ch('@'),
-                action: Action::CopyPath(CopyKind::AtRef),
-                label: Msg::WkAtRef,
-            },
-            // Markdown code block copy. Displayed in the which-key menu only while a code block is
-            // focused (see ui::status::whichkey_spans); harmless no-op otherwise.
-            LeaderItem {
-                key: KeyPress::ch('c'),
-                action: Action::CopyCodeBlock,
-                label: Msg::WkCodeBlock,
-            },
-        ],
-    }
-}
-
-/// The `y` cell/row/column copy leader (CSV/TSV table preview). `f` keeps the full-path copy reachable.
-fn table_copy_leader_default() -> LeaderMenu {
-    LeaderMenu {
-        id: LeaderId::TableCopy,
-        title: Msg::WkTableCopyTitle,
-        items: vec![
-            LeaderItem {
-                key: KeyPress::ch('c'),
-                action: Action::TableCopy(TableCopyKind::Cell),
-                label: Msg::WkCell,
-            },
-            LeaderItem {
-                key: KeyPress::ch('r'),
-                action: Action::TableCopy(TableCopyKind::Row),
-                label: Msg::WkRow,
-            },
-            LeaderItem {
-                key: KeyPress::ch('C'),
-                action: Action::TableCopy(TableCopyKind::Column),
-                label: Msg::WkColumn,
-            },
-            LeaderItem {
-                key: KeyPress::ch('f'),
-                action: Action::CopyPath(CopyKind::Full),
-                label: Msg::WkFull,
-            },
-        ],
+        #[cfg(feature = "git")]
+        LeaderId::BranchCopy => "branch_copy",
+        LeaderId::Options => "options",
+        LeaderId::Actions => "actions",
     }
 }
 
@@ -1742,6 +2457,69 @@ fn git_copy_leader_default() -> LeaderMenu {
             },
         ],
     }
+}
+
+/// The `y` copy menu of the branch list: the name of the selected branch.
+#[cfg(feature = "git")]
+fn branch_copy_leader_default() -> LeaderMenu {
+    LeaderMenu {
+        id: LeaderId::BranchCopy,
+        title: Msg::WkBranchCopyTitle,
+        items: vec![LeaderItem {
+            key: KeyPress::ch('n'),
+            action: Action::CopyBranchName,
+            label: Msg::WkBranchName,
+        }],
+    }
+}
+
+/// The `,` menus of the contexts only konoma has (the preview contexts' are in the shared
+/// tables, `default_menus`): what each lets you sort and show. The letters of the tree's menu are
+/// the old sort menu's (`n s m e` the key, `r` the direction, `.` the folders first).
+fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
+    let item = |c: char, action: Action| LeaderItem {
+        key: KeyPress::ch(c),
+        action,
+        label: leader_label(action),
+    };
+    let menu = |ctx: Context, items: Vec<LeaderItem>| {
+        (
+            ctx,
+            LeaderMenu {
+                id: LeaderId::Options,
+                title: Msg::WkOptionsTitle,
+                items,
+            },
+        )
+    };
+    let path = || item('p', Action::CyclePathStyle);
+    let mut v = vec![menu(
+        Context::Tree,
+        vec![
+            item('n', Action::SortSet(SortKey::Name)),
+            item('s', Action::SortSet(SortKey::Size)),
+            item('m', Action::SortSet(SortKey::Modified)),
+            item('e', Action::SortSet(SortKey::Ext)),
+            item('r', Action::SortToggleReverse),
+            item('.', Action::SortToggleDirsFirst),
+            path(),
+            item('h', Action::ToggleHidden),
+        ],
+    )];
+    v.push(menu(
+        Context::Diff,
+        konoma_plugin::host::project::diff_presentation::default_options()
+            .into_iter()
+            .filter_map(|(key, op)| {
+                crate::ops::decl::diff_action(op).map(|action| LeaderItem {
+                    key,
+                    action,
+                    label: leader_label(action),
+                })
+            })
+            .collect(),
+    ));
+    v
 }
 
 fn file_leader_default() -> LeaderMenu {
@@ -1790,13 +2568,11 @@ fn file_leader_default() -> LeaderMenu {
 
 /// The label key for which-key display. Actions outside any leader get an empty label.
 fn leader_label(a: Action) -> Msg {
+    // The shared actions are labelled by the shared table (`menu_label`).
+    if let Some(c) = a.core() {
+        return Msg::from_core(menu_label(c));
+    }
     match a {
-        Action::CopyPath(CopyKind::Name) => Msg::WkName,
-        Action::CopyPath(CopyKind::Relative) => Msg::WkRelative,
-        Action::CopyPath(CopyKind::Full) => Msg::WkFull,
-        Action::CopyPath(CopyKind::Parent) => Msg::WkParent,
-        Action::CopyPath(CopyKind::AtRef) => Msg::WkAtRef,
-        Action::CopyCodeBlock => Msg::WkCodeBlock,
         Action::FileCreate => Msg::WkCreate,
         Action::FileRename => Msg::WkRename,
         Action::FileDelete => Msg::WkDelete,
@@ -1804,9 +2580,6 @@ fn leader_label(a: Action) -> Msg {
         Action::FileCut => Msg::CutHint,
         Action::FilePaste => Msg::WkPaste,
         Action::FileDuplicate => Msg::WkDuplicate,
-        Action::TableCopy(TableCopyKind::Cell) => Msg::WkCell,
-        Action::TableCopy(TableCopyKind::Row) => Msg::WkRow,
-        Action::TableCopy(TableCopyKind::Column) => Msg::WkColumn,
         #[cfg(feature = "git")]
         Action::GitCopy(GitCopyKind::ShortHash) => Msg::WkShortHash,
         #[cfg(feature = "git")]
@@ -1819,6 +2592,13 @@ fn leader_label(a: Action) -> Msg {
         Action::GitCopy(GitCopyKind::Author) => Msg::WkAuthor,
         #[cfg(feature = "git")]
         Action::GitCopy(GitCopyKind::Date) => Msg::WkDate,
+        #[cfg(feature = "git")]
+        Action::CopyBranchName => Msg::WkBranchName,
+        Action::SortToggleReverse => Msg::FtSortReverse,
+        Action::SortToggleDirsFirst => Msg::FtSortDirs,
+        Action::ToggleHidden => Msg::HintHidden,
+        #[cfg(feature = "git")]
+        Action::ToggleFollowDiffScope => Msg::HintFollowScope,
         _ => Msg::Empty,
     }
 }
@@ -1827,64 +2607,18 @@ fn leader_label(a: Action) -> Msg {
 // Action ↔ config-string two-way mapping.
 // =============================================================================
 
-fn motion_name(m: Motion) -> &'static str {
-    match m {
-        Motion::Up => "up",
-        Motion::Down => "down",
-        Motion::Top => "top",
-        Motion::Bottom => "bottom",
-        Motion::PageUp => "page_up",
-        Motion::PageDown => "page_down",
-        Motion::HalfUp => "half_up",
-        Motion::HalfDown => "half_down",
-        Motion::Left => "left",
-        Motion::Right => "right",
-        Motion::LineHome => "line_home",
-        Motion::LineEnd => "line_end",
-    }
-}
-
-fn motion_from_str(s: &str) -> Option<Motion> {
-    Some(match s {
-        "up" => Motion::Up,
-        "down" => Motion::Down,
-        "top" => Motion::Top,
-        "bottom" => Motion::Bottom,
-        "page_up" => Motion::PageUp,
-        "page_down" => Motion::PageDown,
-        "half_up" => Motion::HalfUp,
-        "half_down" => Motion::HalfDown,
-        "left" => Motion::Left,
-        "right" => Motion::Right,
-        "line_home" => Motion::LineHome,
-        "line_end" => Motion::LineEnd,
-        _ => return None,
-    })
-}
-
 /// config string → Action. Unknown returns None (the caller warns). `tab_goto` is also None (fixed to digit keys).
 pub fn action_from_str(s: &str) -> Option<Action> {
-    if let Some(m) = s.strip_prefix("navigate:") {
-        return motion_from_str(m).map(Action::Navigate);
+    // Layers 0-3 are named by the shared table (`konoma_host_core::keymap`).
+    if let Some(c) = CoreAction::from_name(s) {
+        return Some(c.into());
     }
     Some(match s {
         "noop" | "disabled" => Action::Noop,
         // Global
         "tab_new" => Action::TabNew,
-        "tab_new_after" => Action::TabNewAfter,
         "tab_close" => Action::TabClose,
-        "tab_prev" => Action::TabPrev,
-        "tab_next" => Action::TabNext,
-        "toggle_help" => Action::ToggleHelp,
-        "copy_name" => Action::CopyPath(CopyKind::Name),
-        "copy_relative" => Action::CopyPath(CopyKind::Relative),
-        "copy_full" => Action::CopyPath(CopyKind::Full),
-        "copy_parent" => Action::CopyPath(CopyKind::Parent),
-        "copy_at_ref" => Action::CopyPath(CopyKind::AtRef),
-        "copy_code_block" => Action::CopyCodeBlock,
-        "paste_jump" => Action::PasteJump,
         // Tree
-        "quit" => Action::Quit,
         "close_tab_or_quit" => Action::CloseTabOrQuit,
         "filter_start" => Action::FilterStart,
         "tree_descend" => Action::TreeDescend,
@@ -1892,10 +2626,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "tree_leave" => Action::TreeLeave,
         "toggle_hidden" => Action::ToggleHidden,
         "toggle_info" => Action::ToggleInfo,
-        "request_edit" => Action::RequestEdit,
         "open_git_view" => Action::OpenGitView,
         "refresh" => Action::Refresh,
-        "cycle_path_style" => Action::CyclePathStyle,
         "open_sort_menu" => Action::OpenSortMenu,
         "mark_set" => Action::MarkSet,
         "mark_jump" => Action::MarkJump,
@@ -1907,7 +2639,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "toggle_changed_filter" => Action::ToggleChangedFilter,
         "jump_next_change" => Action::JumpNextChange,
         "jump_prev_change" => Action::JumpPrevChange,
-        "toggle_follow" => Action::ToggleFollow,
         // File management
         "file_create" => Action::FileCreate,
         "file_rename" => Action::FileRename,
@@ -1921,7 +2652,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "visual_select_siblings" => Action::VisualSelectSiblings,
         "visual_select_all" => Action::VisualSelectAll,
         // Preview: text
-        "preview_back" => Action::PreviewBack,
         "search_start" => Action::SearchStart,
         "search_next" => Action::SearchNext,
         "search_prev" => Action::SearchPrev,
@@ -1930,7 +2660,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "preview_copy_selection" => Action::PreviewCopySelection,
         "preview_copy_selection_ref" => Action::PreviewCopySelectionRef,
         "preview_exit_visual" => Action::PreviewExitVisual,
-        "toggle_markdown_raw" => Action::ToggleMarkdownRaw,
+        "cycle_representation" | "toggle_markdown_raw" => Action::CycleRepresentation,
         "image_return_to_diff" => Action::ImageReturnToDiff,
         "link_focus_next" => Action::LinkFocusNext,
         "link_focus_prev" => Action::LinkFocusPrev,
@@ -1938,29 +2668,15 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "open_link_new_tab" => Action::OpenLinkNewTab,
         "open_in_new_tab" => Action::OpenInNewTab,
         // Preview: image
-        "image_zoom_in" => Action::ImageZoomIn,
-        "image_zoom_out" => Action::ImageZoomOut,
-        "image_zoom_reset" => Action::ImageZoomReset,
         // `page_next` / `page_prev`, plus the names they replaced (kept as aliases).
-        "page_next" | "pdf_next_page" | "sheet_next" | "media_diff_page_next" => Action::PageNext,
-        "page_prev" | "pdf_prev_page" | "sheet_prev" | "media_diff_page_prev" => Action::PagePrev,
         "preview_next_file" => Action::PreviewFileNext,
         "preview_prev_file" => Action::PreviewFilePrev,
         // Preview: table (csv/tsv)
-        "table_copy_cell" => Action::TableCopy(TableCopyKind::Cell),
-        "table_copy_row" => Action::TableCopy(TableCopyKind::Row),
-        "table_copy_column" => Action::TableCopy(TableCopyKind::Column),
         // Sort
-        "sort_name" => Action::SortSet(SortKey::Name),
-        "sort_size" => Action::SortSet(SortKey::Size),
-        "sort_modified" => Action::SortSet(SortKey::Modified),
-        "sort_ext" => Action::SortSet(SortKey::Ext),
         "sort_toggle_reverse" => Action::SortToggleReverse,
         "sort_toggle_dirs_first" => Action::SortToggleDirsFirst,
         // Bookmark
-        "toggle_tab_list" => Action::ToggleTabList,
         "tab_list_close" => Action::TabListClose,
-        "toggle_outline" => Action::ToggleOutline,
         "bookmark_jump" => Action::BookmarkJump,
         "bookmark_edit" => Action::BookmarkEdit,
         "bookmark_delete" => Action::BookmarkDelete,
@@ -1969,10 +2685,15 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "info_close" => Action::InfoClose,
         // Table cell popup
         "toggle_table_cell" => Action::ToggleTableCell,
+        "cancel" => Action::Cancel,
+        "tab_list_activate" => Action::TabListActivate,
+        "outline_jump" => Action::OutlineJump,
+        #[cfg(feature = "git")]
+        "git_graph_picker_apply" => Action::GitGraphPickerApply,
+        "toggle_focused_item" => Action::ToggleFocusedItem,
         // Git (feature gate)
         #[cfg(feature = "git")]
         "git_diff_discard" => Action::GitDiffDiscard,
-        #[cfg(feature = "git")]
         "cycle_diff_layout" => Action::CycleDiffLayout,
         #[cfg(feature = "git")]
         "cycle_diff_view" => Action::CycleDiffView,
@@ -2028,6 +2749,15 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "git_graph_picker_move_down" => Action::GitGraphPickerMoveDown,
         #[cfg(feature = "git")]
+        "diff_next_change" => Action::DiffNextChange,
+        #[cfg(feature = "git")]
+        "diff_prev_change" => Action::DiffPrevChange,
+        #[cfg(feature = "git")]
+        "git_screen_next" => Action::GitScreenNext,
+        #[cfg(feature = "git")]
+        "git_screen_prev" => Action::GitScreenPrev,
+        "list_filter_start" => Action::ListFilterStart,
+        #[cfg(feature = "git")]
         "branch_filter_start" => Action::BranchFilterStart,
         #[cfg(feature = "git")]
         "branch_checkout" => Action::BranchCheckout,
@@ -2072,23 +2802,37 @@ pub fn action_from_str(s: &str) -> Option<Action> {
 /// Action → config string (canonical). For conflict reports and round-tripping.
 pub fn action_name(a: Action) -> String {
     let s: &str = match a {
+        // The commands of layers 0-3: the shared table names them.
+        Action::Navigate(_)
+        | Action::Quit
+        | Action::ToggleFollow
+        | Action::TabNewAfter
+        | Action::ToggleTabList
+        | Action::PasteJump
+        | Action::TabPrev
+        | Action::TabNext
+        | Action::ToggleHelp
+        | Action::PreviewBack
+        | Action::ImageZoomIn
+        | Action::ImageZoomOut
+        | Action::ImageZoomReset
+        | Action::PageNext
+        | Action::PagePrev
+        | Action::ToggleOutline
+        | Action::RequestEdit
+        | Action::OpenExternal
+        | Action::CopyPath(_)
+        | Action::TableCopy(_)
+        | Action::SortSet(_)
+        | Action::CopyCodeBlock
+        | Action::CyclePathStyle
+        | Action::ToggleWrap => {
+            return a.core().map(|c| c.name()).unwrap_or_default();
+        }
         Action::Noop => "noop",
-        Action::Navigate(m) => return format!("navigate:{}", motion_name(m)),
         Action::TabNew => "tab_new",
-        Action::TabNewAfter => "tab_new_after",
         Action::TabClose => "tab_close",
-        Action::TabPrev => "tab_prev",
-        Action::TabNext => "tab_next",
         Action::TabGoto(_) => "tab_goto",
-        Action::ToggleHelp => "toggle_help",
-        Action::CopyPath(CopyKind::Name) => "copy_name",
-        Action::CopyPath(CopyKind::Relative) => "copy_relative",
-        Action::CopyPath(CopyKind::Full) => "copy_full",
-        Action::CopyPath(CopyKind::Parent) => "copy_parent",
-        Action::CopyPath(CopyKind::AtRef) => "copy_at_ref",
-        Action::CopyCodeBlock => "copy_code_block",
-        Action::PasteJump => "paste_jump",
-        Action::Quit => "quit",
         Action::CloseTabOrQuit => "close_tab_or_quit",
         Action::FilterStart => "filter_start",
         Action::TreeDescend => "tree_descend",
@@ -2096,10 +2840,8 @@ pub fn action_name(a: Action) -> String {
         Action::TreeLeave => "tree_leave",
         Action::ToggleHidden => "toggle_hidden",
         Action::ToggleInfo => "toggle_info",
-        Action::RequestEdit => "request_edit",
         Action::OpenGitView => "open_git_view",
         Action::Refresh => "refresh",
-        Action::CyclePathStyle => "cycle_path_style",
         Action::OpenSortMenu => "open_sort_menu",
         Action::MarkSet => "mark_set",
         Action::MarkJump => "mark_jump",
@@ -2111,7 +2853,6 @@ pub fn action_name(a: Action) -> String {
         Action::ToggleChangedFilter => "toggle_changed_filter",
         Action::JumpNextChange => "jump_next_change",
         Action::JumpPrevChange => "jump_prev_change",
-        Action::ToggleFollow => "toggle_follow",
         Action::FileCreate => "file_create",
         Action::FileRename => "file_rename",
         Action::FileDelete => "file_delete",
@@ -2122,7 +2863,6 @@ pub fn action_name(a: Action) -> String {
         Action::VisualCommit => "visual_commit",
         Action::VisualSelectSiblings => "visual_select_siblings",
         Action::VisualSelectAll => "visual_select_all",
-        Action::PreviewBack => "preview_back",
         Action::SearchStart => "search_start",
         Action::SearchNext => "search_next",
         Action::SearchPrev => "search_prev",
@@ -2131,41 +2871,37 @@ pub fn action_name(a: Action) -> String {
         Action::PreviewCopySelection => "preview_copy_selection",
         Action::PreviewCopySelectionRef => "preview_copy_selection_ref",
         Action::PreviewExitVisual => "preview_exit_visual",
-        Action::ToggleMarkdownRaw => "toggle_markdown_raw",
+        Action::CycleRepresentation => "cycle_representation",
         Action::ImageReturnToDiff => "image_return_to_diff",
         Action::LinkFocusNext => "link_focus_next",
         Action::LinkFocusPrev => "link_focus_prev",
         Action::LinkOpen => "link_open",
         Action::OpenLinkNewTab => "open_link_new_tab",
         Action::OpenInNewTab => "open_in_new_tab",
-        Action::ImageZoomIn => "image_zoom_in",
-        Action::ImageZoomOut => "image_zoom_out",
-        Action::ImageZoomReset => "image_zoom_reset",
-        Action::PageNext => "page_next",
-        Action::PagePrev => "page_prev",
         Action::PreviewFileNext => "preview_next_file",
         Action::PreviewFilePrev => "preview_prev_file",
-        Action::TableCopy(TableCopyKind::Cell) => "table_copy_cell",
-        Action::TableCopy(TableCopyKind::Row) => "table_copy_row",
-        Action::TableCopy(TableCopyKind::Column) => "table_copy_column",
-        Action::SortSet(SortKey::Name) => "sort_name",
-        Action::SortSet(SortKey::Size) => "sort_size",
-        Action::SortSet(SortKey::Modified) => "sort_modified",
-        Action::SortSet(SortKey::Ext) => "sort_ext",
         Action::SortToggleReverse => "sort_toggle_reverse",
         Action::SortToggleDirsFirst => "sort_toggle_dirs_first",
-        Action::ToggleTabList => "toggle_tab_list",
         Action::TabListClose => "tab_list_close",
-        Action::ToggleOutline => "toggle_outline",
         Action::BookmarkJump => "bookmark_jump",
         Action::BookmarkEdit => "bookmark_edit",
         Action::BookmarkDelete => "bookmark_delete",
         Action::BookmarkClose => "bookmark_close",
         Action::InfoClose => "info_close",
         Action::ToggleTableCell => "toggle_table_cell",
+        Action::Cancel => "cancel",
+        Action::TabListActivate => "tab_list_activate",
+        Action::OutlineJump => "outline_jump",
+        #[cfg(feature = "git")]
+        Action::GitGraphPickerApply => "git_graph_picker_apply",
+        Action::ToggleFocusedItem => "toggle_focused_item",
+        Action::Plugin(p) => return format!("plugin:{}.{}", p.plugin(), p.act()),
+        Action::ProjectControl(ProjectMenuControl::Search) => "project_control:search",
+        Action::ProjectControl(ProjectMenuControl::NextScreen) => "project_control:next_screen",
+        Action::ProjectControl(ProjectMenuControl::PrevScreen) => "project_control:prev_screen",
+        Action::ProjectControl(ProjectMenuControl::Back) => "project_control:back",
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => "git_diff_discard",
-        #[cfg(feature = "git")]
         Action::CycleDiffLayout => "cycle_diff_layout",
         #[cfg(feature = "git")]
         Action::CycleDiffView => "cycle_diff_view",
@@ -2218,6 +2954,15 @@ pub fn action_name(a: Action) -> String {
         #[cfg(feature = "git")]
         Action::GitGraphPickerMoveDown => "git_graph_picker_move_down",
         #[cfg(feature = "git")]
+        Action::DiffNextChange => "diff_next_change",
+        #[cfg(feature = "git")]
+        Action::DiffPrevChange => "diff_prev_change",
+        #[cfg(feature = "git")]
+        Action::GitScreenNext => "git_screen_next",
+        #[cfg(feature = "git")]
+        Action::GitScreenPrev => "git_screen_prev",
+        Action::ListFilterStart => "list_filter_start",
+        #[cfg(feature = "git")]
         Action::BranchFilterStart => "branch_filter_start",
         #[cfg(feature = "git")]
         Action::BranchCheckout => "branch_checkout",
@@ -2263,6 +3008,7 @@ fn binding_name(b: &Binding) -> String {
     match b {
         Binding::Run(a) => action_name(*a),
         Binding::Leader(id) => format!("leader:{}", leader_name(*id)),
+        Binding::Unbound => "unbound".into(),
     }
 }
 
@@ -2274,6 +3020,34 @@ fn binding_name(b: &Binding) -> String {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn cached_defaults_match_fresh_maps_for_every_scheme() {
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let fresh = KeyMap::build_defaults(scheme);
+            assert_eq!(KeyMap::defaults(scheme), fresh, "{scheme:?}");
+            assert_eq!(KeyMap::defaults(scheme), fresh, "{scheme:?} again");
+        }
+    }
+
+    #[test]
+    fn configuring_a_map_does_not_change_cached_defaults() {
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let fresh = KeyMap::build_defaults(scheme);
+            let cfg = cfg_with("text", &[("Z", "refresh"), ("y z", "copy_full")]);
+            let _ = KeyMap::from_config(scheme, &cfg);
+            let mut owned = KeyMap::defaults(scheme);
+            owned.basic.clear();
+            owned.leaders.clear();
+            assert_eq!(KeyMap::defaults(scheme), fresh, "{scheme:?}");
+        }
+    }
+
+    /// A git-backed version-control screen as a context.
+    #[cfg(feature = "git")]
+    fn gs(s: Screen) -> Context {
+        Context::Screen(Backend::Git, s)
+    }
 
     fn cfg_with(surface: &str, entries: &[(&str, &str)]) -> KeysFileConfig {
         let mut table = HashMap::new();
@@ -2290,29 +3064,46 @@ mod tests {
     fn defaults_tree_core_keys() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('d')),
+            m.resolve(Context::Tree, None, KeyPress::ch('d')),
             Resolution::Action(Action::OpenGitDiffCursor)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('a')),
+            m.resolve(Context::Tree, None, KeyPress::ch('a')),
             Resolution::Action(Action::SetAnchor)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('A')),
+            m.resolve(Context::Tree, None, KeyPress::ch('A')),
             Resolution::Action(Action::ResetAnchor)
         );
+        // `p` opens the project's screen; `o` (its old key) now opens the file in another app;
+        // `s` and `p`'s old meaning (the path style) have no default key in the tree.
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('o')),
+            m.resolve(Context::Tree, None, KeyPress::ch('p')),
             Resolution::Action(Action::OpenGitView)
+        );
+        assert_eq!(
+            m.resolve(Context::Tree, None, KeyPress::ch('o')),
+            Resolution::Action(Action::OpenExternal)
+        );
+        assert_eq!(
+            m.resolve(Context::Tree, None, KeyPress::ch('s')),
+            Resolution::Unbound,
+            "s"
         );
     }
 
     #[test]
-    fn visual_q_quits() {
-        // Regression guard: preserve the old Visual mode's q = quit the app.
+    fn visual_q_cancels_the_selection_and_does_not_quit() {
+        // Regression guard: `q` in the tree's range selection used to quit the app. It is layer 1's
+        // "go back one step" now: the same as `Esc`, which cancels the selection.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Visual, None, KeyPress::ch('q')),
+            m.resolve(Context::TreeVisual, None, KeyPress::ch('q')),
+            Resolution::Action(Action::Cancel)
+        );
+        // `Q` is still the one key that quits, from the selection too.
+        assert_eq!(
+            m.resolve(Context::TreeVisual, None, KeyPress::ch('Q')),
             Resolution::Action(Action::Quit)
         );
     }
@@ -2323,11 +3114,11 @@ mod tests {
         // Quit as before.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('q')),
+            m.resolve(Context::Tree, None, KeyPress::ch('q')),
             Resolution::Action(Action::CloseTabOrQuit)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('Q')),
+            m.resolve(Context::Tree, None, KeyPress::ch('Q')),
             Resolution::Action(Action::Quit)
         );
     }
@@ -2337,25 +3128,25 @@ mod tests {
         // J/K (the PDF page-turn keys) switch sheets on the table surface.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('J')),
+            m.resolve(Context::Table, None, KeyPress::ch('J')),
             Resolution::Action(Action::PageNext)
         );
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('K')),
+            m.resolve(Context::Table, None, KeyPress::ch('K')),
             Resolution::Action(Action::PagePrev)
         );
         // The text surface turns the slides of a presentation with the same keys (and does nothing
         // for any other text: `App::page_turn`); the image surface keeps J/K = PDF pages.
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ch('J')),
+            m.resolve(Context::Text, None, KeyPress::ch('J')),
             Resolution::Action(Action::PageNext)
         );
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ch('K')),
+            m.resolve(Context::Text, None, KeyPress::ch('K')),
             Resolution::Action(Action::PagePrev)
         );
         assert_eq!(
-            m.resolve(Surface::PreviewImage, None, KeyPress::ch('J')),
+            m.resolve(Context::Image, None, KeyPress::ch('J')),
             Resolution::Action(Action::PageNext)
         );
         // config-string two-way mapping.
@@ -2387,51 +3178,25 @@ mod tests {
             let m = KeyMap::defaults(scheme);
             let next = Resolution::Action(Action::PageNext);
             let prev = Resolution::Action(Action::PagePrev);
+            assert_eq!(m.resolve(Context::Image, None, KeyPress::ch('J')), next);
+            assert_eq!(m.resolve(Context::Image, None, KeyPress::ch('K')), prev);
             assert_eq!(
-                m.resolve(Surface::PreviewImage, None, KeyPress::ch('J')),
+                m.resolve(Context::Image, None, KeyPress::key(KeyCode::PageDown)),
                 next
             );
             assert_eq!(
-                m.resolve(Surface::PreviewImage, None, KeyPress::ch('K')),
+                m.resolve(Context::Image, None, KeyPress::key(KeyCode::PageUp)),
                 prev
             );
-            assert_eq!(
-                m.resolve(
-                    Surface::PreviewImage,
-                    None,
-                    KeyPress::key(KeyCode::PageDown)
-                ),
-                next
-            );
-            assert_eq!(
-                m.resolve(Surface::PreviewImage, None, KeyPress::key(KeyCode::PageUp)),
-                prev
-            );
-            assert_eq!(
-                m.resolve(Surface::PreviewTable, None, KeyPress::ch('J')),
-                next
-            );
-            assert_eq!(
-                m.resolve(Surface::PreviewTable, None, KeyPress::ch('K')),
-                prev
-            );
+            assert_eq!(m.resolve(Context::Table, None, KeyPress::ch('J')), next);
+            assert_eq!(m.resolve(Context::Table, None, KeyPress::ch('K')), prev);
             #[cfg(feature = "git")]
             {
-                assert_eq!(
-                    m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch('J')),
-                    next
-                );
-                assert_eq!(
-                    m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch('K')),
-                    prev
-                );
+                assert_eq!(m.resolve(Context::Diff, None, KeyPress::ch('J')), next);
+                assert_eq!(m.resolve(Context::Diff, None, KeyPress::ch('K')), prev);
                 // PageDown/PageUp stay a scroll on the diff surface (rerouted only for media).
                 assert_ne!(
-                    m.resolve(
-                        Surface::PreviewGitDiff,
-                        None,
-                        KeyPress::key(KeyCode::PageDown)
-                    ),
+                    m.resolve(Context::Diff, None, KeyPress::key(KeyCode::PageDown)),
                     next
                 );
             }
@@ -2441,21 +3206,21 @@ mod tests {
     #[test]
     fn sheet_switch_can_be_rebound_and_disabled_from_config() {
         let cfg = cfg_with(
-            "preview_table",
+            "table",
             &[("L", "sheet_next"), ("H", "sheet_prev"), ("J", "noop")],
         );
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
         assert!(m.warnings.is_empty(), "{:?}", m.warnings);
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('L')),
+            m.resolve(Context::Table, None, KeyPress::ch('L')),
             Resolution::Action(Action::PageNext)
         );
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('H')),
+            m.resolve(Context::Table, None, KeyPress::ch('H')),
             Resolution::Action(Action::PagePrev)
         );
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('J')),
+            m.resolve(Context::Table, None, KeyPress::ch('J')),
             Resolution::Unbound
         );
     }
@@ -2464,7 +3229,7 @@ mod tests {
     fn paste_jump_p_is_global_and_config_roundtrips() {
         // P is global (inherited by allows_tabs surfaces) = resolves from either Tree or Preview.
         let m = KeyMap::defaults(KeyScheme::Vim);
-        for sfc in [Surface::Tree, Surface::PreviewText, Surface::PreviewImage] {
+        for sfc in [Context::Tree, Context::Text, Context::Image] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('P')),
                 Resolution::Action(Action::PasteJump),
@@ -2482,11 +3247,7 @@ mod tests {
         // J/K conflict with the image surface's PDF page paging, and Ctrl-j is identical to Enter
         // (LF) on legacy terminals, so neither is used.
         let m = KeyMap::defaults(KeyScheme::Vim);
-        for sfc in [
-            Surface::PreviewText,
-            Surface::PreviewImage,
-            Surface::PreviewTable,
-        ] {
+        for sfc in [Context::Text, Context::Image, Context::Table] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ctrl_ch('n')),
                 Resolution::Action(Action::PreviewFileNext),
@@ -2512,7 +3273,7 @@ mod tests {
         // every terminal.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ctrl_ch('t')),
+            m.resolve(Context::Text, None, KeyPress::ctrl_ch('t')),
             Resolution::Action(Action::OpenLinkNewTab),
             "Ctrl-t が PreviewText で open_link_new_tab に解決する"
         );
@@ -2529,7 +3290,7 @@ mod tests {
         // preview's OpenLinkNewTab.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ctrl_ch('t')),
+            m.resolve(Context::Tree, None, KeyPress::ctrl_ch('t')),
             Resolution::Action(Action::OpenInNewTab),
             "Ctrl-t が Tree で open_in_new_tab に解決する"
         );
@@ -2541,27 +3302,79 @@ mod tests {
     }
 
     #[test]
-    fn shift_i_opens_new_tab_after_current_via_global() {
-        // I = insert a new tab right of the currently active one (tab_new_after). Global, so it
-        // resolves the same way from Tree/Preview *and* from the Bookmarks/Tabs list surfaces
-        // (neither binds `I` for anything of its own, so it falls through to global rather than
-        // being available as a bookmark-name jump letter — same treatment as t/T/F/Q). `t` keeps
-        // appending.
+    fn t_opens_a_new_tab_after_the_current_one_via_global() {
+        // t = insert a new tab right of the currently active one (tab_new_after; it was `I`).
+        // Global, so it resolves the same way from Tree/Preview *and* from the Bookmarks/Tabs
+        // list surfaces (neither binds `t` for anything of its own, so it falls through to global
+        // rather than being available as a bookmark-name jump letter — same treatment as
+        // T/F/Q). Appending at the end (`tab_new`) and `I` have no default key.
         let m = KeyMap::defaults(KeyScheme::Vim);
         for sfc in [
-            Surface::Tree,
-            Surface::PreviewText,
-            Surface::Bookmarks,
-            Surface::Tabs,
+            Context::Tree,
+            Context::Text,
+            Context::Bookmarks,
+            Context::Tabs,
         ] {
             assert_eq!(
-                m.resolve(sfc, None, KeyPress::ch('I')),
+                m.resolve(sfc, None, KeyPress::ch('t')),
                 Resolution::Action(Action::TabNewAfter),
-                "I が {sfc:?} で tab_new_after に解決する"
+                "t が {sfc:?} で tab_new_after に解決する"
+            );
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ch('I')),
+                Resolution::Unbound,
+                "I は {sfc:?} で既定のキーではない"
             );
         }
+        // The actions keep their names, so `[keys]` can bind either to any key.
+        assert_eq!(action_from_str("tab_new"), Some(Action::TabNew));
         assert_eq!(action_from_str("tab_new_after"), Some(Action::TabNewAfter));
         assert_eq!(action_name(Action::TabNewAfter), "tab_new_after");
+    }
+
+    /// The canvas controls of the `Space` menu have no config name: no string a `[keys]` table can
+    /// hold (their own names, the old hub's names for the same words, the plugin spelling) gives
+    /// one, so an old binding keeps the meaning it had.
+    #[test]
+    fn project_control_items_have_no_config_name() {
+        let controls = [
+            ProjectMenuControl::Search,
+            ProjectMenuControl::NextScreen,
+            ProjectMenuControl::PrevScreen,
+            ProjectMenuControl::Back,
+        ];
+        for control in controls {
+            let name = action_name(Action::ProjectControl(control));
+            assert!(
+                !matches!(action_from_str(&name), Some(Action::ProjectControl(_))),
+                "{name}"
+            );
+            assert_eq!(action_from_str(&name), None, "{name}");
+        }
+        for name in [
+            "project_control",
+            "project_control:search",
+            "project_control.search",
+            "search",
+            "back",
+            "git_close",
+            "git_screen_next",
+            "git_screen_prev",
+            "list_filter_start",
+        ] {
+            assert!(
+                !matches!(action_from_str(name), Some(Action::ProjectControl(_))),
+                "{name}"
+            );
+        }
+        // The four names differ, so a conflict report cannot confuse them.
+        let mut names: Vec<String> = controls
+            .iter()
+            .map(|c| action_name(Action::ProjectControl(*c)))
+            .collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 4);
     }
 
     #[test]
@@ -2570,10 +3383,10 @@ mod tests {
         // text-input/confirm-modal) inherits it.
         let m = KeyMap::defaults(KeyScheme::Vim);
         for sfc in [
-            Surface::Tree,
-            Surface::PreviewText,
-            Surface::PreviewTable,
-            Surface::Visual,
+            Context::Tree,
+            Context::Text,
+            Context::Table,
+            Context::TreeVisual,
         ] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('Q')),
@@ -2588,24 +3401,24 @@ mod tests {
     fn leader_resolution() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch(' ')),
+            m.resolve(Context::Tree, None, KeyPress::ch(' ')),
             Resolution::EnterLeader(LeaderId::File)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, Some(LeaderId::File), KeyPress::ch('d')),
+            m.resolve(Context::Tree, Some(LeaderId::File), KeyPress::ch('d')),
             Resolution::Action(Action::FileDelete)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('y')),
+            m.resolve(Context::Tree, None, KeyPress::ch('y')),
             Resolution::EnterLeader(LeaderId::Copy)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
+            m.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
         // An unknown suffix is Unbound (cancels the leader).
         assert_eq!(
-            m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('z')),
+            m.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('z')),
             Resolution::Unbound
         );
     }
@@ -2615,16 +3428,16 @@ mod tests {
     fn copy_leader_scope() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ch('y')),
+            m.resolve(Context::Text, None, KeyPress::ch('y')),
             Resolution::EnterLeader(LeaderId::Copy)
         );
         assert_eq!(
-            m.resolve(Surface::PreviewImage, None, KeyPress::ch('y')),
+            m.resolve(Context::Image, None, KeyPress::ch('y')),
             Resolution::EnterLeader(LeaderId::Copy)
         );
         // Visual does not inherit the copy leader.
         assert_eq!(
-            m.resolve(Surface::Visual, None, KeyPress::ch('y')),
+            m.resolve(Context::TreeVisual, None, KeyPress::ch('y')),
             Resolution::Unbound
         );
     }
@@ -2636,46 +3449,34 @@ mod tests {
         let m = KeyMap::defaults(KeyScheme::Vim);
         // hjkl = move the cell cursor.
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('l')),
+            m.resolve(Context::Table, None, KeyPress::ch('l')),
             Resolution::Action(Action::Navigate(Motion::Right))
         );
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('0')),
+            m.resolve(Context::Table, None, KeyPress::ch('0')),
             Resolution::Action(Action::Navigate(Motion::LineHome))
         );
         // y→ is the table-specific TableCopy leader (a separate menu from the path-copy Copy leader).
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('y')),
+            m.resolve(Context::Table, None, KeyPress::ch('y')),
             Resolution::EnterLeader(LeaderId::TableCopy)
         );
         assert_eq!(
-            m.resolve(
-                Surface::PreviewTable,
-                Some(LeaderId::TableCopy),
-                KeyPress::ch('c')
-            ),
+            m.resolve(Context::Table, Some(LeaderId::TableCopy), KeyPress::ch('c')),
             Resolution::Action(Action::TableCopy(TableCopyKind::Cell))
         );
         assert_eq!(
-            m.resolve(
-                Surface::PreviewTable,
-                Some(LeaderId::TableCopy),
-                KeyPress::ch('C')
-            ),
+            m.resolve(Context::Table, Some(LeaderId::TableCopy), KeyPress::ch('C')),
             Resolution::Action(Action::TableCopy(TableCopyKind::Column))
         );
         // `f` is kept for the (full) path copy.
         assert_eq!(
-            m.resolve(
-                Surface::PreviewTable,
-                Some(LeaderId::TableCopy),
-                KeyPress::ch('f')
-            ),
+            m.resolve(Context::Table, Some(LeaderId::TableCopy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
         // q = go back.
         assert_eq!(
-            m.resolve(Surface::PreviewTable, None, KeyPress::ch('q')),
+            m.resolve(Context::Table, None, KeyPress::ch('q')),
             Resolution::Action(Action::PreviewBack)
         );
     }
@@ -2686,26 +3487,26 @@ mod tests {
         let m = KeyMap::defaults(KeyScheme::Vim);
         // In a normal text preview, v = start a selection.
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ch('v')),
+            m.resolve(Context::Text, None, KeyPress::ch('v')),
             Resolution::Action(Action::PreviewEnterVisual)
         );
         // Selection surface: j/k = extend the range (cursor movement).
         assert_eq!(
-            m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('j')),
+            m.resolve(Context::TextVisual, None, KeyPress::ch('j')),
             Resolution::Action(Action::Navigate(Motion::Down))
         );
         // y = copy the selection.
         assert_eq!(
-            m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('y')),
+            m.resolve(Context::TextVisual, None, KeyPress::ch('y')),
             Resolution::Action(Action::PreviewCopySelection)
         );
         // v / q = clear the selection.
         assert_eq!(
-            m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('v')),
+            m.resolve(Context::TextVisual, None, KeyPress::ch('v')),
             Resolution::Action(Action::PreviewExitVisual)
         );
         assert_eq!(
-            m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('q')),
+            m.resolve(Context::TextVisual, None, KeyPress::ch('q')),
             Resolution::Action(Action::PreviewExitVisual)
         );
     }
@@ -2822,20 +3623,20 @@ mod tests {
         );
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('d')),
+            m.resolve(Context::Tree, None, KeyPress::ch('d')),
             Resolution::Action(Action::Refresh)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('X')),
+            m.resolve(Context::Tree, None, KeyPress::ch('X')),
             Resolution::Action(Action::Refresh)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('i')),
+            m.resolve(Context::Tree, None, KeyPress::ch('i')),
             Resolution::Unbound
         );
         // g stays the default Nav(Top) (refuses to become an anonymous leader).
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('g')),
+            m.resolve(Context::Tree, None, KeyPress::ch('g')),
             Resolution::Action(Action::Navigate(Motion::Top))
         );
         assert!(
@@ -2851,7 +3652,7 @@ mod tests {
         let cfg = cfg_with("tree", &[("y z", "copy_full")]);
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
         assert_eq!(
-            m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('z')),
+            m.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('z')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
     }
@@ -2863,7 +3664,7 @@ mod tests {
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
         // Space stays a leader (the override is discarded).
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch(' ')),
+            m.resolve(Context::Tree, None, KeyPress::ch(' ')),
             Resolution::EnterLeader(LeaderId::File)
         );
         assert_eq!(
@@ -2880,10 +3681,10 @@ mod tests {
     fn validate_global_shadow() {
         let cfg = cfg_with("tree", &[("t", "refresh")]);
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
-        // t reverts to Global's TabNew (the per-surface override is discarded).
+        // t reverts to Global's TabNewAfter (the per-surface override is discarded).
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('t')),
-            Resolution::Action(Action::TabNew)
+            m.resolve(Context::Tree, None, KeyPress::ch('t')),
+            Resolution::Action(Action::TabNewAfter)
         );
         assert_eq!(
             m.conflicts
@@ -2919,7 +3720,7 @@ mod tests {
             1
         );
         assert_eq!(
-            m.resolve(Surface::Tabs, None, KeyPress::ch('T')),
+            m.resolve(Context::Tabs, None, KeyPress::ch('T')),
             Resolution::Action(Action::ToggleTabList),
             "global の割当へ戻る"
         );
@@ -2928,18 +3729,26 @@ mod tests {
     #[test]
     fn outline_key_resolves_and_action_round_trips() {
         let m = KeyMap::from_config(KeyScheme::Vim, &KeysFileConfig::default());
-        // `o` in a Markdown/text preview opens the outline.
+        // `O` in a Markdown/text preview opens the outline (`o` is the verb "open" now).
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ch('o')),
+            m.resolve(Context::Text, None, KeyPress::ch('O')),
             Resolution::Action(Action::ToggleOutline)
         );
-        // In the outline overlay: j/k move, o/q close.
         assert_eq!(
-            m.resolve(Surface::Outline, None, KeyPress::ch('j')),
+            m.resolve(Context::Text, None, KeyPress::ch('o')),
+            Resolution::Action(Action::OpenExternal)
+        );
+        // In the outline overlay: j/k move, O/q close.
+        assert_eq!(
+            m.resolve(Context::Outline, None, KeyPress::ch('O')),
+            Resolution::Action(Action::ToggleOutline)
+        );
+        assert_eq!(
+            m.resolve(Context::Outline, None, KeyPress::ch('j')),
             Resolution::Action(Action::Navigate(Motion::Down))
         );
         assert_eq!(
-            m.resolve(Surface::Outline, None, KeyPress::ch('q')),
+            m.resolve(Context::Outline, None, KeyPress::ch('q')),
             Resolution::Action(Action::ToggleOutline)
         );
         // config string round-trip.
@@ -2956,7 +3765,7 @@ mod tests {
         let cfg = cfg_with("tree", &[("enter", "quit")]);
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::key(KeyCode::Enter)),
+            m.resolve(Context::Tree, None, KeyPress::key(KeyCode::Enter)),
             Resolution::Unbound
         );
         assert!(m.warnings.iter().any(|w| w.contains("fixed key")));
@@ -2968,36 +3777,33 @@ mod tests {
         // modifiers, and `'`/q close it.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Bookmarks, None, KeyPress::ctrl_ch('e')),
+            m.resolve(Context::Bookmarks, None, KeyPress::ctrl_ch('e')),
             Resolution::Action(Action::BookmarkEdit)
         );
         assert_eq!(
-            m.resolve(Surface::Bookmarks, None, KeyPress::ctrl_ch('d')),
-            Resolution::Action(Action::BookmarkDelete)
+            m.resolve(Context::Bookmarks, None, KeyPress::ctrl_ch('d')),
+            Resolution::Unbound,
+            "Ctrl-d is layer 1's half page; deleting is in the list's Space menu"
         );
         assert_eq!(
-            m.resolve(Surface::Bookmarks, None, KeyPress::ch('\'')),
+            m.resolve(Context::Bookmarks, None, KeyPress::ch('\'')),
             Resolution::Action(Action::BookmarkClose)
         );
         assert_eq!(
-            m.resolve(Surface::Bookmarks, None, KeyPress::ch('q')),
+            m.resolve(Context::Bookmarks, None, KeyPress::ch('q')),
             Resolution::Action(Action::BookmarkClose)
         );
         // Plain e/d are unbound (= falls through to letter-jump via main's Unbound fallback).
         assert_eq!(
-            m.resolve(Surface::Bookmarks, None, KeyPress::ch('e')),
+            m.resolve(Context::Bookmarks, None, KeyPress::ch('e')),
             Resolution::Unbound
         );
         assert_eq!(
-            m.resolve(Surface::Bookmarks, None, KeyPress::ch('d')),
+            m.resolve(Context::Bookmarks, None, KeyPress::ch('d')),
             Resolution::Unbound
         );
         // The three preview surfaces also have m=register / '=list (bookmark the displayed file).
-        for sfc in [
-            Surface::PreviewText,
-            Surface::PreviewImage,
-            Surface::PreviewTable,
-        ] {
+        for sfc in [Context::Text, Context::Image, Context::Table] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('m')),
                 Resolution::Action(Action::MarkSet)
@@ -3009,7 +3815,7 @@ mod tests {
         }
         // In the Tree, `'` stays MarkJump, opening the list (the config name is unchanged too).
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('\'')),
+            m.resolve(Context::Tree, None, KeyPress::ch('\'')),
             Resolution::Action(Action::MarkJump)
         );
     }
@@ -3020,30 +3826,30 @@ mod tests {
         // global T toggles it open/closed (from any surface); in the list, w = close the selected
         // tab (overrides global's TabClose on this surface).
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('T')),
+            m.resolve(Context::Tree, None, KeyPress::ch('T')),
             Resolution::Action(Action::ToggleTabList)
         );
         assert_eq!(
-            m.resolve(Surface::Tabs, None, KeyPress::ch('T')),
+            m.resolve(Context::Tabs, None, KeyPress::ch('T')),
             Resolution::Action(Action::ToggleTabList),
             "一覧内の T は global 継承で閉じる"
         );
         assert_eq!(
-            m.resolve(Surface::Tabs, None, KeyPress::ch('d')),
+            m.resolve(Context::Tabs, None, KeyPress::ch('d')),
             Resolution::Action(Action::TabListClose)
         );
         assert_eq!(
-            m.resolve(Surface::Tabs, None, KeyPress::ch('q')),
+            m.resolve(Context::Tabs, None, KeyPress::ch('q')),
             Resolution::Action(Action::ToggleTabList)
         );
         // The default `w` has **no** binding anywhere for closing a tab (avoids accidental
         // triggers; consolidated onto q).
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('w')),
+            m.resolve(Context::Tree, None, KeyPress::ch('w')),
             Resolution::Unbound
         );
         assert_eq!(
-            m.resolve(Surface::Tabs, None, KeyPress::ch('w')),
+            m.resolve(Context::Tabs, None, KeyPress::ch('w')),
             Resolution::Unbound
         );
         // config-string round trip.
@@ -3063,17 +3869,39 @@ mod tests {
     #[test]
     fn less_scheme_preview_paging() {
         let m = KeyMap::defaults(KeyScheme::Less);
+        // `f` pages; `Space` does not (it is the operation menu, not a page key).
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ch(' ')),
+            m.resolve(Context::Text, None, KeyPress::ch('f')),
             Resolution::Action(Action::Navigate(Motion::PageDown))
         );
+        for ctx in [Context::Text, Context::Document, Context::Table] {
+            assert_eq!(
+                m.resolve(ctx, None, KeyPress::ch(' ')),
+                Resolution::EnterLeader(LeaderId::Actions),
+                "{ctx:?}"
+            );
+        }
+        #[cfg(feature = "git")]
+        {
+            // The diff's `f` was the follow scope, which collided with this page key; it is the
+            // page key alone now.
+            assert_eq!(
+                m.resolve(Context::Diff, None, KeyPress::ch('f')),
+                Resolution::Action(Action::Navigate(Motion::PageDown))
+            );
+            let vim = KeyMap::defaults(KeyScheme::Vim);
+            assert_eq!(
+                vim.resolve(Context::Diff, None, KeyPress::ch('f')),
+                Resolution::Unbound
+            );
+        }
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ch('d')),
+            m.resolve(Context::Text, None, KeyPress::ch('d')),
             Resolution::Action(Action::Navigate(Motion::HalfDown))
         );
         // Tree stays Space=File leader regardless of scheme.
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch(' ')),
+            m.resolve(Context::Tree, None, KeyPress::ch(' ')),
             Resolution::EnterLeader(LeaderId::File)
         );
     }
@@ -3083,29 +3911,29 @@ mod tests {
     fn vim_scheme_preview_paging() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ctrl_ch('f')),
+            m.resolve(Context::Text, None, KeyPress::ctrl_ch('f')),
             Resolution::Action(Action::Navigate(Motion::PageDown))
         );
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ctrl_ch('d')),
+            m.resolve(Context::Text, None, KeyPress::ctrl_ch('d')),
             Resolution::Action(Action::Navigate(Motion::HalfDown))
         );
         // Under vim, plain f/Space are unbound in Preview.
         assert_eq!(
-            m.resolve(Surface::PreviewText, None, KeyPress::ch('f')),
+            m.resolve(Context::Text, None, KeyPress::ch('f')),
             Resolution::Unbound
         );
     }
 
-    // §10.10 scheme-inapplicable surfaces are unaffected (Sort).
+    // §10.10 scheme-inapplicable menus are unaffected (the sort letters of the `,` menu).
     #[test]
     fn scheme_does_not_affect_sort() {
         let vim = KeyMap::defaults(KeyScheme::Vim);
         let less = KeyMap::defaults(KeyScheme::Less);
         for kp in [KeyPress::ch('n'), KeyPress::ch('s'), KeyPress::ch('r')] {
             assert_eq!(
-                vim.resolve(Surface::Sort, None, kp),
-                less.resolve(Surface::Sort, None, kp)
+                vim.resolve_leader(Context::Tree, LeaderId::Options, kp),
+                less.resolve_leader(Context::Tree, LeaderId::Options, kp)
             );
         }
     }
@@ -3115,15 +3943,15 @@ mod tests {
     fn tree_has_no_horizontal_motion() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('h')),
+            m.resolve(Context::Tree, None, KeyPress::ch('h')),
             Resolution::Action(Action::TreeLeave)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('0')),
+            m.resolve(Context::Tree, None, KeyPress::ch('0')),
             Resolution::Unbound
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('$')),
+            m.resolve(Context::Tree, None, KeyPress::ch('$')),
             Resolution::Unbound
         );
     }
@@ -3133,25 +3961,28 @@ mod tests {
     fn global_tab_inheritance() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('t')),
-            Resolution::Action(Action::TabNew)
+            m.resolve(Context::Tree, None, KeyPress::ch('t')),
+            Resolution::Action(Action::TabNewAfter)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('1')),
+            m.resolve(Context::Tree, None, KeyPress::ch('1')),
             Resolution::Action(Action::TabGoto(0))
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('9')),
+            m.resolve(Context::Tree, None, KeyPress::ch('9')),
             Resolution::Action(Action::TabGoto(8))
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('?')),
+            m.resolve(Context::Tree, None, KeyPress::ch('?')),
             Resolution::Action(Action::ToggleHelp)
         );
-        // A text-input surface (Filter) does not inherit Global.
+        // A text-input surface (Filter) has no context, so it does not inherit Global (nor
+        // anything else): `handle_key` never looks a key up for it.
+        assert_eq!(Context::of_surface(Surface::Filter, false), None);
+        assert_eq!(Context::of_surface(Surface::Search, false), None);
         assert_eq!(
-            m.resolve(Surface::Filter, None, KeyPress::ch('t')),
-            Resolution::Unbound
+            Context::of_surface(Surface::DialogConfirmDelete, false),
+            None
         );
     }
 
@@ -3161,7 +3992,7 @@ mod tests {
         assert!(Surface::Filter.is_text_input());
         assert!(!Surface::Tree.is_text_input());
         assert!(Surface::DialogConfirmDelete.is_modal_confirm());
-        assert!(!Surface::Sort.is_modal_confirm());
+        assert!(!Surface::Help.is_modal_confirm());
         assert!(Surface::Tree.allows_tabs());
         assert!(!Surface::Filter.allows_tabs());
         assert!(!Surface::DialogConfirmDelete.allows_tabs());
@@ -3177,7 +4008,7 @@ mod tests {
         assert!(m.warnings.iter().any(|w| w.contains("unknown key surface")));
         // The default Tree d is preserved.
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('d')),
+            m.resolve(Context::Tree, None, KeyPress::ch('d')),
             Resolution::Action(Action::OpenGitDiffCursor)
         );
     }
@@ -3190,8 +4021,8 @@ mod tests {
         let less = KeyMap::defaults(KeyScheme::Less);
         for kp in [KeyPress::ch('s'), KeyPress::ch('j'), KeyPress::ch('d')] {
             assert_eq!(
-                vim.resolve(Surface::GitChanges, None, kp),
-                less.resolve(Surface::GitChanges, None, kp)
+                vim.resolve(gs(Screen::Changes), None, kp),
+                less.resolve(gs(Screen::Changes), None, kp)
             );
         }
     }
@@ -3201,19 +4032,19 @@ mod tests {
     fn git_detail_navigate_coverage() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::GitDetail, None, KeyPress::ch('h')),
+            m.resolve(gs(Screen::Detail), None, KeyPress::ch('h')),
             Resolution::Action(Action::Navigate(Motion::Left))
         );
         assert_eq!(
-            m.resolve(Surface::GitDetail, None, KeyPress::ch('l')),
+            m.resolve(gs(Screen::Detail), None, KeyPress::ch('l')),
             Resolution::Action(Action::Navigate(Motion::Right))
         );
         assert_eq!(
-            m.resolve(Surface::GitDetail, None, KeyPress::ch('0')),
+            m.resolve(gs(Screen::Detail), None, KeyPress::ch('0')),
             Resolution::Action(Action::Navigate(Motion::LineHome))
         );
         assert_eq!(
-            m.resolve(Surface::GitDetail, None, KeyPress::ctrl_ch('f')),
+            m.resolve(gs(Screen::Detail), None, KeyPress::ctrl_ch('f')),
             Resolution::Action(Action::Navigate(Motion::PageDown))
         );
     }
@@ -3224,11 +4055,11 @@ mod tests {
         let m = KeyMap::defaults(KeyScheme::Vim);
         // Changes hub: y→ path-copy leader (path of the changed file).
         assert_eq!(
-            m.resolve(Surface::GitChanges, None, KeyPress::ch('y')),
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('y')),
             Resolution::EnterLeader(LeaderId::Copy)
         );
         // log/graph/detail: y→ commit-info copy leader.
-        for sfc in [Surface::GitLog, Surface::GitGraph, Surface::GitDetail] {
+        for sfc in [gs(Screen::Log), gs(Screen::Graph), gs(Screen::Detail)] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('y')),
                 Resolution::EnterLeader(LeaderId::GitCopy),
@@ -3237,20 +4068,29 @@ mod tests {
         }
         // Under the GitCopy leader: m→ full message, h→ full hash.
         assert_eq!(
-            m.resolve(Surface::GitLog, Some(LeaderId::GitCopy), KeyPress::ch('m')),
+            m.resolve(gs(Screen::Log), Some(LeaderId::GitCopy), KeyPress::ch('m')),
             Resolution::Action(Action::GitCopy(GitCopyKind::Message))
         );
         assert_eq!(
             m.resolve(
-                Surface::GitGraph,
+                gs(Screen::Graph),
                 Some(LeaderId::GitCopy),
                 KeyPress::ch('h')
             ),
             Resolution::Action(Action::GitCopy(GitCopyKind::FullHash))
         );
-        // branches: y→ copy the branch name (directly).
+        // branches: y→ the copy menu, whose item `n` copies the branch name (it used to copy
+        // directly).
         assert_eq!(
-            m.resolve(Surface::GitBranches, None, KeyPress::ch('y')),
+            m.resolve(gs(Screen::Branches), None, KeyPress::ch('y')),
+            Resolution::EnterLeader(LeaderId::BranchCopy)
+        );
+        assert_eq!(
+            m.resolve(
+                gs(Screen::Branches),
+                Some(LeaderId::BranchCopy),
+                KeyPress::ch('n')
+            ),
             Resolution::Action(Action::CopyBranchName)
         );
     }
@@ -3260,23 +4100,51 @@ mod tests {
     fn git_changes_mnemonics() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::GitChanges, None, KeyPress::ch('d')),
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('d')),
             Resolution::Action(Action::GitWorktreeDiff)
         );
+        // `l` opens (`Enter`'s operation), `h` goes back, `g` is the top: the log and the graph
+        // have no default key here (the screens' `Tab` cycle reaches them).
         assert_eq!(
-            m.resolve(Surface::GitChanges, None, KeyPress::ch('l')),
-            Resolution::Action(Action::GitOpenLog)
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('l')),
+            Resolution::Action(Action::GitOpenSelectedDiff)
         );
         assert_eq!(
-            m.resolve(Surface::GitChanges, None, KeyPress::ch('g')),
-            Resolution::Action(Action::GitOpenGraph)
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('h')),
+            Resolution::Action(Action::GitClose)
         );
         assert_eq!(
-            m.resolve(Surface::GitChanges, None, KeyPress::ch('!')),
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('g')),
+            Resolution::Action(Action::Navigate(Motion::Top))
+        );
+        assert_eq!(
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('G')),
+            Resolution::Action(Action::Navigate(Motion::Bottom))
+        );
+        assert_eq!(action_from_str("git_open_log"), Some(Action::GitOpenLog));
+        assert_eq!(
+            action_from_str("git_open_graph"),
+            Some(Action::GitOpenGraph)
+        );
+        // `s` stages in git and syncs in jj; `R` is neither (it is the representation cycle).
+        assert_eq!(
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('s')),
+            Resolution::Action(Action::GitStage)
+        );
+        let jj = Context::Screen(Backend::Jj, Screen::Changes);
+        assert_eq!(
+            m.resolve(jj, None, KeyPress::ch('s')),
+            Resolution::Action(Action::JjSync)
+        );
+        for c in [gs(Screen::Changes), jj] {
+            assert_eq!(m.resolve(c, None, KeyPress::ch('R')), Resolution::Unbound);
+        }
+        assert_eq!(
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('!')),
             Resolution::Action(Action::GitLaunchTool)
         );
         assert_eq!(
-            m.resolve(Surface::GitChanges, None, KeyPress::ch('w')),
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('w')),
             Resolution::Action(Action::GitOpenWorktrees)
         );
     }
@@ -3290,46 +4158,59 @@ mod tests {
     fn git_worktrees_bindings() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('j')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('j')),
             Resolution::Action(Action::Navigate(Motion::Down))
         );
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('k')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('k')),
             Resolution::Action(Action::Navigate(Motion::Up))
         );
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('g')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('g')),
             Resolution::Action(Action::Navigate(Motion::Top))
         );
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('G')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('G')),
             Resolution::Action(Action::Navigate(Motion::Bottom))
         );
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('/')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('/')),
             Resolution::Action(Action::WorktreeFilterStart)
         );
+        // `c` creates (`n` is layer 1's next match, so it is not bound in the list).
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('n')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('c')),
             Resolution::Action(Action::WorktreeCreate)
         );
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ctrl_ch('t')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('n')),
+            Resolution::Unbound
+        );
+        // `l` goes to the selected worktree (`Enter`'s operation), `h` goes back.
+        assert_eq!(
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('l')),
+            Resolution::Action(Action::WorktreeGoto)
+        );
+        assert_eq!(
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('h')),
+            Resolution::Action(Action::WorktreeClose)
+        );
+        assert_eq!(
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ctrl_ch('t')),
             Resolution::Action(Action::WorktreeGotoNewTab)
         );
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('d')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('d')),
             Resolution::Action(Action::WorktreeShowChanges)
         );
         assert_eq!(
-            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('q')),
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('q')),
             Resolution::Action(Action::WorktreeClose)
         );
-        // `WorktreeGoto` has no default binding here (Enter is fixed elsewhere), but it still
-        // round-trips through the config-string layer.
+        // `WorktreeGoto` (`l`, and the fixed `Enter`) round-trips through the config-string layer.
         assert_eq!(action_from_str("worktree_goto"), Some(Action::WorktreeGoto));
         assert_eq!(action_name(Action::WorktreeGoto), "worktree_goto");
-        // `WorktreeCreate` (`n`, the row just resolved above) round-trips too.
+        // `WorktreeCreate` (`c`, the row just resolved above) round-trips too.
         assert_eq!(
             action_from_str("worktree_create"),
             Some(Action::WorktreeCreate)
@@ -3431,19 +4312,19 @@ mod tests {
     fn agent_watch_keys_resolve() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('C')),
+            m.resolve(Context::Tree, None, KeyPress::ch('C')),
             Resolution::Action(Action::ToggleChangedFilter)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('n')),
+            m.resolve(Context::Tree, None, KeyPress::ch('n')),
             Resolution::Action(Action::JumpNextChange)
         );
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch('N')),
+            m.resolve(Context::Tree, None, KeyPress::ch('N')),
             Resolution::Action(Action::JumpPrevChange)
         );
         // F is inherited via global (works from either Tree or Preview).
-        for sfc in [Surface::Tree, Surface::PreviewText, Surface::PreviewImage] {
+        for sfc in [Context::Tree, Context::Text, Context::Image] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('F')),
                 Resolution::Action(Action::ToggleFollow),
@@ -3452,44 +4333,52 @@ mod tests {
         }
         // y→@ = @reference path copy (a common menu item on every y-leader surface).
         assert_eq!(
-            m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('@')),
+            m.resolve(Context::Tree, Some(LeaderId::Copy), KeyPress::ch('@')),
             Resolution::Action(Action::CopyPath(CopyKind::AtRef))
         );
         // y→c = code-block copy (a Copy-leader menu item; whether it's shown depends on the
         // surface/focus).
         assert_eq!(
-            m.resolve(
-                Surface::PreviewText,
-                Some(LeaderId::Copy),
-                KeyPress::ch('c')
-            ),
+            m.resolve(Context::Text, Some(LeaderId::Copy), KeyPress::ch('c')),
             Resolution::Action(Action::CopyCodeBlock)
         );
         // Y = @path#L reference for the selection/caret (both the normal and visual surfaces).
-        for sfc in [Surface::PreviewText, Surface::PreviewTextVisual] {
+        for sfc in [Context::Text, Context::TextVisual] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('Y')),
                 Resolution::Action(Action::PreviewCopySelectionRef),
                 "Y が {sfc:?} で @参照コピーに解決する"
             );
         }
-        // n/N inside the diff view = cycle through changed files (resolve to the same Action as
-        // the tree's n/N).
+        // Ctrl-n / Ctrl-p inside the diff view = cycle through changed files (the same Actions as
+        // the tree's n/N). `n` / `N` are the next / previous change block of the file, and the
+        // follow scope (`f`) has no default key (it moves into the `,` menu in B3b).
         #[cfg(feature = "git")]
-        for (k, a) in [('n', Action::JumpNextChange), ('N', Action::JumpPrevChange)] {
+        {
+            for (kp, a) in [
+                (KeyPress::ctrl_ch('n'), Action::JumpNextChange),
+                (KeyPress::ctrl_ch('p'), Action::JumpPrevChange),
+            ] {
+                assert_eq!(
+                    m.resolve(Context::Diff, None, kp),
+                    Resolution::Action(a),
+                    "diff ビューの {} が変更間ジャンプに解決する",
+                    kp.label()
+                );
+            }
+            for (c, a) in [('n', Action::DiffNextChange), ('N', Action::DiffPrevChange)] {
+                assert_eq!(
+                    m.resolve(Context::Diff, None, KeyPress::ch(c)),
+                    Resolution::Action(a),
+                    "diff ビューの {c}"
+                );
+            }
             assert_eq!(
-                m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch(k)),
-                Resolution::Action(a),
-                "diff ビューの {k} が変更間ジャンプに解決する"
+                m.resolve(Context::Diff, None, KeyPress::ch('f')),
+                Resolution::Unbound,
+                "diff ビューの f"
             );
         }
-        // f inside the diff view = toggle the follow range (since follow-start ⇄ full).
-        #[cfg(feature = "git")]
-        assert_eq!(
-            m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch('f')),
-            Resolution::Action(Action::ToggleFollowDiffScope),
-            "diff ビューの f がフォロー範囲トグルに解決する"
-        );
         // Config-string round trip.
         for s in [
             "toggle_changed_filter",
@@ -3510,11 +4399,11 @@ mod tests {
         let m = KeyMap::defaults(KeyScheme::Vim);
         // Space→ enters the file-management leader.
         assert_eq!(
-            m.resolve(Surface::Tree, None, KeyPress::ch(' ')),
+            m.resolve(Context::Tree, None, KeyPress::ch(' ')),
             Resolution::EnterLeader(LeaderId::File)
         );
         // Space→D = duplicate (Tree and Visual share the same File leader).
-        for sfc in [Surface::Tree, Surface::Visual] {
+        for sfc in [Context::Tree, Context::TreeVisual] {
             assert_eq!(
                 m.resolve(sfc, Some(LeaderId::File), KeyPress::ch('D')),
                 Resolution::Action(Action::FileDuplicate),
@@ -3532,23 +4421,27 @@ mod tests {
     /// leak onto the log surface.
     #[cfg(feature = "git")]
     #[test]
-    fn graph_base_clears_with_x_and_zero() {
+    fn graph_base_clears_with_x_only() {
         let m = KeyMap::defaults(KeyScheme::Vim);
-        for k in ['x', '0'] {
-            assert_eq!(
-                m.resolve(Surface::GitGraph, None, KeyPress::ch(k)),
-                Resolution::Action(Action::GitGraphClearBase),
-                "グラフの `{k}` が基準解除に解決する"
-            );
-        }
         assert_eq!(
-            m.resolve(Surface::GitGraph, None, KeyPress::ch('s')),
+            m.resolve(gs(Screen::Graph), None, KeyPress::ch('x')),
+            Resolution::Action(Action::GitGraphClearBase),
+            "グラフの `x` が基準解除に解決する"
+        );
+        // `0` is layer 1's line start, not a second way to clear the base: the graph does not
+        // bind it (it used to).
+        assert_eq!(
+            m.resolve(gs(Screen::Graph), None, KeyPress::ch('0')),
+            Resolution::Unbound
+        );
+        assert_eq!(
+            m.resolve(gs(Screen::Graph), None, KeyPress::ch('s')),
             Resolution::Action(Action::GitGraphSetBase)
         );
         // The log surface has none of the graph's dedicated base keys (neither `0` nor `x` is bound).
         for k in ['x', '0', 's'] {
             assert_eq!(
-                m.resolve(Surface::GitLog, None, KeyPress::ch(k)),
+                m.resolve(gs(Screen::Log), None, KeyPress::ch(k)),
                 Resolution::Unbound,
                 "log 面に `{k}` は割り当てない"
             );
@@ -3568,6 +4461,29 @@ mod tests {
     /// existed only in `action_name` and not in `action_from_str`, so they could not be reassigned
     /// via config (detected by this test on 2026-07-20).
     #[test]
+    fn actions_without_a_default_key_still_round_trip() {
+        // Operations whose default key was taken away (they stay for `[keys]`) are not collected
+        // by `keymap_actions_round_trip`, which only sees what is bound by default.
+        #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+        let mut pairs: Vec<(&str, Action)> = vec![
+            ("tab_new", Action::TabNew),
+            ("open_sort_menu", Action::OpenSortMenu),
+            ("toggle_focused_item", Action::ToggleFocusedItem),
+        ];
+        #[cfg(feature = "git")]
+        pairs.extend([
+            ("git_open_log", Action::GitOpenLog),
+            ("git_open_graph", Action::GitOpenGraph),
+            ("toggle_follow_diff_scope", Action::ToggleFollowDiffScope),
+            ("jj_sync", Action::JjSync),
+        ]);
+        for (s, a) in pairs {
+            assert_eq!(action_from_str(s), Some(a), "{s}");
+            assert_eq!(action_name(a), s, "{a:?}");
+        }
+    }
+
+    #[test]
     fn keymap_actions_round_trip() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         let mut actions: Vec<Action> = Vec::new();
@@ -3576,9 +4492,10 @@ mod tests {
                 actions.push(*a);
             }
         };
-        for ctx in m.per_surface.values() {
-            ctx.values().for_each(&mut collect);
+        for table in m.contexts.values().chain(m.types.values()) {
+            table.values().for_each(&mut collect);
         }
+        m.basic.values().for_each(&mut collect);
         m.global.values().for_each(&mut collect);
         for menu in m.leaders.values() {
             actions.extend(menu.items.iter().map(|i| i.action));
@@ -3610,36 +4527,50 @@ mod tests {
         );
     }
 
-    /// Regression test for bug 3: every `Surface` registered in `per_surface` (= its key bindings
-    /// actually exist and fire when pressed) has a `[keys.<name>]` name and can be resolved via
-    /// `key_target_from_name`. `Surface::GitGraphPicker` was registered in `per_surface` but had no
-    /// name in `key_target_from_name`, so the graph branch panel's 5 actions (which
-    /// `config.example.toml` advertised as configurable) could not be reassigned via config. This
-    /// mechanical check keeps the "registry" (`per_surface`) and the "config-name registry"
-    /// (`key_target_from_name`) permanently in sync.
+    /// Regression test for bug 3, for contexts: every context that has a table (= its key bindings
+    /// actually exist and fire when pressed) has a `[keys.<name>]` name, the name resolves back to
+    /// the context, and a binding written under that name really lands on it.
+    /// `gs(Screen::GraphPicker)` once had a table but no config name, so the graph branch panel's 5
+    /// actions (which `config.example.toml` advertised as configurable) could not be reassigned via
+    /// config. This keeps the "registry" (`contexts`) and the "config-name registry"
+    /// (`Context::name` / `Context::from_name`) in sync, and `Context::all()` with both.
     #[test]
-    fn keymap_names_cover_every_bindable_surface() {
+    fn keymap_names_cover_every_bindable_context() {
         let m = KeyMap::defaults(KeyScheme::Vim);
         let mut missing: Vec<String> = Vec::new();
-        for &sfc in m.per_surface.keys() {
-            match surface_config_name(sfc) {
-                Some(name) => match key_target_from_name(name) {
-                    Some(KeyTarget::Surface(back)) if back == sfc => {}
-                    _ => missing.push(format!(
-                        "{sfc:?} => surface_config_name={name:?} だが key_target_from_name({name:?}) が \
-                         {sfc:?} に往復しない"
-                    )),
-                },
-                None => missing.push(format!(
-                    "{sfc:?} は per_surface に登録済み(バインド発火可能)なのに surface_config_name が \
-                     None(=config から到達不能)"
-                )),
+        for ctx in Context::all() {
+            if !m.contexts.contains_key(&ctx) {
+                missing.push(format!("{ctx:?} は Context::all() にあるが既定の表が無い"));
+            }
+            let name = ctx.name();
+            if Context::from_name(&name) != Some(ctx) {
+                missing.push(format!("{ctx:?} => {name:?} が往復しない"));
+            }
+            // Reachable from config: a binding written under the name takes effect.
+            let cfg = cfg_with(&name, &[("Z", "refresh")]);
+            let c = KeyMap::from_config(KeyScheme::Vim, &cfg);
+            if c.resolve(ctx, None, KeyPress::ch('Z')) != Resolution::Action(Action::Refresh) {
+                missing.push(format!("[keys.{name}] の割り当てが {ctx:?} に届かない"));
+            }
+            if !c.warnings.is_empty() {
+                missing.push(format!("[keys.{name}] が警告: {:?}", c.warnings));
             }
         }
+        for &ctx in m.contexts.keys() {
+            if !Context::all().contains(&ctx) {
+                missing.push(format!("{ctx:?} は表があるが Context::all() に無い"));
+            }
+        }
+        // The names are unique.
+        let mut names: Vec<String> = Context::all().iter().map(|c| c.name()).collect();
+        names.sort();
+        let n = names.len();
+        names.dedup();
+        assert_eq!(names.len(), n, "文脈名が重複している");
         missing.sort_unstable();
         assert!(
             missing.is_empty(),
-            "per_surface ↔ config 面名がずれている: {missing:#?}"
+            "contexts ↔ config 文脈名がずれている: {missing:#?}"
         );
     }
 }

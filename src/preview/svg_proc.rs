@@ -43,7 +43,7 @@
 // that bound passes, so it can still not hang the parent. A reused idle child said it long ago.
 //
 //   start   : "KSRDY"                                                       (child -> parent, once)
-//   request : "KSV1" u32 max_px | u32 base_len, base bytes | u64 data_len, data      (little endian)
+//   request : "KSV2" u32 max_px | u32 base_len, base bytes | u32 root_count (u32::MAX = no limit), root_count x (u32 len, bytes) | u64 data_len, data   (little endian)
 //   response: "KSR1" u8 status (0 = drawn, else `SvgFail::code`) [| u32 w, u32 h, w*h*4 RGBA bytes]
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -116,6 +116,10 @@ const MAX_REQUEST_BYTES: u64 = super::svg_guard::MAX_SVG_BYTES as u64 + (1 << 20
 
 /// Longest base directory a request may carry.
 const MAX_BASE_BYTES: usize = 1 << 16;
+/// The roots count that means "no limit on the files read".
+const NO_ROOTS: u32 = u32::MAX;
+/// The most read-scope directories one request may carry.
+const MAX_ROOTS: u32 = 4096;
 
 /// Largest side of a raster the child may send back (the 4096 px cap).
 const MAX_SIDE: u32 = 4096;
@@ -258,7 +262,7 @@ pub(crate) struct TestWorker(Worker);
 #[cfg(test)]
 impl TestWorker {
     pub(crate) fn start(exe: &Path) -> Option<TestWorker> {
-        Worker::start(exe, 1 << 30).ok().map(TestWorker)
+        Worker::start(exe, 1 << 30, WALL_LIMIT).ok().map(TestWorker)
     }
 
     /// Whether the child has ended (reaped when it has).
@@ -389,14 +393,19 @@ struct Worker {
     served: u32,
     /// Since when it has been waiting in the idle pool (None while it is serving a drawing).
     idle_since: Option<Instant>,
+    /// The drawing limit this child's own backstop clock was built from (see `child_main`). An idle
+    /// child is only reused for a request with the same limit.
+    wall: Duration,
 }
 
 impl Worker {
-    /// Start a child for `exe` whose heap may not pass `heap_limit` bytes.
-    fn start(exe: &Path, heap_limit: u64) -> Result<Worker, SvgFail> {
+    /// Start a child for `exe` whose heap may not pass `heap_limit` bytes and whose own backstop
+    /// clock follows `wall` (the drawing limit the parent supervises with).
+    fn start(exe: &Path, heap_limit: u64, wall: Duration) -> Result<Worker, SvgFail> {
         let mut child = Command::new(exe)
             .arg(CHILD_FLAG)
             .arg(heap_limit.to_string())
+            .arg(wall.as_millis().to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // A crash message or a panic report has nowhere to go and nothing to say.
@@ -458,6 +467,7 @@ impl Worker {
             link,
             served: 0,
             idle_since: None,
+            wall,
         })
     }
 
@@ -492,10 +502,14 @@ impl Drop for Worker {
 }
 
 /// An idle child for `exe`, if one is still alive.
-fn take_idle(exe: &Path) -> Option<Worker> {
+fn take_idle(exe: &Path, wall: Duration) -> Option<Worker> {
     let mut guard = IDLE.lock().ok()?;
     let list = guard.as_mut()?.get_mut(exe)?;
-    while let Some(mut w) = list.pop() {
+    // Only a child built for the same drawing limit: its backstop clock follows that limit, so a
+    // child of another limit would stop a long drawing early (or outlive a short one's limit).
+    // The others stay in the pool for their own limit (or are retired by the reaper).
+    while let Some(i) = list.iter().rposition(|w| w.wall == wall) {
+        let mut w = list.remove(i);
         if w.alive() {
             w.idle_since = None;
             return Some(w);
@@ -663,13 +677,32 @@ pub(crate) fn with_real_child<T>(exe: PathBuf, f: impl FnOnce() -> T) -> T {
     r
 }
 
+#[cfg(test)]
 fn header(req: &Request) -> Vec<u8> {
+    header_with(req, None)
+}
+
+/// The request header. `roots` limits the files the drawing may read (see
+/// `svg_guard::options_within`): a count (`NO_ROOTS` for no limit), then each directory as a
+/// length and its bytes.
+fn header_with(req: &Request, roots: Option<&[PathBuf]>) -> Vec<u8> {
     let base = req.base.map(path_bytes).unwrap_or_default();
     let mut h = Vec::with_capacity(32 + base.len());
-    h.extend_from_slice(b"KSV1");
+    h.extend_from_slice(b"KSV2");
     h.extend_from_slice(&req.max_px.to_le_bytes());
     h.extend_from_slice(&(base.len() as u32).to_le_bytes());
     h.extend_from_slice(&base);
+    match roots {
+        None => h.extend_from_slice(&NO_ROOTS.to_le_bytes()),
+        Some(roots) => {
+            h.extend_from_slice(&(roots.len() as u32).to_le_bytes());
+            for r in roots {
+                let b = path_bytes(r);
+                h.extend_from_slice(&(b.len() as u32).to_le_bytes());
+                h.extend_from_slice(&b);
+            }
+        }
+    }
     h.extend_from_slice(&(req.data.len() as u64).to_le_bytes());
     h
 }
@@ -722,10 +755,11 @@ fn supervise(
     worker: &mut Worker,
     limits: Limits,
     req: &Request,
+    roots: Option<&[PathBuf]>,
     cancelled: &dyn Fn() -> bool,
     peak_rss: &mut u64,
 ) -> Ended {
-    let head = header(req);
+    let head = header_with(req, roots);
     // Runs from the start of the child until it is ready (the start-up bound), then from the moment
     // it said so (the drawing's limit). A child that is already ready (a reused one) has only the
     // second part.
@@ -810,10 +844,22 @@ fn supervise(
 /// picture, supervising it. The calling thread blocks (call it from a worker, never the UI
 /// thread). `cancelled` is polled while waiting for a slot and while the child runs; when it turns
 /// true the child is killed.
+#[cfg(test)]
 pub fn run_with(
     exe: &Path,
     limits: Limits,
     req: &Request,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DynamicImage, RunError> {
+    run_with_roots(exe, limits, req, None, cancelled)
+}
+
+/// [`run_with`] with the files the drawing may read limited to `roots` (`None`: no limit).
+pub fn run_with_roots(
+    exe: &Path,
+    limits: Limits,
+    req: &Request,
+    roots: Option<&[PathBuf]>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RunError> {
     if request_too_large(req.data) {
@@ -821,12 +867,12 @@ pub fn run_with(
     }
     let _slot = acquire_slot(cancelled)?;
     loop {
-        let (mut worker, reused) = match take_idle(exe) {
+        let (mut worker, reused) = match take_idle(exe, limits.wall) {
             Some(w) => (w, true),
-            None => (Worker::start(exe, limits.rss)?, false),
+            None => (Worker::start(exe, limits.rss, limits.wall)?, false),
         };
         let mut peak_rss = 0u64;
-        let ended = supervise(&mut worker, limits, req, cancelled, &mut peak_rss);
+        let ended = supervise(&mut worker, limits, req, roots, cancelled, &mut peak_rss);
         #[cfg(test)]
         LAST_PEAK_RSS.store(peak_rss, Ordering::SeqCst);
         return match ended {
@@ -888,12 +934,16 @@ fn request_too_large(data: &[u8]) -> bool {
     data.len() as u64 > limit
 }
 
-/// [`run_with`] with the default limits and konoma's own binary.
-pub fn run(req: &Request, cancelled: &dyn Fn() -> bool) -> Result<DynamicImage, RunError> {
+/// [`run_with_roots`] with the default limits and konoma's own binary, and the files the drawing may read limited to `roots` (`None`: no limit).
+pub fn run_scoped(
+    req: &Request,
+    roots: Option<&[PathBuf]>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DynamicImage, RunError> {
     let Some(exe) = child_exe() else {
         return Err(SvgFail::Crashed.into());
     };
-    run_with(&exe, Limits::default(), req, cancelled)
+    run_with_roots(&exe, Limits::default(), req, roots, cancelled)
 }
 
 /// Read one answer from the child's output: the five bytes that say what it is, then, for a
@@ -979,7 +1029,7 @@ fn parse_response(b: &[u8]) -> Option<Result<DynamicImage, SvgFail>> {
 
 // ---- child: the drawing process ----------------------------------------------------------------
 
-/// Entry point of the child (`konoma --internal-svg-render <heap limit>`): read requests from stdin
+/// Entry point of the child (`konoma --internal-svg-render <heap limit> [<wall limit in ms>]`): read requests from stdin
 /// one after another, draw each with the guarded in-process renderer, write each answer to stdout.
 /// Ends when stdin does. The exit code is 0 after a clean end, 2 on a malformed request. `args` are
 /// the arguments after the flag.
@@ -991,6 +1041,13 @@ pub fn child_main(args: &[std::ffi::OsString]) -> i32 {
         .and_then(|a| a.to_str())
         .and_then(|a| a.parse::<usize>().ok())
         .unwrap_or(RSS_LIMIT as usize);
+    // The drawing limit the parent supervises with (milliseconds). Without it (an older form of the
+    // arguments) the default applies.
+    let wall = args
+        .get(1)
+        .and_then(|a| a.to_str())
+        .and_then(|a| a.parse::<u64>().ok())
+        .map_or(WALL_LIMIT, Duration::from_millis);
     arm_heap_guard(heap_limit);
     #[cfg(unix)]
     watch_parent();
@@ -1012,7 +1069,7 @@ pub fn child_main(args: &[std::ffi::OsString]) -> i32 {
         };
         // A drawing that runs on after the supervisor is gone ends here.
         #[cfg(unix)]
-        set_alarm(WALL_LIMIT + Duration::from_secs(3));
+        set_alarm(wall + Duration::from_secs(3));
         let answer = answer_to(&request);
         drop(request);
         if out.write_all(&answer).and_then(|_| out.flush()).is_err() {
@@ -1042,7 +1099,12 @@ fn answer_to(req: &WireRequest) -> Vec<u8> {
     // (which could hold text) does not need the system's fonts enumerated.
     super::svg::set_fontless(!needs_fonts(&req.data));
     let result = std::panic::catch_unwind(|| {
-        super::svg::rasterize_guarded(&req.data, req.base.as_deref(), req.max_px)
+        super::svg::rasterize_guarded_within(
+            &req.data,
+            req.base.as_deref(),
+            req.roots.as_deref(),
+            req.max_px,
+        )
     })
     .unwrap_or(Err(SvgFail::Invalid));
     let mut out = Vec::new();
@@ -1074,6 +1136,8 @@ fn needs_fonts(data: &[u8]) -> bool {
 struct WireRequest {
     max_px: u32,
     base: Option<PathBuf>,
+    /// The directories the drawing may read files from; `None` is no limit.
+    roots: Option<Vec<PathBuf>>,
     data: Vec<u8>,
 }
 
@@ -1085,7 +1149,7 @@ fn read_request(r: &mut impl Read) -> std::io::Result<Option<WireRequest>> {
     let mut magic = [0u8; 4];
     match read_up_to(r, &mut magic) {
         0 => return Ok(None),
-        4 if &magic == b"KSV1" => {}
+        4 if &magic == b"KSV2" => {}
         _ => return Err(bad()),
     }
     let mut word = [0u8; 4];
@@ -1098,6 +1162,26 @@ fn read_request(r: &mut impl Read) -> std::io::Result<Option<WireRequest>> {
     }
     let mut base = vec![0u8; base_len];
     r.read_exact(&mut base)?;
+    r.read_exact(&mut word)?;
+    let count = u32::from_le_bytes(word);
+    let roots = if count == NO_ROOTS {
+        None
+    } else if count > MAX_ROOTS {
+        return Err(bad());
+    } else {
+        let mut roots = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            r.read_exact(&mut word)?;
+            let n = u32::from_le_bytes(word) as usize;
+            if n > MAX_BASE_BYTES {
+                return Err(bad());
+            }
+            let mut b = vec![0u8; n];
+            r.read_exact(&mut b)?;
+            roots.push(path_from_bytes(&b));
+        }
+        Some(roots)
+    };
     let mut len = [0u8; 8];
     r.read_exact(&mut len)?;
     let data_len = u64::from_le_bytes(len);
@@ -1109,6 +1193,7 @@ fn read_request(r: &mut impl Read) -> std::io::Result<Option<WireRequest>> {
     Ok(Some(WireRequest {
         max_px,
         base: (!base.is_empty()).then(|| path_from_bytes(&base)),
+        roots,
         data,
     }))
 }
@@ -1282,6 +1367,42 @@ mod tests {
     }
 
     #[test]
+    fn the_read_scope_round_trips_and_no_scope_stays_no_scope() {
+        let req = Request {
+            data: b"<svg/>",
+            base: None,
+            max_px: 5,
+        };
+        let roots = vec![PathBuf::from("/a/b"), PathBuf::from("/c d/é")];
+        let mut w = header_with(&req, Some(&roots));
+        w.extend_from_slice(req.data);
+        let got = read_request(&mut &w[..]).unwrap().unwrap();
+        assert_eq!(got.roots.as_deref(), Some(&roots[..]));
+        // An empty scope is a scope (nothing readable), not "no scope".
+        let mut w = header_with(&req, Some(&[]));
+        w.extend_from_slice(req.data);
+        assert_eq!(
+            read_request(&mut &w[..]).unwrap().unwrap().roots,
+            Some(vec![])
+        );
+        let got = read_request(&mut &wire(&req)[..]).unwrap().unwrap();
+        assert_eq!(got.roots, None);
+    }
+
+    #[test]
+    fn a_scope_with_too_many_folders_is_refused_by_the_reader() {
+        let req = Request {
+            data: b"",
+            base: None,
+            max_px: 5,
+        };
+        let many = vec![PathBuf::from("/x"); MAX_ROOTS as usize + 1];
+        let mut w = header_with(&req, Some(&many));
+        w.extend_from_slice(req.data);
+        assert!(read_request(&mut &w[..]).is_err());
+    }
+
+    #[test]
     fn request_round_trips_through_the_wire_format() {
         let req = Request {
             data: b"<svg/>",
@@ -1319,25 +1440,38 @@ mod tests {
     fn malformed_requests_are_refused_not_panicked_on() {
         let refused = |b: &[u8]| read_request(&mut &b[..]).is_err();
         assert!(refused(b"KS"));
-        assert!(refused(b"KSV1"));
+        assert!(refused(b"KSV2"));
         assert!(refused(b"XXXX\0\0\0\0\0\0\0\0\0\0\0\0"));
         // A data length that runs past the end, and one far past the limit.
-        let mut w = b"KSV1".to_vec();
+        let mut w = b"KSV2".to_vec();
         w.extend_from_slice(&5u32.to_le_bytes());
         w.extend_from_slice(&0u32.to_le_bytes());
         w.extend_from_slice(&10u64.to_le_bytes());
         w.extend_from_slice(b"short");
         assert!(refused(&w));
-        let mut w = b"KSV1".to_vec();
+        let mut w = b"KSV2".to_vec();
         w.extend_from_slice(&5u32.to_le_bytes());
         w.extend_from_slice(&0u32.to_le_bytes());
         w.extend_from_slice(&u64::MAX.to_le_bytes());
         assert!(refused(&w));
         // A base length that is absurd.
-        let mut w = b"KSV1".to_vec();
+        let mut w = b"KSV2".to_vec();
         w.extend_from_slice(&5u32.to_le_bytes());
         w.extend_from_slice(&u32::MAX.to_le_bytes());
         assert!(refused(&w));
+    }
+
+    #[test]
+    fn a_request_of_the_previous_wire_version_is_refused_not_misparsed() {
+        // KSV1 had no roots field: its data length would be read as a root count. A parent and a
+        // child of different versions must disagree loudly, not misread each other.
+        let mut w = b"KSV1".to_vec();
+        w.extend_from_slice(&5u32.to_le_bytes());
+        w.extend_from_slice(&0u32.to_le_bytes());
+        w.extend_from_slice(&3u64.to_le_bytes());
+        w.extend_from_slice(b"abc");
+        let err = read_request(&mut w.as_slice()).err().expect("refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     fn picture(w: u32, h: u32) -> Vec<u8> {

@@ -149,6 +149,16 @@ impl App {
         self.save_session();
     }
 
+    /// `konoma <file>`: open `path` in the tab that is on screen. The tree reveals it and the
+    /// preview opens (the root moves to the file's directory when the restored tab sits elsewhere);
+    /// `q` goes back to the tree, as for any preview. The startup message already on the footer
+    /// (a config error, a key warning) is kept: this is not a jump the user made.
+    pub(crate) fn open_startup_file(&mut self, path: &Path) {
+        let startup_flash = self.flash.take();
+        self.paste_jump_to(path, None);
+        self.flash = startup_flash;
+    }
+
     /// Apply one saved tab onto the live (fresh-Tree) state: restore hidden-file visibility, move the
     /// root if it differs, restore the per-tab @-ref base, reveal the cursor, then reopen the preview
     /// (a git diff is reopened as a diff; mirrors `tab_new_from_selection`).

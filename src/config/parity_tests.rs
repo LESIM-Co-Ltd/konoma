@@ -7,8 +7,278 @@
 
 use super::*;
 use crate::test_support::unique_tmp;
+use konoma_widgets::colors::{
+    lighten, parse_color_opt, theme_code_bg, theme_code_label_bg, theme_code_label_right,
+    DEFAULT_CODE_BG,
+};
 use std::collections::HashMap;
 use std::io::Write as _;
+
+#[test]
+fn shared_config_media_diff_agrees_with_config_on_parse_and_load() {
+    use konoma_host_core::shared::SharedConfig;
+    use konoma_widgets::media_diff::MediaDiffLayout;
+    let dir = unique_tmp("shared_media_diff_parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    for raw in [
+        None,
+        Some("auto"),
+        Some("side"),
+        Some("stack"),
+        Some("split"),
+        Some("horizontal"),
+        Some("side-by-side"),
+        Some("vertical"),
+        Some("stacked"),
+        Some("unified"),
+        Some("sideways"),
+    ] {
+        let text = raw.map_or(String::new(), |s| format!("[git]\nmedia_diff='{s}'\n"));
+        let config: Config = toml::from_str(&text).unwrap();
+        let shared = SharedConfig::parse(&text).unwrap();
+        assert_eq!(
+            shared.git.media_diff,
+            raw.unwrap_or("auto"),
+            "stored as written"
+        );
+        assert_eq!(config.git.media_diff, shared.git.media_diff);
+        assert_eq!(
+            MediaDiffLayout::parse(&config.git.media_diff),
+            MediaDiffLayout::parse(&shared.git.media_diff)
+        );
+        std::fs::write(&path, text).unwrap();
+        let (config, host_error) = Config::load_path_reporting(&path);
+        let (shared, shared_error) = SharedConfig::load(&path);
+        assert_eq!(host_error, None);
+        assert_eq!(shared_error, None);
+        assert_eq!(config.git.media_diff, shared.git.media_diff);
+    }
+    let text = "[git]\nmedia_diff=17\n";
+    assert!(toml::from_str::<Config>(text).is_err());
+    assert!(SharedConfig::parse(text).is_err());
+    std::fs::write(&path, text).unwrap();
+    let (config, host_error) = Config::load_path_reporting(&path);
+    let (shared, shared_error) = SharedConfig::load(&path);
+    assert!(host_error.is_some());
+    assert_eq!(host_error, shared_error);
+    assert_eq!(shared.git.media_diff, "auto");
+    assert_eq!(config.git.media_diff, shared.git.media_diff);
+}
+
+#[test]
+fn config_project_vcs_precedence_and_legacy_notice() {
+    assert_eq!(Config::default().project_vcs(), "auto");
+    for (text, expected, renamed) in [
+        ("[project]\nvcs = 'git'", "git", false),
+        ("[project]\nvcs = 'jj'", "jj", false),
+        ("[external]\nvcs = 'jj'", "jj", true),
+        (
+            "[external]\nvcs = 'jj'\n[project]\nvcs = 'git'",
+            "git",
+            true,
+        ),
+        ("[external]\nvcs = 'git'\n[project]\nvcs = 'jj'", "jj", true),
+        (
+            "[external]\nvcs = 'jj'\n[project]\nvcs = 'auto'",
+            "auto",
+            true,
+        ),
+        ("[external]\nvcs = 'jj'\n[project]", "jj", true),
+        ("[project]\nvcs = 'unknown'", "unknown", false),
+    ] {
+        let file = tmp("project_vcs.toml", text.as_bytes());
+        let (cfg, error) = Config::load_path_reporting(&file);
+        assert!(error.is_none(), "{text}: {error:?}");
+        assert_eq!(cfg.project_vcs(), expected, "{text}");
+        let notice = ("[external] vcs".into(), "[project] vcs".into());
+        assert_eq!(cfg.renamed_settings.contains(&notice), renamed, "{text}");
+    }
+}
+
+/// Quick source scan for qualified `git::fn(` calls and direct function imports. This is a
+/// trip-wire, not a Rust name resolver: `src/git.rs` enforces the boundary at compile time by
+/// exporting only types in production and keeping the legacy function exports under `cfg(test)`.
+#[test]
+fn vcs_host_quick_scan_of_qualified_git_calls_and_function_imports() {
+    fn scan(dir: &Path, violations: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("tests")
+                {
+                    scan(&path, violations);
+                }
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            if path.extension().is_none_or(|e| e != "rs")
+                || name.contains("tests")
+                || name == "test_support.rs"
+            {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let production = source.split("\nmod tests {").next().unwrap();
+            for function in vcs_quick_git_scan(production) {
+                violations.push(format!(
+                    "{}: git::{function}",
+                    path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap()
+                        .display()
+                ));
+            }
+        }
+    }
+    let mut violations = Vec::new();
+    scan(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut violations,
+    );
+    assert!(
+        violations.is_empty(),
+        "qualified Git call or function import: {violations:#?}"
+    );
+}
+
+fn vcs_quick_git_scan(source: &str) -> Vec<String> {
+    let code = vcs_code_without_comments_and_literals(source);
+    let mut tokens = Vec::new();
+    let mut chars = code.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        let mut end = start + c.len_utf8();
+        if c.is_ascii_alphanumeric() || c == '_' {
+            while let Some(&(at, next)) = chars.peek() {
+                if !(next.is_ascii_alphanumeric() || next == '_') {
+                    break;
+                }
+                end = at + next.len_utf8();
+                chars.next();
+            }
+        }
+        tokens.push(&code[start..end]);
+    }
+    let mut found = Vec::new();
+    for i in 0..tokens.len().saturating_sub(3) {
+        if tokens[i..i + 3] != ["git", ":", ":"] {
+            continue;
+        }
+        let function = tokens[i + 3];
+        let start = tokens[..i]
+            .iter()
+            .rposition(|t| [";", "{", "}"].contains(t))
+            .map_or(0, |n| n + 1);
+        let imported = tokens[start..i].contains(&"use");
+        if function.starts_with(|c: char| c.is_ascii_lowercase())
+            && (tokens.get(i + 4) == Some(&"(") || imported)
+        {
+            found.push(function.to_string());
+        }
+    }
+    found
+}
+
+/// Mask literals and comments without losing code after URLs, escaped quotes or raw strings.
+fn vcs_code_without_comments_and_literals(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut code = bytes.to_vec();
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        if bytes[i..].starts_with(b"//") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            let mut depth = 1;
+            while i < bytes.len() && depth != 0 {
+                if bytes[i..].starts_with(b"/*") {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            let mut quote = i;
+            if bytes[i] == b'r' {
+                quote += 1;
+                while quote < bytes.len() && bytes[quote] == b'#' {
+                    quote += 1;
+                }
+            }
+            if bytes[i] == b'r' && quote < bytes.len() && bytes[quote] == b'"' {
+                let hashes = quote - i - 1;
+                i = quote + 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'"'
+                        && bytes
+                            .get(i + 1..i + 1 + hashes)
+                            .is_some_and(|s| s.iter().all(|b| *b == b'#'))
+                    {
+                        i += 1 + hashes;
+                        break;
+                    }
+                    i += 1;
+                }
+            } else if bytes[i] == b'"' {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                    } else if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+            } else if bytes[i] == b'\''
+                && source[i + 1..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| bytes.get(i + 1 + c.len_utf8()) == Some(&b'\''))
+            {
+                i += 2 + source[i + 1..].chars().next().unwrap().len_utf8();
+            } else {
+                i += 1;
+                continue;
+            }
+        }
+        for b in &mut code[start..i] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    }
+    String::from_utf8(code).unwrap()
+}
+
+#[test]
+fn vcs_quick_scan_detects_direct_function_imports() {
+    assert_eq!(vcs_quick_git_scan("use crate::git::stage; use crate::git::blob_at as read; use crate::git::DiffLine; stage(root, path);"), ["stage", "blob_at"]);
+}
+
+#[test]
+fn vcs_quick_scan_preserves_calls_after_url_and_raw_string_literals() {
+    let source = r##"
+        let url = "http://localhost/escaped\"//value"; crate::git::stage(root, path); // git::ignored(root)
+        let raw = r#"http://example/"// git::ignored(root)"#; crate::git::blob_at(root, point, path);
+        let quote = '"'; crate::git::unstage(root, path);
+    "##;
+    assert_eq!(vcs_quick_git_scan(source), ["stage", "blob_at", "unstage"]);
+}
 
 /// Local copy of the `mod tests` temp-file helper (that one is private to the other module).
 fn tmp(name: &str, bytes: &[u8]) -> crate::test_support::TmpDir {
@@ -551,6 +821,102 @@ fn cfg_ui_diff_view_default_and_parse() {
         "source"
     );
     assert_eq!(Config::default().ui.diff_view, "rendered");
+}
+
+#[test]
+fn shared_config_diff_view_agrees_with_config_on_parse_and_load() {
+    use konoma_host_core::{project::DiffView, shared::SharedConfig};
+
+    let dir = unique_tmp("shared_diff_view_parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    for (name, text, raw, resolved) in [
+        ("absent", "", "rendered", DiffView::Rendered),
+        ("absent-in-ui", "[ui]\n", "rendered", DiffView::Rendered),
+        (
+            "source",
+            "[ui]\ndiff_view='source'\n",
+            "source",
+            DiffView::Source,
+        ),
+        (
+            "rendered",
+            "[ui]\ndiff_view='rendered'\n",
+            "rendered",
+            DiffView::Rendered,
+        ),
+        (
+            "preview",
+            "[ui]\ndiff_view='preview'\n",
+            "preview",
+            DiffView::Preview,
+        ),
+        (
+            "typo",
+            "[ui]\ndiff_view='sideways'\n",
+            "sideways",
+            DiffView::Rendered,
+        ),
+    ] {
+        let config: Config = toml::from_str(text).unwrap();
+        let shared = SharedConfig::parse(text).unwrap();
+        assert_eq!(shared.ui.diff_view, raw, "{name}: shared ui.diff_view");
+        assert_eq!(
+            config.ui.diff_view, shared.ui.diff_view,
+            "{name}: stored value"
+        );
+        assert_eq!(
+            DiffView::parse(&config.ui.diff_view),
+            resolved,
+            "{name}: host resolution"
+        );
+        assert_eq!(
+            DiffView::parse(&shared.ui.diff_view),
+            resolved,
+            "{name}: shared resolution"
+        );
+
+        std::fs::write(&path, text).unwrap();
+        let (config, host_error) = Config::load_path_reporting(&path);
+        let (shared, shared_error) = SharedConfig::load(&path);
+        assert_eq!(host_error, None, "{name}: host load");
+        assert_eq!(shared_error, None, "{name}: shared load");
+        assert_eq!(shared.ui.diff_view, raw, "{name}: shared loaded value");
+        assert_eq!(
+            config.ui.diff_view, shared.ui.diff_view,
+            "{name}: loaded value"
+        );
+    }
+
+    let wrong_type = "[ui]\ndiff_view=17\nwrap=false\n";
+    assert!(
+        toml::from_str::<Config>(wrong_type).is_err(),
+        "host rejects a non-string view"
+    );
+    assert!(
+        SharedConfig::parse(wrong_type).is_err(),
+        "shared reader rejects a non-string view"
+    );
+    std::fs::write(&path, wrong_type).unwrap();
+    let (config, host_error) = Config::load_path_reporting(&path);
+    let (shared, shared_error) = SharedConfig::load(&path);
+    assert!(host_error.is_some(), "wrong type reports a load error");
+    assert_eq!(
+        host_error, shared_error,
+        "wrong type reports the same load error"
+    );
+    assert_eq!(
+        config.ui.diff_view, "rendered",
+        "host falls back to defaults"
+    );
+    assert_eq!(
+        shared.ui.diff_view, config.ui.diff_view,
+        "shared reader falls back to the same view"
+    );
+    assert!(
+        config.ui.wrap && shared.ui.wrap,
+        "a broken config falls back as a whole"
+    );
 }
 
 #[test]
@@ -1258,17 +1624,20 @@ fn cfg_theme_code_bg_named_indexed_and_uppercase_hex() {
         code_bg: "blue".into(),
         ..Default::default()
     };
-    assert_eq!(named.code_bg(), Some(Color::Blue));
+    assert_eq!(theme_code_bg(&named.code_bg), Some(Color::Blue));
     let indexed = ThemeConfig {
         code_bg: "8".into(),
         ..Default::default()
     };
-    assert_eq!(indexed.code_bg(), Some(Color::Indexed(8)));
+    assert_eq!(theme_code_bg(&indexed.code_bg), Some(Color::Indexed(8)));
     let upper = ThemeConfig {
         code_bg: "#AABBCC".into(),
         ..Default::default()
     };
-    assert_eq!(upper.code_bg(), Some(Color::Rgb(170, 187, 204)));
+    assert_eq!(
+        theme_code_bg(&upper.code_bg),
+        Some(Color::Rgb(170, 187, 204))
+    );
 }
 
 #[test]
@@ -1277,7 +1646,7 @@ fn cfg_theme_code_bg_whitespace_only_is_none() {
         code_bg: "   ".into(),
         ..Default::default()
     };
-    assert_eq!(t.code_bg(), None);
+    assert_eq!(theme_code_bg(&t.code_bg), None);
 }
 
 #[test]
@@ -1306,8 +1675,14 @@ fn cfg_theme_code_label_bg_auto_derives_from_custom_code_bg() {
         code_label_bg: "auto".into(),
         ..Default::default()
     };
-    assert_eq!(t.code_label_bg(), Some(lighten(Color::Rgb(16, 24, 32))));
-    assert_eq!(t.code_label_bg(), Some(Color::Rgb(43, 54, 72)));
+    assert_eq!(
+        theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+        Some(lighten(Color::Rgb(16, 24, 32)))
+    );
+    assert_eq!(
+        theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+        Some(Color::Rgb(43, 54, 72))
+    );
 }
 
 #[test]
@@ -1316,12 +1691,18 @@ fn cfg_theme_code_label_bg_auto_is_case_and_whitespace_insensitive() {
         code_label_bg: "  Auto  ".into(),
         ..Default::default()
     };
-    assert_eq!(t.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+    assert_eq!(
+        theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+        Some(lighten(DEFAULT_CODE_BG))
+    );
     let t = ThemeConfig {
         code_label_bg: "AUTO".into(),
         ..Default::default()
     };
-    assert_eq!(t.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+    assert_eq!(
+        theme_code_label_bg(&t.code_label_bg, &t.code_bg),
+        Some(lighten(DEFAULT_CODE_BG))
+    );
 }
 
 #[test]
@@ -1330,22 +1711,34 @@ fn cfg_theme_code_label_bg_named_index_and_invalid() {
         code_label_bg: "blue".into(),
         ..Default::default()
     };
-    assert_eq!(named.code_label_bg(), Some(Color::Blue));
+    assert_eq!(
+        theme_code_label_bg(&named.code_label_bg, &named.code_bg),
+        Some(Color::Blue)
+    );
     let indexed = ThemeConfig {
         code_label_bg: "5".into(),
         ..Default::default()
     };
-    assert_eq!(indexed.code_label_bg(), Some(Color::Indexed(5)));
+    assert_eq!(
+        theme_code_label_bg(&indexed.code_label_bg, &indexed.code_bg),
+        Some(Color::Indexed(5))
+    );
     let invalid = ThemeConfig {
         code_label_bg: "not-a-color".into(),
         ..Default::default()
     };
-    assert_eq!(invalid.code_label_bg(), None);
+    assert_eq!(
+        theme_code_label_bg(&invalid.code_label_bg, &invalid.code_bg),
+        None
+    );
     let empty = ThemeConfig {
         code_label_bg: "".into(),
         ..Default::default()
     };
-    assert_eq!(empty.code_label_bg(), None);
+    assert_eq!(
+        theme_code_label_bg(&empty.code_label_bg, &empty.code_bg),
+        None
+    );
 }
 
 #[test]
@@ -1354,27 +1747,27 @@ fn cfg_theme_code_label_right_variants() {
         code_label_align: "right".into(),
         ..Default::default()
     };
-    assert!(right.code_label_right());
+    assert!(theme_code_label_right(&right.code_label_align));
     let left_ws = ThemeConfig {
         code_label_align: "  left  ".into(),
         ..Default::default()
     };
-    assert!(!left_ws.code_label_right());
+    assert!(!theme_code_label_right(&left_ws.code_label_align));
     let left_mixed = ThemeConfig {
         code_label_align: "Left".into(),
         ..Default::default()
     };
-    assert!(!left_mixed.code_label_right());
+    assert!(!theme_code_label_right(&left_mixed.code_label_align));
     let other = ThemeConfig {
         code_label_align: "center".into(),
         ..Default::default()
     };
-    assert!(other.code_label_right());
+    assert!(theme_code_label_right(&other.code_label_align));
     let empty = ThemeConfig {
         code_label_align: "".into(),
         ..Default::default()
     };
-    assert!(empty.code_label_right());
+    assert!(theme_code_label_right(&empty.code_label_align));
 }
 
 #[test]
@@ -1390,10 +1783,16 @@ fn cfg_theme_full_roundtrip_via_toml() {
     .unwrap();
     let th = &cfg.ui.theme;
     assert_eq!(th.bg(), Some(Color::Rgb(18, 52, 86)));
-    assert_eq!(th.code_bg(), Some(Color::Rgb(10, 20, 30)));
-    assert!(!th.code_label_right());
-    assert_eq!(th.code_label_bg(), Some(lighten(Color::Rgb(10, 20, 30))));
-    assert_eq!(th.code_label_bg(), Some(Color::Rgb(37, 50, 70)));
+    assert_eq!(theme_code_bg(&th.code_bg), Some(Color::Rgb(10, 20, 30)));
+    assert!(!theme_code_label_right(&th.code_label_align));
+    assert_eq!(
+        theme_code_label_bg(&th.code_label_bg, &th.code_bg),
+        Some(lighten(Color::Rgb(10, 20, 30)))
+    );
+    assert_eq!(
+        theme_code_label_bg(&th.code_label_bg, &th.code_bg),
+        Some(Color::Rgb(37, 50, 70))
+    );
     assert_eq!(th.code_theme, "Dracula");
 }
 
@@ -1401,10 +1800,13 @@ fn cfg_theme_full_roundtrip_via_toml() {
 fn cfg_theme_partial_toml_keeps_defaults_via_serde_default() {
     let cfg: Config = toml::from_str("[ui.theme]\ncode_label_align = \"left\"\n").unwrap();
     let th = &cfg.ui.theme;
-    assert!(!th.code_label_right());
+    assert!(!theme_code_label_right(&th.code_label_align));
     assert_eq!(th.bg(), None);
-    assert_eq!(th.code_bg(), Some(DEFAULT_CODE_BG));
-    assert_eq!(th.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+    assert_eq!(theme_code_bg(&th.code_bg), Some(DEFAULT_CODE_BG));
+    assert_eq!(
+        theme_code_label_bg(&th.code_label_bg, &th.code_bg),
+        Some(lighten(DEFAULT_CODE_BG))
+    );
     assert_eq!(th.code_theme, "TwoDark");
 }
 
@@ -1413,9 +1815,12 @@ fn cfg_theme_absent_block_uses_all_defaults() {
     let cfg: Config = toml::from_str("").unwrap();
     let th = &cfg.ui.theme;
     assert_eq!(th.bg(), None);
-    assert_eq!(th.code_bg(), Some(DEFAULT_CODE_BG));
-    assert!(th.code_label_right());
-    assert_eq!(th.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
+    assert_eq!(theme_code_bg(&th.code_bg), Some(DEFAULT_CODE_BG));
+    assert!(theme_code_label_right(&th.code_label_align));
+    assert_eq!(
+        theme_code_label_bg(&th.code_label_bg, &th.code_bg),
+        Some(lighten(DEFAULT_CODE_BG))
+    );
     assert_eq!(th.code_theme, "TwoDark");
 }
 
@@ -1437,7 +1842,7 @@ fn cfg_preview_default_mermaid_extensions() {
     for name in ["cfgp_a.mmd", "cfgp_b.mermaid"] {
         let p = tmp(name, b"graph TD; A-->B\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Mermaid(_)), "{name}: {kind:?}");
+        assert!(kind.is_mermaid_file(), "{name}: {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 }
@@ -1449,7 +1854,7 @@ fn cfg_preview_default_svg() {
         b"<svg xmlns='http://www.w3.org/2000/svg'/>\n",
     );
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Svg(_)), "got {kind:?}");
+    assert!(kind.is_plugin("svg"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1457,14 +1862,18 @@ fn cfg_preview_default_svg() {
 fn cfg_preview_default_csv_tsv_delimiters() {
     let c = tmp("cfgp_data.csv", b"a,b,c\n1,2,3\n");
     match Config::default().resolve_preview(&c) {
-        PreviewKind::Table { delimiter, .. } => assert_eq!(delimiter, b','),
-        other => panic!("expected Table for csv, got {other:?}"),
+        PreviewKind::Plugin { id, hint, path } if id == "csv" => {
+            assert_eq!(konoma_table::delimiter(hint.as_deref(), &path), b',')
+        }
+        other => panic!("expected the csv plugin for csv, got {other:?}"),
     }
     std::fs::remove_file(&c).ok();
     let t = tmp("cfgp_data.tsv", b"a\tb\tc\n1\t2\t3\n");
     match Config::default().resolve_preview(&t) {
-        PreviewKind::Table { delimiter, .. } => assert_eq!(delimiter, b'\t'),
-        other => panic!("expected Table for tsv, got {other:?}"),
+        PreviewKind::Plugin { id, hint, path } if id == "csv" => {
+            assert_eq!(konoma_table::delimiter(hint.as_deref(), &path), b'\t')
+        }
+        other => panic!("expected the csv plugin for tsv, got {other:?}"),
     }
     std::fs::remove_file(&t).ok();
 }
@@ -1473,7 +1882,7 @@ fn cfg_preview_default_csv_tsv_delimiters() {
 fn cfg_preview_default_pdf() {
     let p = tmp("cfgp_doc.pdf", b"%PDF-1.4\n");
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Pdf(_)), "got {kind:?}");
+    assert!(kind.is_plugin("pdf"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1481,7 +1890,7 @@ fn cfg_preview_default_pdf() {
 fn cfg_preview_default_image_png_by_content() {
     let p = tmp("cfgp_photo.png", PNG_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Image(_)), "got {kind:?}");
+    assert!(kind.is_plugin("image"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1489,7 +1898,7 @@ fn cfg_preview_default_image_png_by_content() {
 fn cfg_preview_default_video_mp4_by_content() {
     let p = tmp("cfgp_clip.mp4", MP4_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(matches!(kind, PreviewKind::Video(_)), "got {kind:?}");
+    assert!(kind.is_plugin("video"), "got {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
@@ -1502,7 +1911,7 @@ fn cfg_preview_default_code_lowercase_exts() {
     ] {
         let p = tmp(name, body);
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Code(_)), "{name}: {kind:?}");
+        assert!(kind.is_code_plugin(), "{name}: {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 }
@@ -1519,15 +1928,12 @@ fn cfg_preview_default_txt_falls_back_to_text() {
 fn cfg_preview_glob_svg_wins_over_png_content() {
     let p = tmp("cfgp_weird.svg", PNG_MAGIC);
     let kind = Config::default().resolve_preview(&p);
-    assert!(
-        matches!(kind, PreviewKind::Svg(_)),
-        "svg glob wins: {kind:?}"
-    );
+    assert!(kind.is_plugin("svg"), "svg glob wins: {kind:?}");
     std::fs::remove_file(&p).ok();
 }
 
 #[test]
-fn cfg_preview_user_rules_replace_defaults() {
+fn cfg_preview_user_rules_come_before_the_standard_plugins() {
     let toml = r#"
 [[preview.rules]]
 glob = "*.md"
@@ -1536,14 +1942,16 @@ builtin = "code"
     let cfg: Config = toml::from_str(toml).unwrap();
     let md = tmp("cfgp_ovr.md", b"# title\n");
     assert!(
-        matches!(cfg.resolve_preview(&md), PreviewKind::Code(_)),
+        cfg.resolve_preview(&md).is_code_plugin(),
         "user rule should win for .md"
     );
     std::fs::remove_file(&md).ok();
     let rs = tmp("cfgp_ovr.rs", b"fn main() {}\n");
+    // Writing a rule used to replace the whole default list (a `.rs` file then fell to plain
+    // text); the rules are now tried first and the standard plugins take what they do not name.
     assert!(
-        matches!(cfg.resolve_preview(&rs), PreviewKind::Text(_)),
-        "defaults must be replaced, not merged"
+        cfg.resolve_preview(&rs).is_code_plugin(),
+        "defaults must be merged (user rules first), not replaced"
     );
     std::fs::remove_file(&rs).ok();
 }
@@ -1552,10 +1960,7 @@ builtin = "code"
 fn cfg_preview_absent_preview_keeps_default_rules() {
     let cfg: Config = toml::from_str("[ui]\nwrap = false\n").unwrap();
     assert!(
-        matches!(
-            cfg.resolve_preview(Path::new("/x/note.md")),
-            PreviewKind::Markdown(_)
-        ),
+        cfg.resolve_preview(Path::new("/x/note.md")).is_markdown(),
         "missing [preview] keeps builtins"
     );
 }
@@ -1607,10 +2012,7 @@ preview_commands = false
 "#;
     let cfg2: Config = toml::from_str(toml2).unwrap();
     assert!(
-        matches!(
-            cfg2.resolve_preview(Path::new("/x/note.md")),
-            PreviewKind::Markdown(_)
-        ),
+        cfg2.resolve_preview(Path::new("/x/note.md")).is_markdown(),
         "preview_commands=false leaves builtin rules intact"
     );
 }
@@ -1782,10 +2184,8 @@ fn cfg_resolve_preview_with_classifies_a_deleted_png_from_its_old_bytes() {
         "対照: 実在しないパスでは resolve_preview は判定できないはず"
     );
     assert!(
-        matches!(
-            cfg.resolve_preview_with(deleted_path, &bytes),
-            PreviewKind::Image(_)
-        ),
+        cfg.resolve_preview_with(deleted_path, &bytes)
+            .is_plugin("image"),
         "resolve_preview_with は旧バイト列から Image と判定できるはず"
     );
 }
@@ -1797,14 +2197,8 @@ fn cfg_resolve_preview_with_svg_and_pdf_match_by_glob_even_with_empty_sniff() {
     let cfg = Config::default();
     let svg = std::path::Path::new("/nonexistent/figure.svg");
     let pdf = std::path::Path::new("/nonexistent/doc.pdf");
-    assert!(matches!(
-        cfg.resolve_preview_with(svg, &[]),
-        PreviewKind::Svg(_)
-    ));
-    assert!(matches!(
-        cfg.resolve_preview_with(pdf, &[]),
-        PreviewKind::Pdf(_)
-    ));
+    assert!(cfg.resolve_preview_with(svg, &[]).is_plugin("svg"));
+    assert!(cfg.resolve_preview_with(pdf, &[]).is_plugin("pdf"));
 }
 
 /// A user rule placed ahead of the builtin defaults still wins for `resolve_preview_with`, exactly
@@ -2021,6 +2415,7 @@ fn cfg_jj_tool_default_and_roundtrip() {
 #[test]
 fn cfg_external_defaults_all_true() {
     let d = ExternalConfig::default();
+    assert!(d.update_check);
     assert!(d.git);
     assert!(d.git_tool);
     assert!(d.pdf);
@@ -2031,6 +2426,7 @@ fn cfg_external_defaults_all_true() {
     assert!(d.preview_commands);
 
     let e = Config::default().external;
+    assert!(e.update_check);
     assert!(e.git);
     assert!(e.git_tool);
     assert!(e.pdf);
@@ -2042,6 +2438,7 @@ fn cfg_external_defaults_all_true() {
 
     // No `[external]` section at all in the file.
     let cfg: Config = toml::from_str("[ui]\n").unwrap();
+    assert!(cfg.external.update_check);
     assert!(cfg.external.git);
     assert!(cfg.external.git_tool);
     assert!(cfg.external.pdf);
@@ -2053,6 +2450,7 @@ fn cfg_external_defaults_all_true() {
 
     // An empty `[external]` table (present but nothing set).
     let cfg2: Config = toml::from_str("[external]\n").unwrap();
+    assert!(cfg2.external.update_check);
     assert!(cfg2.external.git);
     assert!(cfg2.external.git_tool);
     assert!(cfg2.external.pdf);
@@ -2103,6 +2501,7 @@ type ExternalFieldCase = (&'static str, fn(&ExternalConfig) -> bool);
 #[test]
 fn cfg_external_each_field_parses_independently() {
     let cases: &[ExternalFieldCase] = &[
+        ("update_check", |e| e.update_check),
         ("git", |e| e.git),
         ("git_tool", |e| e.git_tool),
         ("pdf", |e| e.pdf),
@@ -2141,11 +2540,13 @@ remote_images = false
 open_links = false
 office_apps = false
 preview_commands = false
+update_check = false
 ";
     let cfg: Config = toml::from_str(toml).unwrap();
     let e = &cfg.external;
     assert!(
         !e.git
+            && !e.update_check
             && !e.git_tool
             && !e.pdf
             && !e.video
@@ -2163,6 +2564,11 @@ preview_commands = false
 /// broken config file.
 #[test]
 fn cfg_external_field_wrong_type_fails_whole_parse_like_other_bool_fields() {
+    for value in ["\"nope\"", "1", "[]", "{}"] {
+        assert!(
+            toml::from_str::<Config>(&format!("[external]\nupdate_check = {value}\n")).is_err()
+        );
+    }
     assert!(toml::from_str::<Config>("[external]\ngit = \"nope\"\n").is_err());
     // Sanity: the same failure mode already exists for an established bool field.
     assert!(toml::from_str::<Config>("[ui]\nicons = \"nope\"\n").is_err());
@@ -2207,6 +2613,166 @@ fn struct_pub_field_names(source: &str, struct_name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Checks one commented `<key> = "<operation>"` entry of a `[keys.<plugin id>]` example the way
+/// konoma binds it: the entry goes alone into the plugin's table, through the binders the app
+/// calls (`bind_actions` for the plugin's actions, `bind_jumps` for its `goto_<screen>` jumps),
+/// and must come out bound to its key with no note, and not shadowed by another binding.
+fn check_plugin_example_entry(
+    name: &str,
+    id: &str,
+    manifest: &konoma_plugin::Manifest,
+    key: &str,
+    operation: &str,
+) {
+    use konoma_plugin::host::bind::{bind_actions, bind_jumps, keypress_of};
+    let table: HashMap<String, String> = [(key.to_string(), operation.to_string())].into();
+    let (acts, act_notes) = bind_actions(id, manifest, Some(&table), |a| a.to_string());
+    let (jumps, jump_notes) = bind_jumps(id, manifest, Some(&table));
+    let notes: Vec<_> = act_notes.into_iter().chain(jump_notes).collect();
+    assert!(
+        notes.is_empty(),
+        "{name}: `[keys.{id}]` example `{key} = {operation:?}` is refused by the binder: {notes:?}"
+    );
+    if operation == "noop" || operation == "disabled" {
+        return; // taking a key away binds nothing
+    }
+    let spec = konoma_plugin::keys::parse_key(key).unwrap_or_else(|e| {
+        panic!("{name}: `[keys.{id}]` example key {key:?} does not parse: {e:?}")
+    });
+    let pressed = keypress_of(spec);
+    let jump = jumps.iter().find(|j| j.op == operation);
+    let act = acts.iter().find(|a| a.act == operation);
+    let owners = acts.iter().filter(|a| a.key == Some(pressed)).count()
+        + jumps.iter().filter(|j| j.key == Some(pressed)).count();
+    match (jump, act) {
+        (Some(j), _) => assert_eq!(
+            j.key,
+            Some(pressed),
+            "{name}: `[keys.{id}]` example `{key} = {operation:?}` does not bind the jump"
+        ),
+        (None, Some(a)) => assert_eq!(
+            a.key,
+            Some(pressed),
+            "{name}: `[keys.{id}]` example `{key} = {operation:?}` does not bind the action"
+        ),
+        (None, None) => panic!(
+            "{name}: `[keys.{id}]` example binds {operation:?}, which the plugin does not declare"
+        ),
+    }
+    assert_eq!(
+        owners, 1,
+        "{name}: `[keys.{id}]` example key {key:?} is also bound to another action or jump of the plugin"
+    );
+}
+
+/// The example configs' `[keys]` section names every key context, and the `[keys.<name>]` examples in
+/// them (commented out, so `toml::from_str` never sees them) use names konoma actually knows — so an
+/// example a user uncomments does not just produce an "unknown key surface" warning. Context names
+/// that were renamed (plugin stage 2 / B1) are the thing this guards: the lists are hand-written
+/// in two languages. A `[keys.<plugin id>]` example (the id of a standard plugin) runs from its
+/// commented header to the next header or the first line that is not a comment (a bare `#` does not
+/// end it); every commented `key = value` line in it is parsed as TOML and bound with the real
+/// binders (`check_plugin_example_entry`).
+#[test]
+fn shipped_example_configs_name_every_key_context_and_only_real_ones() {
+    use crate::keymap::Context;
+    let manifests = crate::plugins::standard_manifests();
+    for name in ["config.example.toml", "config.example.ja.toml"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            eprintln!("skipping {name} — not present (published-crate build?)");
+            continue;
+        };
+        for ctx in Context::all() {
+            assert!(
+                text.contains(&ctx.name()),
+                "{name}: the [keys] section does not mention the context {:?}",
+                ctx.name()
+            );
+        }
+        // Every `[keys.<name>]` / `[keys."<name>"]` header, commented out or not.
+        let mut headers = 0;
+        // Entries checked, by plugin id.
+        let mut checked: HashMap<String, usize> = HashMap::new();
+        // The plugin whose `[keys.<id>]` example table the lines below belong to.
+        let mut plugin_table: Option<String> = None;
+        for (index, line) in text.lines().enumerate() {
+            let at = format!("{name}:{}", index + 1);
+            let commented = line.trim_start().starts_with('#');
+            let l = line.trim_start().trim_start_matches('#').trim();
+            if !commented || l.starts_with('[') {
+                // A line that is not a comment, or any header, ends the table in scope.
+                plugin_table = None;
+            } else if let (Some(id), false) = (&plugin_table, l.is_empty()) {
+                // An entry of the table in scope; prose (no `=`) is skipped.
+                if l.contains('=') {
+                    let parsed: toml::Table = toml::from_str(l).unwrap_or_else(|e| {
+                        panic!("{at}: `{l}` in the `[keys.{id}]` example is not a TOML entry: {e}")
+                    });
+                    assert_eq!(parsed.len(), 1, "{at}: expected one entry in `{l}`");
+                    let (key, value) = parsed.iter().next().expect("one entry");
+                    let operation = value.as_str().unwrap_or_else(|| {
+                        panic!("{at}: the value of `{key}` in the `[keys.{id}]` example is not a string")
+                    });
+                    let manifest = manifests
+                        .iter()
+                        .find(|m| m.id == *id)
+                        .unwrap_or_else(|| panic!("{at}: no manifest for plugin `{id}`"));
+                    check_plugin_example_entry(&at, id, manifest, key, operation);
+                    *checked.entry(id.clone()).or_default() += 1;
+                }
+            }
+            let Some(rest) = l.strip_prefix("[keys.") else {
+                continue;
+            };
+            let Some(end) = rest.find(']') else { continue };
+            // A header ends at its `]` (a trailing comment is fine); a prose line that merely
+            // starts with a `[keys.…]` mention is not one.
+            let after = rest[end + 1..].trim();
+            if !after.is_empty() && !after.starts_with('#') {
+                continue;
+            }
+            let n = rest[..end].trim_matches('"');
+            if n.starts_with('<') {
+                continue; // the `[keys.<context>]` placeholder
+            }
+            headers += 1;
+            // A standard plugin's own table (`[keys.git]`); without git the git and jj plugins are
+            // not built in and their tables are skipped like the dotted names.
+            // A host context of the same name (`text`, `image`, ...) is the context, not the plugin.
+            let is_context = n == "global" || Context::from_name(n).is_some();
+            if !is_context
+                && (manifests.iter().any(|m| m.id == n)
+                    || (!cfg!(feature = "git") && matches!(n, "git" | "jj")))
+            {
+                plugin_table =
+                    (commented && manifests.iter().any(|m| m.id == n)).then(|| n.to_string());
+                continue;
+            }
+            // Without git the dotted version-control names are unknown by design.
+            let known = n == "global" || Context::from_name(n).is_some() || n.contains('.');
+            assert!(known, "{at}: `[keys.{n}]` is not a key context");
+            if cfg!(feature = "git") && n.contains('.') {
+                assert!(
+                    Context::from_name(n).is_some(),
+                    "{at}: `[keys.\"{n}\"]` is not a key context"
+                );
+            }
+        }
+        assert!(
+            headers >= 3,
+            "{name}: found only {headers} [keys.…] examples"
+        );
+        // Lower bound per expected table: the examples show at least one operation under
+        // `[keys.git]`, so the check above cannot pass by finding nothing (with git off the table
+        // is skipped).
+        assert!(
+            !cfg!(feature = "git") || checked.get("git").copied().unwrap_or(0) >= 1,
+            "{name}: no `[keys.git]` example entry was checked"
+        );
+    }
+}
+
 /// Looks up a dotted TOML path (e.g. `"ui.sort"`) from the root table, returning the sub-table only
 /// if every segment exists and is itself a table.
 fn toml_subtable<'a>(root: &'a toml::Table, dotted: &str) -> Option<&'a toml::Table> {
@@ -2220,15 +2786,26 @@ fn toml_subtable<'a>(root: &'a toml::Table, dotted: &str) -> Option<&'a toml::Ta
 #[test]
 fn shipped_example_configs_keys_land_on_the_struct_that_owns_them() {
     let src_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/mod.rs");
-    let source = std::fs::read_to_string(&src_path)
+    let mut source = std::fs::read_to_string(&src_path)
         .unwrap_or_else(|e| panic!("cannot read src/config/mod.rs: {e}"));
+    // `EditorConfig` and `KeysConfig` live in the shared `konoma-host-core` crate now; scan its
+    // sources too so their field lists are still read live.
+    for shared in ["editor.rs", "keys.rs"] {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/konoma-host-core/src")
+            .join(shared);
+        source.push('\n');
+        source.push_str(
+            &std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {p:?}: {e}")),
+        );
+    }
 
     // (TOML path, owning struct). The field *list* for each is read live from `source` above, but
     // which struct a nested path belongs to (`ui.sort` -> `SortConfig`) is structural knowledge a
     // field-name scan can't derive on its own, so it's named here.
     //
     // Deliberately NOT covered below, with reasons (do not add a path here without one):
-    //   - `[keys]` / `[keys.<surface>]`: `KeysConfig::surfaces` is `#[serde(flatten)]`, so every
+    //   - `[keys]` / `[keys.<context>]`: `KeysConfig::surfaces` is `#[serde(flatten)]`, so every
     //     key not matching a named field is legal there (captured as a keymap surface/chord) — there
     //     is no fixed field list a key could be "misplaced" against.
     //   - `[editor.ext]`: `EditorConfig::ext` is an open `HashMap<extension, command>` — any
@@ -2338,7 +2915,7 @@ fn cfg_default_rules_send_every_word_and_presentation_extension_to_the_document_
     let cfg = Config::default();
     let is_doc = |name: &str| {
         let p = std::path::PathBuf::from(format!("/nonexistent/{name}"));
-        matches!(cfg.resolve_preview_with(&p, &[]), PreviewKind::Document(_))
+        cfg.resolve_preview_with(&p, &[]).is_office_document()
     };
     for ext in [
         "docx", "docm", "dotx", "dotm", "odt", "ott", "pptx", "pptm", "ppsx", "ppsm", "potx",
@@ -2363,5 +2940,284 @@ fn cfg_default_rules_send_every_word_and_presentation_extension_to_the_document_
         "d.xlsx",
     ] {
         assert!(!is_doc(name), "{name}");
+    }
+}
+
+// =============================================================================
+// The shared project settings (`konoma_host_core::project::ProjectSettings`) against konoma's own
+// reading of the same text. The host stays the oracle: it reads the fields below through `Config`.
+// =============================================================================
+
+mod project_settings_parity {
+    use super::*;
+    use konoma_host_core::project::{DiffLayout as SharedDiffLayout, ProjectSettings};
+    use konoma_host_core::shared::SharedConfig;
+
+    /// What the host reads for the project screens from `cfg`: the layout the diff starts in, the
+    /// worktree folder, the title path style, icons, theme, the `[external]` gates, and the
+    /// command `!` launches for git and for jj (the host's own `tool_command`).
+    #[derive(Debug, PartialEq, Eq)]
+    struct HostReading {
+        layout: &'static str,
+        worktree_dir: String,
+        path_style: String,
+        icons: bool,
+        theme: [String; 5],
+        git_enabled: bool,
+        tool_enabled: bool,
+        git_tool: (String, &'static str),
+        jj_tool: (String, &'static str),
+    }
+
+    fn layout_name(l: crate::app::DiffLayout) -> &'static str {
+        match l {
+            SharedDiffLayout::Unified => "unified",
+            SharedDiffLayout::Split => "split",
+            SharedDiffLayout::Auto => "auto",
+        }
+    }
+
+    fn host_reading(cfg: &Config) -> HostReading {
+        let t = &cfg.ui.theme;
+        HostReading {
+            layout: layout_name(crate::app::DiffLayout::parse(&cfg.git.diff)),
+            worktree_dir: cfg.git.worktree_dir.clone(),
+            path_style: cfg.ui.path_style.clone(),
+            icons: cfg.ui.icons,
+            theme: [
+                t.bg.clone(),
+                t.code_bg.clone(),
+                t.code_label_align.clone(),
+                t.code_label_bg.clone(),
+                t.code_theme.clone(),
+            ],
+            git_enabled: cfg.external.git,
+            tool_enabled: cfg.external.git_tool,
+            git_tool: crate::tool_command(crate::vcs::VcsKind::Git, cfg),
+            #[cfg(feature = "git")]
+            jj_tool: crate::tool_command(crate::vcs::VcsKind::Jj, cfg),
+            #[cfg(not(feature = "git"))]
+            jj_tool: (cfg.jj.tool.trim().to_string(), "lazyjj"),
+        }
+    }
+
+    fn shared_reading(s: &ProjectSettings) -> HostReading {
+        let t = &s.theme;
+        HostReading {
+            layout: layout_name(s.diff_layout),
+            worktree_dir: s.worktree_dir.clone(),
+            path_style: s.path_style.clone(),
+            icons: s.icons,
+            theme: [
+                t.bg.clone(),
+                t.code_bg.clone(),
+                t.code_label_align.clone(),
+                t.code_label_bg.clone(),
+                t.code_theme.clone(),
+            ],
+            git_enabled: s.git_enabled,
+            tool_enabled: s.tool_enabled,
+            git_tool: s.tool_command(false),
+            jj_tool: s.tool_command(true),
+        }
+    }
+
+    /// One config text: both readings of it agree, or both refuse it. Returns whether it parsed.
+    fn agree(text: &str) -> bool {
+        let host = toml::from_str::<Config>(text);
+        let shared = SharedConfig::parse(text);
+        match (host, shared) {
+            (Ok(c), Ok(s)) => {
+                let mut host = host_reading(&c);
+                let mut shared = shared_reading(&ProjectSettings::from_config(&s));
+                // The jj fallback of a no-git build is not the shared one's concern.
+                if !cfg!(feature = "git") {
+                    host.jj_tool = shared.jj_tool.clone();
+                    shared.jj_tool = host.jj_tool.clone();
+                }
+                assert_eq!(host, shared, "{text:?}");
+                true
+            }
+            (Err(_), Err(_)) => false,
+            (h, s) => panic!(
+                "{text:?}: the host {:?} but the shared reading {:?}",
+                h.map(|_| ()),
+                s.map(|_| ())
+            ),
+        }
+    }
+
+    #[test]
+    fn every_field_agrees_when_present_absent_or_blank() {
+        let cases = [
+            "",
+            "[git]\ntool = \"gitui\"\n",
+            "[git]\ntool = \"  \"\n",
+            "[git]\ntool = \"\"\n",
+            "[git]\ntool = \"  tig  \"\n",
+            "[jj]\ntool = \"jjui\"\n",
+            "[jj]\ntool = \"   \"\n",
+            "[jj]\ntool = \"\"\n",
+            "[git]\ndiff = \"split\"\n",
+            "[git]\ndiff = \"Side-By-Side\"\n",
+            "[git]\ndiff = \"auto\"\n",
+            "[git]\ndiff = \"vertical\"\n",
+            "[git]\ndiff = \"nonsense\"\n",
+            "[git]\nworktree_dir = \"/srv/wt\"\n",
+            "[git]\nworktree_dir = \"\"\n",
+            "[ui]\npath_style = \"home\"\n",
+            "[ui]\npath_style = \"full\"\n",
+            "[ui]\npath_style = \"whatever\"\n",
+            "[ui]\nicons = false\n",
+            "[ui]\nicons = true\n",
+            "[ui.theme]\nbg = \"#102030\"\ncode_bg = \"none\"\ncode_label_align = \"left\"\ncode_label_bg = \"#405060\"\ncode_theme = \"Dracula\"\n",
+            "[ui.theme]\ncode_theme = \"Dracula\"\n",
+            "[external]\ngit = false\n",
+            "[external]\ngit_tool = false\n",
+            "[external]\ngit = false\ngit_tool = true\n",
+            "[external]\ngit = true\ngit_tool = false\n",
+            // Every field at once, none of them the default.
+            "[git]\ntool = \"gitui\"\ndiff = \"split\"\nworktree_dir = \"/w\"\n[jj]\ntool = \"jjui\"\n[ui]\npath_style = \"full\"\nicons = false\n[ui.theme]\nbg = \"#000001\"\n[external]\ngit = false\ngit_tool = false\n",
+        ];
+        for text in cases {
+            assert!(agree(text), "{text:?} should parse");
+        }
+    }
+
+    /// Precedence between the sections: the settings of one section never leak into another, and
+    /// `[external] git_tool` (a gate) does not change which tool `[git] tool` names.
+    #[test]
+    fn the_git_tool_gate_and_the_tool_name_are_independent_and_the_legacy_git_gate_stands_alone() {
+        let c: Config =
+            toml::from_str("[external]\ngit_tool = false\n[git]\ntool = \"tig\"\n").unwrap();
+        let s =
+            SharedConfig::parse("[external]\ngit_tool = false\n[git]\ntool = \"tig\"\n").unwrap();
+        let p = ProjectSettings::from_config(&s);
+        assert!(!c.external.git_tool && !p.tool_enabled);
+        assert!(
+            c.external.git && p.git_enabled,
+            "the legacy gate is untouched"
+        );
+        assert_eq!(p.tool_command(false), ("tig".to_string(), "lazygit"));
+        assert_eq!(crate::tool_command(crate::vcs::VcsKind::Git, &c).0, "tig");
+        // The jj tool does not follow the git one.
+        assert_eq!(p.tool_command(true).0, "lazyjj");
+        let both = "[git]\ntool = \"a\"\n[jj]\ntool = \"b\"\n";
+        assert!(agree(both));
+        let p = ProjectSettings::from_config(&SharedConfig::parse(both).unwrap());
+        assert_eq!(
+            (p.tool_command(false).0, p.tool_command(true).0),
+            ("a".to_string(), "b".to_string())
+        );
+    }
+
+    /// A value of the wrong type is an error for the whole file in both readings (the host then
+    /// runs on defaults and says so), never a half-read value in one of them.
+    #[test]
+    fn a_wrong_type_is_refused_by_both_readings() {
+        for text in [
+            "[git]\ntool = 3\n",
+            "[git]\ntool = true\n",
+            "[git]\ndiff = 1\n",
+            "[git]\nworktree_dir = false\n",
+            "[jj]\ntool = [\"a\"]\n",
+            "[jj]\ntool = 1\n",
+            "[ui]\npath_style = 1\n",
+            "[ui]\nicons = \"no\"\n",
+            "[ui]\nicons = 1\n",
+            "[ui.theme]\nbg = 1\n",
+            "[ui.theme]\ncode_theme = false\n",
+            "[external]\ngit = \"yes\"\n",
+            "[external]\ngit_tool = 1\n",
+            "[git]\ntool = \"ok\"\n[external]\ngit = \"yes\"\n",
+        ] {
+            assert!(!agree(text), "{text:?} must be refused by both");
+        }
+    }
+
+    /// The host's fallback for a refused file is the defaults; the shared defaults are the same.
+    #[test]
+    fn the_defaults_agree_with_the_host_defaults() {
+        let host = host_reading(&Config::default());
+        let shared = shared_reading(&ProjectSettings::from_config(&SharedConfig::default()));
+        assert_eq!(host, shared);
+        assert_eq!(host.git_tool, ("lazygit".to_string(), "lazygit"));
+        assert_eq!(host.layout, "unified");
+        assert_eq!(host.worktree_dir, "../");
+    }
+}
+
+// =============================================================================
+// The readers of the old names (`konoma_plugin::config`) against konoma's own reading of the same
+// old names: where the host accepts a value, the reader returns the same; where the host refuses
+// the file (a wrong type), the reader returns the default the host then runs on.
+// =============================================================================
+
+mod old_name_readers_parity {
+    use super::*;
+    use konoma_plugin::config as readers;
+
+    fn root(text: &str) -> toml::Table {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn the_readers_give_what_the_host_reads_from_the_old_names() {
+        for (text, align, jj_sync, base, max, wt) in [
+            ("", "right", true, vec![], 12, "../"),
+            (
+                "[ui]\ncommit_meta_align = \"inline\"\nconfirm_jj_sync = false\ngraph_base_branches = [\"main\", \"dev\"]\ngraph_max_branches = 0\n[git]\nworktree_dir = \"/w\"\n",
+                "inline",
+                false,
+                vec!["main".to_string(), "dev".to_string()],
+                0,
+                "/w",
+            ),
+            ("[ui]\ngraph_max_branches = 5\n", "right", true, vec![], 5, "../"),
+        ] {
+            let c: Config = toml::from_str(text).unwrap();
+            let t = root(text);
+            assert_eq!(c.ui.commit_meta_align, align, "{text:?}");
+            for plugin in ["git", "jj"] {
+                assert_eq!(readers::commit_meta_align(&t, plugin).value, c.ui.commit_meta_align, "{text:?}");
+                assert_eq!(readers::graph_base_branches(&t, plugin).value, c.ui.graph_base_branches, "{text:?}");
+                assert_eq!(readers::graph_max_branches(&t, plugin).value, c.ui.graph_max_branches, "{text:?}");
+            }
+            assert_eq!(readers::confirm_jj_sync(&t).value, c.ui.confirm_jj_sync, "{text:?}");
+            assert_eq!(readers::worktree_dir(&t).value, c.git.worktree_dir, "{text:?}");
+            assert_eq!(c.ui.confirm_jj_sync, jj_sync);
+            assert_eq!(c.ui.graph_base_branches, base);
+            assert_eq!(c.ui.graph_max_branches, max);
+            assert_eq!(c.git.worktree_dir, wt);
+        }
+    }
+
+    #[test]
+    fn a_wrong_type_is_refused_by_the_host_and_the_reader_gives_the_host_default() {
+        let d = Config::default();
+        for text in [
+            "[ui]\ncommit_meta_align = 1\n",
+            "[ui]\nconfirm_jj_sync = \"no\"\n",
+            "[ui]\ngraph_base_branches = [1]\n",
+            "[ui]\ngraph_max_branches = -1\n",
+            "[git]\nworktree_dir = true\n",
+        ] {
+            assert!(toml::from_str::<Config>(text).is_err(), "{text:?}");
+            let t = root(text);
+            assert_eq!(
+                readers::commit_meta_align(&t, "git").value,
+                d.ui.commit_meta_align
+            );
+            assert_eq!(readers::confirm_jj_sync(&t).value, d.ui.confirm_jj_sync);
+            assert_eq!(
+                readers::graph_base_branches(&t, "jj").value,
+                d.ui.graph_base_branches
+            );
+            assert_eq!(
+                readers::graph_max_branches(&t, "jj").value,
+                d.ui.graph_max_branches
+            );
+            assert_eq!(readers::worktree_dir(&t).value, d.git.worktree_dir);
+        }
     }
 }

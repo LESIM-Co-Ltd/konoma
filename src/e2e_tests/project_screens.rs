@@ -1,0 +1,3387 @@
+//! Project behavior through the same key dispatch and drawing entry points as the host.
+
+#[path = "project_scroll.rs"]
+mod scroll;
+
+#[path = "project_confirmations.rs"]
+mod confirmations;
+
+#[path = "project_left.rs"]
+mod left;
+
+#[path = "project_quit_guard.rs"]
+mod quit_guard;
+
+#[path = "project_write_busy.rs"]
+mod write_busy;
+
+#[path = "project_frozen_frame.rs"]
+mod frozen_frame;
+
+#[path = "project_navigation_bridge.rs"]
+mod navigation_bridge;
+
+#[path = "project_actions_bridge.rs"]
+mod actions_bridge;
+
+#[path = "project_presentation_bridge.rs"]
+mod presentation_bridge;
+
+#[path = "project_wake_bridge.rs"]
+mod wake_bridge;
+
+#[cfg(feature = "git")]
+#[path = "diff_source_bridge.rs"]
+mod diff_source_bridge;
+
+#[test]
+fn e2e_project_tab_closed_discards_inflight_view_before_owner_cleanup() {
+    let mut f = fixture("project_close_inflight", false, 1, None, None, None);
+    open(&mut f);
+    let a = f.sim.app.tab.id;
+    f.sim.app.tab_new().unwrap();
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    f.sim.key('p');
+    drain(&mut f.sim);
+    let b = f.sim.app.tab.id;
+    let hold = ViewHold::new("items");
+    f.log.lock().unwrap().view_hold = Some(hold.clone());
+    f.sim.key('r');
+    f.sim.app.wait_project_view_request("items");
+    hold.entered.wait();
+    f.sim.app.tab_close();
+    assert!(!f.sim.app.project_cached_tabs_for_test().contains(&b));
+    hold.release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().closed_tabs, [b]);
+    assert!(f.sim.app.project_cached_tabs_for_test().contains(&a));
+    assert!(!f.sim.app.project_cached_tabs_for_test().contains(&b));
+}
+
+#[test]
+fn e2e_project_filter_shows_all_fallback_rows_without_action_selection() {
+    use konoma_plugin::{view::ListRow, Line};
+    let mut f = fixture_with_log(
+        "project_filter_fallbacks",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            list_rows: Some(vec![
+                ListRow::new("item", vec![Line::raw("alpha matching")]).value("ordinary"),
+                ListRow::new("item", vec![Line::raw("No matches")])
+                    .value("fallback-one")
+                    .filter_fallback(true),
+                ListRow::new("item", vec![Line::raw("Try another query")])
+                    .value("fallback-two")
+                    .filter_fallback(true),
+            ]),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    assert_eq!(f.sim.app.project_visible_rows(), [0]);
+    f.sim.key('/');
+    f.sim.keys("missing");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.project_visible_rows(), [1, 2]);
+    for _ in 0..2 {
+        assert!(f.sim.app.project_act_context().selected.is_none());
+        f.sim.key('j');
+    }
+    f.sim.see("No matches");
+    f.sim.see("Try another query");
+}
+
+#[test]
+fn e2e_project_help_multikey_push_row_leaves_only_uncovered_right_alias() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut f = fixture_with_log(
+            &format!("project_multikey_open_help_{lang:?}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                push_help_alias: true,
+                ..Default::default()
+            },
+        );
+        f.sim.app.lang = lang;
+        open(&mut f);
+        crate::plugins::test_projects::bind_push_help_alias(&mut f.sim.app.plugin_keys);
+        let sections = crate::ops::help::sections(&f.sim.app);
+        let plugin = sections
+            .iter()
+            .find(|section| section.title == "Project screens")
+            .unwrap();
+        let navigation = sections
+            .iter()
+            .find(|section| section.title == crate::i18n::tr(lang, crate::i18n::Msg::ProjectTitle))
+            .unwrap();
+        let open_rows = |section: &crate::ui::help::HelpSection| {
+            section
+                .rows
+                .iter()
+                .filter(|(_, description)| description == "push")
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(open_rows(plugin), [("Enter / l".into(), "push".into())]);
+        assert_eq!(open_rows(navigation), [("→".into(), "push".into())]);
+    }
+}
+
+#[test]
+fn e2e_project_help_keeps_open_aliases_when_plugin_lists_only_enter() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut f = fixture(
+            &format!("project_open_alias_help_{lang:?}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+        );
+        f.sim.app.lang = lang;
+        open(&mut f);
+        let sections = crate::ops::help::sections(&f.sim.app);
+        assert!(sections
+            .iter()
+            .flat_map(|s| &s.rows)
+            .any(|(keys, desc)| keys == "Enter" && desc == "push"));
+        let navigation = sections
+            .iter()
+            .find(|s| s.title == crate::i18n::tr(lang, crate::i18n::Msg::ProjectTitle))
+            .unwrap();
+        assert!(
+            navigation
+                .rows
+                .iter()
+                .any(|(keys, desc)| keys == "l/→" && desc == "push"),
+            "{:?}",
+            navigation.rows
+        );
+        for code in [KeyCode::Char('l'), KeyCode::Right] {
+            let before = f.log.lock().unwrap().acts.len();
+            f.sim.press(code, KeyModifiers::NONE);
+            drain(&mut f.sim);
+            assert_eq!(
+                f.log.lock().unwrap().acts.len(),
+                before + 1,
+                "{lang:?} {code:?}: screen={:?}, flash={:?}",
+                f.sim.app.project_frame().map(|f| &f.key.screen),
+                f.sim.app.flash
+            );
+            assert_eq!(last_act(&f).0, "push");
+            f.sim.key('q');
+            drain(&mut f.sim);
+        }
+    }
+}
+
+#[test]
+fn e2e_project_footer_shared_key_keeps_act_label_with_two_spaces() {
+    use crate::i18n::Lang;
+    use crate::keymap::{Context, KeyPress};
+    for (lang, label) in [(Lang::En, "open  entry"), (Lang::Jp, "開く  対象")] {
+        let mut f = fixture_with_log(
+            "project_footer_structured_label",
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                open_label: Some(konoma_plugin::t!(en: "open  entry", ja: "開く  対象")),
+                ..Default::default()
+            },
+        );
+        f.sim.app.lang = lang;
+        open(&mut f);
+        let tokens = crate::ops::footer::render_tokens(
+            &f.sim.app,
+            Context::Canvas,
+            &crate::ops::footer::plan(&f.sim.app, Context::Canvas),
+        );
+        assert_eq!(
+            tokens.iter().filter(|t| t.text.contains(label)).count(),
+            1,
+            "{tokens:?}"
+        );
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.keys.contains(&KeyPress::key(KeyCode::Enter)))
+                .count(),
+            1,
+            "{tokens:?}"
+        );
+        assert!(tokens
+            .iter()
+            .any(|t| t.text.contains(&format!("↵/l/→:{label}"))));
+    }
+}
+
+#[test]
+fn e2e_project_markable_list_help_offers_v_and_the_key_toggles_marks() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        let mut f = fixture("project_markable_help", false, 1, None, None, None);
+        f.sim.app.lang = lang;
+        open(&mut f);
+        assert!(f.sim.app.project_marks_enabled());
+        let rows: Vec<_> = crate::ops::help::sections(&f.sim.app)
+            .into_iter()
+            .flat_map(|s| s.rows)
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter(|(keys, label)| keys == "V"
+                    && label == crate::i18n::tr(lang, crate::i18n::Msg::ProjectMark))
+                .count(),
+            1
+        );
+        let before = f.sim.app.project_frame().unwrap().marked.clone();
+        f.sim.key('V');
+        drain(&mut f.sim);
+        assert_ne!(f.sim.app.project_frame().unwrap().marked, before);
+        assert_eq!(
+            f.sim.app.project_frame().unwrap().marked.contains(&0),
+            !before.contains(&0)
+        );
+    }
+}
+
+#[test]
+fn e2e_project_new_tab_help_and_footer_follow_selected_row_target() {
+    let mut f = fixture("project_target_hints", false, 1, None, None, None);
+    f.sim.key('p');
+    drain(&mut f.sim);
+    for target in [true, false] {
+        let sections = crate::ops::help::sections(&f.sim.app);
+        assert_eq!(
+            sections
+                .iter()
+                .flat_map(|s| &s.rows)
+                .any(|(key, _)| key.contains("Ctrl-t")),
+            target,
+        );
+        assert_eq!(
+            f.sim.app.project_controls().unwrap().contains("Ctrl-t"),
+            target
+        );
+        f.sim.key('j');
+        drain(&mut f.sim);
+    }
+}
+
+#[test]
+fn e2e_project_list_right_uses_enter_row_action_and_disabled_gate() {
+    for disabled in [false, true] {
+        let mut f = fixture_with_log(
+            &format!("project_right_enter_gate_{disabled}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                disabled: if disabled {
+                    vec!["push".into()]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            },
+        );
+        f.sim.key('p');
+        drain(&mut f.sim);
+        let hints = f.sim.app.project_controls().unwrap();
+        assert_eq!(hints.contains("/l/"), !disabled, "{hints}");
+        f.sim.key('l');
+        drain(&mut f.sim);
+        assert_eq!(f.log.lock().unwrap().acts.len(), usize::from(!disabled));
+        if !disabled {
+            let (action, context) = f.log.lock().unwrap().acts[0].clone();
+            assert_eq!(action, "push");
+            assert_eq!(context.selected.unwrap().value, "opaque-alpha");
+        }
+    }
+}
+
+use super::*;
+use crate::plugins::test_plugins::{self, Latch};
+use crate::plugins::test_projects::{ProjectLog, Screens, ViewHold};
+use konoma_plugin::project::{ProjectAct, ProjectRow, ProjectView};
+use konoma_plugin::Outcome;
+use std::sync::{Arc, Mutex};
+
+struct Fixture {
+    sim: Sim,
+    log: Arc<Mutex<ProjectLog>>,
+    _dir: crate::test_support::TmpDir,
+}
+
+fn fixture(
+    name: &str,
+    declared_read_only: bool,
+    markers: usize,
+    outcome: Option<Outcome>,
+    hold: Option<Arc<Latch>>,
+    started: Option<Arc<Latch>>,
+) -> Fixture {
+    fixture_with_log(
+        name,
+        declared_read_only,
+        markers,
+        outcome,
+        hold,
+        started,
+        ProjectLog::default(),
+    )
+}
+
+fn fixture_with_log(
+    name: &str,
+    declared_read_only: bool,
+    markers: usize,
+    outcome: Option<Outcome>,
+    hold: Option<Arc<Latch>>,
+    started: Option<Arc<Latch>>,
+    initial: ProjectLog,
+) -> Fixture {
+    let dir = sandbox(name);
+    for index in 0..markers {
+        std::fs::write(
+            dir.join(format!("{index}.screen-project")),
+            format!("chip-{index}"),
+        )
+        .unwrap();
+    }
+    std::fs::write(dir.join("file.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+    std::fs::create_dir_all(dir.join("destination")).unwrap();
+    let file_only = initial.file_only;
+    let log = Arc::new(Mutex::new(initial));
+    let marker = test_plugins::register(
+        name,
+        Arc::new(Screens {
+            log: log.clone(),
+            read_only: declared_read_only,
+            hold,
+            started,
+            outcome,
+        }),
+    );
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    cfg.external.git = false;
+    if log.lock().unwrap().rebound_hint_key {
+        cfg.keys.surfaces.insert(
+            "project-screens".into(),
+            [("W".into(), "hint-stage-all".into())].into(),
+        );
+    }
+    if let Some(value) = log.lock().unwrap().prompt_value.clone() {
+        cfg.plugins
+            .entry("project-screens".into())
+            .or_default()
+            .insert("confirm_sync".into(), value);
+    }
+    let mut sim = Sim::with_config_sized(&canon(&dir), cfg, 160, 24);
+    if !file_only {
+        sim.app.tab.projects.wait_for_result();
+        assert!(sim.app.tab.projects.uses_injected_events());
+    }
+    sim.app.poll_projects();
+    drain(&mut sim);
+    Fixture {
+        sim,
+        log,
+        _dir: dir,
+    }
+}
+
+#[test]
+fn e2e_project_chip_initial_styled_and_worker_owned() {
+    use konoma_plugin::{Chip, Color, Line, Span, Style};
+    let mut f = fixture_with_log(
+        "project_chip_initial",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            chip: Some(Chip::new(Line::from(vec![
+                Span::styled("計算", Style::new().fg(Color::Red)),
+                Span::styled(" chip", Style::new().fg(Color::Green)),
+            ]))),
+            ..Default::default()
+        },
+    );
+    let screen = chip_screen(&f.sim);
+    let title = screen
+        .lines()
+        .find(|line| line.contains(" · "))
+        .unwrap_or(&screen);
+    assert!(title.contains(" · 計算 chip "), "{title}");
+    f.sim.dont_see("project chip");
+    assert_eq!(f.log.lock().unwrap().chips, 1);
+    assert_eq!(f.log.lock().unwrap().watch_threads.len(), 1);
+    assert!(f
+        .log
+        .lock()
+        .unwrap()
+        .threads
+        .iter()
+        .all(|id| *id != std::thread::current().id()));
+    let buffer = f.sim.term.backend().buffer();
+    let (x, y) = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .find(|pos| buffer[*pos].symbol() == "計")
+        .unwrap();
+    assert_eq!(buffer[(x, y)].fg, ratatui::style::Color::Red);
+    assert_eq!(buffer[(x + 2, y)].symbol(), "算");
+    for _ in 0..3 {
+        f.sim.draw();
+    }
+    assert_eq!(f.log.lock().unwrap().chips, 1);
+}
+
+fn chip_screen(s: &Sim) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let buffer = s.term.backend().buffer();
+    let mut text = String::new();
+    for y in 0..buffer.area.height {
+        let mut x = 0;
+        while x < buffer.area.width {
+            let symbol = buffer[(x, y)].symbol();
+            text.push_str(symbol);
+            // A terminal advances over the continuation cell of a wide glyph.
+            x += symbol.width().max(1) as u16;
+        }
+        text.push('\n');
+    }
+    text
+}
+
+#[test]
+fn e2e_project_chip_fallback_empty_failure_and_panic_keep_session() {
+    for mode in 0..4 {
+        for declared in [true, false] {
+            let mut f = fixture_with_log(
+                &format!("project_chip_fallback_{mode}_{declared}"),
+                false,
+                1,
+                None,
+                None,
+                None,
+                ProjectLog {
+                    chip: (mode == 1).then(konoma_plugin::Chip::default),
+                    chip_failure: mode == 2,
+                    chip_panic: mode == 3,
+                    no_declared_chip: !declared,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                f.sim.screen().contains(" · project chip "),
+                declared && mode != 1
+            );
+            if mode >= 2 {
+                assert_eq!(
+                    f.sim.app.flash.as_deref(),
+                    Some(if mode == 2 {
+                        "chip fixture failure"
+                    } else {
+                        crate::i18n::tr(f.sim.app.lang, crate::i18n::Msg::ProjectWorkerFailed)
+                    })
+                );
+            }
+            open(&mut f);
+            f.sim.key('x');
+            drain(&mut f.sim);
+            assert_eq!(last_act(&f).0, "capture");
+            assert_eq!(f.log.lock().unwrap().opens, 1);
+            // A later chip failure must replace a previous computed value, too.
+            f.log.lock().unwrap().chip = Some(konoma_plugin::Chip::new("before failure"));
+            f.log.lock().unwrap().chip_failure = false;
+            f.log.lock().unwrap().chip_panic = false;
+            press(&mut f, KeyCode::F(10));
+            assert_eq!(f.sim.app.project_chips()[0].to_string(), "before failure");
+            f.log.lock().unwrap().chip = (mode == 1).then(konoma_plugin::Chip::default);
+            f.log.lock().unwrap().chip_failure = mode == 2;
+            f.log.lock().unwrap().chip_panic = mode == 3;
+            press(&mut f, KeyCode::F(10));
+            if mode >= 2 {
+                assert_eq!(
+                    f.sim.app.flash.as_deref(),
+                    Some(if mode == 2 {
+                        "chip fixture failure"
+                    } else {
+                        crate::i18n::tr(f.sim.app.lang, crate::i18n::Msg::ProjectWorkerFailed)
+                    })
+                );
+            }
+            f.sim.key('x');
+            drain(&mut f.sim);
+            assert_eq!(f.log.lock().unwrap().acts.last().unwrap().0, "capture");
+            f.sim.key('q');
+            assert_eq!(
+                f.sim.screen().contains(" · project chip "),
+                declared && mode != 1
+            );
+            f.sim.dont_see("before failure");
+            assert_eq!(f.log.lock().unwrap().opens, 1);
+        }
+    }
+}
+
+#[test]
+fn e2e_project_chip_clips_controls_text_spans_and_narrow_cjk_title() {
+    use konoma_plugin::{Chip, Line, Span};
+    let mut f = fixture_with_log(
+        "project_chip_clipped",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            chip: Some(Chip::new(Line::from(vec![
+                Span::raw("a\0\n\t\r\x1b\x7f\u{85}\u{10eeee}b"),
+                Span::raw("界".repeat(600)),
+            ]))),
+            ..Default::default()
+        },
+    );
+    let kept = f.sim.app.project_chips()[0].to_string();
+    assert_eq!(kept, format!("ab{}…", "界".repeat(509)));
+    f.sim.resize(1200, 24);
+    drain(&mut f.sim);
+    assert!(chip_screen(&f.sim).contains(&kept));
+    for width in [73, 74, 75, 76] {
+        f.sim.resize(width, 24);
+        drain(&mut f.sim);
+        let screen = chip_screen(&f.sim);
+        let title = screen.lines().find(|line| line.starts_with('┌')).unwrap();
+        assert!(title.ends_with('┐'), "{title}");
+        assert_eq!(unicode_width::UnicodeWidthStr::width(title), width as usize);
+        assert_eq!(f.sim.app.project_chips()[0].to_string(), kept);
+    }
+    assert_eq!(f.log.lock().unwrap().chips, 1);
+    f.log.lock().unwrap().chip = Some(Chip::new(Line::from(
+        (0..65)
+            .map(|i| Span::raw(if i == 64 { "overflow" } else { "x" }))
+            .collect::<Vec<_>>(),
+    )));
+    open(&mut f);
+    press(&mut f, KeyCode::F(10));
+    assert_eq!(f.sim.app.project_chips()[0].to_string(), "x".repeat(64));
+}
+
+#[test]
+fn e2e_project_chip_file_only_session_is_never_called() {
+    let mut f = fixture_with_log(
+        "project_chip_file_only",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            file_only: true,
+            chip_panic: true,
+            ..Default::default()
+        },
+    );
+    assert!(f.sim.app.tab.projects.projects.is_empty());
+    std::fs::write(f.sim.app.tab.root.join("view.screen-file"), "file").unwrap();
+    f.sim.app.rebuild_tree().unwrap();
+    f.sim.select("view.screen-file");
+    f.sim.enter();
+    f.sim.see("file session");
+    assert_eq!(f.log.lock().unwrap().opens, 1);
+    assert_eq!(f.log.lock().unwrap().chips, 0);
+}
+
+#[test]
+fn e2e_project_chip_tabs_roots_and_multiple_project_order() {
+    let mut f = fixture_with_log(
+        "project_chip_tabs",
+        false,
+        2,
+        None,
+        None,
+        None,
+        ProjectLog {
+            chip_from_marker: true,
+            ..Default::default()
+        },
+    );
+    let first_root = f.sim.app.tab.root.clone();
+    f.sim.see(" · chip-0  · chip-1 ");
+    let other = sandbox("project_chip_other_root");
+    std::fs::write(other.join("0.screen-project"), "other chip").unwrap();
+    let empty = sandbox("project_chip_empty_root");
+    f.log.lock().unwrap().outcome = Some(Outcome::OpenTab {
+        path: canon(&other),
+    });
+    f.sim.key('p');
+    f.sim.enter();
+    drain(&mut f.sim);
+    press(&mut f, KeyCode::F(11));
+    f.sim.app.tab.projects.wait_for_result();
+    drain(&mut f.sim);
+    f.sim.see(" · other chip ");
+    f.sim.dont_see("chip-0");
+    f.sim.dont_see("chip-1");
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.root, first_root);
+    f.sim.key('q');
+    f.sim.see(" · chip-0  · chip-1 ");
+    f.sim.dont_see("other chip");
+    f.sim.key(']');
+    drain(&mut f.sim);
+    open(&mut f);
+    f.log.lock().unwrap().outcome = Some(Outcome::SwitchRoot {
+        root: canon(&empty),
+        message: None,
+    });
+    press(&mut f, KeyCode::F(11));
+    assert!(f.sim.app.project_chips().is_empty());
+    f.sim.app.tab.projects.wait_for_result();
+    drain(&mut f.sim);
+    f.sim.dont_see("other chip");
+    f.sim.dont_see("chip-0");
+}
+
+#[test]
+fn e2e_project_chip_watch_during_held_reply_fetches_latest_on_tree() {
+    let mut f = fixture("project_chip_watch_busy", false, 1, None, None, None);
+    open(&mut f);
+    let before = f.log.lock().unwrap().chips;
+    let gate = ViewHold::new("chip");
+    f.log.lock().unwrap().chip = Some(konoma_plugin::Chip::new("stale chip"));
+    f.log.lock().unwrap().chip_hold = Some(gate.clone());
+    f.sim.press(KeyCode::F(10), KeyModifiers::NONE);
+    gate.entered.wait();
+    assert!(gate.entered.is_open());
+    f.log.lock().unwrap().chip = Some(konoma_plugin::Chip::new("latest chip"));
+    let root = f.sim.app.tab.root.clone();
+    std::fs::create_dir_all(root.join("metadata")).unwrap();
+    std::fs::write(root.join("metadata/index"), "change").unwrap();
+    f.sim.app.tab.projects.inject_event(Ok(
+        notify::Event::new(notify::EventKind::Any).add_path(root.join("metadata/index"))
+    ));
+    assert!(f.sim.app.poll_projects());
+    f.sim.key('q');
+    gate.release.open();
+    f.sim.app.wait_project_job();
+    assert!(!f
+        .sim
+        .app
+        .project_chips()
+        .iter()
+        .any(|chip| chip.to_string() == "stale chip"));
+    drain(&mut f.sim);
+    f.sim.see("latest chip");
+    assert_eq!(f.log.lock().unwrap().chips, before + 2);
+    f.sim.dont_see("stale chip");
+}
+
+fn drain(s: &mut Sim) {
+    // Every iteration consumes an actual worker reply; a stuck worker has a bounded receive.
+    for _ in 0..32 {
+        s.app.poll_projects();
+        s.draw();
+        if !s.app.project_jobs_pending() {
+            return;
+        }
+        s.app.wait_project_job();
+    }
+    panic!("project did not become idle");
+}
+
+fn hold_view(f: &mut Fixture, screen: &str, reverse: bool) -> Arc<ViewHold> {
+    drain(&mut f.sim);
+    let gate = ViewHold::new(screen);
+    f.log.lock().unwrap().reverse_rows = reverse;
+    f.log.lock().unwrap().view_hold = Some(gate.clone());
+    gate
+}
+
+fn resize_while_held(f: &mut Fixture, gate: &ViewHold) {
+    f.sim.resize(159, 24);
+    f.sim.app.wait_project_view_request(&gate.screen);
+    gate.entered.wait();
+    assert!(gate.entered.is_open());
+}
+
+#[test]
+fn e2e_project_loading_keys_wait_for_current_screen_and_cancel_when_leaving() {
+    let mut f = fixture("project_loading_diff_input", false, 1, None, None, None);
+    open(&mut f);
+    let gate = hold_view(&mut f, "diff", false);
+    f.sim.key('d');
+    f.sim.app.wait_project_view_request("diff");
+    gate.entered.wait();
+    assert!(gate.entered.is_open());
+    f.sim.key('x');
+    assert!(f.log.lock().unwrap().acts.is_empty());
+    gate.release.open();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "diff-act");
+    assert_eq!(last_act(&f).1.screen.as_deref(), Some("diff"));
+    f.sim.key('i');
+    drain(&mut f.sim);
+    let gate = hold_view(&mut f, "items", false);
+    resize_while_held(&mut f, &gate);
+    let before = f.log.lock().unwrap().acts.len();
+    f.sim.key('x');
+    f.sim.key('q');
+    assert!(!f.sim.app.project_active());
+    gate.release.open();
+    drain(&mut f.sim);
+    open(&mut f);
+    assert_eq!(f.log.lock().unwrap().acts.len(), before);
+}
+
+#[test]
+fn e2e_project_loading_dialog_keys_are_delivered_after_view_reply() {
+    for (key, label) in [
+        (2, "Confirm project?"),
+        (3, "Project name"),
+        (4, "Choose target"),
+        (5, "Proceed?"),
+    ] {
+        let mut f = fixture(
+            &format!("project_loading_dialog_{key}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+        );
+        open(&mut f);
+        let gate = hold_view(&mut f, "items", false);
+        resize_while_held(&mut f, &gate);
+        f.sim.press(KeyCode::F(key), KeyModifiers::NONE);
+        if key == 3 {
+            f.sim.keys("q?t");
+        }
+        assert!(f.log.lock().unwrap().acts.is_empty());
+        gate.release.open();
+        drain(&mut f.sim);
+        f.sim.see(label);
+        assert!(f.sim.app.project_dialog.is_some());
+        if key == 3 {
+            assert!(
+                matches!(&f.sim.app.project_dialog, Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. }) if buffer == "初期q?t")
+            );
+        }
+        f.sim.esc();
+        assert!(f.log.lock().unwrap().acts.is_empty());
+    }
+}
+
+#[test]
+fn e2e_project_loading_navigation_key_is_not_lost() {
+    let mut f = fixture("project_loading_navigation", false, 1, None, None, None);
+    f.log.lock().unwrap().outcome = Some(Outcome::OpenFile {
+        path: f.sim.app.tab.root.join("file.txt"),
+        line: Some(3),
+    });
+    open(&mut f);
+    let gate = hold_view(&mut f, "items", false);
+    resize_while_held(&mut f, &gate);
+    f.sim.press(KeyCode::F(11), KeyModifiers::NONE);
+    gate.release.open();
+    drain(&mut f.sim);
+    assert!(!f.sim.app.project_active());
+    assert_eq!(f.sim.app.preview_caret_line(), 2);
+    f.sim.key('q');
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_active());
+}
+
+#[test]
+fn e2e_project_refresh_keeps_selected_and_marked_row_identity() {
+    let mut f = fixture("project_refresh_row_identity", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.key('j');
+    let gate = hold_view(&mut f, "items", true);
+    resize_while_held(&mut f, &gate);
+    f.sim.key('j');
+    f.sim.key('x');
+    gate.release.open();
+    drain(&mut f.sim);
+    let (_, context) = last_act(&f);
+    assert_eq!(
+        context.selected,
+        Some(ProjectRow::new("item", "opaque-gamma"))
+    );
+    assert_eq!(
+        context.marked,
+        vec![ProjectRow::new("item", "opaque-alpha")]
+    );
+    let before = f.log.lock().unwrap().acts.len();
+    f.log.lock().unwrap().omit_row = Some("opaque-gamma".into());
+    let gate = hold_view(&mut f, "items", false);
+    f.sim.resize(158, 24);
+    gate.entered.wait();
+    assert!(gate.entered.is_open());
+    f.sim.key('x');
+    gate.release.open();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.log.lock().unwrap().acts.len(),
+        before,
+        "an action must not move to the removed row's neighbour"
+    );
+}
+
+#[test]
+fn e2e_project_dialog_submit_waits_for_view_and_rechecks_guard_and_row() {
+    for (read_only, removed, disabled) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let mut f = fixture(
+            &format!("project_queued_dialog_{read_only}_{removed}_{disabled}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+        );
+        open(&mut f);
+        f.sim.press(KeyCode::F(3), KeyModifiers::NONE);
+        drain(&mut f.sim);
+        if removed {
+            f.log.lock().unwrap().omit_row = Some("opaque-alpha".into());
+        }
+        let gate = hold_view(&mut f, "items", removed);
+        resize_while_held(&mut f, &gate);
+        f.sim.enter();
+        assert!(f.log.lock().unwrap().acts.is_empty());
+        if disabled {
+            f.log.lock().unwrap().disabled.push("text-input".into());
+        }
+        f.sim.app.cfg.plugins.insert(
+            "project-screens".into(),
+            toml::Table::from_iter([("read_only".into(), read_only.into())]),
+        );
+        gate.release.open();
+        drain(&mut f.sim);
+        if disabled {
+            assert!(f.log.lock().unwrap().acts.is_empty());
+        } else if read_only || removed {
+            assert!(f.log.lock().unwrap().acts.is_empty());
+            assert_eq!(
+                f.sim.app.flash.as_deref(),
+                Some(crate::i18n::tr(
+                    f.sim.app.lang,
+                    if read_only {
+                        crate::i18n::Msg::PluginReadOnly
+                    } else {
+                        crate::i18n::Msg::ProjectSelectionChanged
+                    }
+                ))
+            );
+        } else {
+            assert_eq!(last_act(&f).0, "text-input");
+            assert_eq!(last_act(&f).1.text.as_deref(), Some("初期"));
+        }
+    }
+}
+
+fn open(f: &mut Fixture) {
+    f.sim.key('p');
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_active(), "{:?}", f.sim.app.flash);
+    f.sim.see("alpha");
+}
+
+fn hint_fixture(name: &str, disabled: &[&str], rebound: bool) -> Fixture {
+    let mut f = fixture_with_log(
+        name,
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            hint_groups: true,
+            rebound_hint_key: rebound,
+            disabled: disabled.iter().map(|s| (*s).into()).collect(),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f
+}
+
+fn hint_rows(f: &Fixture) -> Vec<(String, String)> {
+    crate::ops::help::sections_for(&f.sim.app, crate::keymap::Context::Canvas)
+        .into_iter()
+        .filter(|s| s.title == "Project screens")
+        .flat_map(|s| s.rows)
+        .filter(|(_, desc)| desc.contains("stage"))
+        .collect()
+}
+
+#[test]
+fn e2e_project_hint_groups_footer_help_and_menu() {
+    let mut f = hint_fixture("project_hint_groups", &[], false);
+    let ctx = crate::keymap::Context::Canvas;
+    let tokens = crate::ui::status::hint_tokens(&f.sim.app);
+    let hints: Vec<_> = tokens
+        .iter()
+        .filter(|s| s.contains("stage") || s.contains("hint-"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        hints,
+        [
+            "C-F8:hint-before",
+            "s/S:stage(all)",
+            "C-F9:hint-between",
+            "u/U:unstage(all)",
+            "C-F10:hint-after"
+        ]
+    );
+    assert_eq!(
+        hint_rows(&f),
+        [
+            ("s / S".into(), "stage / stage all".into()),
+            ("u / U".into(), "unstage / unstage all".into())
+        ]
+    );
+    f.sim.key(' ');
+    let menu = crate::ops::menu::menu(
+        &f.sim.app,
+        ctx,
+        f.sim.app.pending_leader.unwrap(),
+        crate::ops::menu::View::Open,
+    )
+    .unwrap();
+    for id in [
+        "hint-stage",
+        "hint-stage-all",
+        "hint-unstage",
+        "hint-unstage-all",
+    ] {
+        assert_eq!(
+            menu.items
+                .iter()
+                .filter(
+                    |item| matches!(item.action, crate::keymap::Action::Plugin(p) if p.act() == id)
+                )
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn e2e_project_hint_groups_only_enabled_keys_and_no_empty_hint() {
+    for (index, disabled, expected) in [
+        (0, vec!["hint-stage"], Some(("S:stage(all)", "S"))),
+        (1, vec!["hint-stage-all"], Some(("s:stage(all)", "s"))),
+        (2, vec!["hint-stage", "hint-stage-all"], None),
+    ] {
+        let f = hint_fixture(&format!("project_hint_enabled_{index}"), &disabled, false);
+        let tokens: Vec<_> = crate::ui::status::hint_tokens(&f.sim.app)
+            .into_iter()
+            .filter(|s| s.ends_with(":stage(all)"))
+            .collect();
+        // With one member left, the row's words are that member's own help (the fixture's
+        // `action()` helper sets it to the id), not the group's.
+        let rows: Vec<_> = hint_rows(&f)
+            .into_iter()
+            .filter(|(_, d)| d == "hint-stage" || d == "hint-stage-all" || d == "stage / stage all")
+            .collect();
+        match expected {
+            Some((token, keys)) => {
+                let words = if keys == "S" {
+                    "hint-stage-all"
+                } else {
+                    "hint-stage"
+                };
+                assert_eq!(tokens, [token]);
+                assert_eq!(rows, [(keys.into(), words.into())]);
+            }
+            None => {
+                assert!(tokens.is_empty(), "{tokens:?}");
+                assert!(rows.is_empty(), "{rows:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn e2e_project_hint_groups_rebinding() {
+    let f = hint_fixture("project_hint_rebound", &[], true);
+    assert!(crate::ui::status::hint_tokens(&f.sim.app).contains(&"s/W:stage(all)".into()));
+    assert!(hint_rows(&f).contains(&("s / W".into(), "stage / stage all".into())));
+}
+
+#[test]
+fn e2e_project_hint_group_shared_key_is_deduplicated() {
+    use crate::keymap::{Action, Context, KeyPress};
+    use crate::plugins::PluginAct;
+
+    let mut f = hint_fixture("project_hint_shared_key", &[], false);
+    let stage = PluginAct::new("project-screens", "hint-stage");
+    let all = PluginAct::new("project-screens", "hint-stage-all");
+    // Registration drops collisions. Inject one at the binding boundary to exercise rendering.
+    f.sim.app.plugin_keys.share_key_for_test(stage, all);
+    for action in [stage, all] {
+        assert!(crate::ops::gate::action_enabled(
+            &f.sim.app,
+            Context::Canvas,
+            Action::Plugin(action)
+        ));
+    }
+    let tokens = crate::ops::footer::render_tokens(
+        &f.sim.app,
+        Context::Canvas,
+        &crate::ops::footer::plan(&f.sim.app, Context::Canvas),
+    );
+    let grouped: Vec<_> = tokens
+        .iter()
+        .filter(|t| t.text.ends_with(":stage(all)"))
+        .collect();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].text, "s:stage(all)");
+    // Inspect raw keys too: the host's text writer also de-duplicates them.
+    assert_eq!(grouped[0].keys, [KeyPress::ch('s')]);
+    assert_eq!(
+        grouped[0].actions,
+        [Action::Plugin(stage), Action::Plugin(all)]
+    );
+    assert_eq!(
+        hint_rows(&f),
+        [
+            ("s".into(), "stage / stage all".into()),
+            ("u / U".into(), "unstage / unstage all".into()),
+        ]
+    );
+}
+
+/// The stage / unstage hint groups of a changes screen are the released hub's: the footer shows
+/// `s/S:stage(all)` and `u/U:unstage(all)`, the help `s / S` and `u / U` rows.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_project_hint_groups_match_old_changes_footer_and_help() {
+    let f = hint_fixture("project_hint_old_changes", &[], false);
+    let new_tokens: Vec<_> = crate::ui::status::hint_tokens(&f.sim.app)
+        .into_iter()
+        .filter(|s| s.ends_with(":stage(all)") || s.ends_with(":unstage(all)"))
+        .collect();
+    assert_eq!(new_tokens, ["s/S:stage(all)", "u/U:unstage(all)"]);
+    assert_eq!(
+        hint_rows(&f),
+        [
+            ("s / S".to_string(), "stage / stage all".to_string()),
+            ("u / U".to_string(), "unstage / unstage all".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn e2e_project_session_watch_paths_replace_declaration_and_reread_after_invalidation() {
+    let mut f = fixture("project_dynamic_watch_paths", false, 1, None, None, None);
+    open(&mut f);
+    let outside = sandbox("project_dynamic_watch_outside");
+    let first = canon(&outside).join("first/index");
+    let second = canon(&outside).join("second/index");
+    f.log.lock().unwrap().watch_paths = Some(vec![first.clone()]);
+    let inject = |f: &mut Fixture, path| {
+        f.sim
+            .app
+            .tab
+            .projects
+            .inject_event_with_pending_watch_update(Ok(notify::Event::new(
+                notify::EventKind::Modify(notify::event::ModifyKind::Any),
+            )
+            .add_path(path)));
+        f.sim.app.poll_projects();
+        drain(&mut f.sim);
+    };
+    let root = f.sim.app.tab.root.clone();
+    inject(&mut f, root.join("metadata/index"));
+    let count = f.log.lock().unwrap().views.len();
+    let watches = f.log.lock().unwrap().watch_threads.len();
+    f.log.lock().unwrap().watch_paths = Some(vec![second.clone()]);
+    inject(&mut f, first.clone());
+    assert_eq!(f.log.lock().unwrap().views.len(), count + 1);
+    assert_eq!(f.log.lock().unwrap().watch_threads.len(), watches + 1);
+    let count = f.log.lock().unwrap().views.len();
+    inject(&mut f, first);
+    inject(&mut f, root.join("metadata/index"));
+    assert_eq!(
+        f.log.lock().unwrap().views.len(),
+        count,
+        "old and declared paths no longer invalidate the session"
+    );
+    inject(&mut f, second);
+    assert_eq!(f.log.lock().unwrap().views.len(), count + 1);
+    assert!(f
+        .log
+        .lock()
+        .unwrap()
+        .watch_threads
+        .iter()
+        .all(|thread| *thread != std::thread::current().id()));
+}
+
+#[test]
+fn e2e_project_act_replaces_watch_paths_before_next_invalidation() {
+    let mut f = fixture("project_act_watch_paths", false, 1, None, None, None);
+    open(&mut f);
+    let outside = sandbox("project_act_watch_outside");
+    let next = canon(&outside).join("new-gitdir/index");
+    let root = f.sim.app.tab.root.clone();
+    let watches = f.log.lock().unwrap().watch_threads.len();
+    f.log.lock().unwrap().watch_paths = Some(vec![next.clone()]);
+    f.sim.key('x');
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "capture");
+    // The act reply replaced the watch paths at once. How many restarts of the session watch have
+    // happened so far depends on whether the drain above already adopted the rescan's answer (see
+    // below), so only the reply's own effect is asserted here.
+    assert!(f.log.lock().unwrap().watch_threads.len() > watches);
+    assert_eq!(
+        f.sim.app.tab.projects.projects[0].session_watch_paths,
+        Some(vec![next.clone()])
+    );
+
+    // Flush PathsChanged before injecting: overflowing the bounded queue invalidates all paths.
+    // Access events are ignored, but inject_event still waits for its processing fence.
+    f.sim
+        .app
+        .tab
+        .projects
+        .inject_event(Ok(notify::Event::new(notify::EventKind::Access(
+            notify::event::AccessKind::Any,
+        ))));
+    // The watch paths changed, so the worker rebuilds its watcher and scans again: that rescan
+    // publishes one answer (every rebuild is followed by a rescan). The fence above returns only
+    // after the worker has done all of that, so the answer is published from here on; whether the
+    // drain before it already adopted it does not matter, because the count is compared only after
+    // one more drain, which adopts it if it is still waiting and finds nothing otherwise. Adopting
+    // it restarts the session watch once, so the total is the same in both orders.
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.projects.poll(), None, "and only once");
+    let after_rescan = f.log.lock().unwrap().watch_threads.len();
+    assert_eq!(
+        after_rescan,
+        watches + 2,
+        "one restart for the act reply and one for the rescan's answer"
+    );
+    f.log.lock().unwrap().views.clear();
+    let chips = f.log.lock().unwrap().chips;
+    f.sim.app.tab.projects.inject_event(Ok(
+        notify::Event::new(notify::EventKind::Any).add_path(root.join("metadata/index"))
+    ));
+    assert_eq!(f.sim.app.tab.projects.poll(), None);
+    drain(&mut f.sim);
+    assert!(f.log.lock().unwrap().views.is_empty());
+    assert_eq!(f.log.lock().unwrap().chips, chips);
+
+    f.sim
+        .app
+        .tab
+        .projects
+        .inject_event(Ok(notify::Event::new(notify::EventKind::Any).add_path(next)));
+    assert!(f.sim.app.poll_projects());
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().views, [view_context(&f, "items")]);
+    assert_eq!(f.log.lock().unwrap().chips, chips + 1);
+    assert_eq!(f.log.lock().unwrap().watch_threads.len(), after_rescan + 1);
+}
+
+fn press(f: &mut Fixture, code: KeyCode) {
+    f.sim.press(code, KeyModifiers::NONE);
+    drain(&mut f.sim);
+}
+
+fn last_act(f: &Fixture) -> (String, ProjectAct) {
+    f.log
+        .lock()
+        .unwrap()
+        .acts
+        .last()
+        .cloned()
+        .expect("act received")
+}
+
+fn view_context(f: &Fixture, screen: &str) -> ProjectView {
+    ProjectView::new(screen)
+        .tab(f.sim.app.tab.id)
+        .icons(f.sim.app.cfg.ui.icons)
+        .paths(&f.sim.app.tab.root, &f.sim.app.tab.open_dir)
+        .home_dir(crate::plugins::read_scope::home_dir())
+}
+
+#[test]
+fn e2e_project_watch_paths_refresh_only_current_screen_once_and_ignore_unrelated_paths() {
+    let mut f = fixture("project_injected_watch_paths", false, 1, None, None, None);
+    open(&mut f);
+    // Cache a second screen to distinguish invalidation from eagerly fetching every screen.
+    f.sim.key('z');
+    drain(&mut f.sim);
+    f.sim.key('i');
+    drain(&mut f.sim);
+    let root = f.sim.app.tab.root.clone();
+    std::fs::create_dir_all(root.join("metadata")).unwrap();
+    std::fs::write(root.join("metadata/index"), "watched chip").unwrap();
+    let chips = f.log.lock().unwrap().chips;
+    let watches = f.log.lock().unwrap().watch_threads.len();
+    f.log.lock().unwrap().chip_from_watch = true;
+    f.log.lock().unwrap().views.clear();
+    // Actual file writes have no effect until the test delivers their notification.
+    drain(&mut f.sim);
+    assert!(f.log.lock().unwrap().views.is_empty());
+    assert_eq!(f.sim.app.tab.projects.poll(), None);
+    f.sim.app.tab.projects.inject_event(Ok(
+        notify::Event::new(notify::EventKind::Any).add_path(root.join("metadata/index"))
+    ));
+    assert!(f.sim.app.poll_projects());
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().views, [view_context(&f, "items")]);
+    assert_eq!(f.log.lock().unwrap().chips, chips + 1);
+    assert_eq!(f.log.lock().unwrap().watch_threads.len(), watches + 1);
+    f.sim.key('q');
+    f.sim.see("watched chip");
+    f.log.lock().unwrap().views.clear();
+    std::fs::write(root.join("unrelated.txt"), "unrelated change").unwrap();
+    f.sim.app.tab.projects.inject_event(Ok(
+        notify::Event::new(notify::EventKind::Any).add_path(root.join("unrelated.txt"))
+    ));
+    assert_eq!(
+        f.sim.app.tab.projects.poll(),
+        None,
+        "the event fence proves the unrelated path was processed without a scan reply"
+    );
+    drain(&mut f.sim);
+    assert!(f.log.lock().unwrap().views.is_empty());
+    assert_eq!(f.log.lock().unwrap().chips, chips + 1);
+    // A second UI poll cannot consume a duplicate event or produce another view request.
+    drain(&mut f.sim);
+    assert!(f.log.lock().unwrap().views.is_empty());
+    assert_eq!(f.log.lock().unwrap().chips, chips + 1);
+}
+
+#[test]
+fn e2e_project_marker_events_redetect_created_and_removed_matches() {
+    let mut f = fixture("project_injected_marker_events", false, 1, None, None, None);
+    let root = f.sim.app.tab.root.clone();
+    assert_eq!(f.sim.app.tab.projects.projects.len(), 1);
+    let marker = root.join("1.screen-project");
+    std::fs::write(&marker, "second").unwrap();
+    f.sim.app.tab.projects.inject_event(Ok(
+        notify::Event::new(notify::EventKind::Any).add_path(marker.clone())
+    ));
+    assert!(f.sim.app.poll_projects());
+    assert_eq!(f.sim.app.tab.projects.projects.len(), 2);
+    f.sim.key('p');
+    f.sim.see("Choose a project");
+    f.sim.press(KeyCode::Esc, KeyModifiers::NONE);
+    std::fs::remove_file(&marker).unwrap();
+    f.sim.app.tab.projects.inject_event(Ok(
+        notify::Event::new(notify::EventKind::Any).add_path(marker)
+    ));
+    assert!(f.sim.app.poll_projects());
+    assert_eq!(f.sim.app.tab.projects.projects.len(), 1);
+    open(&mut f);
+    f.sim.key('q');
+    std::fs::remove_file(root.join("0.screen-project")).unwrap();
+    f.sim.app.tab.projects.inject_event(Ok(
+        notify::Event::new(notify::EventKind::Any).add_path(root.join("0.screen-project"))
+    ));
+    assert!(f.sim.app.poll_projects());
+    assert!(f.sim.app.tab.projects.projects.is_empty());
+}
+
+#[test]
+fn e2e_project_enter_cycle_jump_push_pop_and_view_fields() {
+    let mut f = fixture("project_screen_navigation", false, 1, None, None, None);
+    open(&mut f);
+    assert_eq!(
+        f.log.lock().unwrap().views.last(),
+        Some(&view_context(&f, "items"))
+    );
+    press(&mut f, KeyCode::Tab);
+    f.sim.see("text selection=none");
+    assert_eq!(
+        f.log.lock().unwrap().views.last(),
+        Some(&view_context(&f, "text"))
+    );
+    f.sim.press(KeyCode::BackTab, KeyModifiers::NONE);
+    f.sim.see("● [x] alpha styled");
+    f.sim.see("alpha");
+    f.sim.key('b');
+    drain(&mut f.sim);
+    f.sim.see("Project document");
+    f.sim.key('i');
+    drain(&mut f.sim);
+    press(&mut f, KeyCode::Enter);
+    f.sim.see("text selection=opaque-alpha");
+    assert_eq!(
+        f.log.lock().unwrap().views.last(),
+        Some(&view_context(&f, "text").selection("opaque-alpha"))
+    );
+    assert_eq!(last_act(&f).0, "push");
+    f.sim.key('q');
+    drain(&mut f.sim);
+    f.sim.see("alpha");
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "items");
+    f.sim.key('q');
+    assert!(!f.sim.app.project_active());
+    assert_eq!(f.sim.app.tab.mode, Mode::Tree);
+    assert!(!f.sim.quit);
+}
+
+#[test]
+fn e2e_project_act_receives_screen_selected_kind_value_and_marked_rows() {
+    let mut f = fixture("project_act_real_state", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.key('j');
+    f.sim.key('V');
+    f.sim.key('j');
+    f.sim.key('x');
+    drain(&mut f.sim);
+    let (action, context) = last_act(&f);
+    assert_eq!(action, "capture");
+    assert_eq!(context.screen.as_deref(), Some("items"));
+    assert_eq!(
+        context.selected,
+        Some(ProjectRow::new("item", "opaque-gamma"))
+    );
+    assert_eq!(
+        context.marked,
+        vec![
+            ProjectRow::new("item", "opaque-alpha"),
+            ProjectRow::new("other", "opaque-beta")
+        ]
+    );
+    assert_eq!(context.confirmation, None);
+    assert_eq!(context.text, None);
+    assert_eq!(context.choice, None);
+    assert_eq!(f.sim.app.flash.as_deref(), Some("did capture"));
+    let log = f.log.lock().unwrap();
+    assert!(log
+        .threads
+        .iter()
+        .all(|id| *id != std::thread::current().id()));
+    assert!(log.threads.iter().all(|id| *id == log.threads[0]));
+}
+
+#[test]
+fn e2e_project_default_enter_changes_with_row_kind() {
+    let mut f = fixture("project_row_default", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.key('j');
+    press(&mut f, KeyCode::Enter);
+    assert_eq!(last_act(&f).0, "other");
+    assert_eq!(
+        last_act(&f).1.selected,
+        Some(ProjectRow::new("other", "opaque-beta"))
+    );
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "items");
+}
+
+fn advertised(f: &Fixture, action: &str) -> bool {
+    crate::ops::menu::declared_actions_menu(
+        &f.sim.app,
+        f.sim
+            .app
+            .key_context()
+            .unwrap_or_else(|| f.sim.app.base_context()),
+    )
+    .iter()
+    .any(|item| matches!(item.action, crate::keymap::Action::Plugin(p) if p.act() == action))
+}
+
+#[test]
+fn e2e_project_hints_help_menu_match_screen_row_tree_and_diff_contexts() {
+    let mut f = fixture("project_hint_contexts", false, 1, None, None, None);
+    f.sim.select("file.txt");
+    assert!(advertised(&f, "tree-act"));
+    assert!(!advertised(&f, "capture"));
+    assert!(!advertised(&f, "diff-act"));
+    let before = f.log.lock().unwrap().acts.len();
+    f.sim.key('x');
+    assert_eq!(
+        f.log.lock().unwrap().acts.len(),
+        before,
+        "tree actions have no single key"
+    );
+    f.sim.key(' ');
+    let ctx = f.sim.app.key_context().unwrap();
+    let menu = crate::ops::menu::menu(
+        &f.sim.app,
+        ctx,
+        f.sim.app.pending_leader.unwrap(),
+        crate::ops::menu::View::Open,
+    )
+    .unwrap();
+    let key = menu
+        .items
+        .iter()
+        .find(|i| matches!(i.action, crate::keymap::Action::Plugin(p) if p.act() == "tree-act"))
+        .unwrap()
+        .key;
+    handle_key(
+        &mut f.sim.app,
+        KeyEvent::new(
+            key.code,
+            if key.ctrl {
+                KeyModifiers::CONTROL
+            } else {
+                KeyModifiers::NONE
+            },
+        ),
+    )
+    .unwrap();
+    drain(&mut f.sim);
+    let (_, context) = last_act(&f);
+    assert_eq!(context.screen, None);
+    assert_eq!(
+        context.selected,
+        Some(ProjectRow::new(
+            "file",
+            f.sim.app.tab.root.join("file.txt").to_string_lossy()
+        ))
+    );
+    open(&mut f);
+    assert!(advertised(&f, "capture"));
+    assert!(advertised(&f, "screen"));
+    assert!(!advertised(&f, "tree-act"));
+    assert!(crate::ui::status::hint_tokens(&f.sim.app)
+        .iter()
+        .any(|t| t.contains("capture")));
+    f.sim.key('j');
+    assert!(!advertised(&f, "capture"));
+    assert!(advertised(&f, "screen"));
+    assert!(!crate::ui::status::hint_tokens(&f.sim.app)
+        .iter()
+        .any(|t| t.contains("capture")));
+    f.sim.key('?');
+    assert!(
+        !crate::ops::footer::tokens(&f.sim.app, crate::keymap::Context::Help)
+            .iter()
+            .any(|token| token.contains(":screen")),
+        "help keys must not advertise actions of the covered project screen"
+    );
+    let help = f.sim.screen();
+    assert!(!help.contains("capture"));
+    assert!(help.contains("screen"));
+    f.sim.key('q');
+    f.sim.key('d');
+    drain(&mut f.sim);
+    assert!(advertised(&f, "diff-act"));
+    assert!(!advertised(&f, "capture"));
+    f.sim.key('x');
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "diff-act");
+    assert_eq!(last_act(&f).1.screen.as_deref(), Some("diff"));
+    f.sim.key('z');
+    drain(&mut f.sim);
+    assert!(!advertised(&f, "diff-act"));
+    assert!(!advertised(&f, "capture"));
+    f.sim.key('b');
+    drain(&mut f.sim);
+    assert!(!advertised(&f, "diff-act"));
+}
+
+#[test]
+fn e2e_project_host_diff_context_has_hints_help_menu_and_real_file_selection() {
+    let mut f = navigate("project_host_diff_context", |root| Outcome::OpenDiff {
+        path: root.join("file.txt"),
+    });
+    assert!(f.sim.app.is_git_diff_preview());
+    f.sim.press(KeyCode::F(12), KeyModifiers::NONE); // Clear the navigation flash.
+    assert!(advertised(&f, "diff-act"));
+    assert!(
+        crate::ops::footer::tokens(&f.sim.app, crate::keymap::Context::Diff)
+            .iter()
+            .any(|hint| hint.contains("x:diff-act"))
+    );
+    f.sim.see("x:diff-act");
+    f.sim.key('?');
+    f.sim.see("diff-act");
+    f.sim.key('q');
+    f.sim.key('x');
+    drain(&mut f.sim);
+    let (action, context) = last_act(&f);
+    assert_eq!(action, "diff-act");
+    assert_eq!(context.screen, None);
+    assert_eq!(
+        context.selected,
+        Some(ProjectRow::new(
+            "file",
+            f.sim.app.tab.root.join("file.txt").to_string_lossy()
+        ))
+    );
+    f.sim.key('q');
+    drain(&mut f.sim); // Return to the owning project.
+    f.sim.key('q');
+    drain(&mut f.sim); // Return to the original tree.
+    assert_eq!(f.sim.app.tab.mode, Mode::Tree);
+    assert!(!advertised(&f, "diff-act"));
+    assert!(!crate::ui::status::hint_tokens(&f.sim.app)
+        .iter()
+        .any(|hint| hint.contains("diff-act")));
+    f.sim.key('?');
+    f.sim.dont_see("diff-act");
+    f.sim.key('q');
+    f.sim.select("file.txt");
+    f.sim.enter();
+    assert!(!f.sim.app.is_git_diff_preview());
+    assert!(!advertised(&f, "diff-act"));
+    assert!(!crate::ui::status::hint_tokens(&f.sim.app)
+        .iter()
+        .any(|hint| hint.contains("diff-act")));
+    f.sim.key('?');
+    f.sim.dont_see("diff-act");
+}
+
+#[test]
+fn e2e_project_screen_key_collision_preserves_tree_key_and_menu_help_access() {
+    let mut f = fixture("project_context_key_collision", false, 1, None, None, None);
+    f.sim.select("file.txt");
+    assert!(crate::ui::status::hint_tokens(&f.sim.app)
+        .iter()
+        .any(|hint| hint.contains("z:tree-shortcut")));
+    f.sim.key('z');
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "tree-shortcut");
+    assert_eq!(last_act(&f).1.screen, None);
+    f.sim.key('?');
+    f.sim.see("tree-shortcut");
+    f.sim.key('q');
+    open(&mut f);
+    assert!(
+        f.sim
+            .app
+            .plugin_keys
+            .acts_of("project-screens")
+            .iter()
+            .find(|binding| binding.act.act() == "screen-shortcut")
+            .unwrap()
+            .key
+            .is_some(),
+        "the declaration must keep its key"
+    );
+    assert!(crate::ui::status::hint_tokens(&f.sim.app)
+        .iter()
+        .any(|hint| hint.contains("z:screen-shortcut")));
+    let before = f.log.lock().unwrap().acts.len();
+    f.sim.key('z');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "items");
+    assert_eq!(f.log.lock().unwrap().acts.len(), before + 1);
+    assert_eq!(last_act(&f).0, "screen-shortcut");
+    f.sim.key('i');
+    drain(&mut f.sim);
+    f.sim.key('?');
+    assert!(crate::ops::help::sections(&f.sim.app)
+        .iter()
+        .flat_map(|section| &section.rows)
+        .any(|(keys, desc)| keys.starts_with('z') && desc == "screen-shortcut"));
+    f.sim.key('q');
+    f.sim.key(' ');
+    let ctx = f.sim.app.key_context().unwrap();
+    let menu = crate::ops::menu::menu(
+        &f.sim.app,
+        ctx,
+        f.sim.app.pending_leader.unwrap(),
+        crate::ops::menu::View::Open,
+    )
+    .unwrap();
+    let key = menu.items.iter().find(|item| matches!(item.action, crate::keymap::Action::Plugin(p) if p.act() == "screen-shortcut")).unwrap().key;
+    handle_key(
+        &mut f.sim.app,
+        KeyEvent::new(
+            key.code,
+            if key.ctrl {
+                KeyModifiers::CONTROL
+            } else {
+                KeyModifiers::NONE
+            },
+        ),
+    )
+    .unwrap();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "screen-shortcut");
+    assert_eq!(last_act(&f).1.screen.as_deref(), Some("items"));
+    let gate = hold_view(&mut f, "items", false);
+    resize_while_held(&mut f, &gate);
+    let before = f.log.lock().unwrap().acts.len();
+    f.sim.key('q');
+    f.sim.key('z');
+    assert_eq!(f.log.lock().unwrap().acts.len(), before);
+    gate.release.open();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "tree-shortcut");
+    assert_eq!(last_act(&f).1.screen, None);
+    open(&mut f);
+    let gate = hold_view(&mut f, "items", false);
+    f.sim.resize(158, 24);
+    gate.entered.wait();
+    assert!(gate.entered.is_open());
+    let before = f.log.lock().unwrap().acts.len();
+    f.sim.key('q');
+    f.sim.key('z');
+    f.sim.key('t');
+    gate.release.open();
+    drain(&mut f.sim);
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(
+        f.log.lock().unwrap().acts.len(),
+        before,
+        "a queued tree shortcut must not survive leaving its tab"
+    );
+}
+
+#[test]
+fn e2e_project_rendering_reuses_styled_list_text_diff_and_document_widgets() {
+    use ratatui::style::{Color, Modifier};
+    let mut f = fixture("project_render_widgets", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.see("● [x] alpha styled");
+    f.sim.see("[ ] beta");
+    let cells = f.sim.term.backend().buffer().content();
+    assert!(cells
+        .iter()
+        .any(|c| c.symbol() == "a" && c.fg == Color::Red && c.modifier.contains(Modifier::BOLD)));
+    assert!(cells.iter().any(|c| c.fg == Color::Green));
+    assert!(cells
+        .iter()
+        .any(|c| c.modifier.contains(Modifier::REVERSED)));
+    f.sim.press(KeyCode::Tab, KeyModifiers::NONE);
+    drain(&mut f.sim);
+    f.sim.see("text selection=none");
+    f.sim.key('d');
+    drain(&mut f.sim);
+    f.sim.see("project addition");
+    f.sim.see("project removal");
+    f.sim.key('b');
+    drain(&mut f.sim);
+    f.sim.see("strong body");
+    f.sim.dont_see("**strong body**");
+}
+
+#[test]
+fn e2e_project_shared_dialog_answers_reach_the_act_context() {
+    let mut f = fixture("project_dialog_answers", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::NONE);
+    drain(&mut f.sim);
+    f.sim.see("Proceed?");
+    assert!(f.log.lock().unwrap().acts.is_empty());
+    f.sim.key('y');
+    f.sim.see("Name");
+    f.sim.keys("追加");
+    f.sim.enter();
+    f.sim.see("Target");
+    f.sim.key('j');
+    f.sim.enter();
+    drain(&mut f.sim);
+    let (action, context) = last_act(&f);
+    assert_eq!(action, "answers");
+    assert_eq!(context.confirmation.as_deref(), Some("accepted"));
+    assert_eq!(context.text.as_deref(), Some("seed追加"));
+    assert_eq!(context.choice.as_deref(), Some("second"));
+    assert_eq!(context.screen.as_deref(), Some("items"));
+    assert_eq!(
+        context.selected,
+        Some(ProjectRow::new("item", "opaque-alpha"))
+    );
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_confirmation_chooses_the_declared_value() {
+    let mut f = fixture("project_confirmation_choice", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.press(KeyCode::F(2), KeyModifiers::NONE);
+    drain(&mut f.sim);
+    f.sim.key('!');
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).1.confirmation.as_deref(), Some("force-value"));
+}
+
+#[test]
+fn e2e_project_confirmation_row_name_uses_invocation_after_cursor_moves() {
+    let mut f = fixture_with_log(
+        "project_prompt_row_name",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            row_name: Some("short.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("Discard short.txt? Again short.txt; {other}");
+    f.sim
+        .app
+        .tab
+        .project_navigation
+        .as_mut()
+        .unwrap()
+        .stack
+        .last_mut()
+        .unwrap()
+        .cursor = 2;
+    f.sim.draw();
+    f.sim.see("Discard short.txt? Again short.txt; {other}");
+    f.sim.key('y');
+    drain(&mut f.sim);
+    assert_eq!(
+        last_act(&f).1.selected,
+        Some(ProjectRow::new("item", "opaque-alpha").name("short.txt"))
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_row_value_and_empty_selection() {
+    let mut f = fixture("project_prompt_row_value", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim
+        .see("Discard opaque-alpha? Again opaque-alpha; {other}");
+    f.sim.esc();
+    f.sim.key('/');
+    f.sim.keys("no matching rows");
+    f.sim.enter();
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("Discard ? Again ; {other}");
+}
+
+#[test]
+fn e2e_project_confirmation_row_localized_and_refreshed() {
+    let mut f = fixture_with_log(
+        "project_prompt_row_refresh",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            row_name: Some("{row}.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.app.lang = crate::i18n::Lang::Jp;
+    f.sim.press(KeyCode::F(2), KeyModifiers::CONTROL);
+    f.sim.see("JA {row}.txt / {row}.txt");
+    f.log.lock().unwrap().row_name = Some("changed.txt".into());
+    f.log.lock().unwrap().reverse_rows = true;
+    let views = f.log.lock().unwrap().views.len();
+    f.sim.resize(159, 24);
+    drain(&mut f.sim);
+    assert!(f.log.lock().unwrap().views.len() > views);
+    f.sim.see("JA {row}.txt / {row}.txt");
+}
+
+fn conditional_confirmation(name: &str, value: Option<toml::Value>, default: bool, asks: bool) {
+    let mut f = fixture_with_log(
+        name,
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            prompt_value: value,
+            prompt_default: Some(default),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(3), KeyModifiers::CONTROL);
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.project_dialog.is_some(), asks);
+    if asks {
+        f.sim.see("Sync project?");
+        assert!(f.log.lock().unwrap().acts.is_empty());
+        f.sim.key('y');
+        drain(&mut f.sim);
+    }
+    assert_eq!(last_act(&f).0, "conditional");
+    assert_eq!(
+        last_act(&f).1.confirmation.as_deref(),
+        asks.then_some("yes")
+    );
+    assert_eq!(f.log.lock().unwrap().prompt_settings, vec![asks]);
+}
+
+#[test]
+fn e2e_project_confirmation_setting_true_asks() {
+    conditional_confirmation(
+        "project_prompt_true",
+        Some(toml::Value::Boolean(true)),
+        false,
+        true,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_false_runs_act() {
+    conditional_confirmation(
+        "project_prompt_false",
+        Some(toml::Value::Boolean(false)),
+        true,
+        false,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_missing_uses_default() {
+    conditional_confirmation("project_prompt_missing_true", None, true, true);
+    conditional_confirmation("project_prompt_missing_false", None, false, false);
+}
+
+#[test]
+fn e2e_project_confirmation_setting_non_boolean_asks() {
+    conditional_confirmation(
+        "project_prompt_non_boolean",
+        Some(toml::Value::String("false".into())),
+        false,
+        true,
+    );
+}
+
+#[test]
+fn e2e_project_confirmation_setting_false_keeps_later_inputs() {
+    let mut f = fixture_with_log(
+        "project_prompt_later_inputs",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            prompt_value: Some(toml::Value::Boolean(false)),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(4), KeyModifiers::CONTROL);
+    f.sim.see("Sync message");
+    f.sim.dont_see("Sync project?");
+    assert!(f.log.lock().unwrap().acts.is_empty());
+    f.sim.keys(" edit");
+    f.sim.enter();
+    f.sim.see("Sync target");
+    f.sim.enter();
+    drain(&mut f.sim);
+    let (action, context) = last_act(&f);
+    assert_eq!(action, "conditional-input");
+    assert_eq!(context.confirmation, None);
+    assert_eq!(context.text.as_deref(), Some("seed edit"));
+    assert_eq!(context.choice.as_deref(), Some("all"));
+    assert_eq!(f.log.lock().unwrap().prompt_settings, vec![false]);
+}
+
+#[test]
+fn e2e_project_text_input_edits_unicode_initial_value() {
+    let mut f = fixture("project_text_input", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.press(KeyCode::F(3), KeyModifiers::NONE);
+    drain(&mut f.sim);
+    f.sim.see("Project name");
+    assert!(
+        matches!(&f.sim.app.project_dialog, Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. }) if buffer == "初期")
+    );
+    f.sim.press(KeyCode::Left, KeyModifiers::NONE);
+    f.sim.press(KeyCode::Backspace, KeyModifiers::NONE);
+    f.sim.key('新');
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).1.text.as_deref(), Some("新期"));
+}
+
+#[test]
+fn e2e_project_keep_input_failure_preserves_text_and_invocation_for_retry() {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        "project_keep_input_retry",
+        false,
+        1,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            row_name: Some("short.txt".into()),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" retry λ");
+    f.sim.enter();
+    started.wait();
+    f.sim.key('j');
+    f.sim.key('j');
+    assert_eq!(f.sim.app.project_frame().unwrap().cursor, 2);
+    release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, cursor, .. })
+            if buffer == "seed retry λ" && *cursor == buffer.chars().count()));
+    let first = last_act(&f);
+    assert_eq!(first.0, "retry-input");
+    assert_eq!(first.1.text.as_deref(), Some("seed retry λ"));
+    assert_eq!(
+        first.1.selected,
+        Some(ProjectRow::new("item", "opaque-alpha").name("short.txt"))
+    );
+    assert_eq!(f.sim.app.project_frame().unwrap().cursor, 2);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().acts.len(), 2);
+    assert_eq!(last_act(&f), first);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+fn pending_input_failure(name: &str) -> (Fixture, Arc<Latch>) {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        name,
+        false,
+        1,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" saved");
+    f.sim.enter();
+    started.wait();
+    assert_eq!(f.log.lock().unwrap().acts.len(), 1);
+    (f, release)
+}
+
+#[test]
+fn e2e_project_keep_input_panic_reopens() {
+    let mut f = fixture_with_log(
+        "project_keep_input_panic",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_panic: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" panic");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert!(f.sim.app.flash.is_some());
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. }) if buffer == "seed panic"));
+}
+
+#[test]
+fn e2e_project_keep_input_reported_dead_child_reopens() {
+    let mut f = fixture_with_log(
+        "project_keep_input_dead_child",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            act_error: Some(konoma_plugin::Failure::corrupt("plugin child disconnected")),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.keys(" child");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.sim.app.flash.as_deref(),
+        Some("plugin child disconnected")
+    );
+    f.sim.see("Retry message");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. }) if buffer == "seed child"));
+}
+
+#[test]
+fn e2e_project_keep_input_success_does_not_reopen() {
+    for (index, outcome) in [Outcome::Unhandled, Outcome::Redraw, Outcome::Reload]
+        .into_iter()
+        .enumerate()
+    {
+        let mut f = fixture_with_log(
+            &format!("project_keep_input_success_{index}"),
+            false,
+            1,
+            None,
+            None,
+            None,
+            ProjectLog {
+                outcome: Some(outcome),
+                ..Default::default()
+            },
+        );
+        open(&mut f);
+        f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+        f.sim.enter();
+        drain(&mut f.sim);
+        assert_eq!(last_act(&f).0, "retry-input");
+        assert!(f.sim.app.project_dialog.is_none());
+    }
+}
+
+#[test]
+fn e2e_project_keep_input_flash_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_flash",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            outcome: Some(Outcome::Flash("action said no".into())),
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-input");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("action said no"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_success_then_watch_failure_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_watch_failure",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            watch_failure_after_act: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-input");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project watch failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_success_then_refresh_failure_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_refresh_failure",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            view_failure_after_act: true,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(7), KeyModifiers::CONTROL);
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "retry-refresh");
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project refresh failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_without_flag_does_not_reopen() {
+    let mut f = fixture_with_log(
+        "project_keep_input_without_flag",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(3), KeyModifiers::NONE);
+    f.sim.keys(" edit");
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "text-input");
+    assert!(last_act(&f).1.text.unwrap().ends_with(" edit"));
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_confirmation_is_not_repeated() {
+    let mut f = fixture_with_log(
+        "project_keep_input_confirmation",
+        false,
+        1,
+        None,
+        None,
+        None,
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    open(&mut f);
+    f.sim.press(KeyCode::F(6), KeyModifiers::CONTROL);
+    f.sim.see("Confirm retry?");
+    f.sim.key('y');
+    f.sim.keys(" confirmed");
+    f.sim.enter();
+    drain(&mut f.sim);
+    f.sim.see("Retry message");
+    f.sim.dont_see("Confirm retry?");
+    assert!(matches!(&f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { prompts, stage: 0, .. })
+            if matches!(prompts.as_slice(), [crate::app::project_screens::ProjectPrompt::Text(_)])));
+    let first = last_act(&f);
+    assert_eq!(first.1.confirmation.as_deref(), Some("yes"));
+    assert_eq!(first.1.text.as_deref(), Some("seed confirmed"));
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(f.log.lock().unwrap().acts.len(), 2);
+    assert_eq!(last_act(&f), first);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_other_tab_does_not_reopen_even_on_same_screen() {
+    let (mut f, release) = pending_input_failure("project_keep_input_other_tab");
+    let origin = f.sim.app.tab.id;
+    f.sim.key('t');
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    f.sim.key('p');
+    assert_ne!(f.sim.app.tab.id, origin);
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "items");
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_dialog.is_none());
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.id, origin);
+    assert!(
+        f.sim.app.project_dialog.is_none(),
+        "a dropped retry must not reopen on a later tab switch"
+    );
+}
+
+#[test]
+fn e2e_project_keep_input_changed_screen_does_not_reopen() {
+    let (mut f, release) = pending_input_failure("project_keep_input_changed_screen");
+    f.sim.press(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(f.sim.app.project_frame().unwrap().key.screen, "text");
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_host_dialog_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_host_dialog");
+    f.sim.key('Q');
+    assert!(f.sim.app.confirm_is_quit());
+    release.open();
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.flash.as_deref(), Some("project action failed"));
+    assert!(f.sim.app.confirm_is_quit());
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_active_filter_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_active_filter");
+    f.sim.key('/');
+    f.sim.keys("alp");
+    assert!(f.sim.app.project_frame().unwrap().filtering);
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_frame().unwrap().filtering);
+    assert_eq!(f.sim.app.project_frame().unwrap().query, "alp");
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_host_text_input_is_not_overwritten() {
+    let (mut f, release) = pending_input_failure("project_keep_input_host_input");
+    f.sim.app.start_filter();
+    f.sim.app.filter_input_push('x');
+    assert!(f.sim.app.is_filtering());
+    release.open();
+    drain(&mut f.sim);
+    assert!(f.sim.app.is_filtering());
+    assert!(f.sim.app.project_dialog.is_none());
+}
+
+#[test]
+fn e2e_project_keep_input_project_dialog_is_not_overwritten() {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture_with_log(
+        "project_keep_input_project_dialog",
+        false,
+        2,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+        ProjectLog {
+            act_failures: 1,
+            ..Default::default()
+        },
+    );
+    f.sim.key('p');
+    f.sim.enter();
+    drain(&mut f.sim);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    f.sim.enter();
+    started.wait();
+    f.sim.key('p');
+    assert!(matches!(
+        f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Projects { .. })
+    ));
+    release.open();
+    drain(&mut f.sim);
+    assert!(matches!(
+        f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Projects { .. })
+    ));
+}
+
+#[test]
+fn e2e_project_choice_input_returns_value_not_label() {
+    let mut f = fixture("project_choice_input", false, 1, None, None, None);
+    open(&mut f);
+    f.sim.press(KeyCode::F(4), KeyModifiers::NONE);
+    drain(&mut f.sim);
+    f.sim.key('j');
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).1.choice.as_deref(), Some("two-value"));
+}
+
+macro_rules! cancel_dialog {
+    ($name:ident, $key:expr, $flash:expr) => {
+        #[test]
+        fn $name() {
+            for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+                let mut f = fixture(
+                    &format!("{}_{lang:?}", stringify!($name)),
+                    false,
+                    1,
+                    None,
+                    None,
+                    None,
+                );
+                f.sim.app.lang = lang;
+                open(&mut f);
+                f.sim.press(KeyCode::F($key), KeyModifiers::NONE);
+                drain(&mut f.sim);
+                assert!(f.sim.app.project_dialog.is_some());
+                f.sim.esc();
+                drain(&mut f.sim);
+                assert!(f.sim.app.project_dialog.is_none());
+                assert!(f.log.lock().unwrap().acts.is_empty());
+                assert_eq!(
+                    f.sim.app.flash.as_deref(),
+                    $flash.map(|msg| crate::i18n::tr(lang, msg))
+                );
+                f.sim.key('x');
+                drain(&mut f.sim);
+                assert_eq!(last_act(&f).0, "capture");
+            }
+        }
+    };
+}
+cancel_dialog!(
+    e2e_project_confirmation_esc_runs_nothing,
+    2,
+    Some(crate::i18n::Msg::Canceled)
+);
+cancel_dialog!(
+    e2e_project_text_input_esc_runs_nothing,
+    3,
+    None::<crate::i18n::Msg>
+);
+cancel_dialog!(
+    e2e_project_choice_input_esc_runs_nothing,
+    4,
+    None::<crate::i18n::Msg>
+);
+
+macro_rules! refresh {
+    ($name:ident, $key:expr, $screens:expr, $tree:expr, $chip:expr, $watch:expr) => {
+        #[test]
+        fn $name() {
+            let mut f = fixture(stringify!($name), false, 1, None, None, None);
+            open(&mut f);
+            f.log.lock().unwrap().views.clear();
+            let manifests = f.log.lock().unwrap().manifests;
+            let chips = f.log.lock().unwrap().chips;
+            let watches = f.log.lock().unwrap().watch_threads.len();
+            f.log.lock().unwrap().chip = Some(konoma_plugin::Chip::new("updated chip"));
+            f.sim.app.clear_project_tree_dirty();
+            handle_key(
+                &mut f.sim.app,
+                KeyEvent::new(KeyCode::F($key), KeyModifiers::NONE),
+            )
+            .unwrap();
+            while f.sim.app.project_jobs_pending() {
+                f.sim.app.wait_project_job();
+            }
+            assert_eq!(f.sim.app.project_tree_dirty(), $tree);
+            f.sim.key('q');
+            f.sim.see(if $chip == 1 {
+                "updated chip"
+            } else {
+                "project chip"
+            });
+            let log = f.log.lock().unwrap();
+            let mut screens: Vec<_> = log.views.iter().map(|view| view.screen.as_str()).collect();
+            screens.sort();
+            assert_eq!(screens, $screens);
+            assert_eq!(log.manifests - manifests, 0);
+            assert_eq!(log.chips - chips, $chip);
+            assert_eq!(log.watch_threads.len(), watches + $watch);
+        }
+    };
+}
+refresh!(
+    e2e_project_refresh_current_screen_exactly,
+    6,
+    vec!["items"],
+    false,
+    0,
+    1
+);
+refresh!(
+    e2e_project_refresh_named_screen_exactly,
+    7,
+    vec!["text"],
+    false,
+    0,
+    1
+);
+refresh!(
+    e2e_project_refresh_all_screens_exactly,
+    8,
+    vec!["diff", "doc", "items", "pushed", "text"],
+    false,
+    0,
+    1
+);
+refresh!(
+    e2e_project_refresh_tree_status_exactly,
+    9,
+    Vec::<&str>::new(),
+    true,
+    0,
+    1
+);
+refresh!(
+    e2e_project_refresh_chip_exactly,
+    10,
+    Vec::<&str>::new(),
+    false,
+    1,
+    0
+);
+refresh!(
+    e2e_project_refresh_none_rereads_watch,
+    11,
+    Vec::<&str>::new(),
+    false,
+    0,
+    1
+);
+refresh!(
+    e2e_project_refresh_current_screen_and_chip_rereads_watch,
+    12,
+    vec!["items"],
+    false,
+    1,
+    1
+);
+refresh!(
+    e2e_project_refresh_tree_status_and_chip_rereads_watch,
+    1,
+    Vec::<&str>::new(),
+    true,
+    1,
+    1
+);
+
+/// Waits for every project worker reply like `drain`, but never draws: a draw refetches the tree
+/// status and clears the dirty flag these tests observe.
+fn wait_without_drawing(f: &mut Fixture) {
+    f.sim.app.poll_projects();
+    while f.sim.app.project_jobs_pending() {
+        f.sim.app.wait_project_job();
+    }
+}
+
+/// A held `tree-status` act of the first tab, then a second tab opened while it runs. Returns the
+/// fixture, the release latch and the first tab's id.
+fn held_tree_status_act(name: &str) -> (Fixture, Arc<Latch>, u64) {
+    let hold = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture(
+        name,
+        false,
+        1,
+        None,
+        Some(hold.clone()),
+        Some(started.clone()),
+    );
+    open(&mut f);
+    let origin = f.sim.app.tab.id;
+    f.sim.press(KeyCode::F(9), KeyModifiers::NONE);
+    started.wait();
+    f.sim.key('t');
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    assert_ne!(f.sim.app.tab.id, origin);
+    (f, hold, origin)
+}
+
+/// The asynchronous path (`ProjectEvent::Effect` in `poll`): the effect of a tab that is not shown
+/// is only queued, so the synchronous `ProjectCommand::TreeStatus` of `apply_effect` has not run;
+/// the tree status of the shown tab (same repository) is marked dirty by the event alone.
+#[test]
+fn e2e_project_tree_status_effect_of_a_background_tab_marks_the_shown_tree_dirty() {
+    let (mut f, hold, origin) = held_tree_status_act("project_tree_status_async_only");
+    f.sim.app.clear_project_tree_dirty();
+    hold.open();
+    wait_without_drawing(&mut f);
+    assert_ne!(
+        f.sim.app.tab.id, origin,
+        "the effect's tab must stay in the background"
+    );
+    assert!(
+        f.sim.app.project_tree_dirty(),
+        "the poll event must mark the dirty flag for the shown tab on the same repository"
+    );
+}
+
+/// The synchronous path (`ProjectCommand::TreeStatus` of `apply_effect`): the effect arrives while
+/// another tab with a root outside the project is shown (so the event's own check does not match),
+/// is queued, and is applied when its tab is shown again.
+#[test]
+fn e2e_project_tree_status_queued_effect_marks_dirty_when_its_tab_is_applied() {
+    let (mut f, hold, origin) = held_tree_status_act("project_tree_status_sync_only");
+    // The second tab leaves the project's directory: its root is no longer under the project root.
+    f.sim.app.tree_leave().unwrap();
+    assert!(!f.sim.app.tab.root.starts_with(canon(&f._dir)));
+    f.sim.app.clear_project_tree_dirty();
+    hold.open();
+    wait_without_drawing(&mut f);
+    assert!(
+        !f.sim.app.project_tree_dirty(),
+        "the event alone must not match a tab rooted outside the project"
+    );
+    f.sim.key('[');
+    assert_eq!(f.sim.app.tab.id, origin);
+    f.sim.app.clear_project_tree_dirty();
+    f.sim.app.poll_projects();
+    wait_without_drawing(&mut f);
+    assert!(
+        f.sim.app.project_tree_dirty(),
+        "applying the queued effect must mark the tree dirty"
+    );
+}
+
+/// A project act reply that lands while another tab is shown changes nothing there: the second
+/// tab's filter text, cursor and root are untouched, and the origin tab still shows its project.
+#[test]
+fn e2e_project_reply_landing_on_a_background_tab_disturbs_nothing_shown() {
+    let (mut f, hold, origin) = held_tree_status_act("project_reply_other_tab_undisturbed");
+    // Move the second tab outside the project root and into a committed `/` filter.
+    f.sim.app.tree_leave().unwrap();
+    f.sim.app.start_filter();
+    for c in "a".chars() {
+        f.sim.app.filter_input_push(c);
+    }
+    f.sim.app.filter_commit();
+    f.sim.key('j');
+    f.sim.app.clear_project_tree_dirty();
+    let before = (
+        f.sim.app.tab.root.clone(),
+        f.sim.app.tab.entries.len(),
+        f.sim.app.tab.selected,
+        f.sim.app.filter_query().map(str::to_string),
+    );
+    hold.open();
+    wait_without_drawing(&mut f);
+    assert_eq!(
+        (
+            f.sim.app.tab.root.clone(),
+            f.sim.app.tab.entries.len(),
+            f.sim.app.tab.selected,
+            f.sim.app.filter_query().map(str::to_string),
+        ),
+        before,
+        "a reply landing on a background tab must not touch the shown tab"
+    );
+    assert!(
+        !f.sim.app.project_tree_dirty(),
+        "a write in another repository must not invalidate this tab's tree status"
+    );
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.id, origin);
+    assert!(f.sim.app.project_active());
+}
+
+/// A held SwitchRoot act relocates only the tab that asked: a second tab opened at the same root
+/// keeps its root when the reply lands, and the asking tab relocates when it is shown again.
+#[test]
+fn e2e_project_switch_root_reply_relocates_only_the_tab_that_asked() {
+    let hold = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture(
+        "project_switch_root_other_tab",
+        false,
+        1,
+        None,
+        Some(hold.clone()),
+        Some(started.clone()),
+    );
+    f.log.lock().unwrap().outcome = Some(Outcome::SwitchRoot {
+        root: canon(&f._dir.join("destination")),
+        message: None,
+    });
+    open(&mut f);
+    let origin = f.sim.app.tab.id;
+    let origin_root = f.sim.app.tab.root.clone();
+    f.sim.press(KeyCode::F(11), KeyModifiers::NONE);
+    started.wait();
+    f.sim.key('t');
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    let other = f.sim.app.tab.id;
+    assert_ne!(other, origin);
+    assert_eq!(
+        f.sim.app.tab.root, origin_root,
+        "t opens the tab at the same root"
+    );
+    hold.open();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.sim.app.tab.root, origin_root,
+        "the tab that did not ask must keep its root"
+    );
+    assert!(f._dir.join("destination").is_dir());
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert_eq!(f.sim.app.tab.id, origin);
+    assert_eq!(
+        f.sim.app.tab.root,
+        canon(&f._dir.join("destination")),
+        "the asking tab relocates when its queued effect is applied"
+    );
+    assert!(!f.sim.app.project_active());
+}
+
+/// `refused_git_op_puts_the_typed_text_back` protected a typed prompt submitted into a running
+/// write. By keys alone that state is unreachable (a prompt submitted into a runtime that
+/// refuses is covered by `vcs_port_write_submit_refused_as_busy_keeps_the_typed_commit_message`).
+/// Both directions are mutually exclusive here — an
+/// open prompt feeds every key into its buffer, so no act can start beneath it, and while an
+/// act runs its act keys are disabled, so no prompt can open on top of it. The only text a
+/// running act can meet is the screen's own `/` filter, which keeps its characters across the
+/// act's reply.
+#[test]
+fn e2e_project_prompt_and_running_act_are_mutually_exclusive() {
+    let release = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture(
+        "project_prompt_act_exclusion",
+        false,
+        1,
+        None,
+        Some(release.clone()),
+        Some(started.clone()),
+    );
+    open(&mut f);
+
+    // With a text prompt open, an act key types into the buffer instead of dispatching.
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    assert!(f.sim.app.project_dialog.is_some());
+    f.sim.keys("partial");
+    f.sim.key('w');
+    assert!(
+        f.log.lock().unwrap().acts.is_empty(),
+        "an act key inside a prompt cannot dispatch a write"
+    );
+    assert!(matches!(
+        &f.sim.app.project_dialog,
+        Some(crate::app::project_screens::ProjectDialog::Act { buffer, .. })
+            if buffer.ends_with("partialw")
+    ));
+    f.sim.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(f.sim.app.project_dialog.is_none());
+    assert!(f.log.lock().unwrap().acts.is_empty());
+
+    // With an act held, the prompt's act key is dead, a second act key does not dispatch, and
+    // the `/` filter — the only in-progress text a running act can meet — keeps its text.
+    f.sim.key('w');
+    started.wait();
+    assert_eq!(f.log.lock().unwrap().acts.len(), 1);
+    f.sim.key('w');
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    assert!(
+        f.sim.app.project_dialog.is_none(),
+        "no prompt can open while an act runs"
+    );
+    assert_eq!(
+        f.log.lock().unwrap().acts.len(),
+        1,
+        "a second act key while one runs dispatches nothing"
+    );
+    f.sim.key('/');
+    f.sim.keys("al");
+    assert!(f.sim.app.project_frame().unwrap().filtering);
+    f.sim.press(KeyCode::F(5), KeyModifiers::CONTROL);
+    assert!(f.sim.app.project_dialog.is_none());
+    assert_eq!(f.sim.app.project_frame().unwrap().query, "al");
+    release.open();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.sim.app.project_frame().unwrap().query,
+        "al",
+        "the in-progress filter text outlives the act's reply"
+    );
+    assert_eq!(f.log.lock().unwrap().acts.len(), 1);
+}
+
+#[test]
+fn e2e_project_no_implicit_refresh_and_one_owner_per_project_across_tabs() {
+    let hold = Arc::new(Latch::default());
+    let started = Arc::new(Latch::default());
+    let mut f = fixture(
+        "project_serial_owner",
+        false,
+        1,
+        None,
+        Some(hold.clone()),
+        Some(started.clone()),
+    );
+    open(&mut f);
+    f.log.lock().unwrap().views.clear();
+    f.sim.key('x');
+    assert!(
+        f.sim.app.project_jobs_pending(),
+        "the act must have been dispatched before waiting for its worker"
+    );
+    f.sim.app.wait_project_view();
+    started.wait();
+    assert!(started.is_open());
+    assert!(f.sim.app.project_jobs_pending());
+    assert!(!crate::ui::status::hint_tokens(&f.sim.app)
+        .iter()
+        .any(|t| t.contains("capture")));
+    f.sim.key('x');
+    f.sim.key('t');
+    assert!(!f.sim.app.project_active());
+    f.sim.app.tab.projects.wait_for_result();
+    f.sim.app.poll_projects();
+    f.sim.key('p');
+    f.sim.key('x');
+    assert_eq!(f.log.lock().unwrap().acts.len(), 1);
+    hold.open();
+    drain(&mut f.sim);
+    let log = f.log.lock().unwrap();
+    assert_eq!(log.opens, 1);
+    assert_eq!(
+        log.views,
+        [view_context(&f, "items")],
+        "only the new tab's initial view is fetched; Flash must not refresh it"
+    );
+}
+
+#[test]
+fn e2e_project_plugin_declared_read_only_stops_a_write_with_reason() {
+    let mut f = fixture("project_declared_read_only", true, 1, None, None, None);
+    open(&mut f);
+    assert!(!crate::ui::status::hint_tokens(&f.sim.app)
+        .iter()
+        .any(|t| t.contains("write")));
+    f.sim.key('w');
+    assert_eq!(
+        f.sim.app.flash.as_deref(),
+        Some(crate::i18n::tr(
+            f.sim.app.lang,
+            crate::i18n::Msg::PluginReadOnly
+        ))
+    );
+    assert!(f.log.lock().unwrap().acts.is_empty());
+    f.sim.key('x');
+    drain(&mut f.sim);
+    assert_eq!(last_act(&f).0, "capture");
+}
+
+#[test]
+fn e2e_project_multiple_matches_open_choice_menu_and_esc_cancels() {
+    let mut f = fixture("project_choice_matches", false, 2, None, None, None);
+    f.sim.key('p');
+    assert!(!f.sim.app.project_active());
+    f.sim.see("Choose a project");
+    f.sim.esc();
+    assert!(f.sim.app.project_dialog.is_none());
+    assert!(!f.sim.app.project_active());
+    assert_eq!(f.sim.app.flash, None);
+    assert!(f.log.lock().unwrap().acts.is_empty());
+    f.sim.key('p');
+    f.sim.key('j');
+    f.sim.enter();
+    drain(&mut f.sim);
+    assert_eq!(
+        f.sim
+            .app
+            .tab
+            .project_navigation
+            .as_ref()
+            .unwrap()
+            .project
+            .marker,
+        "1.screen-project"
+    );
+}
+
+#[test]
+fn e2e_project_enter_from_preview_returns_to_the_same_file() {
+    let mut f = fixture("project_preview_origin", false, 1, None, None, None);
+    f.sim.select("file.txt");
+    f.sim.enter();
+    open(&mut f);
+    f.sim.key('q');
+    assert_eq!(f.sim.app.tab.mode, Mode::Preview);
+    assert!(f
+        .sim
+        .app
+        .tab
+        .preview_path
+        .as_ref()
+        .unwrap()
+        .ends_with("file.txt"));
+    f.sim.see("three");
+}
+
+#[test]
+fn e2e_project_tree_selection_push_carries_selection_and_returns_to_tree() {
+    let mut f = fixture(
+        "project_tree_push",
+        false,
+        1,
+        Some(Outcome::PushScreen {
+            screen: "text".into(),
+            selection: Some("from-tree".into()),
+        }),
+        None,
+        None,
+    );
+    f.sim.select("file.txt");
+    f.sim.key(' ');
+    let ctx = f.sim.app.key_context().unwrap();
+    let menu = crate::ops::menu::menu(
+        &f.sim.app,
+        ctx,
+        f.sim.app.pending_leader.unwrap(),
+        crate::ops::menu::View::Open,
+    )
+    .unwrap();
+    let key = menu
+        .items
+        .iter()
+        .find(
+            |item| matches!(item.action, crate::keymap::Action::Plugin(p) if p.act() == "tree-act"),
+        )
+        .unwrap()
+        .key;
+    handle_key(
+        &mut f.sim.app,
+        KeyEvent::new(
+            key.code,
+            if key.ctrl {
+                KeyModifiers::CONTROL
+            } else {
+                KeyModifiers::NONE
+            },
+        ),
+    )
+    .unwrap();
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_active());
+    f.sim.see("text selection=from-tree");
+    assert_eq!(
+        f.log.lock().unwrap().views.last(),
+        Some(&view_context(&f, "text").selection("from-tree"))
+    );
+    let (_, context) = last_act(&f);
+    assert_eq!(context.screen, None);
+    assert_eq!(
+        context.selected,
+        Some(ProjectRow::new(
+            "file",
+            f.sim.app.tab.root.join("file.txt").to_string_lossy()
+        ))
+    );
+    f.sim.key('q');
+    assert!(!f.sim.app.project_active());
+    assert_eq!(f.sim.app.tab.mode, Mode::Tree);
+}
+
+fn navigate(name: &str, outcome: impl FnOnce(&std::path::Path) -> Outcome) -> Fixture {
+    let mut f = fixture(name, false, 1, None, None, None);
+    // Register a fresh configuration before opening the fixture's session.
+    let root = f.sim.app.tab.root.clone();
+    let outcome = outcome(&root);
+    let diff = matches!(outcome, Outcome::OpenDiff { .. });
+    #[cfg(feature = "git")]
+    if diff {
+        seed_repo(&f._dir);
+        std::fs::write(root.join("file.txt"), "changed project file\n").unwrap();
+    }
+    let marker = test_plugins::register(
+        &format!("{name}-navigation"),
+        Arc::new(Screens {
+            log: f.log.clone(),
+            read_only: false,
+            hold: None,
+            started: None,
+            outcome: Some(outcome),
+        }),
+    );
+    let mut cfg = test_plugins::marker_config(&marker);
+    for id in ["git", "jj"] {
+        cfg.plugins
+            .entry(id.into())
+            .or_default()
+            .insert("enabled".into(), toml::Value::Boolean(false));
+    }
+    cfg.ui.lang = "en".into();
+    cfg.external.git = diff;
+    f.sim = Sim::with_config_sized(&root, cfg, 160, 24);
+    f.sim.app.tab.projects.wait_for_result();
+    assert!(f.sim.app.tab.projects.uses_injected_events());
+    f.sim.app.poll_projects();
+    drain(&mut f.sim);
+    open(&mut f);
+    press(&mut f, KeyCode::F(11));
+    f
+}
+
+#[test]
+fn e2e_project_outcome_open_file_uses_line_and_q_returns_to_project() {
+    let mut f = navigate("project_outcome_file", |root| Outcome::OpenFile {
+        path: root.join("file.txt"),
+        line: Some(3),
+    });
+    assert!(!f.sim.app.project_active());
+    assert_eq!(f.sim.app.tab.mode, Mode::Preview);
+    assert_eq!(f.sim.app.preview_caret_line(), 2);
+    f.sim.see("three");
+    assert!(f
+        .sim
+        .app
+        .tab
+        .preview_path
+        .as_ref()
+        .unwrap()
+        .ends_with("file.txt"));
+    f.sim.key('q');
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_active());
+    f.sim.see("alpha");
+}
+
+/// `Esc` and `q` close a preview opened by a plugin's `OpenFile` outcome the same way: back onto
+/// the project canvas it came from, with no stale return target. One file per preview surface
+/// (text, table, image).
+#[test]
+fn e2e_project_outcome_open_file_esc_returns_to_project_like_q_on_every_preview_surface() {
+    for file in ["file.txt", "grid.csv", "pic.png"] {
+        let mut landings = Vec::new();
+        for key in [KeyCode::Char('q'), KeyCode::Esc] {
+            let name = format!("project_outcome_file_esc_{}_{}", &file[..4], landings.len());
+            let mut f = navigate(&name, |root| {
+                std::fs::write(root.join("grid.csv"), "a,b\n1,2\n").unwrap();
+                write_png(&root.join("pic.png"), 8, 8);
+                Outcome::OpenFile {
+                    path: root.join(file),
+                    line: None,
+                }
+            });
+            assert!(!f.sim.app.project_active(), "{file}");
+            assert_eq!(
+                f.sim.app.tab.mode,
+                Mode::Preview,
+                "{file} {:?} {:?}",
+                f.sim.app.flash,
+                f.sim.app.tab.preview_path
+            );
+            assert!(f.sim.app.tab.project_return.is_some(), "{file}");
+            press(&mut f, key);
+            assert!(
+                f.sim.app.project_active(),
+                "{file} {key:?}: back on the project"
+            );
+            assert!(
+                f.sim.app.tab.project_return.is_none(),
+                "{file} {key:?}: no stale project_return"
+            );
+            f.sim.see("alpha");
+            landings.push((
+                f.sim
+                    .app
+                    .project_frame()
+                    .map(|fr| (fr.key.screen.clone(), fr.cursor)),
+                f.sim.app.tab.mode,
+            ));
+        }
+        assert_eq!(landings[0], landings[1], "{file}: q and Esc land alike");
+    }
+}
+
+/// With a search active, the first `Esc` clears it and stays in the preview; the second returns.
+#[test]
+fn e2e_project_outcome_open_file_esc_clears_search_first_then_returns_to_project() {
+    let mut f = navigate("project_outcome_file_esc_search", |root| {
+        Outcome::OpenFile {
+            path: root.join("file.txt"),
+            line: None,
+        }
+    });
+    assert!(!f.sim.app.project_active());
+    press(&mut f, KeyCode::Char('/'));
+    for c in "three".chars() {
+        press(&mut f, KeyCode::Char(c));
+    }
+    press(&mut f, KeyCode::Enter);
+    assert_eq!(f.sim.app.preview_search_query(), Some("three"));
+    press(&mut f, KeyCode::Esc);
+    assert!(
+        f.sim.app.preview_search_query().is_none(),
+        "first Esc clears the search"
+    );
+    assert!(
+        !f.sim.app.project_active(),
+        "first Esc stays in the preview"
+    );
+    assert!(
+        f.sim.app.tab.project_return.is_some(),
+        "the return target is kept"
+    );
+    press(&mut f, KeyCode::Esc);
+    assert!(f.sim.app.project_active());
+    assert!(f.sim.app.tab.project_return.is_none());
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_project_outcome_open_diff_esc_returns_to_project_like_q() {
+    let mut landings = Vec::new();
+    for key in [KeyCode::Char('q'), KeyCode::Esc] {
+        let name = format!("project_outcome_diff_esc_{}", landings.len());
+        let mut f = navigate(&name, |root| Outcome::OpenDiff {
+            path: root.join("file.txt"),
+        });
+        assert!(f.sim.app.is_git_diff_preview() && f.sim.app.tab.project_return.is_some());
+        press(&mut f, key);
+        assert!(f.sim.app.project_active(), "{key:?}");
+        assert!(
+            f.sim.app.tab.project_return.is_none(),
+            "{key:?}: no stale project_return"
+        );
+        f.sim.see("alpha");
+        landings.push(
+            f.sim
+                .app
+                .project_frame()
+                .map(|fr| (fr.key.screen.clone(), fr.cursor)),
+        );
+    }
+    assert_eq!(landings[0], landings[1]);
+}
+
+#[test]
+fn e2e_project_outcome_open_diff_uses_host_diff() {
+    let f = navigate("project_outcome_diff", |root| Outcome::OpenDiff {
+        path: root.join("file.txt"),
+    });
+    assert!(!f.sim.app.project_active());
+    assert!(f.sim.app.is_git_diff_preview());
+    assert_eq!(
+        f.sim.app.tab.preview_path.as_ref(),
+        Some(&f.sim.app.tab.root.join("file.txt"))
+    );
+    // A navigation result flashes no operation name, with or without the git feature.
+    assert!(f.sim.app.flash.is_none(), "{:?}", f.sim.app.flash);
+    #[cfg(feature = "git")]
+    f.sim.see("changed project file");
+}
+
+#[test]
+fn e2e_project_outcome_switch_root_uses_worktree_root_path() {
+    let f = navigate("project_outcome_root", |root| Outcome::SwitchRoot {
+        root: root.join("destination"),
+        message: None,
+    });
+    assert_eq!(f.sim.app.tab.root, canon(&f._dir.join("destination")));
+    assert!(!f.sim.app.project_active());
+    assert_eq!(f.sim.app.tab.mode, Mode::Tree);
+}
+
+#[test]
+fn e2e_project_outcome_open_tab_uses_host_tab_lifecycle() {
+    let mut f = navigate("project_outcome_tab", |root| Outcome::OpenTab {
+        path: root.join("destination"),
+    });
+    assert_eq!(f.sim.app.tab_count(), 2);
+    assert_eq!(f.sim.app.tab.root, canon(&f._dir.join("destination")));
+    assert!(!f.sim.app.project_active());
+    f.sim.key('[');
+    drain(&mut f.sim);
+    assert!(f.sim.app.project_active());
+    f.sim.see("alpha");
+}
+
+#[test]
+fn e2e_project_help_of_another_provider_lists_the_global_rows_and_the_keys_act() {
+    use crate::i18n::{tr, Lang, Msg};
+    for lang in [Lang::En, Lang::Jp] {
+        let mut f = fixture("project_global_help", false, 1, None, None, None);
+        open(&mut f);
+        f.sim.app.lang = lang;
+        f.sim.resize(160, 100);
+        // Through the real `?` key: the Global section lists the four layer-0 rows that act.
+        f.sim.key('?');
+        assert!(f.sim.app.show_help);
+        let global = tr(lang, Msg::HelpGlobal);
+        if lang == Lang::En {
+            // The drawn panel (the ja run only switches the host's language after the project
+            // opened, so its sections are checked as data below).
+            f.sim.see(global);
+        }
+        let core = |m: konoma_host_core::help_msg::CoreMsg| {
+            if lang == Lang::En {
+                m.en()
+            } else {
+                m.ja()
+            }
+        };
+        for (keys, text) in [
+            ("P", tr(lang, Msg::PasteJumpHelp)),
+            ("?", core(konoma_host_core::help_msg::CoreMsg::ToggleHelp)),
+            ("F", tr(lang, Msg::FollowHelp)),
+            ("Q", core(konoma_host_core::help_msg::CoreMsg::Quit)),
+        ] {
+            let rows: Vec<_> = crate::ops::help::sections(&f.sim.app)
+                .into_iter()
+                .filter(|s| s.title == global)
+                .flat_map(|s| s.rows)
+                .collect();
+            assert!(
+                rows.iter().any(|(k, d)| k == keys && d == text),
+                "{lang:?}: the Global section lists {keys}: {rows:?}"
+            );
+        }
+        // The Tabs section is listed too; every key in it is pressed by
+        // `e2e_project_tab_keys_of_another_provider_are_listed_where_they_act`.
+        assert!(
+            crate::ops::help::sections(&f.sim.app)
+                .iter()
+                .any(|s| s.title == tr(lang, Msg::HelpTabs)),
+            "{lang:?}: the Tabs rows are listed on another provider's screen"
+        );
+        // The listed keys act: `?` closes the help, `F` turns following on, `Q` asks and quits.
+        f.sim.key('?');
+        assert!(!f.sim.app.show_help, "{lang:?}: ? closes the help");
+        assert!(!f.sim.app.follow_enabled());
+        f.sim.key('F');
+        assert!(f.sim.app.follow_enabled(), "{lang:?}: F follows");
+        f.sim.key('Q');
+        assert!(!f.sim.quit);
+        f.sim.key('y');
+        assert!(f.sim.quit, "{lang:?}: Q then y quits");
+    }
+}
+
+/// The key texts of every help row (all sections) and of the `[Tabs]` section alone, in the
+/// host's language.
+fn help_key_texts(sim: &Sim) -> (Vec<String>, Vec<String>) {
+    let title = crate::i18n::tr(sim.app.lang, crate::i18n::Msg::HelpTabs);
+    let sections = crate::ops::help::sections(&sim.app);
+    let all = sections
+        .iter()
+        .flat_map(|s| s.rows.iter().map(|(k, _)| k.clone()))
+        .collect();
+    let tabs = sections
+        .iter()
+        .filter(|s| s.title == title)
+        .flat_map(|s| s.rows.iter().map(|(k, _)| k.clone()))
+        .collect();
+    (all, tabs)
+}
+
+/// A help row lists `key` when the key text is that key or one of a `/`-separated group of keys
+/// (the literal `1 - 9` row is compared whole).
+fn row_lists(rows: &[String], key: &str) -> bool {
+    rows.iter()
+        .any(|row| row == key || (key != "1 - 9" && row.split([' ', '/']).any(|part| part == key)))
+}
+
+/// The host's tab keys on the project screen `make` builds (`make(true)` has a second tab, the
+/// active one still the first, on the same screen): each key the `[Tabs]` help section lists acts
+/// there, and a key that does not act (`Ctrl-t`, the plugin's own "open the row in a new tab",
+/// needs a row) is listed nowhere. `[`, `]` and `1 - 9` change the active tab only with two tabs
+/// open: the project canvas lists `[ / ]` only then (`gate.rs`), and `1 - 9` regardless of the
+/// count, like every other screen's help.
+pub(in crate::e2e_tests) fn check_tab_keys_listed_and_act(
+    label: &str,
+    ctrl_t_acts: bool,
+    make: &dyn Fn(bool) -> (Sim, Box<dyn std::any::Any>),
+) {
+    use crate::i18n::Lang;
+    for lang in [Lang::En, Lang::Jp] {
+        let (mut sim, _keep) = make(false);
+        sim.app.lang = lang;
+        let (all, tabs) = help_key_texts(&sim);
+        assert!(
+            !tabs.is_empty(),
+            "{label} {lang:?}: a Tabs section is listed"
+        );
+        for (key, token) in [('t', "t"), ('2', "1 - 9"), ('T', "T")] {
+            assert!(
+                row_lists(&tabs, token),
+                "{label} {lang:?}: the Tabs section lists {key}: {tabs:?}"
+            );
+        }
+        // With one tab `[` and `]` return at once, so no row lists them; with two they do.
+        assert!(
+            !row_lists(&tabs, "["),
+            "{label} {lang:?}: one tab, `[ / ]` is not listed: {tabs:?}"
+        );
+        let (mut two, _keep_two) = make(true);
+        two.app.lang = lang;
+        let (_, two_tabs) = help_key_texts(&two);
+        for (key, token) in [('[', "["), (']', "]")] {
+            assert!(
+                row_lists(&two_tabs, token),
+                "{label} {lang:?}: two tabs, the Tabs section lists {key}: {two_tabs:?}"
+            );
+        }
+        assert_eq!(
+            row_lists(&all, "Ctrl-t"),
+            ctrl_t_acts,
+            "{label} {lang:?}: Ctrl-t is listed iff it acts: {all:?}"
+        );
+    }
+    // The listed keys act, one fresh screen per key.
+    let (mut sim, _keep) = make(false);
+    assert!(sim.app.project_active(), "{label}");
+    let tabs = sim.app.tab_count();
+    sim.key('t');
+    assert_eq!(sim.app.tab_count(), tabs + 1, "{label}: t opens a tab");
+    assert_eq!(sim.app.active_tab_index(), tabs, "{label}: t shows it");
+    let (mut sim, _keep) = make(false);
+    sim.key('T');
+    assert!(sim.app.is_tab_list(), "{label}: T lists the tabs");
+    for key in ['[', ']', '2'] {
+        let (mut sim, _keep) = make(true);
+        assert_eq!(sim.app.tab_count(), 2, "{label}");
+        assert_eq!(sim.app.active_tab_index(), 0, "{label}");
+        assert!(sim.app.project_active(), "{label}");
+        sim.key(key);
+        assert_eq!(sim.app.active_tab_index(), 1, "{label}: {key} changes tab");
+    }
+    let (mut sim, _keep) = make(false);
+    let tabs = sim.app.tab_count();
+    sim.ctrl('t');
+    assert_eq!(
+        sim.app.tab_count(),
+        tabs + usize::from(ctrl_t_acts),
+        "{label}: Ctrl-t acts iff it is listed"
+    );
+}
+
+/// The other provider's screens for `check_tab_keys_listed_and_act`: the root list screen (a row
+/// is selected, so `Ctrl-t` acts) and a pushed screen (no row).
+fn another_provider_screen(pushed: bool, two: bool) -> (Sim, Box<dyn std::any::Any>) {
+    let mut f = if pushed {
+        navigate("project_tab_keys_pushed", |_| Outcome::PushScreen {
+            screen: "pushed".into(),
+            selection: None,
+        })
+    } else {
+        let mut f = fixture("project_tab_keys_root", false, 1, None, None, None);
+        open(&mut f);
+        f
+    };
+    assert_eq!(f.sim.app.project_pushed(), pushed);
+    if two {
+        f.sim.app.tab_new().unwrap();
+        f.sim.app.tab.projects.wait_for_result();
+        f.sim.app.poll_projects();
+        f.sim.app.tab_goto(0);
+        drain(&mut f.sim);
+    }
+    let Fixture { sim, _dir, .. } = f;
+    (sim, Box::new(_dir))
+}
+
+#[test]
+fn e2e_project_tab_keys_of_another_provider_are_listed_where_they_act() {
+    check_tab_keys_listed_and_act("root screen", true, &|two| {
+        another_provider_screen(false, two)
+    });
+    check_tab_keys_listed_and_act("pushed screen", false, &|two| {
+        another_provider_screen(true, two)
+    });
+}
+
+/// The rows of the `[Launch]` help section (empty when the section is not listed), in the host's
+/// language.
+fn launch_help_rows(sim: &Sim) -> Vec<(String, String)> {
+    let title = crate::i18n::tr(sim.app.lang, crate::i18n::Msg::HelpLaunch);
+    crate::ops::help::sections(&sim.app)
+        .into_iter()
+        .filter(|s| s.title == title)
+        .flat_map(|s| s.rows)
+        .collect()
+}
+
+/// `e` and `o` act on any project screen whose selected row has a launchable target, so the help
+/// of another provider's screen lists them there and only there (the footer never showed them).
+/// `e` is pressed for real: the host only records the pending edit. `o` goes through a stubbed
+/// process runner, so no opener starts.
+#[test]
+fn e2e_project_help_of_another_provider_lists_launch_rows_where_the_keys_act() {
+    use crate::i18n::{tr, Lang, Msg};
+    for lang in [Lang::En, Lang::Jp] {
+        // A row with a target (the first, `file.txt`): both keys act and both rows are listed,
+        // after the plugin's sections and before the menus behind Space.
+        let (mut sim, _keep) = another_provider_screen(false, false);
+        sim.app.lang = lang;
+        sim.resize(160, 100);
+        let target = sim.app.project_launch_target().expect("alpha has a target");
+        let rows = launch_help_rows(&sim);
+        let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["e", "o"], "{lang:?}: {rows:?}");
+        let titles: Vec<String> = crate::ops::help::sections(&sim.app)
+            .into_iter()
+            .map(|s| s.title)
+            .collect();
+        let at = |m: Msg| titles.iter().position(|t| *t == tr(lang, m)).unwrap();
+        assert!(
+            at(Msg::HelpLaunch) < at(Msg::WkActionsTitle)
+                && at(Msg::WkActionsTitle) < at(Msg::HelpTabs),
+            "{lang:?}: {titles:?}"
+        );
+        // Through the real `?`, the rows are on screen.
+        sim.key('?');
+        assert!(sim.app.show_help);
+        if lang == Lang::En {
+            // The ja screen text has a cell filler between wide glyphs, so only en is matched.
+            sim.see(tr(lang, Msg::HelpLaunch));
+            sim.see("edit in external editor");
+        }
+        sim.key('?');
+        assert!(!sim.app.show_help);
+        let opened = Arc::new(Mutex::new(0usize));
+        let seen = opened.clone();
+        sim.app.set_office_runner(Arc::new(move |_| {
+            *seen.lock().unwrap() += 1;
+            Ok(Some(0))
+        }));
+        sim.key('e');
+        assert_eq!(
+            sim.app.take_pending_edit(),
+            Some((target.clone(), None)),
+            "{lang:?}: e records that row's file"
+        );
+        sim.key('o');
+        assert_eq!(*opened.lock().unwrap(), 1, "{lang:?}: o opens that row");
+
+        // A row without a target (the second): neither key acts, neither row is listed.
+        sim.key('j');
+        drain(&mut sim);
+        assert!(sim.app.project_launch_target().is_none());
+        assert!(
+            launch_help_rows(&sim).is_empty(),
+            "{lang:?}: {:?}",
+            launch_help_rows(&sim)
+        );
+        sim.key('e');
+        assert!(sim.app.take_pending_edit().is_none(), "{lang:?}");
+        sim.key('o');
+        assert_eq!(*opened.lock().unwrap(), 1, "{lang:?}: o does not act");
+
+        // A pushed screen has no row at all.
+        let (mut sim, _keep) = another_provider_screen(true, false);
+        sim.app.lang = lang;
+        assert!(launch_help_rows(&sim).is_empty(), "{lang:?}");
+        sim.key('e');
+        assert!(sim.app.take_pending_edit().is_none(), "{lang:?}");
+    }
+}

@@ -1,9 +1,8 @@
 //! Application state: the `App` struct and its methods — mode (Tree/Preview), the tree,
-//! tabs, and the current preview target. Git view methods live in the `git_view` submodule.
+//! tabs, and the current preview target. The file diff and its git writes live in the `git_view` submodule.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -14,21 +13,49 @@ use ratatui_image::picker::Picker;
 
 use crate::preview::media_diff::MediaDiffLayout;
 use ratatui_image::protocol::Protocol;
-use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
-use ratatui_image::{FilterType, Resize};
+use ratatui_image::thread::{ResizeRequest, ResizeResponse};
+
+use konoma_widgets::layout::fence_crop;
+
+// The inline-image cache machinery lives in the display crate (the standalone plugin app draws
+// canvas pictures with the very same code); the names stay reachable here for the host.
+#[cfg(test)]
+pub use konoma_widgets::inline_images::{
+    kitty_id_for, md_band_pixels, reserve_proto_slot_hard, MdProtoSlot, MD_PROTO_SLOTS,
+    MD_ZOOM_SLOTS,
+};
+pub use konoma_widgets::inline_images::{
+    md_encode_worker, EncodeApplied, InlineImage, InlineImageCache, MdEncodeKey, MdEncodeRequest,
+    MdEncodeResult, MdImgEntry, SvgTrust,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;
 use crate::i18n::tr;
+#[cfg(test)]
+use crate::preview::markdown::{math_cells, mermaid_cells};
+#[cfg(test)]
+use crate::preview::markdown::{md_image_cells, slide_cells};
 use crate::preview::PreviewKind;
+use konoma_host_core::copy::at_ref_text;
+pub(crate) use konoma_host_core::paths::home_relative;
 
 mod bookmark_actions;
+mod change_jump;
 mod copy_actions;
 mod dialog_actions;
 mod diff_view;
+mod embed_plugin;
 mod file_actions;
+mod file_preview_resolution;
 mod follow;
+#[cfg(feature = "git")]
+mod follow_worker;
+#[cfg(feature = "git")]
+pub use follow_worker::FollowResult;
 mod git_view;
+pub(crate) mod list_filter;
+mod markdown_plugin;
 mod md_diff;
 mod md_items;
 mod md_media;
@@ -37,29 +64,75 @@ mod md_tasks;
 mod md_text;
 mod media_diff;
 mod media_load;
+pub(crate) mod media_plugin;
+#[cfg(test)]
+pub(crate) use embed_plugin::probe_fence_picture;
+#[cfg(test)]
+pub(crate) use md_media::redraw_svg;
+#[cfg(test)]
+pub(crate) use media_plugin::{svg_file_payload, svg_view_payload};
+#[cfg(test)]
+pub(crate) use plugin_host::color_depth_from as color_depth_from_for_test;
+#[cfg(test)]
+pub(crate) use plugin_host::MAX_QUEUED_ACTS;
+#[cfg(test)]
+pub(crate) use plugin_input::plugin_key_of;
+#[cfg(test)]
+pub(crate) use plugin_input::{
+    MAX_PASTE_BYTES, MAX_QUEUED_KEYS, MAX_QUEUED_PASTE_BYTES, MAX_REDRAW_AFTER, MIN_REDRAW_AFTER,
+};
 mod office_doc;
-pub(crate) use office_doc::is_presentation_path;
-mod office_open;
+pub(crate) mod open_app;
+#[cfg(test)]
+pub(crate) use konoma_plugin::host::file_preview::test_hooks::is_presentation_path;
+pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
-mod outline;
+pub(crate) mod canvas_images;
+pub(crate) mod outline;
 mod paste_jump;
+mod plugin_acts;
+mod plugin_host;
+#[cfg(test)]
+pub(crate) use plugin_host::HoldOpens;
+#[cfg(test)]
+pub(crate) use plugin_host::InlineAnswers;
+#[cfg(test)]
+pub(crate) use plugin_host::LongFirstFrame;
+mod plugin_input;
+mod plugin_outcomes;
 mod preview_visual;
+mod project_detection;
+pub(crate) mod project_screens;
+mod project_worker;
+mod repr_cycle;
 mod search;
 mod session_actions;
 mod tab_lifecycle;
 mod table_actions;
+/// Test-only: waits until the background reaper has dropped everything discarded so far.
+#[cfg(test)]
+pub(crate) use konoma_base::discard::flush_discards;
+mod text_plugin;
 
 use md_text::*;
 // Referenced by `main`'s watcher/run loop as `crate::app::FsBurstKinds` (it builds the value; the
 // only consumer is `App::fs_burst_is_build_churn`, which lives with the type).
-pub use bookmark_actions::FsBurstKinds;
+pub use bookmark_actions::{DeferredFsBurst, FsBurstKinds};
 // Only referenced by tests (`crate::app::PreviewSelection`) — `preview_visual` itself uses the
 // type unqualified since it's defined there, so this re-export would be unused_imports outside cfg(test).
 #[cfg(test)]
 pub use preview_visual::PreviewSelection;
-use preview_visual::*;
 // Referenced by `ui/table.rs` (the full-cell popup renderer) as `crate::app::TableCellView`.
 pub use table_actions::TableCellView;
+
+/// What an external program that returned may have changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExternalReturn {
+    /// The file it was given.
+    File,
+    /// Anything in the working tree.
+    Tree,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -93,8 +166,9 @@ pub enum InternalMode {
     /// Changed-files-only tree view (`C`; Agent Watch).
     ChangedFilter,
     Search,
-    Sort,
     Mark,
+    /// A plugin's canvas is taking the typing (`CanvasView::text_input`).
+    PluginInput,
     Bookmarks,
     Tabs,
     Outline,
@@ -109,16 +183,7 @@ pub enum InternalMode {
     DropConfirm,
     QuitConfirm,
     BookmarkConfirm,
-    GitChanges,
     GitDiff,
-    Commit,
-    GitLog,
-    GitDetail,
-    GitBranch,
-    /// The linked-worktree list (`w` from the changes hub).
-    GitWorktrees,
-    GitGraph,
-    GitGraphPicker,
 }
 
 /// What the **bottom** of the UI stack is showing, once nothing is overlaying it.
@@ -130,6 +195,8 @@ pub enum BaseKind {
     PreviewText,
     PreviewImage,
     PreviewTable,
+    /// A plugin's free-drawing view (`View::Canvas`).
+    PreviewCanvas,
 }
 
 /// The bottom layer of the UI stack, plus the two facts that decorate it.
@@ -155,6 +222,14 @@ pub struct BaseLayer {
 /// were separate hand-written cascades that had to be kept in step by hand, and they drifted: the
 /// `?` help overlay reached `surface()` but not `internal_mode()`, so the chip and footer
 /// advertised keys that did nothing.
+///
+/// A project screen ([`UiLayer::Project`]) covers the whole screen under it (the tree, a file
+/// diff, a preview), so while it is in front the layers that belong to that screen — the diff, the
+/// filter / search / mark inputs, the outline, a table cell, a visual selection, a plugin's text
+/// input — are masked: they can neither receive keys nor name the chip. What stays in front of the
+/// project screen are the dialogs, help, the bookmark list, the tab list and info, which are drawn
+/// over it. The state under the project screen is untouched: it is what leaving the screens
+/// returns to.
 // `Ord` follows the declaration order, which lets
 // `the_walk_visits_the_layers_in_their_declaration_order` check mechanically that the walk really
 // does go front to back in the order written below.
@@ -175,40 +250,39 @@ pub enum UiLayer {
     /// each gets its own chip/footer wording.
     InputCreate,
     InputBatchRename,
-    InputCommit,
-    InputCreateBranch,
-    InputCreateWorktree,
     /// Input dialog: rename, and the catch-all for any other pending operation.
     InputRename,
 
     // --- The help overlay (above everything but the dialogs) ---
     Help,
 
-    // --- The git views (detail sits over log; the branch panel sits over the graph) ---
-    GitDetail,
-    GitLog,
-    GitGraphPicker,
-    GitGraph,
-    /// The branch list with its `/` filter input active.
-    GitBranchFilter,
-    GitBranches,
-    /// The worktree list with its `/` filter input active.
-    GitWorktreeFilter,
-    GitWorktrees,
-    GitChanges,
+    // --- The file diff ---
     GitDiff,
 
     // --- Input surfaces / menus / lists / popups ---
     Filter,
     Search,
-    Sort,
     Mark,
+    /// The bookmark list with its `/` filter input active.
+    BookmarksFilter,
     Bookmarks,
+    /// The tab list with its `/` filter input active.
+    TabsFilter,
     Tabs,
+    /// The outline / page list with its `/` filter input active.
+    OutlineFilter,
     Outline,
     Info,
     TableCell,
     Visual,
+    /// A plugin's canvas that asked for text input is on screen and has not been left with
+    /// `Esc`. Just above the base: every overlay and dialog sits in front of it.
+    PluginInput,
+
+    /// A project screen (git / jj changes, log, ...) is on screen. It covers the base screen and
+    /// every layer that belongs to it, so it sits right above the base and those layers are
+    /// masked while it is active (see [`App::frontmost_layer`]).
+    Project,
 
     /// The base full screen. Always active, so the walk ends here.
     Base(BaseLayer),
@@ -221,6 +295,7 @@ impl BaseLayer {
             BaseKind::Tree => S::Tree,
             BaseKind::PreviewImage => S::PreviewImage,
             BaseKind::PreviewTable => S::PreviewTable,
+            BaseKind::PreviewCanvas => S::PreviewCanvas,
             BaseKind::PreviewText => {
                 if self.preview_visual {
                     S::PreviewTextVisual
@@ -245,12 +320,8 @@ impl BaseLayer {
 impl UiLayer {
     /// The keymap surface this layer owns.
     ///
-    /// `None` means the layer has no surface **on this build** — only the git layers, and only when
-    /// the `git` feature is off, where `keymap::Surface` has no git variants at all. [`App::surface`]
-    /// then keeps walking to the layer behind it, which is exactly what the old hand-written cascade
-    /// did by wrapping its whole git block in `#[cfg(feature = "git")]`. (Such state is unreachable
-    /// through the UI on a no-git build — every git opener bails out because the `git.rs` stubs
-    /// return empty/None — but the fall-through is characterized so it cannot change by accident.)
+    /// Every layer owns a surface now, so this is always `Some`; the `Option` stays because
+    /// [`App::frontmost_layer`] takes a predicate over it.
     pub fn surface(self) -> Option<crate::keymap::Surface> {
         use crate::keymap::Surface as S;
         Some(match self {
@@ -259,54 +330,22 @@ impl UiLayer {
             Self::ConfirmDrop => S::DialogConfirmDrop,
             Self::ConfirmDelete => S::DialogConfirmDelete,
             Self::RenamePreview => S::DialogRenamePreview,
-            Self::InputCreate
-            | Self::InputBatchRename
-            | Self::InputCommit
-            | Self::InputCreateBranch
-            | Self::InputCreateWorktree
-            | Self::InputRename => S::DialogInput,
+            Self::InputCreate | Self::InputBatchRename | Self::InputRename => S::DialogInput,
             Self::Help => S::Help,
-            #[cfg(feature = "git")]
-            Self::GitDetail => S::GitDetail,
-            #[cfg(feature = "git")]
-            Self::GitLog => S::GitLog,
-            #[cfg(feature = "git")]
-            Self::GitGraphPicker => S::GitGraphPicker,
-            #[cfg(feature = "git")]
-            Self::GitGraph => S::GitGraph,
-            #[cfg(feature = "git")]
-            Self::GitBranchFilter => S::BranchFilter,
-            #[cfg(feature = "git")]
-            Self::GitBranches => S::GitBranches,
-            #[cfg(feature = "git")]
-            Self::GitWorktreeFilter => S::WorktreeFilter,
-            #[cfg(feature = "git")]
-            Self::GitWorktrees => S::GitWorktrees,
-            #[cfg(feature = "git")]
-            Self::GitChanges => S::GitChanges,
-            #[cfg(feature = "git")]
             Self::GitDiff => S::PreviewGitDiff,
-            #[cfg(not(feature = "git"))]
-            Self::GitDetail
-            | Self::GitLog
-            | Self::GitGraphPicker
-            | Self::GitGraph
-            | Self::GitBranchFilter
-            | Self::GitBranches
-            | Self::GitWorktreeFilter
-            | Self::GitWorktrees
-            | Self::GitChanges
-            | Self::GitDiff => return None,
             Self::Filter => S::Filter,
             Self::Search => S::Search,
-            Self::Sort => S::Sort,
             Self::Mark => S::Mark,
+            Self::PluginInput => S::PluginInput,
+            Self::BookmarksFilter | Self::TabsFilter | Self::OutlineFilter => S::ListFilter,
             Self::Bookmarks => S::Bookmarks,
             Self::Tabs => S::Tabs,
             Self::Outline => S::Outline,
             Self::Info => S::Info,
             Self::TableCell => S::TableCell,
             Self::Visual => S::Visual,
+            // A project canvas is a canvas whatever plugin screen it shows.
+            Self::Project => S::PreviewCanvas,
             Self::Base(b) => b.surface(),
         })
     }
@@ -323,39 +362,22 @@ impl UiLayer {
             Self::RenamePreview => InternalMode::RenamePreview,
             Self::InputCreate => InternalMode::Create,
             Self::InputBatchRename => InternalMode::BatchRename,
-            Self::InputCommit => InternalMode::Commit,
-            // The branch/worktree creation prompts reuse their list's chip rather than inventing a
-            // dedicated "creating a …" mode.
-            Self::InputCreateBranch => InternalMode::GitBranch,
-            Self::InputCreateWorktree => InternalMode::GitWorktrees,
             Self::InputRename => InternalMode::Rename,
             Self::Help => InternalMode::Help,
-            Self::GitDetail => InternalMode::GitDetail,
-            Self::GitLog => InternalMode::GitLog,
-            Self::GitGraphPicker => InternalMode::GitGraphPicker,
-            Self::GitGraph => InternalMode::GitGraph,
-            // A list's `/` filter deliberately keeps the list's own chip, so there is no
-            // `InternalMode::BranchFilter`/`WorktreeFilter` to map to. The three consumers each
-            // want something different and that is on purpose: the keymap needs a separate surface
-            // because typing has to be captured rather than dispatched (`Surface::is_text_input`),
-            // the chip must *not* change because the list is still what you are looking at (cursor
-            // and all), and the footer swaps to the `/query` prompt through its own branch in
-            // `ui::status::footer_spans`, ahead of the mode footer. Pinned by
-            // `a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip`.
-            Self::GitBranchFilter | Self::GitBranches => InternalMode::GitBranch,
-            Self::GitWorktreeFilter | Self::GitWorktrees => InternalMode::GitWorktrees,
-            Self::GitChanges => InternalMode::GitChanges,
             Self::GitDiff => InternalMode::GitDiff,
             Self::Filter => InternalMode::Filter,
             Self::Search => InternalMode::Search,
-            Self::Sort => InternalMode::Sort,
             Self::Mark => InternalMode::Mark,
-            Self::Bookmarks => InternalMode::Bookmarks,
-            Self::Tabs => InternalMode::Tabs,
-            Self::Outline => InternalMode::Outline,
+            Self::PluginInput => InternalMode::PluginInput,
+            // The overlay lists' `/` filter keeps the overlay's own chip (as the git lists do).
+            Self::BookmarksFilter | Self::Bookmarks => InternalMode::Bookmarks,
+            Self::TabsFilter | Self::Tabs => InternalMode::Tabs,
+            Self::OutlineFilter | Self::Outline => InternalMode::Outline,
             Self::Info => InternalMode::Info,
             Self::TableCell => InternalMode::TableCell,
             Self::Visual => InternalMode::Visual,
+            // The project screen names the chip itself (`project_vcs_chips`).
+            Self::Project => return None,
             Self::Base(b) => return b.internal_mode(),
         })
     }
@@ -387,37 +409,19 @@ impl crate::keymap::Surface {
             S::Filter => UiLayer::Filter,
             S::Search => UiLayer::Search,
             S::Mark => UiLayer::Mark,
-            #[cfg(feature = "git")]
-            S::BranchFilter => UiLayer::GitBranchFilter,
-            #[cfg(feature = "git")]
-            S::WorktreeFilter => UiLayer::GitWorktreeFilter,
+            S::PluginInput => UiLayer::PluginInput,
+            S::ListFilter => UiLayer::OutlineFilter,
             S::DialogConfirmDelete => UiLayer::ConfirmDelete,
             S::DialogConfirmDrop => UiLayer::ConfirmDrop,
             S::DialogRenamePreview => UiLayer::RenamePreview,
             S::DialogConfirmQuit => UiLayer::ConfirmQuit,
             S::DialogConfirmBookmark => UiLayer::ConfirmBookmark,
             S::Help => UiLayer::Help,
-            S::Sort => UiLayer::Sort,
             S::Bookmarks => UiLayer::Bookmarks,
             S::Tabs => UiLayer::Tabs,
             S::Outline => UiLayer::Outline,
             S::Info => UiLayer::Info,
             S::TableCell => UiLayer::TableCell,
-            #[cfg(feature = "git")]
-            S::GitDetail => UiLayer::GitDetail,
-            #[cfg(feature = "git")]
-            S::GitLog => UiLayer::GitLog,
-            #[cfg(feature = "git")]
-            S::GitGraph => UiLayer::GitGraph,
-            #[cfg(feature = "git")]
-            S::GitGraphPicker => UiLayer::GitGraphPicker,
-            #[cfg(feature = "git")]
-            S::GitBranches => UiLayer::GitBranches,
-            #[cfg(feature = "git")]
-            S::GitChanges => UiLayer::GitChanges,
-            #[cfg(feature = "git")]
-            S::GitWorktrees => UiLayer::GitWorktrees,
-            #[cfg(feature = "git")]
             S::PreviewGitDiff => UiLayer::GitDiff,
             S::Visual => UiLayer::Visual,
             S::Tree => base(BaseKind::Tree, false),
@@ -425,75 +429,13 @@ impl crate::keymap::Surface {
             S::PreviewTextVisual => base(BaseKind::PreviewText, true),
             S::PreviewImage => base(BaseKind::PreviewImage, false),
             S::PreviewTable => base(BaseKind::PreviewTable, false),
+            S::PreviewCanvas => base(BaseKind::PreviewCanvas, false),
         }
     }
 }
 
-/// Preview paging key style. Specified via the `ui.keys` setting (default vim).
-/// Diffs use only the page/half-page keys. j/k line movement, arrows, and PageUp/Down are common to both styles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyScheme {
-    /// vim style: Ctrl-f/Ctrl-b=page, Ctrl-d/Ctrl-u=half.
-    Vim,
-    /// less style: Space/b=page, d/u=half.
-    Less,
-}
-
-impl KeyScheme {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "less" => Self::Less,
-            _ => Self::Vim,
-        }
-    }
-}
-
-/// diff layout (config `git.diff`; cycle at runtime with `s`). Auto picks vertical/horizontal automatically from the terminal width.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffLayout {
-    /// Vertical (unified).
-    Unified,
-    /// Side-by-side.
-    Split,
-    /// Horizontal if wide, vertical if narrow.
-    Auto,
-}
-
-impl DiffLayout {
-    /// Parse a config value. "split"/"horizontal"/"side-by-side"=horizontal / "auto"=auto / otherwise=vertical.
-    pub fn parse(s: &str) -> Self {
-        let n: String = s
-            .chars()
-            .filter(|c| !matches!(c, ' ' | '-' | '_'))
-            .flat_map(|c| c.to_lowercase())
-            .collect();
-        match n.as_str() {
-            "split" | "horizontal" | "sidebyside" | "side" => Self::Split,
-            "auto" => Self::Auto,
-            _ => Self::Unified, // "unified" / "vertical" / unknown
-        }
-    }
-    /// Resolve whether to lay out side-by-side at the actual display width `width`. Auto decides by a threshold.
-    pub fn is_split(self, width: u16) -> bool {
-        match self {
-            DiffLayout::Unified => false,
-            DiffLayout::Split => true,
-            DiffLayout::Auto => width >= DIFF_AUTO_MIN_WIDTH,
-        }
-    }
-    /// Cycle to the next layout (vertical→horizontal→Auto→vertical). For `s`.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub fn next(self) -> Self {
-        match self {
-            DiffLayout::Unified => DiffLayout::Split,
-            DiffLayout::Split => DiffLayout::Auto,
-            DiffLayout::Auto => DiffLayout::Unified,
-        }
-    }
-}
-
-/// Minimum inner width for side-by-side under Auto (below this, vertical). A guideline so two-column code is not cramped.
-const DIFF_AUTO_MIN_WIDTH: u16 = 90;
+/// The diff layout lives in `konoma_host_core::project` (shared with the standalone app).
+pub use konoma_host_core::project::DiffLayout;
 
 /// Layout of the status chrome (config `ui.statusbar`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -513,33 +455,8 @@ impl StatusbarLayout {
     }
 }
 
-/// Path display style. Used for the title (tree/preview). Cycle with the `p` key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathStyle {
-    /// Relative to the launch directory name (e.g. konoma/src/main.rs). Default.
-    Relative,
-    /// Relative to HOME (e.g. ~/work/konoma).
-    Home,
-    /// Full path (e.g. /Users/me/work/konoma).
-    Full,
-}
-
-impl PathStyle {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "home" => Self::Home,
-            "full" => Self::Full,
-            _ => Self::Relative,
-        }
-    }
-    pub fn next(self) -> Self {
-        match self {
-            Self::Relative => Self::Home,
-            Self::Home => Self::Full,
-            Self::Full => Self::Relative,
-        }
-    }
-}
+/// Path display style (`,` then `p`); shared with the standalone app.
+pub use konoma_host_core::view_options::PathStyle;
 
 /// How far a preview is scrolled, expressed in that view's **own scroll unit**.
 ///
@@ -551,27 +468,7 @@ impl PathStyle {
 ///   - the windowed (less-style) reader counts **bytes**, because that is what *it* scrolls by — it
 ///     deliberately never learns a total line count (see `preview::window`), so rows aren't
 ///     available to it without reading the whole file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ScrollExtent {
-    /// Current offset from the start of the content.
-    pub pos: u64,
-    /// Largest reachable offset. `0` means everything already fits on one screen.
-    pub max: u64,
-    /// How much of the content one screenful covers, in the same unit.
-    pub viewport: u64,
-}
-
-impl ScrollExtent {
-    /// `pos` is clamped into `0..=max` so "at the end" is decided the same way everywhere, even
-    /// when a caller passes a position that a resize has not been reconciled with yet.
-    pub fn new(pos: u64, max: u64, viewport: u64) -> Self {
-        Self {
-            pos: pos.min(max),
-            max,
-            viewport,
-        }
-    }
-}
+pub use konoma_widgets::scroll::ScrollExtent;
 
 /// A single entry shown in the tree.
 #[derive(Debug, Clone)]
@@ -582,14 +479,8 @@ pub struct Entry {
     pub expanded: bool,
 }
 
-/// Tree sort key (FR / M7 auxiliary). Switch via the footer menu (`s`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortKey {
-    Name,
-    Size,
-    Modified,
-    Ext,
-}
+// The kinds the key layers name live with the shared key tables (`konoma_host_core::keymap`).
+pub use konoma_host_core::keymap::{CopyKind, SortKey, TableCopyKind};
 
 /// Sort settings. `reverse`=flip ascending/descending, `dirs_first`=group directories at the top.
 /// Default is "name, ascending, directories first" (matches the previous behavior). Global (not per-tab).
@@ -610,18 +501,6 @@ impl Default for Sort {
     }
 }
 
-impl SortKey {
-    /// Parse a config string (case-insensitive). Unknown/empty falls back to Name.
-    pub fn parse(s: &str) -> Self {
-        match s.trim().to_lowercase().as_str() {
-            "size" => SortKey::Size,
-            "modified" | "mtime" | "mod" => SortKey::Modified,
-            "ext" | "extension" | "type" => SortKey::Ext,
-            _ => SortKey::Name,
-        }
-    }
-}
-
 impl Sort {
     /// Build the startup sort order from the `[ui.sort]` config.
     pub fn from_config(c: &crate::config::SortConfig) -> Self {
@@ -634,7 +513,7 @@ impl Sort {
 }
 
 /// Destructive/creation operations confirmed through a modal dialog (M7 Phase B, safety first).
-// The git-only variants (GitDiscard/GitDeleteBranch) have no construction path in a non-git build
+// The git-only variants (GitDiscard) have no construction path in a non-git build
 // (what constructs them is git-dispatch only). The variants themselves are kept for match
 // exhaustiveness, and dead_code is allowed only for the non-git build.
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -652,18 +531,6 @@ enum PendingOp {
     BatchRenameApply { plan: Vec<(PathBuf, PathBuf)> },
     /// In the Git view, `x`=discard a file's changes (via a confirmation dialog). On confirm, git::discard.
     GitDiscard { path: PathBuf },
-    /// In the Git view, `c`=enter a commit message. On confirm, git::commit (uses the staged index).
-    GitCommit,
-    /// In the hub, `R`=let jj take a snapshot. The only write konoma makes to a jj repository, and
-    /// only after this confirmation.
-    JjSync,
-    /// In the branch list, `n`=enter a new branch name. On confirm, git::create_branch (create and switch).
-    GitCreateBranch,
-    /// In the worktree list, `n`=enter a branch name for a new linked worktree. On confirm,
-    /// `dialog_submit` auto-detects new-vs-existing (`git::branch_tip`) and runs `git::worktree_add`.
-    WorktreeCreate,
-    /// In the branch list, `d`=delete confirmation. `y`=safe (-d) / `!`=force (-D).
-    GitDeleteBranch { name: String },
     /// A transfer received via file drag & drop (through a terminal paste). `c`=copy / `m`=move / Esc=cancel.
     /// `sources`=the dropped existing paths, `dir`=the drop destination (directory based on the cursor).
     DropTransfer { sources: Vec<PathBuf>, dir: PathBuf },
@@ -720,6 +587,66 @@ pub fn sizeof_app() -> usize {
     std::mem::size_of::<App>()
 }
 
+/// Join the startup `notices` (most important first) with " / " so that they fit `width` columns:
+/// as many as fit from the front, then a "(+n more)" for the rest. Keep the first notice as the
+/// priority anchor; `fit_flash_notices` bounds it with an ellipsis while reserving the count.
+pub(crate) fn fit_notices(
+    notices: Vec<String>,
+    width: usize,
+    lang: crate::i18n::Lang,
+) -> Option<String> {
+    use unicode_width::UnicodeWidthStr;
+    let total = notices.len();
+    for shown in (1..=total).rev() {
+        let mut text = notices[..shown].join(" / ");
+        let hidden = total - shown;
+        if hidden > 0 {
+            text.push(' ');
+            text.push_str(
+                &tr(lang, crate::i18n::Msg::KeymapMore).replace("{n}", &hidden.to_string()),
+            );
+        }
+        if shown == 1 || text.width() <= width {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// Keep the original notices alongside their rendered form, so later guidance and resizes can
+/// refit the entire list. A direct replacement of `App::flash` invalidates this provenance.
+struct NoticeFlash {
+    notices: Vec<String>,
+    rendered: String,
+    width: usize,
+}
+
+fn fit_flash_notices(notices: &[String], width: usize, lang: crate::i18n::Lang) -> Option<String> {
+    use unicode_width::UnicodeWidthStr;
+    let text = fit_notices(notices.to_vec(), width, lang)?;
+    if text.width() <= width {
+        return Some(text);
+    }
+    // fit_notices deliberately keeps an overlong first notice. Bound that one here while
+    // reserving the existing localized count, rather than letting the footer cut the count off.
+    let suffix = if notices.len() > 1 {
+        format!(
+            " {}",
+            tr(lang, crate::i18n::Msg::KeymapMore).replace("{n}", &(notices.len() - 1).to_string())
+        )
+    } else {
+        String::new()
+    };
+    Some(if suffix.width() < width {
+        format!(
+            "{}{suffix}",
+            crate::ui::status::truncate_display(&notices[0], width - suffix.width())
+        )
+    } else {
+        crate::ui::status::truncate_display(&text, width)
+    })
+}
+
 /// Size of one `PerTab` in bytes. `PerTab` is cloned per tab (snapshot / restore), so a regression
 /// that inlines a large buffer into it multiplies memory by the tab count — this guards against that.
 #[cfg(test)]
@@ -727,17 +654,70 @@ pub fn sizeof_pertab() -> usize {
     std::mem::size_of::<PerTab>()
 }
 
+/// The host's half of [`SvgTrust`]: drawing it again goes through the supervised child process
+/// (`preview::svg_proc`), which the display crates cannot depend on.
+pub trait SvgTrustExt {
+    #[cfg(test)]
+    fn is_untrusted(&self) -> bool;
+    fn draw(
+        &self,
+        svg: &[u8],
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<image::DynamicImage>;
+}
+
+impl SvgTrustExt for SvgTrust {
+    /// Whether this SVG is drawn by the supervised child process (anything but konoma's own).
+    #[cfg(test)]
+    fn is_untrusted(&self) -> bool {
+        !matches!(self, SvgTrust::Trusted(_))
+    }
+
+    /// Draw `svg` at `max_px` the way its origin allows. The one function the first drawing, the
+    /// drawing again (sharp zoom, evicted pixels) and the full-screen re-raster all go through, so
+    /// the same SVG never changes how it looks (a relative `<image href>` is read, or not, the
+    /// same each time). `None`: it could not be drawn (or `cancelled` turned true).
+    fn draw(
+        &self,
+        svg: &[u8],
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<image::DynamicImage> {
+        match self {
+            SvgTrust::Trusted(p) => crate::preview::svg::rasterize_trusted(svg, p, max_px),
+            SvgTrust::File(p) => {
+                crate::preview::svg::rasterize_untrusted(svg, p, max_px, cancelled).ok()
+            }
+            SvgTrust::FileWithin(p, roots) => crate::preview::svg::rasterize_untrusted_within(
+                svg,
+                p,
+                Some(roots),
+                max_px,
+                cancelled,
+            )
+            .ok(),
+            SvgTrust::Embedded => {
+                crate::preview::svg::rasterize_embedded(svg, max_px, cancelled).ok()
+            }
+        }
+    }
+}
+
 /// The media payload loaded on a separate thread (sent back to the UI thread).
 pub enum MediaPayload {
+    FilePreview(Box<file_preview_resolution::FilePreviewReply>),
     /// A still image (single-frame GIF / video thumb / PDF page) → goes to image_src.
     Static(image::DynamicImage),
-    /// All GIF frames (composited RGBA + delay) → goes to gif_frames.
+    /// All GIF frames (composited RGBA + delay) → goes to the GIF player (`App::gif`).
     Gif(Vec<(image::DynamicImage, std::time::Duration)>),
     /// A raster of a vector source (SVG file / mermaid diagram). The SVG is retained so zooming
     /// re-rasterizes at the needed density (sharp zoom) instead of blowing up pixels.
     Vector {
         img: image::DynamicImage,
         svg: std::sync::Arc<Vec<u8>>,
+        /// How `svg` is drawn again.
+        trust: SvgTrust,
     },
     /// Text-mode `PreviewKind::Command` output: the temp file its captured stdout / `{out}`
     /// artifact was written to. Goes to `tab.command_out`, which the windowed (less-style) text
@@ -754,86 +734,43 @@ pub enum MediaPayload {
     /// unsupported format) — carried as a payload so the reason travels through the same
     /// generation-checked channel as success. Goes to `App::image_failure`.
     ImageFailed(crate::preview::image::ImageFailure),
-    /// An opened spreadsheet (`PreviewKind::Spreadsheet`: its sheet list and the cells of the one
-    /// sheet that was asked for) → goes to `App::workbook`.
-    Workbook(Box<crate::preview::office::Workbook>),
-    /// A spreadsheet that could not be loaded; the reason is mapped to a translated message by the
-    /// render side. Carried as a payload (not the plain `None` failure) so the *reason* travels
-    /// through the same generation-checked channel as success.
-    WorkbookFailed(crate::preview::office::OfficeError),
-    /// An opened Word document (`PreviewKind::Document`): its Markdown and pictures → goes to
-    /// `App::document`.
-    Document(Box<office_doc::LoadedDocument>),
-    /// A Word document that could not be loaded (the reason maps to a translated message on the
-    /// render side), carried like [`MediaPayload::WorkbookFailed`].
-    DocumentFailed(crate::preview::office::OfficeError),
+    /// A plugin's result (`PreviewKind::Plugin`): the session, its layout, the view it returned
+    /// and, when that was a picture, the picture decoded on the same worker
+    /// (`app/plugin_host.rs`).
+    Plugin(Box<plugin_host::PluginResult>),
+    /// What a plugin's `open` learned (the page count of a PDF), sent ahead of the first picture.
+    /// Not a final result: the loading mark stays until the real one lands.
+    PluginLayout(Box<plugin_host::PluginLayoutMsg>),
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
 pub struct MediaResult {
     gen: u64,
-    /// The result of the (single) workbook load thread: its slot is free again, whatever `gen` is.
-    wb_worker: bool,
     /// None = decode/rasterize failure (the render side shows a fallback).
     payload: Option<MediaPayload>,
 }
 
-/// An Office load (a workbook or a Word document) waiting for the running one to end
-/// (`App::wb_queued`). Both kinds share the one Office worker slot.
-struct WbRequest {
-    /// `MediaJob::Workbook` or `MediaJob::Document`.
-    job: MediaJob,
-    /// The `media_gen` it was asked under; stale (dropped) if that moved on.
-    gen: u64,
+impl MediaResult {
+    /// Test-only: whether this is only the layout a plugin's `open` learned, sent ahead of its
+    /// picture (the loading is not over).
+    #[cfg(test)]
+    pub fn is_layout_only(&self) -> bool {
+        matches!(self.payload, Some(MediaPayload::PluginLayout(_)))
+    }
 }
 
-/// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
-type KittyGeom = ((u32, u32, u32, u32), u16, u16);
-
-/// Result of an async kitty image build (resize + `o=z` compress) from a worker thread. Matched by
-/// `gen` (latest-wins): a build superseded by a newer zoom/pan is discarded. None = build failed.
-pub struct KittyResult {
-    gen: u64,
-    image: Option<crate::preview::kitty::KittyImage>,
-}
+pub use konoma_widgets::image_view::KittyResult;
 
 /// Heavy media loading to run on a separate thread (pure work that does not reference App).
 enum MediaJob {
-    /// Rasterize an SVG (path, max-edge px). Vector-backed: keeps the source for sharp zoom.
-    Svg(PathBuf, u32),
-    /// Decode a still image (PNG/JPEG/...). On a worker so that a very large image never stalls the UI.
-    Still(PathBuf),
-    /// Expand all GIF frames. Falls back to still-image decode for single-frame/non-animated GIFs.
-    Gif(PathBuf),
-    /// Extract one representative frame from a video — decoded in pure Rust for H.264 in
-    /// mp4/m4v/mov, with ffmpegthumbnailer/ffmpeg behind it for everything else and only when the
-    /// `bool` (`[external] video`) allows launching them. Thumbnail only; no playback.
-    Video(PathBuf, bool),
-    /// Rasterize page N (1-based) of a PDF — `hayro` (pure Rust) first, macOS's bundled
-    /// `qlmanage`/`sips` only as a page-1 fallback and only when the `bool` (`[external] pdf`)
-    /// allows it. Loaded one page at a time.
-    Pdf(PathBuf, u32, bool),
-    /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme,
-    /// curve, routing). None (unsupported diagram / parse failure) → the caller's text-diagram
-    /// fallback shows.
-    Mermaid(PathBuf, u32, String, String, String),
     /// Render mermaid source text (a ```mermaid fence opened full-screen) and rasterize it
-    /// (source, max-edge px, theme, curve, routing).
-    MermaidSrc(String, u32, String, String, String),
-    /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
-    /// the base for relative resources inside the SVG (mermaid output has none).
-    /// The `bool` is whether the SVG came from a file (drawn by a supervised child process) rather
-    /// than from konoma's own mermaid renderer.
-    SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32, bool),
-    /// Open a spreadsheet and read one sheet of it (path, the display locale that decides
-    /// locale-dependent built-in formats, the 0-based visible sheet to read). Always yields a
-    /// payload: a workbook (every visible sheet listed, the requested one's cells loaded), or the
-    /// reason it could not be opened.
-    Workbook(PathBuf, crate::preview::office::Locale, usize),
-    /// Open a Word document and convert it to Markdown (+ its pictures). Always yields a payload:
-    /// the document, or the reason it could not be opened. Runs on the Office worker slot, so it
-    /// is serialised with workbook loads and stops when its generation is superseded.
-    Document(PathBuf, crate::i18n::Lang),
+    /// (source, max-edge px, the plugin that takes `fence:mermaid` with its settings). None
+    /// (unsupported diagram / parse failure / the plugin switched off) → the caller's
+    /// "unavailable" screen shows.
+    MermaidSrc(String, u32, embed_plugin::EmbedRender),
+    /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom), the way it was
+    /// drawn the first time (`SvgTrust`).
+    SvgReraster(std::sync::Arc<Vec<u8>>, SvgTrust, u32),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -853,116 +790,37 @@ impl MediaJob {
         self.run_cancellable(None)
     }
 
-    /// [`Self::run`]; `cancel` is honoured by the workbook load (the other kinds are short).
+    /// [`Self::run`]; `cancel` stops the drawing of an untrusted SVG (`SvgReraster`). The other jobs
+    /// are short, and the plugins' own work is cancelled by the generation (`plugin_host`).
     fn run_cancellable(
         self,
         cancel: Option<crate::preview::office::Cancel>,
     ) -> Option<MediaPayload> {
         match self {
-            MediaJob::Svg(p, max_px) => {
-                // A file the user opened: drawn by a supervised child process (`svg_proc`).
-                let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
-                let data = match crate::preview::svg::read_limited(&p) {
-                    Ok(d) => d,
-                    Err(why) => {
-                        return Some(MediaPayload::ImageFailed(
-                            crate::preview::image::ImageFailure::Svg(why),
-                        ))
-                    }
-                };
-                let img =
-                    match crate::preview::svg::rasterize_untrusted(&data, &p, max_px, &cancelled) {
-                        Ok(img) => img,
-                        Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
-                    };
-                Some(MediaPayload::Vector {
-                    img,
-                    svg: std::sync::Arc::new(data),
-                })
-            }
-            MediaJob::Still(p) => Some(still_payload(&p)),
-            MediaJob::Gif(p) => match crate::preview::image::decode_gif(&p) {
-                Some(frames) => Some(MediaPayload::Gif(frames)),
-                // A single-frame / non-animated GIF → display as a still image.
-                None => Some(still_payload(&p)),
-            },
-            MediaJob::Video(p, allow_external) => {
-                crate::preview::video::thumbnail(&p, allow_external).map(MediaPayload::Static)
-            }
-            MediaJob::Pdf(p, page, allow_external) => {
-                crate::preview::pdf::render_page(&p, page, allow_external).map(MediaPayload::Static)
-            }
-            MediaJob::Mermaid(p, max_px, theme, curve, routing) => {
-                let code = std::fs::read_to_string(&p).ok()?;
-                MediaJob::MermaidSrc(code, max_px, theme, curve, routing).run()
-            }
-            MediaJob::MermaidSrc(code, max_px, theme, curve, routing) => {
-                let svg =
-                    crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)?;
-                let data = svg.into_bytes();
-                let img = crate::preview::svg::rasterize_trusted(
-                    &data,
-                    Path::new("mermaid.svg"),
+            MediaJob::MermaidSrc(code, max_px, embed) => {
+                let (img, svg) = embed.picture(
+                    embed_plugin::FENCE_MERMAID,
+                    &code,
+                    false,
                     max_px,
-                )?;
-                Some(MediaPayload::Vector {
-                    img,
-                    svg: std::sync::Arc::new(data),
-                })
-            }
-            MediaJob::SvgReraster(svg, p, max_px, untrusted) => {
-                let img = if untrusted {
-                    let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
-                    crate::preview::svg::rasterize_untrusted(&svg, &p, max_px, &cancelled).ok()?
+                    "mermaid",
+                    "mermaid.svg",
+                );
+                let trust = if embed.trusts_svg() {
+                    SvgTrust::Trusted(PathBuf::from("mermaid.svg"))
                 } else {
-                    crate::preview::svg::rasterize_trusted(&svg, &p, max_px)?
+                    SvgTrust::Embedded
                 };
-                Some(MediaPayload::Vector { img, svg })
-            }
-            MediaJob::Workbook(p, locale, sheet) => {
-                use crate::preview::office::{
-                    load_workbook_sheet_cancellable, LoadOptions, OfficeError,
-                };
-                let opts = LoadOptions {
-                    locale,
-                    ..LoadOptions::default()
-                };
-                // The readers sit on third-party parsers: a panic on a pathological file becomes a
-                // "corrupt" reason instead of killing the thread (principle #3).
-                let loaded = crate::preview::markdown::catch_silent(|| {
-                    load_workbook_sheet_cancellable(&p, &opts, sheet, cancel)
-                })
-                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
-                Some(match loaded {
-                    Ok(wb) => MediaPayload::Workbook(Box::new(wb)),
-                    Err(e) => MediaPayload::WorkbookFailed(e),
+                Some(MediaPayload::Vector {
+                    img: img.ok()?,
+                    svg: svg?,
+                    trust,
                 })
             }
-            MediaJob::Document(p, lang) => {
-                use crate::preview::office::docx::pptx::load_presentation_cancellable;
-                use crate::preview::office::docx::{load_document_cancellable, DocOptions};
-                use crate::preview::office::OfficeError;
-                let opts = DocOptions {
-                    lang,
-                    ..DocOptions::default()
-                };
-                let slides = office_doc::is_presentation_path(&p);
-                // The reader sits on third-party parsers: a panic on a pathological file becomes a
-                // "corrupt" reason instead of killing the thread (principle #3).
-                let loaded = crate::preview::markdown::catch_silent(|| {
-                    if slides {
-                        load_presentation_cancellable(&p, &opts, cancel.as_ref())
-                    } else {
-                        load_document_cancellable(&p, &opts, cancel.as_ref())
-                    }
-                })
-                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
-                Some(match loaded {
-                    Ok(doc) => MediaPayload::Document(Box::new(
-                        office_doc::LoadedDocument::from_document(doc),
-                    )),
-                    Err(e) => MediaPayload::DocumentFailed(office_doc::legacy_binary_reason(&p, e)),
-                })
+            MediaJob::SvgReraster(svg, trust, max_px) => {
+                let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                let img = trust.draw(&svg, max_px, &cancelled)?;
+                Some(MediaPayload::Vector { img, svg, trust })
             }
             MediaJob::Command {
                 argv,
@@ -996,12 +854,22 @@ impl MediaJob {
     }
 }
 
-/// Decode a still image for the full-screen preview: the picture, or why there is none.
-fn still_payload(path: &Path) -> MediaPayload {
-    match crate::preview::image::decode_static_why(path) {
-        Ok(img) => MediaPayload::Static(img),
-        Err(why) => MediaPayload::ImageFailed(why),
+/// Run one delegated command to completion and report what it produced (`MediaPayload::CommandText`,
+/// `MediaPayload::Static` for an image, or `MediaPayload::CommandFailed`). The `command` plugin's
+/// `view` calls this on a worker; the job itself is the one the delegation always ran.
+pub(crate) fn run_command_job(
+    argv: Vec<String>,
+    out: PathBuf,
+    uses_out: bool,
+    as_image: bool,
+) -> Option<MediaPayload> {
+    MediaJob::Command {
+        argv,
+        out,
+        uses_out,
+        as_image,
     }
+    .run()
 }
 
 /// Result of the **heavy ignored set (`git::ignored`)** computed on a separate thread. Staleness is judged by `gen`, and
@@ -1054,6 +922,7 @@ struct MediaCache {
     src: std::sync::Arc<image::DynamicImage>,
     logical: Option<(u32, u32)>,
     vector_svg: Option<std::sync::Arc<Vec<u8>>>,
+    vector_trust: Option<SvgTrust>,
 }
 
 /// Result of `git status` + branch computed on a separate thread. Staleness is judged by `gen` exactly like
@@ -1079,300 +948,19 @@ pub struct StatusResult {
     vcs: crate::vcs::VcsKind,
 }
 
-/// Which of the two Markdown block-diff computations (`docs/STATUS.md` ★未修正 item 4,
-/// `docs/FEATURE-MD-RENDERED-DIFF.md` §2/§3) a [`MdDiffRequest`] is for. Both share the identical
-/// "resolve old/new text, preprocess, `diff_align`" shape (`App::compute_md_diff` is the one
-/// implementation of it) and differ only in *which* text each side reads and what a missing
-/// baseline means — see that fn's own doc comment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MdDiffKind {
-    /// The ordinary decorated preview's change gutter (§3) — old vs the current file.
-    Gutter,
-    /// The diff's `Rendered` presentation (§2) — old vs the current file, both preprocessed.
-    Rendered,
-}
+pub use konoma_plugin::host::project::md_diff::MdDiffResult;
+pub(crate) use konoma_plugin::host::project::md_diff::{
+    DiffBaseline, MdDiffKind, MdDiffOutcome, MdDiffRequest,
+};
 
-/// Which "old version" bytes a block-diff request should read, resolved on the UI thread
-/// (`App::diff_baseline`) from already-in-memory state (a `HashMap` lookup, no disk/subprocess
-/// I/O) so the worker thread never needs `&App` at all — only this plain-data instruction plus the
-/// backend calls it names (`vcs::base_contents`/`git::blob_at`, which touch the filesystem/git
-/// object store, never `App`).
-///
-/// Every variant but `Vcs` is only ever constructed on a `git`-feature build (`App::diff_baseline`'s
-/// follow-session branch is itself `#[cfg(feature = "git")]`) — `#[allow(dead_code)]` on a no-`git`
-/// build, not unreachable.
-#[derive(Clone)]
-pub(crate) enum DiffBaseline {
-    /// The backend's committed baseline — git HEAD blob / jj `@-` (`vcs::base_contents`).
-    Vcs,
-    /// A follow-session snapshot already held in memory at follow-start — no I/O needed.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    FollowSnapshot(Vec<u8>),
-    /// A follow-session baseline that is the pinned HEAD blob — the worker fetches it
-    /// (`git::blob_at`, a subprocess under jj).
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    FollowHead { sha: String },
-    /// No baseline at all (untracked / no repository / dirty-but-too-large-to-snapshot at
-    /// follow-start).
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    Empty,
-}
-
-/// A Markdown block-diff computation request handed to the worker thread (or run synchronously —
-/// `App::spawn_or_sync_md_diff`). Carries everything `App::compute_md_diff` needs as **plain
-/// data**, resolved on the UI thread ahead of time, so that pure function never touches `App`.
-pub(crate) struct MdDiffRequest {
-    gen: u64,
-    path: PathBuf,
-    root: PathBuf,
-    kind: MdDiffKind,
-    baseline: DiffBaseline,
-    md_frontmatter: bool,
-    md_footnotes: bool,
-    md_inline_html: bool,
-}
-
-/// Outcome of a Markdown block-diff computation (`docs/FEATURE-MD-RENDERED-DIFF.md` §5's
-/// degenerate cases). `Doc`s are never sent across the channel (they borrow from `old_pre`/
-/// `new_pre`, which would make this self-referential) — the UI thread re-parses them from these
-/// owned strings when it actually needs to render (`App::ensure_md_cache`), a cheap `Doc::parse`
-/// (~1.7ms at 20k lines) compared to the I/O + preprocessing + `block_ops` this offloads.
-#[derive(Clone, Debug)]
-pub(crate) enum MdDiffOutcome {
-    Ready {
-        old_pre: String,
-        new_pre: String,
-        ops: Vec<crate::preview::markdown::BlockOp>,
-        /// Whether `ops` marks any change at all — `GutterAlign::is_active`'s own `ops_has_any_change`
-        /// re-derives this from `ops` for production use (so it's dead code outside tests), but
-        /// tests read it directly off a landed outcome without needing an `align` to hand.
-        #[cfg_attr(not(test), allow(dead_code))]
-        any_change: bool,
-        /// The block-diff found no change (`!any_change`) even though the raw file bytes differ —
-        /// the only difference is in front matter, which is stripped before either side ever
-        /// reaches `Doc::parse`. Only meaningful for `MdDiffKind::Rendered` (`App::apply_md_diff`
-        /// flashes `DiffRenderedFrontMatterOnly`); `Gutter` never reads it.
-        front_matter_only: bool,
-    },
-    /// The current file is over the size cap, not valid UTF-8, or unreadable. `Rendered` falls
-    /// back to `Source` with a flash (`App::apply_md_diff`); `Gutter` simply shows no gutter.
-    Unavailable,
-    /// No committed baseline exists at all (untracked file / outside a repo). Only ever returned
-    /// for `MdDiffKind::Gutter` — an ordinary preview then has no gutter, matching the pre-worker
-    /// `GutterAlign::None` contract. `MdDiffKind::Rendered` never returns this: a missing baseline
-    /// there is §5's "旧版が無い…全ブロック Insert", which `App::compute_md_diff` already resolves
-    /// into an ordinary `Ready` (comparing against an empty old side) rather than a separate case.
-    NoBaseline,
-}
-
-/// Result of a Markdown block-diff computed on a separate thread, returned via `App::md_diff_tx`.
-/// Staleness is judged by `gen` exactly like [`StatusResult`]/[`IgnoredResult`].
-pub struct MdDiffResult {
-    gen: u64,
-    path: PathBuf,
-    kind: MdDiffKind,
-    outcome: MdDiffOutcome,
-}
-
-// ---- Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) ------------------
-
-/// Which base a media diff's "old" side was actually compared against — reported alongside the
-/// computed outcome so a caption can name the real baseline even when a follow session degraded to
-/// it (a follow baseline with no usable snapshot for this file falls back to the committed baseline;
-/// see `App::media_diff_baseline`'s own doc comment). Read by `ui/preview.rs::render_gitdiff_media`'s
-/// caption (`App::media_base_msg`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MediaBase {
-    Head,
-    JjParent,
-    FollowStart,
-}
-
-/// The three picture-capable kinds a media diff can pair up side by side — everything else
-/// (video/archive/table/unsupported) degrades to
-/// [`MediaDiffOutcome::Summary`]/[`MediaDiffComputed::Summary`] instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MediaDiffKind {
-    Image,
-    Svg,
-    Pdf,
-}
-
-/// One side's fully-decoded picture, still carrying its pixel data — only ever lives inside
-/// [`MediaDiffComputed`] on its way from the worker thread to `App::apply_media_diff`, which moves
-/// the pixels into `md_image_cache` (under a `media_diff_url` key) and keeps only a lightweight
-/// [`MediaDiffPicture`] in `App::media_diff_landed` — the same split `MdImageResult`/`MdImgEntry`
-/// already have for mermaid/math renders.
-#[derive(Debug)]
-pub(crate) struct MediaDiffPictureDecoded {
-    /// This side's **intrinsic** size, in the kind's own natural unit — a raster image's real
-    /// (file-header) pixel dimensions, an SVG's **viewBox** size, or a PDF page's size in **points**.
-    /// **Not** `image.dimensions()`/`frames[0].dimensions()` (the decoded raster's own pixel size),
-    /// which depends on kind-specific rendering choices not comparable across the two sides of one
-    /// diff: a PDF page rasterizes to a fixed longest side regardless of its point size, an SVG
-    /// rasterizes to fit the caller's `raster_px` box regardless of its viewBox, and a GIF's frames
-    /// may be downscaled by the inline decode budget — so two *different* intrinsic sizes can decode
-    /// to *similar or identical* raster dimensions, which would make `preview::media_diff::layout`'s
-    /// shared-scale math compare apples to oranges (a physically smaller PDF page rendered visibly
-    /// *larger* than the original, both having rasterized to the same longest side). `layout`'s own
-    /// fit math must be driven by *this* field — the terminal encoder never re-derives its own fit
-    /// from the decoded raster instead (`App::poll_md_encode` always passes media-diff pictures
-    /// through `Resize::Scale`, never `Fit`, resizing the decoded raster to exactly the cell box
-    /// `layout` already decided).
-    natural_px: (u32, u32),
-    bytes: u64,
-    page_count: Option<u32>,
-    /// How the SVG kept in `svg` was drawn the first time (see `MdImgEntry::svg_trust`).
-    svg_trust: crate::preview::svg::SvgTrust,
-    image: image::DynamicImage,
-    frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
-    svg: Option<Arc<Vec<u8>>>,
-    cache_key: PathBuf,
-}
-
-/// One side's outcome, still carrying pixel data where present (`MediaDiffComputed`'s own per-side
-/// shape). Boxes its `Picture` payload so `MediaDiffComputed::Ready`'s two sides don't double the
-/// cost of `MediaDiffPictureDecoded`'s own size (`clippy::large_enum_variant`) — a plain pointer
-/// indirection, not a behavior change.
-#[derive(Debug)]
-pub(crate) enum MediaDiffSideDecoded {
-    /// The file doesn't exist on this side (new/untracked, or deleted).
-    Absent,
-    /// Bytes were read but could not be decoded as this diff's `kind` (corrupt image, encrypted/
-    /// unparsable PDF, invalid SVG).
-    Failed {
-        reason: String,
-    },
-    /// A PDF page beyond this side's own page count.
-    PageMissing,
-    Picture(Box<MediaDiffPictureDecoded>),
-}
-
-/// The lightweight, stored form of one side's picture — everything a caption/layout needs, with no
-/// pixel data (that already lives in `md_image_cache` under `cache_key`).
-#[derive(Clone, Debug)]
-pub(crate) struct MediaDiffPicture {
-    // Read by `ui/preview.rs::draw_media_caption` (git-gated) for the caption's "WxH", and by
-    // `ui/preview.rs::media_side_natural_px` (git-gated) as `preview::media_diff::layout`'s own
-    // sizing input — dead on `--no-default-features`. See `MediaDiffPictureDecoded::natural_px`'s
-    // own doc comment for why the *intrinsic* size (not the decoded raster's) is what sizing math
-    // must use.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub(crate) natural_px: (u32, u32),
-    pub(crate) bytes: u64,
-    pub(crate) page_count: Option<u32>,
-    pub(crate) cache_key: PathBuf,
-}
-
-/// The stored (landed) form of one side's outcome — the `MediaDiffSideDecoded` counterpart with no
-/// pixel data.
-#[derive(Clone, Debug)]
-pub(crate) enum MediaDiffSide {
-    Absent,
-    Failed {
-        // Read by `ui/preview.rs::draw_media_side`'s "cannot display: <reason>" placeholder
-        // (git-gated) — dead on `--no-default-features`.
-        #[cfg_attr(not(feature = "git"), allow(dead_code))]
-        reason: String,
-    },
-    PageMissing,
-    Picture(MediaDiffPicture),
-}
-
-/// The pure computation's raw result (`App::compute_media_diff`) — still carrying pixel data where a
-/// side decoded into a picture. Travels from the worker thread to the run loop inside
-/// [`MediaDiffResult`]; `App::apply_media_diff` turns it into a stored [`MediaDiffOutcome`].
-#[derive(Debug)]
-pub(crate) enum MediaDiffComputed {
-    /// Both sides were resolved against a picture-capable `kind` (their own decode may still have
-    /// individually failed/been absent — see [`MediaDiffSideDecoded`]).
-    Ready {
-        kind: MediaDiffKind,
-        base: MediaBase,
-        same_bytes: bool,
-        old: MediaDiffSideDecoded,
-        new: MediaDiffSideDecoded,
-    },
-    /// Not a picture-capable kind, or a side is over the byte cap: sizes only, no decode.
-    Summary {
-        base: MediaBase,
-        same_bytes: bool,
-        old_len: Option<u64>,
-        new_len: Option<u64>,
-    },
-    /// The worker panicked, or the request could not be resolved at all (`compute_or_fallback`'s
-    /// fallback value).
-    Unavailable,
-}
-
-/// The stored (landed) form of [`MediaDiffComputed`] — the `Ready`/`Summary`/`Unavailable` shapes are
-/// identical, only the per-side payload loses its pixel data (see [`MediaDiffSide`]).
-#[derive(Clone, Debug)]
-pub(crate) enum MediaDiffOutcome {
-    Ready {
-        kind: MediaDiffKind,
-        // Read by `ui/preview.rs::draw_media_caption` (git-gated: the side-by-side view is only
-        // ever drawn there) for the old-side caption's base label — dead on a `--no-default-
-        // features` build, where that whole render path is compiled out.
-        #[cfg_attr(not(feature = "git"), allow(dead_code))]
-        base: MediaBase,
-        same_bytes: bool,
-        old: MediaDiffSide,
-        new: MediaDiffSide,
-    },
-    Summary {
-        // Carried through for symmetry with `Ready` and because a future consumer (or a test) may
-        // want it, but the binary-summary line itself never names a base — only sizes — so nothing
-        // in production reads this field today.
-        #[allow(dead_code)]
-        base: MediaBase,
-        same_bytes: bool,
-        old_len: Option<u64>,
-        new_len: Option<u64>,
-    },
-    Unavailable,
-}
-
-/// A media-diff computation request handed to the worker thread (or run synchronously —
-/// `App::spawn_or_sync_media_diff`). Carries everything `App::compute_media_diff` needs as plain
-/// data, resolved on the UI thread ahead of time (mirrors [`MdDiffRequest`]'s own doc comment on why
-/// `preview_rules`/`preview_commands` ride along here instead of `&Config`: the worker thread has no
-/// access to `App`/`Config` at all).
-pub(crate) struct MediaDiffRequest {
-    gen: u64,
-    path: PathBuf,
-    root: PathBuf,
-    baseline: DiffBaseline,
-    /// 1-based PDF page (ignored for every other kind).
-    page: u32,
-    /// Target pixel box an SVG/PDF side is rasterized to fit (the pane's own image area in px —
-    /// `preview::media_diff::layout`'s output converted to px by the caller). Ignored for a raw
-    /// raster image, whose decode doesn't depend on the display box at all.
-    raster_px: (u32, u32),
-    preview_rules: Vec<crate::config::Rule>,
-    preview_commands: bool,
-    /// Set by the UI thread when nobody wants this computation any more (the want changed or the
-    /// baseline moved): a drawing of an untrusted SVG then stops at once instead of holding its
-    /// child process for the whole time limit.
-    cancel: Arc<AtomicBool>,
-}
-
-/// Result of a media-diff computation, returned via `App::media_diff_tx`. Staleness is judged by
-/// `gen` exactly like [`MdDiffResult`].
-pub struct MediaDiffResult {
-    gen: u64,
-    path: PathBuf,
-    /// The 1-based PDF page this result answers for (mirrors `MediaDiffRequest::page`).
-    page: u32,
-    /// The raster target this result was decoded at (mirrors `MediaDiffRequest::raster_px`).
-    raster_px: (u32, u32),
-    computed: MediaDiffComputed,
-}
-
-/// `App::media_diff_landed`'s key: `(path, page, raster_px, gen)` it answers for, plus the outcome
-/// itself. A named alias only to keep the field declaration under `clippy::type_complexity`'s
-/// threshold — see `App::media_diff_landed`'s own doc comment for what each element means.
-type MediaDiffLandedKey = (PathBuf, u32, (u32, u32), u64, MediaDiffOutcome);
+#[cfg(all(test, feature = "git"))]
+pub(crate) use konoma_plugin::host::project::media_diff::MediaDiffPicture;
+pub use konoma_plugin::host::project::media_diff::MediaDiffResult;
+#[cfg(any(test, feature = "git"))]
+pub(crate) use konoma_plugin::host::project::media_diff::MediaDiffSide;
+pub(crate) use konoma_plugin::host::project::media_diff::{
+    MediaBase, MediaDiffComputed, MediaDiffKind, MediaDiffOutcome, MediaDiffRequest,
+};
 
 /// Which long-running filesystem operation a background job is performing.
 /// The variants differ in the completion message and in whether a failing target aborts the
@@ -1431,16 +1019,7 @@ pub struct FileOpResult {
 /// worse than the freeze — and a slow-but-legitimate hook is not an error to abort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitOpKind {
-    Stage,
-    Unstage,
-    StageAll,
-    UnstageAll,
     Discard,
-    Commit,
-    Checkout,
-    CreateBranch,
-    DeleteBranch,
-    WorktreeAdd,
 }
 
 /// A queued git write handed to the background worker (or run synchronously when no worker is
@@ -1457,22 +1036,14 @@ pub struct GitOpJob {
     /// alongside `root`. `root` alone cannot answer "did *this* tab ask for it": `t` opens the new
     /// tab at the current root, so two tabs sharing a root is the ordinary case.
     tab_id: u64,
-    /// Path operand: the file for `Stage`/`Unstage`/`Discard`, the new directory for `WorktreeAdd`.
-    /// Empty for the kinds that take no path.
+    /// The file to discard.
     path: PathBuf,
-    /// Text operand: the message for `Commit`, the branch name for `Checkout`/`CreateBranch`/
-    /// `DeleteBranch`/`WorktreeAdd`. Empty for the kinds that take no text.
-    text: String,
-    /// `DeleteBranch`: force (`-D` instead of `-d`). `WorktreeAdd`: also create the branch (`-b`).
-    flag: bool,
     /// Pre-formatted display text for the completion flash, resolved on the UI thread at dispatch
     /// time. `format_path` renders relative to the *dispatching* tab's `open_dir`, and by the time
     /// the result lands the active tab may be a different one — so the label is frozen here rather
     /// than recomputed in `apply_git_op` (same "resolve what needs `&self` before dispatch" rule as
     /// `FileOpJob::err_failed`).
     label: String,
-    /// `StageAll`: how many entries the Git view listed at dispatch time (the count in its flash).
-    count: usize,
 }
 
 /// Outcome of a background git write, applied on the run loop's thread by `App::apply_git_op`.
@@ -1485,27 +1056,25 @@ pub struct GitOpResult {
     /// The dispatching tab's identity (copied from `GitOpJob`), which answers the stricter question
     /// "is the active tab the one that asked".
     tab_id: u64,
-    path: PathBuf,
-    text: String,
     label: String,
-    count: usize,
     /// `None` = success. Otherwise git's own message, produced by `git.rs`'s `git_error_message`
     /// (stderr's first `fatal:` line first, so the reason is never pushed off the end of the flash).
     err: Option<String>,
 }
 
 pub struct App {
+    pub(crate) project_runtimes:
+        std::collections::HashMap<project_screens::ProjectKey, project_worker::ProjectRuntime>,
+    pub(crate) project_dialog: Option<project_screens::ProjectDialog>,
+    project_replaying: konoma_plugin::host::project::ProjectReplayState,
     /// The directory opened at startup (immutable). The reset target for `A` ResetAnchor. Kept separately because open_dir moves with `a`.
     launch_dir: PathBuf,
     pub path_style: PathStyle,
-    pub key_scheme: KeyScheme,
     pub lang: crate::i18n::Lang,
     pub cfg: Config,
 
-    /// Tree sort settings (FR / M7 auxiliary). Global (not per-tab). Changed via the `s` menu.
+    /// Tree sort settings (FR / M7 auxiliary). Global (not per-tab). Changed via the `,` menu.
     pub sort: Sort,
-    /// Whether the `s` sort-selection menu is showing (while true, main intercepts keys).
-    sort_menu: bool,
     /// Bookmarks (M7 auxiliary). Lowercase a-z=local (per launch dir) / uppercase A-Z=global.
     pub bookmarks: crate::bookmarks::Bookmarks,
     /// Tab-session persistence (`[ui] restore_tabs`). Attached by main like the loader senders;
@@ -1522,6 +1091,14 @@ pub struct App {
     bookmark_list: bool,
     /// Selection position in the list (a flat index over local on top and global below, concatenated).
     bookmark_list_sel: usize,
+    /// The `/` filter of the overlay lists (bookmark list, tab list, outline / page list): the
+    /// query and whether it is being typed. App-global like the overlays; see `list_filter`.
+    bookmark_list_filter: String,
+    bookmark_list_filtering: bool,
+    tab_list_filter: String,
+    tab_list_filtering: bool,
+    outline_filter: String,
+    outline_filtering: bool,
     /// Confirmation/input dialog (create `a` / rename `R` / delete `D`). While showing, main intercepts keys.
     dialog: Option<Dialog>,
     /// File clipboard (M7 Phase B). Push with `Y`=copy/`X`=cut, apply with `P`=paste.
@@ -1548,6 +1125,8 @@ pub struct App {
     /// under `diff_follow_scope`. See `docs/FEATURE-FOLLOW-BASELINE-2026-07.md`.
     #[cfg(feature = "git")]
     follow_baseline: Option<FollowBaseline>,
+    #[cfg(feature = "git")]
+    follow_worker: follow_worker::State,
     /// The tab root that was active when `follow_session`/`follow_baseline` were (re)captured. Follow
     /// mode is a global (not per-tab) mode, but its session and baseline describe one specific repo —
     /// tab switching, `l`/`h` navigation, worktree switching (`o`→`w`→`Enter`), paste-jump, and bookmark
@@ -1587,6 +1166,9 @@ pub struct App {
     /// the on-screen preview position; None = open at the top). The run loop takes it, suspends the TUI, and
     /// launches (because entering/leaving the terminal must happen on the render thread, here we only raise the "request").
     pending_edit: Option<(PathBuf, Option<usize>)>,
+    /// A launch chain that takes the terminal over (`Launch::Terminal`): the attempts (with `{line}`
+    /// filled in) and the directory they start in. The run loop hands the terminal over and walks them.
+    pending_terminal: Option<(Vec<konoma_plugin::launch::Attempt>, PathBuf)>,
 
     /// Flag requesting launch of an external git tool (lazygit, etc.) via `O`. The run loop takes it, suspends the TUI, and launches.
     pending_git_tool: bool,
@@ -1611,42 +1193,52 @@ pub struct App {
     /// For rendering, ui::preview passes `image` by &mut to StatefulImage. Resize/encode is
     /// offloaded to a separate thread via `img_tx`, and the result is applied in apply_image_resize.
     picker: Option<Picker>,
+    /// How many colors the terminal shows, read once from `COLORTERM` / `TERM` at startup and
+    /// handed to the plugins (`TermCaps::colors`); the host never converts a plugin's colors.
+    plugin_colors: konoma_plugin::ColorDepth,
+    /// Keys typed into a canvas that asked for text input and not yet handed to the plugin: they
+    /// wait here while a job holds the session and go, in order, in the next job
+    /// (`app/plugin_input.rs`).
+    plugin_key_queue: Vec<konoma_plugin::Key>,
+    /// `Esc` left the plugin's text input: the host does not take the typing again until the
+    /// plugin shows a canvas that does not ask for it (so a plugin cannot trap the user).
+    plugin_input_left: bool,
+    /// A declared action the user pressed is out (or its follow-up `view` is): the canvas that
+    /// answers it is "the user's" and may take the typing back after `Esc`
+    /// (`App::canvas_landed`). Cleared as the answer lands, and with the show.
+    plugin_user_act: bool,
+    /// The generation of the job `plugin_user_act` was set for: a stale answer of that job or of a
+    /// later one that is discarded takes the mark away (it is no longer the answer to the action).
+    plugin_user_act_gen: u64,
+    /// `plugin_session_returned` is running (0 = no, 1 = running, 2 = running and asked again):
+    /// an answer taken on the spot inside it only marks "more to do", the outer loop goes on.
+    plugin_returning: u8,
+    /// `plugin_session_returned` stopped at its per-call bound with work left (answers taken on
+    /// the spot keep asking for more): the run loop continues it next turn.
+    plugin_returned_pending: bool,
+    /// When the canvas on screen asked to be drawn again (`CanvasView::redraw_after`).
+    canvas_redraw_at: Option<std::time::Instant>,
+    /// When the host last asked the plugin again because canvas pictures were left for later (the
+    /// follow-up asks are at most one per `MIN_REDRAW_AFTER`).
+    canvas_more_at: Option<std::time::Instant>,
     img_tx: Option<UnboundedSender<ResizeRequest>>,
-    pub image: Option<ThreadProtocol>,
-    /// On a kitty-graphics terminal, still images take konoma's own transmit path instead of
-    /// ratatui-image's `image`/`ThreadProtocol`: the pixels are **zlib-compressed** (`o=z`), which
-    /// shrinks the terminal transfer 2×–50× (the real latency; see docs/PERF-IMAGE-TRANSFER-2026-07).
-    /// `use_kitty` is set from the picker's protocol type; on other terminals (sixel/iterm2/
-    /// halfblocks) `kitty_image` stays None and the `image` path is used unchanged.
-    use_kitty: bool,
-    kitty_is_tmux: bool,
-    /// The prepared compressed image for the current crop (None until built / on non-kitty terminals).
-    kitty_image: Option<crate::preview::kitty::KittyImage>,
+    /// The drawing state of the full-screen still image (zoom/pan crop, the protocol built for it).
+    pub image_viewer: konoma_widgets::image_view::ImageViewer,
     /// Offloads the kitty resize+compress (~30–50 ms) to a worker thread so rapid zoom/pan does not
     /// hitch the UI. The **first** build after opening a file stays synchronous (so the image appears
     /// without a blank frame); subsequent rebuilds (zoom/pan/resize) go async and the previous image
     /// keeps showing until the new one arrives. None in tests → everything runs synchronously.
     kitty_tx: Option<std::sync::mpsc::Sender<KittyResult>>,
-    /// Latest-wins generation for async kitty builds: only the newest spawn's result is applied.
-    kitty_gen: u64,
-    /// The (crop, cols, rows) the current kitty image (or in-flight build) targets. Prevents
-    /// re-spawning the same build every frame while the geometry is unchanged.
-    kitty_want: Option<KittyGeom>,
-    /// The geometry the **currently shown** kitty image was actually built for. A build is in flight
-    /// exactly when this differs from `kitty_want` (covers pan, where the cell size is unchanged).
-    kitty_shown: Option<KittyGeom>,
     /// The source image (decoded). Zoom/pan crops this at render time and rebuilds the protocol
     /// (because ratatui-image has no offset pan). Held in an `Arc` so the async kitty-build worker
     /// can share it without copying the (potentially large) pixels.
     image_src: Option<std::sync::Arc<image::DynamicImage>>,
-    /// The most recently built crop rectangle (source-image px: x,y,w,h). The protocol is rebuilt only when it changes.
-    image_crop: Option<(u32, u32, u32, u32)>,
-    /// The most recent visible fraction (0..1, w/h). Less than 1 = the image overflows the viewport and is clipped = pan is possible.
-    image_vis_frac: (f64, f64),
     /// SVG source of the current image preview when it is vector-backed (SVG file / mermaid diagram).
     /// Zooming past the raster's density re-rasterizes this at the needed scale on a worker thread
     /// ("sharp zoom"); raster images leave it None (pixel zoom only).
     vector_svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// How `vector_svg` is drawn again (`SvgTrust`): set with it.
+    vector_trust: Option<SvgTrust>,
     /// Logical (layout) pixel size of a vector-backed image = the dimensions of its **first** raster.
     /// `image_layout` sizes/zooms against this identity, so swapping in a sharper raster changes only
     /// pixel density, never the on-screen geometry (HiDPI-style backing store).
@@ -1659,15 +1251,22 @@ pub struct App {
     /// changes (scroll/focus moved a diagram, or the document was left), the run loop clears the
     /// terminal once to sweep orphaned kitty unicode-placeholder rows (they are printed into the
     /// terminal grid and a blank-over-blank diff never repaints them).
-    md_overlay_last: Option<u64>,
-    /// Overlay signature seen during the current frame (None until the overlay draws).
-    md_overlay_seen: Option<u64>,
-    /// The overlay moved/vanished since the previous frame → the run loop full-redraws once.
-    md_overlay_moved: bool,
+    md_overlay: konoma_widgets::inline_images::OverlayMoved,
 
     /// mtime of the previewed media file at load time. Media (image/svg/gif/video/pdf) is reloaded on an
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
     preview_media_mtime: Option<std::time::SystemTime>,
+    /// The (mtime, size) of the file the open plugin show was last opened on. A plugin that reads
+    /// heavily (declares a work group: the Office ones) is opened again on an FS event only when
+    /// this changes (`App::plugin_file_unchanged`): an event for `.git` or for another file must
+    /// not re-read a workbook of hundreds of megabytes.
+    plugin_stamp: Option<FileStamp>,
+    /// When `plugin_stamp` was taken (the "racily clean" rule: see [`named_event_rereads`]).
+    plugin_stamp_taken: Option<std::time::SystemTime>,
+    /// Set while the user's own refresh (`r`) runs: a plugin's file is read again whatever its
+    /// stamp says (`plugin_file_unchanged`), because the user asked for it. Only a canvas show
+    /// honours it; every other plugin keeps the stamp rule.
+    plugin_reopen_forced: bool,
     /// Failure reason for the current `PreviewKind::Command` attempt (detached-launch error,
     /// non-zero exit, missing tool, `{out}` never produced, ...). None on success/in-flight/every
     /// other preview kind. Reset by `clear_image` (the same "starting a fresh attempt" checkpoint
@@ -1691,27 +1290,20 @@ pub struct App {
     /// (their frames are separate state). Reuse requires an exact `(path, mtime, page)` match, so an
     /// externally edited file is always re-read.
     media_cache: Option<MediaCache>,
-
-    /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
-    /// None while not a table, or when parsing failed (then the preview degrades to raw text).
-    table_data: Option<crate::preview::table::TableData>,
-    /// The opened spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
-    /// finished successfully: every visible sheet by name, and the cells of **the one sheet on
-    /// screen** (`PerTab::sheet_idx`) — moving to another sheet loads that one and drops this one.
-    /// Lives on `App` (like `table_data`), not on `PerTab`: a sheet can hold up to 4M cells, so
-    /// cloning it into every tab snapshot is not an option — a tab switch re-reads it on the worker
-    /// instead (the sheet number and cursor are `PerTab` state and survive).
-    workbook: Option<Box<crate::preview::office::Workbook>>,
-    /// Why the last spreadsheet load failed (`Some` only while `workbook` is `None`). Drives the
-    /// reason shown on the "can not preview" screen.
-    workbook_error: Option<crate::preview::office::OfficeError>,
-    /// The opened Word document while a `PreviewKind::Document` preview is active and its worker
-    /// finished: the converted Markdown and the pictures it refers to. App-level (not `PerTab`) for
-    /// the same reason as `workbook`; a tab switch re-reads it on the worker. Assigned only through
-    /// `set_document`, which frees the old one off the UI thread.
+    /// The plugin display that is open (`PreviewKind::Plugin`, tables and pictures alike): the
+    /// plugin's `Session` (a PDF keeps it so a page turn does not open the file again), its layout
+    /// and the view it returned (`app/plugin_host.rs`). Lives on `App` (like `document`): the data
+    /// can be large, so a tab switch opens it again instead of cloning it into every tab snapshot.
+    /// Assigned only through the helpers in `plugin_host.rs`, and dropped by `set_preview_kind`
+    /// whenever the preview is not a plugin's and by `clear_image`.
+    plugin: Option<plugin_host::PluginShow>,
+    /// The converted Word document or presentation while the `document` / `presentation` plugin
+    /// shows the preview and its job finished: the Markdown to draw (of the representation on
+    /// screen) and the pictures it refers to. The plugin's `View` is turned into this on the worker
+    /// (`office_doc.rs`). App-level (not `PerTab`) for the same reason as the plugin show; a tab
+    /// switch re-reads it on the worker. Assigned only through `set_document`, which frees the old
+    /// one off the UI thread. Why a file could not be shown is the plugin show's failure.
     document: Option<Box<office_doc::LoadedDocument>>,
-    /// Why the last Word document load failed (`Some` only while `document` is `None`).
-    document_error: Option<crate::preview::office::OfficeError>,
     /// Per-tab bundle — see `PerTab` (root/mode/preview target/scroll, table cursor/scroll, git-view
     /// overlay, windowed-preview scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom,
     /// selection/filter/search). `pub(crate)` because ui/main read the 13 fields that used to be
@@ -1736,71 +1328,39 @@ pub struct App {
     /// Whether the active selection is linewise (`V`, whole lines) rather than charwise (`v`, exact character range).
     preview_visual_linewise: bool,
 
-    /// GIF animation (M6). All frames (composited RGBA) + each display duration. Empty means no animation (still image).
-    /// A separate path from the still-image asynchronous ThreadProtocol: to avoid the "render an unencoded
-    /// new protocol → nothing shows" churn in an animation whose frame changes each time, the current frame is **synchronously encoded**
-    /// and atomically swapped into `gif_protocol` (see below). Zoom/pan share image_zoom/image_center.
-    gif_frames: Vec<(image::DynamicImage, std::time::Duration)>,
-    /// Index of the currently displayed GIF frame.
-    gif_idx: usize,
-    /// The time the current frame began showing (the start point for the next-frame deadline). None=before the first tick.
-    gif_shown_at: Option<std::time::Instant>,
-    /// The render protocol (kitty, etc.) of the current frame synchronously encoded to the display size. Drawn with the Image widget.
-    gif_protocol: Option<Protocol>,
-    /// The (frame index, crop rectangle) gif_protocol was built from. Re-encoded only when it changes (avoids wasteful re-encode).
-    gif_proto_key: Option<(usize, (u32, u32, u32, u32))>,
+    /// Full-screen GIF animation: frames, playback position and the synchronously encoded current
+    /// frame (see `konoma_widgets::gif_player`). Zoom/pan are shared with `tab.image_view`.
+    gif: konoma_widgets::gif_player::GifPlayer,
 
     /// Sending end that offloads heavy media loading (SVG rasterize / GIF full-frame decode) to a separate thread.
     /// The result is received by main's poll loop and applied in apply_media. None=synchronous fallback (tests, etc.).
     media_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
-    /// Decoded/encoded cache for inline Markdown images, keyed by resolved absolute path.
-    md_image_cache: std::collections::HashMap<PathBuf, MdImgEntry>,
-    /// The **fixed** kitty image ids of one picture: `[full, clip, zoom]` (the families of
-    /// `MdEncodeKey::slot`), and within each family one id per slot of `MdImgEntry`, at the matching
-    /// index. Allocated on a slot's first encode and reused for every later one.
-    ///
-    /// Reuse is the whole point: a re-transmit on the same id *replaces* the picture in the
-    /// terminal, so re-encoding a slot — an animated GIF advancing a frame, a scroll re-cropping a
-    /// band, the very same document being opened again tomorrow — costs the terminal one image
-    /// forever instead of one per re-encode. The three families need ids of their *own*, though: the
-    /// renderer keeps showing the full-image encode while a scrolled band is still encoding, so two
-    /// families of the same picture can be on screen across consecutive frames, and sharing an id
-    /// there would let the band's transmit silently take over the cells the full image is still
-    /// drawn from.
-    ///
-    /// The *within*-family split exists for the same reason one step down. The same file drawn at
-    /// two cell sizes at once (a block image and a copy inside a narrower table column) is two
-    /// pictures as far as the terminal is concerned, so the two sizes cannot share one id either —
-    /// each transmit would delete the other, which is the terminal-side half of the very fight
-    /// `MD_PROTO_SLOTS` settles on konoma's side. Index-alignment with `MdImgEntry`'s slots is what
-    /// keeps the two halves honest: recycling a slot re-keys exactly one id, so konoma's retained
-    /// encodes and the terminal's resident pictures for a file are the same set, and **resizing
-    /// reuses slots** instead of burning an id per width.
-    ///
-    /// This lives on `App` rather than on the `MdImgEntry` it describes because `md_image_cache` is
-    /// **discarded whenever the preview moves to a different file** — so ids parked on the entry
-    /// died with it, and reopening a document handed the terminal a brand new image for a picture
-    /// it already held. The terminal's resident set then grew as "pictures × times opened", which
-    /// on a long agent-watch session is exactly the runaway the per-slot pinning existed to stop.
-    /// Keyed by the same path/synthetic key as the cache, so a picture keeps its ids for the whole
-    /// session no matter how often it is opened, closed, or reached from another tab.
-    ///
-    /// Nothing is ever removed: an id may be *needed* again at any moment (the same file reopened,
-    /// the same diagram re-rendered from an undo), and dropping one would silently reintroduce the
-    /// growth. The map only ever holds a handful of `u32`s per distinct picture the session has
-    /// shown — the same quantity the terminal's own (megabyte-per-image) storage grows with, so it
-    /// is by construction the cheaper of the two.
-    md_kitty_ids: std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
-    /// Monotonic counter of inline-image overlay passes — one "frame" for the purpose of recycling
-    /// protocol slots. `ui::preview::overlay_inline_images` bumps it before walking the placements,
-    /// so every `ensure_md_image` inside that walk stamps the same value onto the slot it wants, and
-    /// `reserve_proto_slot` can tell "wanted by the picture currently being drawn" (never recycle)
-    /// from "left over from an earlier position" (fair game).
-    md_frame: u64,
-    /// Last request id handed out by `App::begin_md_request` (ids start at 1). Every decode,
-    /// rebuild and re-raster of an inline picture is stamped with a fresh one, so a result can be
-    /// matched to the request that is still wanted (`MdImgEntry::request`).
-    md_request_seq: u64,
+    /// Decoded/encoded cache for inline Markdown images (keyed by resolved absolute path), the
+    /// kitty ids pinned to their encodes and the encode worker's handle (`InlineImageCache`).
+    /// Also holds the `use_kitty` / `kitty_is_tmux` flags of the terminal.
+    md_images: InlineImageCache,
+    /// The canvas pictures on screen: the placements, the entry each id is drawn from, the kept
+    /// sources and the read scope they were made under (`konoma_plugin::canvas_pictures`, shared
+    /// with the standalone plugin app). Its methods take `md_images`, the cache they fill.
+    canvas: canvas_images::CanvasPictureHost,
+    /// The (plugin id, reason) pairs of read-scope refusals already flashed, so a refusal is told
+    /// once and not at every redraw.
+    scope_flashed: std::collections::HashSet<(String, &'static str)>,
+    /// Plugin ids whose document pictures the read scope refused while a page was being built
+    /// (`build_decorated` only reads `&self`); `ensure_md_cache` flashes them once built.
+    md_scope_refusals: std::cell::RefCell<Vec<String>>,
+    /// The read scope of the plugin document on screen, built once and reused between frames
+    /// (see `App::with_scope_memo`); rebuilt when its inputs change.
+    read_scope_memo: std::cell::RefCell<Option<md_media::ScopeMemo>>,
+    /// The plugin that takes the file `e` / `o` / the footer ask about, decided once by the full
+    /// resolution (rules, content sniff, text probe) and reused until the file or the settings
+    /// change (see `App::verb_plugin_id`).
+    verb_plugin_memo: std::cell::RefCell<Option<open_app::VerbPluginMemo>>,
+    preview_resolution_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
+    preview_resolution_serial: std::cell::Cell<u64>,
+    diff_resolution_serial: u64,
+
+    pending_file_verbs: Vec<file_preview_resolution::PendingFileVerb>,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
@@ -1835,33 +1395,36 @@ pub struct App {
     md_remote_failed: std::collections::HashSet<String>,
     /// Sender that reports the completion of a background remote-image download to the run loop.
     md_remote_tx: Option<std::sync::mpsc::Sender<RemoteFetch>>,
-    /// Sender that offloads inline-image encoding (resize + protocol) to the encode worker thread.
-    md_enc_tx: Option<std::sync::mpsc::Sender<MdEncodeRequest>>,
     /// Media-load generation. Incremented in enter_preview/clear to make old thread results stale.
     media_gen: u64,
-    /// `media_gen`, shared with the running workbook load so it can see that it was superseded
+    /// `media_gen`, shared with the running loads so they can see that they were superseded
     /// (every change of `media_gen` goes through `bump_media_gen`).
     media_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether waiting on another thread's media load (used by the render side to show "Loading…").
     media_loading: bool,
-    /// A workbook load is running on its thread. **At most one at a time**: a spreadsheet is read
-    /// in one pass of a parser that can hold gigabytes, so `J` held down must not start one per
-    /// press (see `spawn_workbook_job`).
-    wb_worker_busy: bool,
-    /// The newest workbook load asked for while one was running; it starts when that one ends.
-    wb_queued: Option<WbRequest>,
-    /// Test-only: workbook loads started on a thread.
+    /// The exclusive work groups of the plugins (`Manifest::work_group`): which have a job running
+    /// and the newest one waiting behind it (`app/plugin_host.rs`).
+    plugin_groups: std::collections::BTreeMap<String, plugin_host::GroupSlot>,
+    /// The actions the plugins declare, with their keys (`app/plugin_acts.rs`).
+    pub(crate) plugin_keys: crate::plugins::PluginKeys,
+    /// Test-only: plugin jobs of a work group started on a thread.
     #[cfg(test)]
-    wb_dispatches: u32,
+    plugin_group_dispatches: u32,
 
     /// Run2 keymap (Surface × key → Action). Built from the config at startup.
     pub keymaps: crate::keymap::KeyMap,
     /// which-key leader-pending state (`Space`=file management / `y`=path copy). After the press, a
     /// which-key menu is shown in the footer and the next keystroke confirms/cancels (a generalization of the old two-key pending_chord).
     pub pending_leader: Option<crate::keymap::LeaderId>,
+    /// The last operation `dispatch_action` let through the gate (tests: a menu item really ran).
+    #[cfg(test)]
+    pub last_dispatched: Option<crate::keymap::Action>,
 
     /// A transient message (copy result, etc.). Cleared on the next key input. Shown in the status line.
     pub flash: Option<String>,
+    notice_flash: Option<Box<NoticeFlash>>,
+    /// Notice space after layout and context, from startup columns or the last drawn footer.
+    notice_flash_width: usize,
 
     /// Visibility state and scroll position of the `?` help (full key list) overlay.
     pub show_help: bool,
@@ -1873,6 +1436,8 @@ pub struct App {
     tabs: Vec<PerTab>,
     /// Source of `PerTab::id`. Only ever incremented, so an id is never reused for a later tab.
     tab_seq: u64,
+    /// Source of `PerTab::load_id`.
+    load_seq: u64,
     active_tab: usize,
     /// Tab-list overlay (`T`). App-global (not per-tab).
     tab_list: bool,
@@ -1880,6 +1445,14 @@ pub struct App {
     /// Heading-outline overlay (`o` in a Markdown preview): jump to any heading.
     outline_open: bool,
     outline_sel: usize,
+    /// The page list of the open `O` overlay, built once when it opens (a plugin may declare
+    /// 100,000 pages, and the overlay asks for the rows on every frame and key): the key it was
+    /// built for and the rows. Dropped when the overlay closes or the layout changes.
+    outline_pages: std::cell::RefCell<Option<outline::BuiltPages>>,
+    /// The widest window of a long `O` list drawn in this opening, for the filter query it was
+    /// drawn under, and the signature of the list it was measured for (the popup does not shrink
+    /// while it scrolls, and starts afresh when the list itself changes).
+    outline_width: std::cell::RefCell<(String, usize, u64)>,
 
     /// git status (FR-7). Absolute path → kind. Cached per root and re-fetched when root changes.
     git_status: std::collections::HashMap<PathBuf, crate::git::FileStatus>,
@@ -1906,61 +1479,8 @@ pub struct App {
     /// Sender returning results from the worker computing `statuses`+`branch` in the background.
     /// If not attached (tests), `spawn_or_sync_statuses` falls back to computing synchronously.
     status_tx: Option<std::sync::mpsc::Sender<StatusResult>>,
-    /// `(path, kind)` a Markdown block-diff is being computed for on a separate thread (`docs/
-    /// STATUS.md` ★未修正 item 4). `None` = not computing. Keyed like `git_status_pending` (never
-    /// `None` while in flight, so the `pending == target` comparison can't be satisfied by two
-    /// `None`s).
-    md_diff_pending: Option<(PathBuf, MdDiffKind)>,
-    /// Generation of the block-diff computation. Bumped on every dispatch (`App::kick_md_diff`)
-    /// and by `App::invalidate_md_diff` (called from `App::invalidate_diff_caches`/
-    /// `App::reload_preview`); a result is applied only if it still matches (discards a result
-    /// superseded by a newer file/kind, or by a working-tree change).
-    md_diff_gen: u64,
-    /// Sender returning `MdDiffResult`s from the worker computing block-diffs in the background.
-    /// If not attached (tests), `spawn_or_sync_md_diff` falls back to computing synchronously —
-    /// exactly like `status_tx`/`ignored_tx` — so unit tests that don't drive a run loop still
-    /// observe the result immediately.
-    md_diff_tx: Option<std::sync::mpsc::Sender<MdDiffResult>>,
-    /// The last landed block-diff, tagged with the `(path, kind, gen)` it answers. `App::poll_md_diff`
-    /// reads this instead of recomputing inline; a tuple that doesn't match the currently wanted
-    /// `(path, kind)` **and** the current `md_diff_gen` means "not ready yet for this frame" — the
-    /// caller (`App::ensure_md_cache`) degrades (no gutter / a "computing…" placeholder) rather
-    /// than blocking.
-    md_diff_landed: Option<(PathBuf, MdDiffKind, u64, MdDiffOutcome)>,
-    /// `(path, page, raster_px)` a media diff is being computed for on a separate thread, **for the
-    /// current generation** — cleared by `App::invalidate_media_diff` (a bumped `media_diff_gen` makes
-    /// this identity stale even though the worker thread is still physically running) and by
-    /// `App::apply_media_diff` once that thread's result lands. `App::poll_media_diff` dedupes an
-    /// exact repeat want against this (and against `media_diff_queued`); it deliberately is **not**
-    /// what gates direct-dispatch-vs-coalesce (`media_diff_worker_busy` does that) — different
-    /// questions ("is this want already accounted for" vs. "is a thread occupying the worker slot").
-    media_diff_pending: Option<(PathBuf, u32, (u32, u32))>,
-    /// Whether a media-diff worker thread is currently running, from the moment it's dispatched
-    /// (`App::dispatch_media_diff`) until its result — accepted or stale — lands
-    /// (`App::apply_media_diff`). **Not** cleared by `App::invalidate_media_diff`: the real thread
-    /// doesn't stop just because the baseline it was computing against went stale, so this stays
-    /// `true` until that thread reports back. `App::kick_media_diff` reads this to decide
-    /// direct-dispatch vs. coalesce (`media_diff_queued`) — enforcing "at most one worker in flight at
-    /// a time" even across a burst of invalidations from an AI repeatedly rewriting the same image.
-    media_diff_worker_busy: bool,
-    /// The one request coalesced behind an in-flight worker (`App::kick_media_diff`) — overwritten,
-    /// never accumulated, by every further want that arrives while `media_diff_worker_busy` is still
-    /// `true`, so only the *newest* one is ever dispatched next. `App::apply_media_diff` takes and
-    /// dispatches this the moment the busy worker's result lands, whether or not that result was
-    /// itself stale.
-    media_diff_queued: Option<(PathBuf, u32, (u32, u32))>,
-    /// Generation of the media-diff computation. Mirrors `md_diff_gen`'s own doc comment
-    /// (`App::invalidate_media_diff`, called from `App::invalidate_diff_caches`, bumps this).
-    media_diff_gen: u64,
-    /// The cancellation flag of the computation in flight (see `MediaDiffRequest::cancel`).
-    media_diff_cancel: Arc<AtomicBool>,
-    /// Sender returning `MediaDiffResult`s from the worker computing media diffs in the background.
-    /// Mirrors `md_diff_tx`'s own doc comment (no Sender attached = tests fall back to synchronous
-    /// computation).
-    media_diff_tx: Option<std::sync::mpsc::Sender<MediaDiffResult>>,
-    /// The last landed media diff, tagged with the `(path, page, raster_px, gen)` it answers. Mirrors
-    /// `md_diff_landed`'s own doc comment.
-    media_diff_landed: Option<MediaDiffLandedKey>,
+    md_diff: konoma_plugin::host::project::md_diff::MdDiffWorker,
+    media_diff: konoma_plugin::host::project::media_diff::MediaDiffWorker,
     /// `(path, Config::resolve_preview(path))`, memoized for whatever `path` the diff surface is
     /// currently (re)targeted at — `App::diff_target_kind` is the sole reader/writer contract.
     /// `resolve_preview` is real I/O for an extension-less/MIME-sniffed rule (`infer::get_from_path`
@@ -1970,7 +1490,11 @@ pub struct App {
     /// kind_cache`, called from `App::invalidate_diff_caches` — which `App::open_git_diff_with` always
     /// calls after already updating `tab.preview_kind`, so a (re)target and an invalidation-only
     /// refresh both go through the one place.
-    diff_target_kind_cache: Option<(PathBuf, PreviewKind)>,
+    diff_target_kind_cache: Option<(
+        PathBuf,
+        konoma_plugin::host::file_preview::ResolvedFilePreview,
+        bool,
+    )>,
     /// The **repo workdir** at which `git_ignored` (heavy) was computed. If it is the same, root moves within the same repository
     /// do not rebuild it (avoids the 410ms recomputation when descending into a subdirectory with `l`).
     git_ignored_for: Option<PathBuf>,
@@ -2011,6 +1535,14 @@ pub struct App {
     /// git diff layout (vertical/horizontal/Auto). Initialized from the `git.diff` setting and cycled with `s`. Used by both the GitDiff preview
     /// and the commit/working-tree detail.
     diff_layout: DiffLayout,
+    /// Whether the last drawn source diff was laid out side by side (the width the layout was
+    /// resolved at is only known while drawing). `n` / `N` and `e` read it to turn a diff line
+    /// into the scroll row it is at.
+    pub(crate) diff_split_drawn: bool,
+    /// The change block (an index into the blocks of the file shown) the last `n` / `N` of a
+    /// document or a diff landed on, with the file: lets the next step and `e` know which block
+    /// the view is on when the scroll alone cannot say (see `current_block`).
+    change_at: Option<(PathBuf, usize)>,
     /// The image/PDF/SVG side-by-side "diff"'s layout (auto/side/stack). Initialized from
     /// `[git] media_diff` and cycled with `s` while that view is active
     /// (`App::cycle_media_diff_layout`). App-level (not per-tab), like `diff_layout` — kept across
@@ -2031,16 +1563,6 @@ pub struct App {
     /// is (moving to a different repo). Drives the persistent "WT <origin>" chip (`ui/status.rs`),
     /// which needs it recomputed exactly once per root change, never per render.
     git_worktree_origin: Option<String>,
-
-    /// Whether the branch-visibility panel (`b`) is open. Modal/transient — not per-tab (reset, not
-    /// restored, on tab switch; see `PerTab` for the per-tab git-view overlay state).
-    git_graph_picker: bool,
-    /// Cursor position in the panel (row = branch).
-    git_graph_picker_sel: usize,
-    /// Tentative selection while editing the panel (committed to `git_graph_visible` with Enter / discarded with q).
-    git_graph_picker_set: std::collections::HashSet<String>,
-    /// Whether `J`/`K` reordering was done in the panel (so the base is re-derived to the top branch on Enter confirm).
-    git_graph_reordered: bool,
 
     /// Sender returning results from the worker running background filesystem operations
     /// (paste/duplicate/trash/permanent-delete/drop-transfer). If not attached (tests), `start_file_op`
@@ -2075,23 +1597,6 @@ pub struct App {
     gitop_pending: Option<GitOpKind>,
 }
 
-/// Path-copy kind (FR-6). Chosen by the key after `c`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CopyKind {
-    /// File name only (`cn`).
-    Name,
-    /// Full path (`cp`).
-    Full,
-    /// Path relative to where it was opened (`cr`).
-    Relative,
-    /// Full path of the parent directory (`cd`).
-    Parent,
-    /// `@relative/path` reference for AI agents (`y@`). Claude Code reads `@path` as file context, so
-    /// the path is strictly relative to `open_dir` (the launch/anchor dir where the agent usually runs),
-    /// **without** the leading directory name that `Relative` prepends for display.
-    AtRef,
-}
-
 /// Commit-info copy kind (chosen after `y` in git log/graph/detail).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -2123,17 +1628,6 @@ enum SearchTarget {
     Markdown,
     /// Media and diffs — no search model (`/` flashes a hint).
     Unsupported,
-}
-
-/// CSV/TSV table copy kind (chosen after `y` in the table preview).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TableCopyKind {
-    /// The current cell's value.
-    Cell,
-    /// The current row's cells joined by the delimiter (`,` / tab).
-    Row,
-    /// The current column's header plus every cell value, one per line.
-    Column,
 }
 
 /// Cache of decorated preview content. The key is (path, display width).
@@ -2233,21 +1727,24 @@ struct DiffCache {
     lines: Vec<crate::git::DiffLine>,
 }
 
-/// Per-file cap for a follow baseline snapshot: a dirty file larger than this is not snapshotted
-/// (recorded as `None`), and its follow diff falls back to the full git diff (honest degradation).
-/// Also the size cap `App::compute_md_diff` (`src/app/md_diff.rs`) applies to either side of the
-/// diff's `Rendered` presentation — not itself behind `#[cfg(feature = "git")]` (unlike the
-/// follow-specific constants below it) because that caller compiles on every build.
-const FOLLOW_BASELINE_FILE_CAP: usize = 5 * 1024 * 1024;
+#[cfg(feature = "git")]
+use konoma_plugin::host::project::md_diff::FOLLOW_BASELINE_FILE_CAP;
 /// Total cap across all snapshotted baseline files: once exceeded, remaining dirty files are recorded
 /// as `None` (full-diff fallback) so pressing `F` on a fully-dirty tree never balloons memory.
 #[cfg(feature = "git")]
 const FOLLOW_BASELINE_TOTAL_CAP: usize = 64 * 1024 * 1024;
 
+#[derive(Clone)]
+struct VcsWatchCache {
+    root: PathBuf,
+    kind: crate::vcs::VcsKind,
+    directory: Option<PathBuf>,
+}
+
 /// The follow-start snapshot. `dirty` holds the content of files that were already modified/untracked
 /// at follow-start (keyed by canonicalized path): `Some(bytes)` = snapshotted, `None` = skipped for
 /// size (falls back to full diff). Files NOT in `dirty` were clean at follow-start, so their baseline
-/// is the blob at `head`.
+/// is the content at `head` (an opaque backend point, not necessarily a Git SHA).
 #[cfg(feature = "git")]
 struct FollowBaseline {
     dirty: std::collections::HashMap<PathBuf, Option<Vec<u8>>>,
@@ -2349,136 +1846,8 @@ struct WinCache {
     lines: Vec<Line<'static>>,
 }
 
-/// One drawable inline Markdown image: either konoma's own compressed kitty transmit or
-/// ratatui-image's protocol for every other graphics backend.
-///
-/// The split exists because a kitty image is **addressable**: it carries an id, and re-transmitting
-/// that id replaces the picture instead of adding a second one. Everything else (sixel, iTerm2,
-/// halfblocks) is written as cell content — the terminal keeps nothing between frames — so those
-/// backends can keep re-encoding freely and stay on the ratatui-image path unchanged.
-#[derive(Clone)]
-pub enum InlineImage {
-    /// konoma's zlib-compressed (`o=z`) transmit + Unicode placeholders, on a fixed image id.
-    Kitty(crate::preview::kitty::KittyImage),
-    /// ratatui-image's fixed-size protocol (sixel / iTerm2 / halfblocks).
-    Proto(Protocol),
-}
-
-impl InlineImage {
-    /// Draw into `area`. Both arms refuse to draw when the encoded image is **larger** than the
-    /// area, matching `ratatui_image::Image`'s no-clipping rule: while a freshly scrolled band is
-    /// still encoding, the renderer deliberately hands the previous (taller) encode to this
-    /// function, and drawing it clipped would show the wrong slice of the picture rather than
-    /// simply nothing for one frame. The full-screen path keeps its own clamping behavior — this
-    /// rule is about matching what the inline path did before, not about `KittyImage` in general.
-    pub(crate) fn render(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
-        match self {
-            Self::Kitty(ki) => {
-                let (cols, rows) = ki.cell_size();
-                if cols > area.width || rows > area.height {
-                    return;
-                }
-                ki.render(area, buf);
-            }
-            Self::Proto(p) => {
-                ratatui::widgets::Widget::render(ratatui_image::Image::new(p), area, buf)
-            }
-        }
-    }
-
-    /// Whether this went through konoma's compressed kitty transmit. Test-only: it is the one
-    /// difference the two arms are allowed to have, so a test can pin which backend a terminal got.
-    #[cfg(test)]
-    pub fn is_kitty(&self) -> bool {
-        matches!(self, Self::Kitty(_))
-    }
-
-    /// The encoded size in cells. Test-only, and deliberately readable from *both* arms: the kitty
-    /// arm reimplements `Picker::new_protocol`'s sizing, so the way to keep it honest is to run the
-    /// same request through both and compare this.
-    #[cfg(test)]
-    pub fn cell_size(&self) -> (u16, u16) {
-        match self {
-            Self::Kitty(ki) => ki.cell_size(),
-            Self::Proto(p) => {
-                let s = p.size();
-                (s.width, s.height)
-            }
-        }
-    }
-
-    /// Bytes of this image's one-shot transmit escape (0 for a protocol that is re-sent as cell
-    /// content every frame). Test-only, to state the compression win in real numbers.
-    #[cfg(test)]
-    pub fn transmit_len(&self) -> usize {
-        match self {
-            Self::Kitty(ki) => ki.transmit_len(),
-            Self::Proto(_) => 0,
-        }
-    }
-}
-
-/// How many distinct encode keys of **one picture** konoma keeps encoded protocols (and kitty image
-/// ids) for, within one protocol family.
-///
-/// The same file can be on screen at several sizes at once: a block image is laid out at the page
-/// width while a copy inside a table cell is shaved to that column's width, and one document can
-/// hold several tables whose columns are all different widths. Holding a single encode per picture
-/// is what made those placements fight — each one saw the other's size recorded, asked for its own,
-/// and the answer overwrote the first — so `draw → request → apply → draw → request → …` never
-/// stopped, with nobody touching the keyboard (measured at 40 columns: 0.31s of CPU across 30 idle
-/// seconds, and the losing placement never drew a picture at all).
-///
-/// The number is a **soft floor, not a hard ceiling**: `reserve_proto_slot` never recycles a slot
-/// the frame being drawn right now is using, and grows the family instead when every slot is live.
-/// That is what makes convergence unconditional — a document showing one picture at more
-/// simultaneous sizes than this keeps all of them rather than thrashing between them — and it is
-/// also what bounds the memory, because sizes that are on screen *at the same moment* occupy
-/// disjoint parts of the viewport: their cell areas sum to at most one screenful however many they
-/// are, and a protocol's bytes track its cell area.
-///
-/// So the constant only decides how many **off-screen** encodes stay warm, i.e. how much scrolling
-/// back (or dragging a pane edge back to a previous width) redraws instantly instead of re-encoding.
-/// Three covers the shapes that recur in practice — the page width plus two table column widths, or
-/// one width plus the previous one still lingering right after a resize — without paying for more.
-const MD_PROTO_SLOTS: usize = 3;
-
-/// Slots for the zoom family. Only one inline diagram can be focused at a time (`Tab` moves the
-/// focus, and `md_fence_zoom_proto` is only consulted for the focused fence), so one crop is all
-/// that is ever *wanted* — but two are kept, because a slot is claimed when its encode is requested
-/// and every `+`/`-` step asks for a different crop. With one slot the step would blank the crop on
-/// screen and fall back to the unzoomed diagram until the new one landed; with two, the previous
-/// crop stays visible right up to the moment it is replaced, and the pair simply alternates.
-const MD_ZOOM_SLOTS: usize = 2;
-
-/// One encoded protocol of an inline image, together with the exact request it answers.
-///
-/// A slot's **position** in its family is its identity: on a kitty terminal the image id at the same
-/// index of `App::md_kitty_ids` is pinned to it, so re-encoding into a slot hands the terminal a
-/// *replacement* rather than an additional picture — the property that keeps an animated GIF, and a
-/// document reopened all day long, at a constant cost in terminal image storage.
-struct MdProtoSlot {
-    /// The request this slot answers. Re-keying a slot is how it gets recycled, and is exactly when
-    /// its pinned kitty id starts holding a different picture.
-    key: MdEncodeKey,
-    /// None = the encode has been requested but has not landed yet, **or** it failed. Either way the
-    /// key stays recorded, which is what stops the renderer from asking again on every frame.
-    image: Option<InlineImage>,
-    /// `App::md_frame` at the last render pass that asked for this key. Slots the current pass is
-    /// drawing from are never recycled — see `MD_PROTO_SLOTS`.
-    used: u64,
-    /// The stored image belongs to a superseded animation frame: keep drawing it (clearing it would
-    /// flash a blank), but re-encode into this same slot so the id — and the terminal's picture
-    /// under it — is replaced rather than duplicated.
-    stale: bool,
-}
-
-/// Most decoded pixels the inline-image cache keeps resident across all pictures of a document, in
-/// bytes. Typical documents are far below it (twenty 1080p screenshots are 160 MB); a document with
-/// hundreds of images or formulas is the case it exists for, where the cache used to grow with the
-/// document (500 formulas at 1024 px were 880 MB, a hundred 4,000 px images 6 GB). Pictures drawn
-/// by the latest overlay pass are never evicted, so a screenful always stays whole.
-const MD_IMAGE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+// The budget of the inline-image cache lives with the cache (shared with the standalone app).
+use konoma_widgets::inline_images::MD_IMAGE_CACHE_BYTES;
 
 /// The same budget while a presentation shows its slide pictures. A slide is drawn at the size of
 /// its frame (up to `SLIDE_RASTER_MAX_PX` on the long side, 4096 x 2304 x 4 = 38 MB), so a deck
@@ -2498,282 +1867,6 @@ const SLIDE_RASTER_MAX_PX: u32 = 4096;
 /// wait (and ask again) instead of all starting together.
 const MD_MAX_REBUILDS: usize = 4;
 
-/// A decoded inline Markdown image plus its background-encoded render protocol(s).
-#[derive(Default)]
-struct MdImgEntry {
-    /// The decoded source image (None while the background decode is in flight). Shared with the encode
-    /// worker via `Arc` (cheap clone) so cropping/encoding happens off the UI thread. Deliberately
-    /// **one per picture, not one per size**: the protocols below are what a size costs, while the
-    /// RGBA source is the big allocation and every size crops/resizes from the same one.
-    decoded: Option<Arc<image::DynamicImage>>,
-    /// Graphics protocols for the fully-visible image, one slot per (cols, rows) cell box it is
-    /// drawn at. See `MD_PROTO_SLOTS` for why this is a list and not a single encode.
-    full: Vec<MdProtoSlot>,
-    /// Graphics protocols for a partially-scrolled image: only the visible vertical band, cropped
-    /// and encoded so the image renders clipped instead of being hidden. One slot per
-    /// (cols, full_rows, row_off, vis_rows) band — a list for the same reason `full` is one, since
-    /// two placements of the same picture can be cut by the top and the bottom viewport edge at the
-    /// same time. A family of its own because the renderer keeps drawing the full-image encode until
-    /// a freshly scrolled band lands: the two are on screen across consecutive frames, so a band's
-    /// transmit must not land on the id the full image is still drawn from.
-    clip: Vec<MdProtoSlot>,
-    /// An encode request is in flight on the worker thread (at most one per image, so scrolling does not
-    /// queue a backlog — when it returns, the next render requests the then-current band).
-    enc_inflight: bool,
-    /// Decode or encode failed — do not retry; the placeholder/text fallback stays visible.
-    failed: bool,
-    /// In-place zoom protocols for a **focused inline mermaid diagram** (`+`/`-` while focused):
-    /// a crop of the source encoded into the same (cols, rows) cell area (the layout never moves).
-    /// Capped at `MD_ZOOM_SLOTS`.
-    zoom: Vec<MdProtoSlot>,
-    /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
-    /// density (sharp zoom, same mechanism as the full-screen vector zoom).
-    svg: Option<std::sync::Arc<Vec<u8>>>,
-    /// Where the kept `svg` came from, and so how every redraw of it is done (the same way as its
-    /// first draw). The default never draws in this process.
-    svg_trust: crate::preview::svg::SvgTrust,
-    /// Layout size, fixed at the **first** result so a later sharpening re-raster never changes the
-    /// reserved area (the user-visible size is fixed). For a mermaid fence or a math expression
-    /// (vector-backed, synthetic key), this is the source SVG's **intrinsic size** (px user units,
-    /// the same domain the renderer laid glyphs out in — see `mermaid_cells`/`math_cells`), not the
-    /// raster's pixel dimensions (those are scaled by `[ui] svg_max_px`, an unrelated setting).
-    /// Regular images use the raster's own dimensions, since there is no separate intrinsic size.
-    layout_px: Option<(u32, u32)>,
-    /// A sharpening re-raster is in flight (at most one per diagram).
-    reraster_inflight: bool,
-    /// All frames of an animated inline GIF (empty = not a GIF, or a static/single-frame one — those
-    /// already decode through the plain `decoded` path above and never populate this). Kept as `Arc`s
-    /// so advancing to the next frame (`App::advance_md_gifs_if_due`) is a cheap pointer clone into
-    /// `decoded` rather than a full image copy — mirrors the full-screen `gif_frames` mechanism
-    /// (`App::advance_gif_if_due`) but per cache entry, since several inline GIFs can animate at once.
-    frames: Vec<(Arc<image::DynamicImage>, std::time::Duration)>,
-    /// Index of the currently-displayed frame within `frames`.
-    idx: usize,
-    /// The time the current frame began showing (mirrors `App::gif_shown_at`). None = before the
-    /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
-    shown_at: Option<std::time::Instant>,
-    /// `App::md_frame` of the last overlay pass that asked for this picture. The cache evicts the
-    /// pixels of the pictures asked for longest ago first (`App::evict_md_images_over_budget`).
-    last_used: u64,
-    /// The decoded pixels were dropped to stay within `MD_IMAGE_CACHE_BYTES`. The entry itself stays
-    /// (its layout size, SVG source, kitty ids and any finished encodes), so nothing on the page
-    /// moves; the pixels are rebuilt from the file / SVG the next time a placement needs them.
-    evicted: bool,
-    /// A rebuild of the evicted pixels is running (`App::ensure_md_pixels` started it, its result
-    /// has not landed). Together with `evicted` this is the whole life of a rebuild: waiting
-    /// (`evicted`, not `rebuilding`) -> running (`rebuilding`) -> back (`!evicted`) or `failed`.
-    rebuilding: bool,
-    /// A placement asked for the evicted pixels but the rebuild limit (`MD_MAX_REBUILDS`) was
-    /// reached: ask again on the next frame, and keep the loading indicator (and so the redraw
-    /// loop) alive until it starts. It holds the `App::draw_seq` of the frame that asked and counts
-    /// only while that is the last frame drawn, so a wish nobody renews (the picture scrolled out
-    /// of view, the preview was left) lapses by itself instead of keeping the loop ticking.
-    rebuild_wanted: Option<u64>,
-    /// For a slide picture: the longest edge, in pixels, its frame needs (0 = not asked yet). The
-    /// first decode, a rebuild of evicted pixels and the re-raster of a frame that outgrew the
-    /// raster all draw at this size (`App::note_slide_raster_wish`).
-    want_px: u32,
-    /// Why the decode failed, for the text that replaces the picture (None = no specific reason).
-    fail: Option<crate::preview::image::ImageFailure>,
-    /// This entry's place in the decode queue: its priority is the last overlay pass that asked for
-    /// the picture, and dropping the entry (document closed, file changed) withdraws a decode that
-    /// has not run yet.
-    wish: crate::preview::image::DecodeWish,
-    /// Id of the one background decode / rebuild / re-raster that is still wanted for this entry
-    /// (`App::begin_md_request`; 0 = none was ever started, as for an entry placed by hand in a
-    /// test). A result carrying any other id belongs to an earlier life of the same path (the entry
-    /// was dropped, then asked for again) and is ignored by `apply_md_image`, so a stale
-    /// "cancelled" cannot forget the new entry and a stale picture cannot fill it. At most one
-    /// request runs per entry, so this is also the identity of the in-flight one.
-    request: u64,
-    /// Id of the first request ever started for this entry, constant for its life: an encode
-    /// result carries it so that one computed for a dropped entry is not applied to a new one of
-    /// the same path (`request` cannot do this: a re-raster legitimately changes it while an
-    /// encode of the previous pixels may still be running). 0 = never started.
-    born: u64,
-}
-
-impl MdImgEntry {
-    /// Bytes of decoded pixels this entry keeps resident (frames of an animated GIF count once;
-    /// the first frame is shared with `decoded`).
-    fn pixel_bytes(&self) -> u64 {
-        use image::GenericImageView;
-        // The picture's own pixel format (3 bytes for an RGB8, 8 for an RGBA16), not an assumed 4.
-        let px = |im: &image::DynamicImage| {
-            let (w, h) = im.dimensions();
-            u64::from(w) * u64::from(h) * u64::from(im.color().bytes_per_pixel())
-        };
-        if self.frames.is_empty() {
-            self.decoded.as_deref().map_or(0, px)
-        } else {
-            self.frames.iter().map(|(im, _)| px(im)).sum()
-        }
-    }
-
-    /// Drop the decoded pixels (keeping everything that lets them be rebuilt).
-    fn evict_pixels(&mut self) {
-        self.decoded = None;
-        self.frames.clear();
-        self.idx = 0;
-        self.shown_at = None;
-        self.evicted = true;
-    }
-
-    /// The slot family a request belongs to (full / clip / zoom — `MdEncodeKey::slot`).
-    fn slots(&self, key: &MdEncodeKey) -> &[MdProtoSlot] {
-        match key.slot() {
-            0 => &self.full,
-            1 => &self.clip,
-            _ => &self.zoom,
-        }
-    }
-
-    fn slots_mut(&mut self, key: &MdEncodeKey) -> &mut Vec<MdProtoSlot> {
-        match key.slot() {
-            0 => &mut self.full,
-            1 => &mut self.clip,
-            _ => &mut self.zoom,
-        }
-    }
-
-    /// Record that the pass numbered `frame` wants this exact request, and say whether it is
-    /// already **settled** — encoded, or attempted and failed, so it must not be requested again.
-    /// A `stale` slot is deliberately not settled: its picture belongs to an animation frame that
-    /// has been superseded, so it needs re-encoding (into that same slot, keeping its id).
-    ///
-    /// Stamping happens even for a request that is not settled and cannot be sent yet (another
-    /// encode holds the single in-flight ticket). That is the whole point: a placement the renderer
-    /// is drawing right now must keep its slot out of the recycling pool while it waits its turn,
-    /// or two placements of one picture take turns evicting each other and never converge.
-    fn touch(&mut self, key: &MdEncodeKey, frame: u64) -> bool {
-        match self.slots_mut(key).iter_mut().find(|s| s.key == *key) {
-            Some(s) => {
-                s.used = frame;
-                !s.stale
-            }
-            None => false,
-        }
-    }
-
-    /// The image already encoded for exactly this request, if there is one. `None` also covers "the
-    /// slot exists but holds no image" (requested and still in flight, or failed) — the caller then
-    /// falls back to something drawable rather than blanking the picture.
-    fn proto(&self, key: &MdEncodeKey) -> Option<&InlineImage> {
-        self.slots(key)
-            .iter()
-            .find(|s| s.key == *key)?
-            .image
-            .as_ref()
-    }
-
-    /// The most recently wanted slot carrying an actual image, among `order`'s families. This is
-    /// what the renderer draws while the encode for the current position is still in flight, so
-    /// scrolling — or a resize, or a second placement at another width claiming the encoder — never
-    /// blinks an image out. Ties (both wanted by the same pass) go to the earlier family in `order`.
-    fn newest_in<'a>(&'a self, order: &[&'a [MdProtoSlot]]) -> Option<&'a InlineImage> {
-        let mut best: Option<&MdProtoSlot> = None;
-        for fam in order {
-            for s in fam.iter().filter(|s| s.image.is_some()) {
-                if best.is_none_or(|b| s.used > b.used) {
-                    best = Some(s);
-                }
-            }
-        }
-        best.and_then(|s| s.image.as_ref())
-    }
-
-    /// Fallback for a plain inline placement: the freshest band, else the freshest full image.
-    fn newest_proto(&self) -> Option<&InlineImage> {
-        self.newest_in(&[&self.clip, &self.full])
-    }
-
-    /// Fallback for the focused-diagram zoom: the freshest **unzoomed** full image (a zoom crop of
-    /// some other cell area would be drawn at the wrong scale).
-    fn newest_full(&self) -> Option<&InlineImage> {
-        self.newest_in(&[&self.full])
-    }
-
-    /// The source pixels changed underneath every encode — a GIF advanced a frame, or a diagram was
-    /// re-rasterized at a higher density. Mark each slot for re-encoding **without** dropping the
-    /// picture it holds: the old one keeps drawing until the new one lands (clearing it would flash
-    /// a blank), and re-encoding into the surviving slot reuses its kitty id, so the terminal
-    /// replaces that picture instead of collecting one per frame.
-    fn mark_stale(&mut self) {
-        for slot in self
-            .full
-            .iter_mut()
-            .chain(self.clip.iter_mut())
-            .chain(self.zoom.iter_mut())
-        {
-            slot.stale = true;
-        }
-    }
-}
-
-#[cfg(test)]
-impl MdProtoSlot {
-    /// A slot holding a finished encode of `key` — the state `apply_md_encode` leaves behind.
-    fn encoded(key: MdEncodeKey, image: InlineImage) -> Self {
-        Self {
-            key,
-            image: Some(image),
-            used: 0,
-            stale: false,
-        }
-    }
-
-    /// A slot reserved for `key` that holds no picture: the encode is either still in flight or it
-    /// failed. Both look the same from here, and both mean "do not ask for this again".
-    fn attempted(key: MdEncodeKey) -> Self {
-        Self {
-            key,
-            image: None,
-            used: 0,
-            stale: false,
-        }
-    }
-}
-
-/// Choose the slot a fresh encode of `key` will be answered into, and return its index — which is
-/// also the index of the kitty image id pinned to it (`App::md_kitty_ids`).
-///
-/// Preference order: the slot already holding this key (a re-encode — same id, so the terminal
-/// *replaces* its picture instead of accumulating one), then a brand-new slot while the family is
-/// still under `cap`, then the least-recently-wanted slot. A slot the pass numbered `frame` is
-/// drawing from is never recycled: when every slot is live the family grows by one instead, which
-/// is what makes convergence unconditional (see `MD_PROTO_SLOTS`).
-fn reserve_proto_slot(
-    slots: &mut Vec<MdProtoSlot>,
-    key: MdEncodeKey,
-    frame: u64,
-    cap: usize,
-) -> usize {
-    if let Some(i) = slots.iter().position(|s| s.key == key) {
-        slots[i].used = frame;
-        return i;
-    }
-    let fresh = MdProtoSlot {
-        key,
-        image: None,
-        used: frame,
-        stale: false,
-    };
-    if slots.len() >= cap {
-        let lru = slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.used < frame)
-            .min_by_key(|(i, s)| (s.used, *i))
-            .map(|(i, _)| i);
-        if let Some(i) = lru {
-            slots[i] = fresh;
-            return i;
-        }
-    }
-    slots.push(fresh);
-    slots.len() - 1
-}
-
 /// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
 #[derive(PartialEq)]
 enum FenceSharpen {
@@ -2782,207 +1875,8 @@ enum FenceSharpen {
     AppliedSync,
 }
 
-/// Which protocol a background encode produces (so the result is stored in the right slot).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum MdEncodeKey {
-    /// The whole image at (cols, rows) cells.
-    Full { cols: u16, rows: u16 },
-    /// A cropped vertical band, keyed by (cols, full_rows, row_off, vis_rows).
-    Clip {
-        cols: u16,
-        full_rows: u16,
-        row_off: u16,
-        vis_rows: u16,
-    },
-    /// An in-place zoom crop of a focused inline mermaid diagram, encoded into the same
-    /// (cols, rows) area. Keyed by the pixel crop so pan/zoom/re-raster all re-encode naturally.
-    Zoom { cols: u16, rows: u16, crop: PxRect },
-}
-
-impl MdEncodeKey {
-    /// Which of `MdImgEntry`'s three protocol slots this result belongs in — and therefore which of
-    /// its three fixed kitty ids the encode must be transmitted under.
-    fn slot(&self) -> usize {
-        match self {
-            Self::Full { .. } => 0,
-            Self::Clip { .. } => 1,
-            Self::Zoom { .. } => 2,
-        }
-    }
-}
-
-/// A request to encode an inline image (or a cropped band of it) off the UI thread (principle #4).
-pub struct MdEncodeRequest {
-    path: PathBuf,
-    key: MdEncodeKey,
-    image: Arc<image::DynamicImage>,
-    /// Pixel band to crop before encoding; None encodes the whole image.
-    crop: Option<PxRect>,
-    cols: u16,
-    rows: u16,
-    /// `Some((id, is_tmux))` on a kitty terminal: build konoma's own compressed transmit under this
-    /// slot's **fixed** id (see `MdImgEntry::kitty_ids`). None everywhere else = ratatui-image.
-    kitty: Option<(u32, bool)>,
-    /// `MdImgEntry::born` of the entry the request was made for.
-    born: u64,
-}
-
-/// Result of a background inline-image encode, delivered to the run loop.
-pub struct MdEncodeResult {
-    path: PathBuf,
-    key: MdEncodeKey,
-    /// None = the encode failed. The worker **always** sends a result: swallowing failures left
-    /// `enc_inflight` latched on, freezing all re-encodes of that image and keeping
-    /// `md_images_loading()` true forever (busy spinner + 16ms polling — idle CPU 0% broken).
-    image: Option<InlineImage>,
-    /// `MdImgEntry::born` of the entry the request was made for; `apply_md_encode` drops a result
-    /// whose entry has since been replaced.
-    born: u64,
-}
-
-/// Background worker that encodes inline-image protocols (the whole image or a cropped band) with a
-/// cloned Picker, so the UI thread never blocks on the resize/encode (principle #4). Exits when the
-/// request sender is dropped (App teardown).
-pub fn md_encode_worker(
-    picker: Picker,
-    rx: std::sync::mpsc::Receiver<MdEncodeRequest>,
-    tx: std::sync::mpsc::Sender<MdEncodeResult>,
-) {
-    while let Ok(req) = rx.recv() {
-        let (path, key, born) = (req.path.clone(), req.key, req.born);
-        let picker = &picker; // borrow: so the move closure doesn't consume picker across loop iterations
-                              // Wrap the whole request handling in a panic catch: even if one new_protocol/crop
-                              // panics, don't kill the worker thread (killing it would stop every future encode,
-                              // latching enc_inflight forever).
-        let image = crate::preview::markdown::catch_silent(move || {
-            let img = match req.crop {
-                Some((x, y, w, h)) => req.image.crop_imm(x, y, w, h),
-                None => (*req.image).clone(),
-            };
-            let size = ratatui::layout::Size::new(req.cols, req.rows);
-            // A fence diagram (vector-derived) is **also scaled up** to the reserved grid (Scale):
-            // even if the raster is small, it fills the area instead of leaving a top-left-packed
-            // margin band — sharpness is handled by density-following re-rasterization instead.
-            // A photo keeps the previous Fit behavior (never scaled up past its natural size = never blurred).
-            //
-            // A media-diff picture is **also** `Scale`, for a different reason than the mermaid case:
-            // `preview::media_diff::layout`'s "shared scale" math already computed the *exact* target
-            // cell box (`req.cols`/`req.rows`, clamped to never exceed the natural size), using
-            // PDF-page **points** or a decode-budget-downscaled GIF frame as the "natural" unit —
-            // either of which differs from this image's own *actual* pixel dimensions. Letting `Fit`
-            // independently re-derive a fit from those actual dimensions doesn't reliably reproduce
-            // the same box: it can come out smaller (a real bug) or larger (silently blocked entirely
-            // — both `Image`/`KittyImage`'s `Widget::render` refuse to draw when the protocol's size
-            // exceeds the render area). `Scale` sidesteps both by always resizing to exactly `size`,
-            // matching what the caller then renders into.
-            let is_media_diff_picture =
-                crate::preview::media_diff::is_media_diff_url(&req.path.to_string_lossy());
-            let resize =
-                if crate::preview::markdown::is_mermaid_fence_url(&req.path.to_string_lossy())
-                    || is_media_diff_picture
-                {
-                    Resize::Scale(Some(FilterType::Lanczos3))
-                } else {
-                    Resize::Fit(Some(FilterType::Lanczos3))
-                };
-            // Always send back a result even on failure (Err/None): swallowing it would leave
-            // enc_inflight stuck true forever.
-            match req.kitty {
-                Some((id, is_tmux)) => encode_inline_kitty(picker, img, size, &resize, id, is_tmux)
-                    .map(InlineImage::Kitty),
-                None => picker
-                    .new_protocol(img, size, resize)
-                    .ok()
-                    .map(InlineImage::Proto),
-            }
-        })
-        .flatten();
-        if tx
-            .send(MdEncodeResult {
-                path,
-                key,
-                image,
-                born,
-            })
-            .is_err()
-        {
-            break;
-        }
-    }
-}
-
-/// Encode one inline image as konoma's own **compressed** kitty transmit under the fixed `id`.
-///
-/// The sizing is deliberately not reinvented: it replays `Picker::new_protocol`'s decision through
-/// `Resize`'s public API, so this lands on the exact same cell area — and the same transparent
-/// padding when the aspect ratio does not divide evenly into cells — that the ratatui-image path it
-/// replaces produced. Getting that wrong would not fail loudly; it would quietly stretch every
-/// diagram and equation by a few percent.
-///
-/// The one thing that does change is the payload: RGBA compressed with `o=z` (see `preview::kitty`),
-/// which is what makes re-encoding an animated frame affordable in the first place.
-fn encode_inline_kitty(
-    picker: &Picker,
-    img: image::DynamicImage,
-    target: ratatui::layout::Size,
-    resize: &Resize,
-    id: u32,
-    is_tmux: bool,
-) -> Option<crate::preview::kitty::KittyImage> {
-    let font = picker.font_size();
-    let natural = Resize::natural_size(&img, font);
-    // `new_protocol` skips the resize entirely when the image already fits the target at its
-    // natural cell size and lines up with the font grid on at least one axis (`needs_resize`'s
-    // early `None`). `Scale` never takes that shortcut — it is defined as "resize even when
-    // smaller". konoma passes no background color, so the padding color is ratatui-image's default.
-    let fits = natural.width <= target.width && natural.height <= target.height;
-    let on_grid = img.width() == u32::from(natural.width) * u32::from(font.width)
-        || img.height() == u32::from(natural.height) * u32::from(font.height);
-    let (img, area) = if !matches!(resize, Resize::Scale(_)) && fits && on_grid {
-        (img, natural)
-    } else {
-        let area = resize.size_for(&img, font, target);
-        (resize.resize(&img, font, area, None), area)
-    };
-    if area.width == 0 || area.height == 0 {
-        return None;
-    }
-    Some(crate::preview::kitty::KittyImage::build(
-        &img.to_rgba8(),
-        area.width,
-        area.height,
-        id,
-        is_tmux,
-    ))
-}
-
 /// Result of a background inline-image decode, delivered to the run loop.
-pub struct MdImageResult {
-    path: PathBuf,
-    image: Result<image::DynamicImage, String>,
-    /// SVG source alongside a rendered mermaid fence (kept for in-place sharp zoom). None otherwise.
-    svg: Option<std::sync::Arc<Vec<u8>>>,
-    /// Origin of `svg` (see `MdImgEntry::svg_trust`); only meaningful when `svg` is `Some`.
-    svg_trust: crate::preview::svg::SvgTrust,
-    /// True when this is a sharpening re-raster of an already-shown diagram: only the pixels are
-    /// replaced — the layout size and the decoration cache stay untouched.
-    reraster: bool,
-    /// All frames when this is an animated inline GIF (`image` above is just its first frame, kept
-    /// so the existing layout-sizing code path is unchanged). None for everything else, including a
-    /// static/single-frame GIF, which already fell back to the plain still-image decode.
-    frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
-    /// The `MdImgEntry::request` this result answers (see there); `apply_md_image` drops it when
-    /// the entry has moved on to another request.
-    request: u64,
-}
-
-/// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
-/// It carries no bytes: on success the file is already in the cache, so the run loop just invalidates
-/// the decoration cache to re-lay the image out; on failure the URL is remembered so it is not retried.
-pub struct RemoteFetch {
-    url: String,
-    ok: bool,
-}
+pub type MdImageResult = konoma_widgets::inline_images::DecodedImage;
 
 /// Result of `build_decorated`: the rendered lines plus everything needed to finish setting up the
 /// Markdown cache (inline images, follow-up fetches/renders to kick off, source line count).
@@ -3019,39 +1913,7 @@ struct DecoratedMarkdown {
     diff_marks: Vec<(std::ops::Range<usize>, crate::preview::markdown::DiffMark)>,
 }
 
-/// Which of the full-screen diff's three presentations a Markdown/text diff is currently shown in
-/// (`docs/FEATURE-MD-RENDERED-DIFF.md` §1/§4). Lives on [`PerTab`] (`diff_view`) rather than `App`
-/// for the ordinary per-tab reason — a second tab reviewing a different diff must not be dragged
-/// along by the first's `R` presses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DiffView {
-    /// The classic unified/split diff (`ui/preview.rs::render_gitdiff`'s pre-existing body) —
-    /// `Surface::PreviewGitDiff`.
-    Source,
-    /// Both versions' changed blocks, decorated, old (red/dim) then new (amber) —
-    /// `Surface::PreviewGitDiff` still, drawn through the same `App::ensure_md_cache` +
-    /// `ui/preview.rs::render_decorated` path an ordinary preview uses
-    /// (`App::ensure_md_cache`'s own `DecoratedSource::Diff` branch) and its thin
-    /// `render_diff_rendered` wrapper. Markdown only — see `App::diff_representation_count`.
-    Rendered,
-    /// The file's own ordinary preview (ordinary `Surface::PreviewText`/ `PreviewImage`), with a
-    /// change gutter on the current content. Leaves `Surface::PreviewGitDiff` entirely — see
-    /// `PerTab::preview_from_diff`.
-    Preview,
-}
-
-impl DiffView {
-    /// `[ui] diff_view`, resolved permissively: an unrecognized value falls back to `Rendered` (the
-    /// config default), the same "typo can't silently change behavior in a surprising direction"
-    /// contract every other mode string in `config/mod.rs` already has.
-    fn parse(s: &str) -> Self {
-        match s.trim() {
-            "source" => Self::Source,
-            "preview" => Self::Preview,
-            _ => Self::Rendered,
-        }
-    }
-}
+pub(crate) use konoma_host_core::project::DiffView;
 
 /// Per-tab state bundle. Migrated concern-by-concern out of the flat App fields so tab save/load
 /// is one clone and adding a per-tab field touches one place (see docs/REFACTOR-2026-07.md).
@@ -3062,8 +1924,48 @@ impl DiffView {
 /// inline-fence zoom state, and the tab-scoped selection/filter/search state.
 ///
 /// `Default` is implemented manually (not derived): a few fields have a non-zero "fresh tab" value
-/// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `pdf_page` starts
+/// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `page` starts
 /// at 1), matching what `App::new` used to initialize them to before this migration.
+/// What a preview's opener wants done once the preview kind is known (the kind decides whether the
+/// view is windowed or decorated, which every one of these needs).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) enum Landing {
+    #[default]
+    None,
+    /// Scroll to this 1-based line (a Markdown preview is switched to its source first).
+    GotoLine(usize),
+    /// Scroll to the first change of the file (a follow jump).
+    FirstChange,
+    /// The diff's own `Preview` representation: tagged as the diff's, then the first change.
+    #[cfg(feature = "git")]
+    DiffPreview {
+        read_context: konoma_plugin::host::project::DiffReadContext,
+        follow_scope: bool,
+    },
+    /// Read the windowed text at a **line** (a position put back on a preview whose text was not
+    /// here yet, or whose file is no longer the one the position was saved in).
+    Line {
+        top_line: usize,
+        cursor_line: usize,
+        cursor_col: usize,
+    },
+}
+
+/// What a file preview still waits for. One value, owned by the preview that asked: it is dropped
+/// whenever the tab's preview kind is set (`App::set_preview_kind`), so it never outlives the file
+/// preview it was made for or lands on another one.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingResolution {
+    /// The file the preview was opened on.
+    pub(crate) path: PathBuf,
+    /// What the opener wants done once the preview can be positioned.
+    pub(crate) landing: Landing,
+    /// `false`: the kind is still being decided on the worker (the kind held in `preview_kind` is
+    /// the provisional one; a tab saved in this state asks again when it becomes active). `true`:
+    /// the kind is known and the landing waits for the document's text.
+    pub(crate) kind_known: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct PerTab {
     /// Identity of this tab, unique for the lifetime of the process and never reused.
@@ -3076,6 +1978,19 @@ pub(crate) struct PerTab {
     pub(crate) id: u64,
     // --- Tree/root navigation state ---
     pub(crate) root: PathBuf,
+    pub(crate) projects: crate::plugins::projects::ProjectDetection,
+    pub(crate) project_navigation: Option<project_screens::ProjectNavigation>,
+    /// Selected project backend for the current diff and its ordinary Preview presentation.
+    diff_read_context: konoma_plugin::host::project::DiffReadContext,
+    pub(crate) project_return: Option<project_screens::ProjectNavigation>,
+    pub(crate) project_enter_pending: bool,
+    /// The old hub action name a key asked for while the project was not open yet (detection
+    /// pending, or the chooser up): it runs once that project opens, and is dropped when none does.
+    pub(crate) project_enter_op: Option<String>,
+    project_effects: Vec<project_screens::ProjectEffect>,
+    project_pending_acts: std::collections::VecDeque<project_screens::ProjectInvocation>,
+    /// Extra repository watch, resolved once for this root/backend and carried across tab switches.
+    vcs_watch: Option<VcsWatchCache>,
     /// The directory opened at startup. The base for relative-path display (kept separately because root moves up with h).
     pub(crate) open_dir: PathBuf,
     /// The tree flattened into display order. For M0 it is fine to simply rebuild it every time.
@@ -3094,18 +2009,13 @@ pub(crate) struct PerTab {
     pub(crate) preview_hscroll: u16,
     /// Height (in rows) of the text display area at the last render. Used as the page size for paging.
     pub(crate) preview_viewport: u16,
+    /// Width (in columns) of the preview content area at the last render that measured it
+    /// (`ui::preview::render`); 0 until the preview has been drawn. A plugin's `ViewReq::cols`.
+    pub(crate) preview_cols: u16,
     table_cur_row: usize,
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
-    /// Which visible sheet (0-based) a spreadsheet preview shows. Clamped to the workbook's sheet
-    /// count whenever a (re)load lands.
-    sheet_idx: usize,
-    // The git overlay is also kept per tab (still in git mode after viewing a doc in another tab and coming back).
-    git_view: bool,
-    git_view_sel: usize,
-    git_view_entries: Vec<crate::git::ChangeEntry>,
-    came_from_git_view: bool,
     /// Which of the three presentations (`docs/FEATURE-MD-RENDERED-DIFF.md` §1) the current/last
     /// GitDiff preview is shown in. Set from `[ui] diff_view` (rounded to what the target file can
     /// actually show) every time `App::open_git_diff` opens a *fresh* file's diff; `R`
@@ -3165,44 +2075,25 @@ pub(crate) struct PerTab {
     /// plain raw-source toggle / tree return. Cleared by `App::enter_preview`'s own reset (so any
     /// *other* way of opening a preview always starts `false`) and by returning to the diff.
     preview_from_diff: bool,
-    git_log: Option<Vec<crate::git::CommitInfo>>,
-    git_log_sel: usize,
-    git_detail: Option<Vec<crate::git::DiffLine>>,
-    git_detail_meta: Option<crate::git::CommitMeta>,
-    git_detail_title: Option<String>,
-    git_detail_scroll: u16,
-    git_detail_hscroll: u16,
-    git_detail_viewport: u16,
-    git_detail_total: usize,
-    git_branches: Option<Vec<crate::git::BranchInfo>>,
-    git_branch_sel: usize,
-    git_branch_filter: String,
-    git_branch_filtering: bool,
-    // The linked-worktree list (`w` from the changes hub). Same shape as the branch-list fields
-    // right above (list / cursor / filter query / filter-input-active).
-    git_worktrees: Option<Vec<crate::git::WorktreeInfo>>,
-    git_worktree_sel: usize,
-    git_worktree_filter: String,
-    git_worktree_filtering: bool,
-    git_graph: Option<Vec<crate::git::GraphRow>>,
-    git_graph_sel: usize,
-    // Since we save the graph body itself (git_graph), the derived state that decorates it (base
-    // pin, legend, visible branches, priority order) must be saved to the same tab too, or the
-    // legend/`base:` title left over from another tab would stick around after changing base/view
-    // there and coming back (load_active does not rebuild the graph). Same treatment as saving
-    // git_detail_meta/title alongside git_detail. The picker's (modal) transient state is not
-    // saved, and gets reset on restore.
-    git_graph_base: Option<String>,
-    git_graph_base_label: Option<String>,
-    /// Whether the graph shows every revision instead of the range the backend considers current.
-    /// Only jj has a narrower default; git already draws everything.
-    pub(crate) git_graph_all: bool,
-    git_graph_visible: std::collections::HashSet<String>,
-    git_graph_legend: Vec<crate::git::LegendEntry>,
-    git_graph_hidden: usize,
-    git_graph_order: Vec<String>,
+    /// What the file preview in this tab still waits for before it is final (see
+    /// [`PendingResolution`]). It belongs to **that file preview**: `App::set_preview_kind`, the one
+    /// place a preview is replaced or left, drops it.
+    pending: Option<PendingResolution>,
+    /// The identity of the preview load this tab holds: given by `App::begin_preview_load` each
+    /// time a preview is opened (or left), never reused. The state that belongs to one load of one
+    /// preview (the pending landing, the kind it resolved, a search waiting for the table, the
+    /// first-change reservations) is compared by it when a covered tab is put back
+    /// (`App::put_tab_back`): the same identity means the working tab continued the saved load.
+    load_id: u64,
+    /// A diff opened on the worker still waits for the first answer of its target resolution: that
+    /// answer reserves the scroll to the first change (the landing of the diff's first load). Later
+    /// answers (a read made when the diff is put back) keep the view. One-shot state of the load.
+    diff_answer_awaited: bool,
     // --- Internal scroll state for a windowed (Code/Text/raw md) preview ---
     preview_byte_top: u64,
+    /// Length and mtime of the file the windowed reader was opened on (see `setup_windowed`): a
+    /// position saved with it is a byte offset only while the file still is that file.
+    preview_win_stamp: Option<(u64, Option<std::time::SystemTime>)>,
     preview_top_line: usize,
     /// Text-mode `PreviewKind::Command`'s generated output (the `{out}` artifact / captured
     /// stdout) — the windowed reader opens **this** instead of `preview_path` (see
@@ -3216,18 +2107,25 @@ pub(crate) struct PerTab {
     preview_cursor_line: usize,
     preview_cursor_col: usize,
     // --- Image/PDF pan and page position ---
-    /// Zoom factor. 1.0=the whole image fits, >1.0 zooms in (overflowing the viewport clips and enables pan).
-    pub(crate) image_zoom: f64,
-    image_center: (f64, f64),
-    pdf_page: u32,
-    pdf_pages: Option<u32>,
-    // --- Markdown/Mermaid raw-source display (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
-    md_raw: bool,
-    /// A presentation's chosen view (`R`): `Some(true)` = the text, `Some(false)` = the slide
-    /// pictures, `None` = the terminal's default (`App::deck_picture_view`). Reset per file.
-    deck_text_view: Option<bool>,
-    /// The slide (0-based) `R` asked to keep: scrolled to by the next draw, once the other view's
-    /// layout exists (`App::apply_pending_slide`).
+    /// Zoom (1.0=the whole image fits, >1.0 zooms in; overflowing the viewport clips and enables
+    /// pan) and the center of the visible window. The drawing state is `App::image_viewer`.
+    pub(crate) image_view: konoma_widgets::image_view::ImageViewState,
+    /// The page on screen, counted from 1, of a preview made of separate pages (a PDF today; the
+    /// spreadsheet's sheets and the slides keep their own numbers until they move onto this).
+    /// 1 for anything else.
+    page: u32,
+    /// How many pages the plugin reported (`Layout.pages`), or `None` when it has none or does not
+    /// know (page keys do nothing then).
+    page_count: Option<u32>,
+    // --- Chosen representation (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
+    /// The representation the user chose with `R` (an id of the plugin's `Layout.reprs`), or
+    /// `None` for the plugin's default for the terminal. Reset per file. A presentation's are
+    /// `picture` and `text` (`App::deck_picture_view`); a Markdown file's and a Word document's
+    /// are `rendered` and `source` (`App::is_md_raw`: the source is shown in the windowed reader).
+    repr: Option<String>,
+    /// The page (0-based) of an anchored page list (the slides of a presentation) to keep: scrolled
+    /// to by the next draw, once the layout of the new representation or size exists
+    /// (`App::apply_pending_slide`).
     deck_pending_slide: Option<usize>,
     /// Whether the preview body has been drawn for this tab at least once, so `preview_viewport`
     /// is a measured height (possibly 0 on a tiny terminal) and not the initial "not drawn yet" 0.
@@ -3246,10 +2144,11 @@ pub(crate) struct PerTab {
     /// The file the `C` cursor was on, for a changed-list rebuild that had to be **deferred** until
     /// the in-flight `git status` lands (`refresh_fs_inner` hands it to `apply_statuses`).
     ///
-    /// The identity has to travel with the deferred work because `rebuild_tree` has already replaced
-    /// `entries` with the ordinary listing by the time the scan arrives — `apply_statuses` reading
-    /// the cursor for itself there gets a file from the *whole tree* (measured: a cursor on the third
-    /// changed file read back as an unchanged, committed one). See `reapply_changed_filter`.
+    /// The identity has to travel with the deferred work: every rebuild under `C` keeps the list it
+    /// had while the scan is out (`rebuild_tree_under_changed_list`), where the identity is usually
+    /// `entries[selected]`, but a reveal after a file operation aims at a file that list has no row
+    /// for yet (one it just created), so `apply_statuses` cannot read it from `entries`. See
+    /// `reapply_changed_filter`.
     ///
     /// Lives on `PerTab` (not `App`) precisely so it travels with a tab switch rather than being
     /// lost by one: this used to be an `App`-level field that `save_active` explicitly reset to
@@ -3264,6 +2163,12 @@ pub(crate) struct PerTab {
     /// anchor rides along in its own snapshot across any number of switches until it is actually
     /// consumed (no loss *out*).
     changed_anchor_pending: Option<PathBuf>,
+    /// The file of the row the cursor was on when `changed_anchor_pending` was published: the
+    /// pending identity stands for the cursor only while the cursor is still on that row. A move by
+    /// the user (any key, the mouse, a search jump) puts the cursor on another row, and from then
+    /// on the cursor's own file is the identity (`App::standing_changed_anchor`). Published and
+    /// retired with `changed_anchor_pending`, never on its own.
+    changed_anchor_row: Option<PathBuf>,
     preview_search: Option<String>,
     search_input: Option<String>,
     search_matches: Vec<(u64, usize, usize)>,
@@ -3274,6 +2179,11 @@ pub(crate) struct PerTab {
     /// nothing yet: when the sheet arrives it is run and the cursor goes to the first hit (the
     /// same as confirming it on a loaded sheet). Cleared with the search.
     search_pending: bool,
+    /// `search_matches` is not the matches of the text now shown (a tab came back from a project
+    /// screen or from another tab: the text may have changed meanwhile): they are found again on
+    /// the current text (`App::rescan_stale_search`) before they are used, and the match nearest
+    /// the caret becomes the current one.
+    search_stale: bool,
 }
 
 impl Default for PerTab {
@@ -3286,7 +2196,16 @@ impl Default for PerTab {
             // root/open_dir has no meaningful default — App::new overrides both right after
             // `PerTab::default()`, and `rebuild_tree` fills `entries`.
             root: PathBuf::new(),
+            vcs_watch: None,
             open_dir: PathBuf::new(),
+            projects: crate::plugins::projects::ProjectDetection::default(),
+            project_navigation: None,
+            diff_read_context: Default::default(),
+            project_return: None,
+            project_enter_pending: false,
+            project_enter_op: None,
+            project_effects: Vec::new(),
+            project_pending_acts: Default::default(),
             entries: Vec::new(),
             selected: 0,
             show_hidden: false,
@@ -3298,15 +2217,11 @@ impl Default for PerTab {
             preview_scroll: 0,
             preview_hscroll: 0,
             preview_viewport: 0,
+            preview_cols: 0,
             table_cur_row: 0,
             table_cur_col: 0,
             table_top_row: 0,
             table_left_col: 0,
-            sheet_idx: 0,
-            git_view: false,
-            git_view_sel: 0,
-            git_view_entries: Vec::new(),
-            came_from_git_view: false,
             // No diff has been opened yet in a fresh tab; App::open_git_diff sets the real value
             // from config the moment one is. `Rendered` (not e.g. `Source`) simply so a fresh
             // `PerTab` never claims a presentation it never actually resolved.
@@ -3316,46 +2231,19 @@ impl Default for PerTab {
             diff_media_page: 1,
             diff_scroll_pending: None,
             preview_from_diff: false,
-            git_log: None,
-            git_log_sel: 0,
-            git_detail: None,
-            git_detail_meta: None,
-            git_detail_title: None,
-            git_detail_scroll: 0,
-            git_detail_hscroll: 0,
-            git_detail_viewport: 0,
-            git_detail_total: 0,
-            git_branches: None,
-            git_branch_sel: 0,
-            git_branch_filter: String::new(),
-            git_branch_filtering: false,
-            git_worktrees: None,
-            git_worktree_sel: 0,
-            git_worktree_filter: String::new(),
-            git_worktree_filtering: false,
-            git_graph: None,
-            git_graph_sel: 0,
-            git_graph_base: None,
-            git_graph_base_label: None,
-            git_graph_all: false,
-            git_graph_visible: std::collections::HashSet::new(),
-            git_graph_legend: Vec::new(),
-            git_graph_hidden: 0,
-            git_graph_order: Vec::new(),
+            pending: None,
             preview_byte_top: 0,
+            preview_win_stamp: None,
             preview_top_line: 0,
             command_out: None,
             preview_cursor_line: 0,
             preview_cursor_col: 0,
-            // App::new used to initialize image_zoom to 1.0 (whole image fits), not 0.0.
-            image_zoom: 1.0,
-            // The image/fence center's initial value is "centered" (same as App::new used to set it to (0.5, 0.5)).
-            image_center: (0.5, 0.5),
+            // Zoom 1.0 (the whole image fits), centered.
+            image_view: konoma_widgets::image_view::ImageViewState::default(),
             // PDF pages are 1-based (same as App::new used to set it to 1).
-            pdf_page: 1,
-            pdf_pages: None,
-            md_raw: false,
-            deck_text_view: None,
+            page: 1,
+            page_count: None,
+            repr: None,
             deck_pending_slide: None,
             preview_viewport_drawn: false,
             focused_item: None,
@@ -3370,21 +2258,33 @@ impl Default for PerTab {
             filter_pool: Vec::new(),
             changed_filter: false,
             changed_anchor_pending: None,
+            changed_anchor_row: None,
+            load_id: 0,
+            diff_answer_awaited: false,
             preview_search: None,
             search_input: None,
             search_matches: Vec::new(),
             search_truncated: false,
             search_idx: 0,
             search_pending: false,
+            search_stale: false,
         }
     }
 }
 
 impl App {
     pub fn new(root: PathBuf, cfg: Config) -> Result<Self> {
+        let bookmarks = crate::bookmarks::Bookmarks::load(&root);
+        Self::new_with_bookmarks(root, cfg, bookmarks)
+    }
+
+    pub(crate) fn new_with_bookmarks(
+        root: PathBuf,
+        cfg: Config,
+        bookmarks: crate::bookmarks::Bookmarks,
+    ) -> Result<Self> {
         let path_style = PathStyle::parse(&cfg.ui.path_style);
-        let key_scheme = KeyScheme::parse(&cfg.ui.keys);
-        let lang = crate::i18n::Lang::resolve(&cfg.ui.lang);
+        let lang = crate::i18n::config_language(&cfg);
         let sort = Sort::from_config(&cfg.ui.sort);
         // `[ui] show_hidden` — captured before `cfg` is moved into `Self` below, and used as the
         // fresh tab's starting value (rebuild_tree, called right after construction, reads
@@ -3394,27 +2294,51 @@ impl App {
         let diff_layout = DiffLayout::parse(&cfg.git.diff);
         // The media diff's initial layout (config git.media_diff). At runtime, `s` cycles auto → side → stack → auto.
         let media_diff_layout = MediaDiffLayout::parse(&cfg.git.media_diff);
-        // Run2 keymap: merge the defaults + config (`[keys.<surface>]` + the old copy_* alias) and
+        // Run2 keymap: merge the defaults + config (`[keys.<context>]` + the old copy_* alias) and
         // validate for conflicts. The page/half profile follows ui.keys (vim/less). Stage 2 is
         // construction only (dispatch is not yet wired up).
-        let keymaps = crate::keymap::KeyMap::from_config(
+        // The `[keys.<plugin id>]` tables are the plugins', not the host's: they are taken out of
+        // the host's keymap config and applied to the plugins' declared actions.
+        let mut keys_config = cfg.keys.to_keymap_config();
+        let registry = crate::plugins::shared_registry(&cfg.plugin_disabled());
+        // The old per-screen tables are read as old names of the version-control plugins'
+        // operations: translated into `[keys.<plugin id>]` (the table the plugins' keys are
+        // bound from) and noted below through the keymap's own renames and warnings.
+        #[cfg(feature = "git")]
+        let old_screens =
+            crate::plugins::old_screens::translate(&registry, &mut keys_config.surfaces);
+        let plugin_keys = crate::plugins::PluginKeys::build(&registry, &mut keys_config.surfaces);
+        #[allow(unused_mut)]
+        let mut keymaps = crate::keymap::KeyMap::from_config(
             crate::keymap::scheme_from_str(&cfg.ui.keys),
-            &cfg.keys.to_keymap_config(),
+            &keys_config,
         );
+        #[cfg(feature = "git")]
+        {
+            keymaps.renames.extend(old_screens.renames);
+            keymaps.warnings.extend(old_screens.warnings);
+        }
         let mut app = Self {
+            project_runtimes: std::collections::HashMap::new(),
+            project_dialog: None,
+            project_replaying: Default::default(),
             launch_dir: root.clone(),
             path_style,
-            key_scheme,
             lang,
             cfg,
             sort,
-            sort_menu: false,
-            bookmarks: crate::bookmarks::Bookmarks::load(&root),
+            bookmarks,
             session_store: None,
             session_restoring: false,
             mark_set_pending: false,
             bookmark_list: false,
             bookmark_list_sel: 0,
+            bookmark_list_filter: String::new(),
+            bookmark_list_filtering: false,
+            tab_list_filter: String::new(),
+            tab_list_filtering: false,
+            outline_filter: String::new(),
+            outline_filtering: false,
             dialog: None,
             clipboard: None,
             follow_mode: false,
@@ -3423,6 +2347,8 @@ impl App {
             follow_diff_full: false,
             #[cfg(feature = "git")]
             follow_baseline: None,
+            #[cfg(feature = "git")]
+            follow_worker: follow_worker::State::default(),
             follow_root: None,
             md_view_rows: 0,
             preview_win: None,
@@ -3432,6 +2358,7 @@ impl App {
             hl_warming: false,
             spinner_frame: 0,
             pending_edit: None,
+            pending_terminal: None,
             pending_git_tool: false,
             md_cache: None,
             diff_cache: None,
@@ -3439,35 +2366,35 @@ impl App {
             md_items: Vec::new(),
             details_open: std::collections::HashMap::new(),
             picker: None,
+            plugin_colors: plugin_host::detect_color_depth(),
+            plugin_key_queue: Vec::new(),
+            plugin_input_left: false,
+            plugin_user_act: false,
+            plugin_user_act_gen: 0,
+            plugin_returning: 0,
+            plugin_returned_pending: false,
+            canvas_redraw_at: None,
+            canvas_more_at: None,
             img_tx: None,
-            image: None,
-            use_kitty: false,
-            kitty_is_tmux: false,
-            kitty_image: None,
+            image_viewer: konoma_widgets::image_view::ImageViewer::new(),
             kitty_tx: None,
-            kitty_gen: 0,
-            kitty_want: None,
-            kitty_shown: None,
             image_src: None,
-            image_crop: None,
-            image_vis_frac: (1.0, 1.0),
             vector_svg: None,
+            vector_trust: None,
             image_logical: None,
             vector_reraster_inflight: false,
-            md_overlay_last: None,
-            md_overlay_seen: None,
-            md_overlay_moved: false,
+            md_overlay: Default::default(),
             preview_media_mtime: None,
+            plugin_stamp: None,
+            plugin_stamp_taken: None,
+            plugin_reopen_forced: false,
             command_err: None,
             image_failure: None,
             #[cfg(test)]
             md_cache_budget_for_test: None,
             media_cache: None,
-            table_data: None,
-            workbook: None,
-            workbook_error: None,
+            plugin: None,
             document: None,
-            document_error: None,
             tab: PerTab {
                 id: 1,
                 root: root.clone(),
@@ -3476,22 +2403,25 @@ impl App {
                 ..PerTab::default()
             },
             tab_seq: 1,
+            load_seq: 0,
             table_viewport_rows: 0,
             table_cell_open: false,
             table_cell_scroll: 0,
             table_cell_viewport: 0,
             preview_visual_anchor: None,
             preview_visual_linewise: false,
-            gif_frames: Vec::new(),
-            gif_idx: 0,
-            gif_shown_at: None,
-            gif_protocol: None,
-            gif_proto_key: None,
+            gif: konoma_widgets::gif_player::GifPlayer::new(),
             media_tx: None,
-            md_image_cache: std::collections::HashMap::new(),
-            md_kitty_ids: std::collections::HashMap::new(),
-            md_frame: 0,
-            md_request_seq: 0,
+            canvas: canvas_images::CanvasPictureHost::default(),
+            md_images: InlineImageCache::default(),
+            scope_flashed: std::collections::HashSet::new(),
+            md_scope_refusals: std::cell::RefCell::new(Vec::new()),
+            read_scope_memo: std::cell::RefCell::new(None),
+            verb_plugin_memo: std::cell::RefCell::new(None),
+            preview_resolution_tx: None,
+            preview_resolution_serial: std::cell::Cell::new(0),
+            diff_resolution_serial: 0,
+            pending_file_verbs: Vec::new(),
             draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
@@ -3499,17 +2429,20 @@ impl App {
             md_remote_inflight: std::collections::HashSet::new(),
             md_remote_failed: std::collections::HashSet::new(),
             md_remote_tx: None,
-            md_enc_tx: None,
             media_gen: 0,
             media_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             media_loading: false,
-            wb_worker_busy: false,
-            wb_queued: None,
+            plugin_groups: std::collections::BTreeMap::new(),
+            plugin_keys,
             #[cfg(test)]
-            wb_dispatches: 0,
+            plugin_group_dispatches: 0,
             keymaps,
             pending_leader: None,
+            #[cfg(test)]
+            last_dispatched: None,
             flash: None,
+            notice_flash: None,
+            notice_flash_width: 80,
             show_help: false,
             show_info: false,
             help_scroll: 0,
@@ -3519,6 +2452,8 @@ impl App {
             tab_list_sel: 0,
             outline_open: false,
             outline_sel: 0,
+            outline_pages: std::cell::RefCell::new(None),
+            outline_width: std::cell::RefCell::new((String::new(), 0, 0)),
             git_status: std::collections::HashMap::new(),
             git_ignored: std::collections::HashSet::new(),
             git_status_for: None,
@@ -3528,17 +2463,8 @@ impl App {
             git_status_pending: None,
             git_status_gen: 0,
             status_tx: None,
-            md_diff_pending: None,
-            md_diff_gen: 0,
-            md_diff_tx: None,
-            md_diff_landed: None,
-            media_diff_pending: None,
-            media_diff_worker_busy: false,
-            media_diff_queued: None,
-            media_diff_gen: 0,
-            media_diff_cancel: Arc::default(),
-            media_diff_tx: None,
-            media_diff_landed: None,
+            md_diff: Default::default(),
+            media_diff: Default::default(),
             diff_target_kind_cache: None,
             git_ignored_for: None,
             git_ignored_pending: None,
@@ -3550,13 +2476,11 @@ impl App {
             filter_pool_dirty: false,
             pool_tx: None,
             diff_layout,
+            diff_split_drawn: false,
+            change_at: None,
             media_diff_layout,
             git_branch: None,
             git_worktree_origin: None,
-            git_graph_picker: false,
-            git_graph_picker_sel: 0,
-            git_graph_picker_set: std::collections::HashSet::new(),
-            git_graph_reordered: false,
             fileop_tx: None,
             office_tx: None,
             office_runner: office_open::real_runner(),
@@ -3572,8 +2496,8 @@ impl App {
         // git (rebuild_tree). It's thread-local, so it doesn't race with other tests (see git.rs's
         // EXTERNAL_GIT_ENABLED).
         #[cfg(feature = "git")]
-        crate::git::set_external_git_enabled(app.cfg.external.git);
-        crate::vcs::set_preference(crate::vcs::Preference::parse(&app.cfg.external.vcs));
+        crate::vcs::Git::set_external_git_enabled(app.cfg.external.git);
+        crate::vcs::set_preference(crate::vcs::Preference::parse(app.cfg.project_vcs()));
         app.rebuild_tree()?;
         // Register the current state as the first tab.
         app.tabs.push(app.snapshot_tab());
@@ -3587,34 +2511,187 @@ impl App {
         self.session_store = Some(store);
     }
 
-    /// Summarize startup keymap conflicts / ignored settings into one line (for the startup flash; i18n).
-    /// Conflicts have already safely fallen back to defaults (#17/FR-8). None if there is nothing.
+    /// Summarize startup keymap conflicts / ignored settings / old table names into one line (for
+    /// the startup flash; i18n). Conflicts have already safely fallen back to defaults (#17/FR-8).
+    /// Each kind gets its count and its first instance (so the flash says *which* key or table, not
+    /// just how many), followed by "(+n more)". None if there is nothing. The footer's own message
+    /// is [`App::set_startup_flash`], which orders and fits the pieces; this is the whole in one line.
+    #[cfg(test)]
     pub fn keymap_report(&self) -> Option<String> {
-        let nc = self.keymaps.conflicts.len();
-        let nw = self.keymaps.warnings.len();
-        if nc == 0 && nw == 0 {
+        let (problems, guidance) = self.keymap_report_parts();
+        let parts: Vec<String> = problems.into_iter().chain(guidance).collect();
+        if parts.is_empty() {
             return None;
         }
-        let mut parts: Vec<String> = Vec::new();
-        if nc > 0 {
-            parts.push(match self.lang {
+        Some(format!(
+            "{}: {}",
+            tr(self.lang, crate::i18n::Msg::Keymap),
+            parts.join(" / ")
+        ))
+    }
+
+    /// The pieces of [`App::keymap_report`]: what is wrong (conflicts, ignored settings) and what
+    /// only guides (old table names), each already carrying its "(+n more)".
+    fn keymap_report_parts(&self) -> (Vec<String>, Vec<String>) {
+        use crate::i18n::Msg;
+        let k = &self.keymaps;
+        let (nc, nw, nr) = (k.conflicts.len(), k.warnings.len(), k.renames.len());
+        let lang = self.lang;
+        let more = |total: usize| -> String {
+            if total > 1 {
+                format!(
+                    " {}",
+                    tr(lang, Msg::KeymapMore).replace("{n}", &(total - 1).to_string())
+                )
+            } else {
+                String::new()
+            }
+        };
+        let mut problems: Vec<String> = Vec::new();
+        let mut guidance: Vec<String> = Vec::new();
+        if let Some(c) = k.conflicts.first() {
+            let count = match lang {
                 crate::i18n::Lang::Jp => format!("キー衝突{nc}件(既定で継続)"),
                 crate::i18n::Lang::En => format!("{nc} key conflict(s) (using defaults)"),
-            });
+            };
+            let detail = tr(lang, Msg::KeymapConflictDetail)
+                .replace("{key}", &c.key.label())
+                .replace("{kept}", &c.kept)
+                .replace("{dropped}", &c.dropped);
+            problems.push(format!("{count}: {detail}{}", more(nc)));
         }
-        if nw > 0 {
-            parts.push(match self.lang {
+        if let Some(w) = k.warnings.first() {
+            let count = match lang {
                 crate::i18n::Lang::Jp => format!("無効な設定{nw}件を無視"),
                 crate::i18n::Lang::En => format!("{nw} invalid key setting(s) ignored"),
-            });
+            };
+            problems.push(format!("{count}: {w}{}", more(nw)));
         }
-        let head = tr(self.lang, crate::i18n::Msg::Keymap);
-        Some(format!("{head}: {}", parts.join(" / ")))
+        if let Some((old, new)) = k.renames.first() {
+            let note = tr(lang, Msg::KeymapOldName)
+                .replace("{old}", old)
+                .replace("{new}", new);
+            guidance.push(format!("{note}{}", more(nr)));
+        }
+        (problems, guidance)
+    }
+
+    /// The old `[ui]` names the config still uses, in one piece of guidance ("write ... instead",
+    /// the first one named and "(+n more)"), or `None` when it uses none.
+    fn settings_guidance(&self) -> Option<String> {
+        use crate::i18n::Msg;
+        let (old, new) = self.cfg.renamed_settings.first()?;
+        let more = if self.cfg.renamed_settings.len() > 1 {
+            format!(
+                " {}",
+                tr(self.lang, Msg::KeymapMore)
+                    .replace("{n}", &(self.cfg.renamed_settings.len() - 1).to_string())
+            )
+        } else {
+            String::new()
+        };
+        let head = match self.lang {
+            crate::i18n::Lang::Jp => "設定",
+            crate::i18n::Lang::En => "config",
+        };
+        let note = tr(self.lang, Msg::KeymapOldName)
+            .replace("{old}", old)
+            .replace("{new}", new);
+        Some(format!("{head}: {note}{more}"))
+    }
+
+    /// The message on the footer when konoma starts, from everything that has something to say:
+    /// a config that could not be read (`cfg_err`), key conflicts and ignored key settings,
+    /// `[plugins.*]` mistakes, then the guidance about old names (keys and settings). What is
+    /// wrong comes first and the guidance last; when they do not all fit the footer, what
+    /// does not fit is counted ("(+n more)"). An overlong first notice is shortened with an
+    /// ellipsis while reserving room for the count.
+    /// Derive the footer's notice space from terminal columns, as rendering does, and install
+    /// the startup message together with its unabridged, priority-ordered notices.
+    pub(crate) fn set_startup_flash(&mut self, cfg_err: Option<String>, columns: usize) {
+        let width = crate::ui::notice_footer_width(self, columns);
+        self.notice_flash_width = width;
+        self.set_notice_flash(self.startup_notices(cfg_err), width);
+    }
+
+    fn set_notice_flash(&mut self, notices: Vec<String>, width: usize) {
+        self.flash = fit_flash_notices(&notices, width, self.lang);
+        self.notice_flash = self.flash.as_ref().map(|rendered| {
+            Box::new(NoticeFlash {
+                rendered: rendered.clone(),
+                notices,
+                width,
+            })
+        });
+    }
+
+    /// Guidance follows all existing notices. Never revive startup notices after another action
+    /// replaced or dismissed their flash, and never parse a previously rendered hidden count.
+    pub(crate) fn append_flash_notice(&mut self, note: String) {
+        let mut notices = self
+            .notice_flash
+            .take()
+            .filter(|s| self.flash.as_ref() == Some(&s.rendered))
+            .map(|s| s.notices)
+            .unwrap_or_else(|| self.flash.take().into_iter().collect());
+        notices.push(note);
+        self.set_notice_flash(notices, self.notice_flash_width);
+    }
+
+    /// Use the actual notice space on each draw, including changes to terminal or context width.
+    pub(crate) fn refit_notice_flash(&mut self, width: usize) {
+        self.notice_flash_width = width;
+        if self
+            .notice_flash
+            .as_ref()
+            .is_some_and(|s| s.width == width && self.flash.as_ref() == Some(&s.rendered))
+        {
+            return;
+        }
+        if let Some(state) = self
+            .notice_flash
+            .take()
+            .filter(|s| self.flash.as_ref() == Some(&s.rendered))
+        {
+            self.set_notice_flash(state.notices, width);
+        }
+    }
+
+    fn startup_notices(&self, cfg_err: Option<String>) -> Vec<String> {
+        use crate::i18n::Msg;
+        let (key_problems, key_guidance) = self.keymap_report_parts();
+        let head = tr(self.lang, Msg::Keymap);
+        let mut notices: Vec<String> = Vec::new();
+        notices.extend(cfg_err);
+        if !key_problems.is_empty() {
+            notices.push(format!("{head}: {}", key_problems.join(" / ")));
+        }
+        notices.extend(self.cfg.plugin_report(self.lang));
+        let plugin_notes = self.plugin_keys.report(self.lang);
+        if !plugin_notes.is_empty() {
+            let head = konoma_host_core::help_msg::CoreMsg::PluginsHead.tr(self.lang);
+            notices.push(format!("{head}: {}", plugin_notes.join(" / ")));
+        }
+        if !key_guidance.is_empty() {
+            notices.push(format!("{head}: {}", key_guidance.join(" / ")));
+        }
+        notices.extend(self.settings_guidance());
+        notices
     }
 
     /// Starting from directly under root, recursively expand the expanded directories and flatten them.
     /// A naive implementation for M0. Support for large directories will later be replaced with lazy loading.
     pub fn rebuild_tree(&mut self) -> Result<()> {
+        self.ensure_project_detection();
+        if self
+            .tab
+            .vcs_watch
+            .as_ref()
+            .is_none_or(|c| c.root != self.tab.root)
+        {
+            self.git_vcs = crate::vcs::detect(&self.tab.root);
+            self.refresh_vcs_watch(self.git_vcs);
+        }
         let mut out = Vec::new();
         // HashSet: build_dir checks membership once per child (a Vec scan is E×N comparisons).
         let expanded_dirs: std::collections::HashSet<PathBuf> = self
@@ -3688,7 +2765,15 @@ impl App {
     /// Used on paths that cannot bail out with `?` (bookmark jump, clearing the filter, rebuilding after a git discard).
     /// The return value lets the caller decide whether to show a subsequent success flash (=false means don't).
     fn rebuild_tree_notify(&mut self) -> bool {
-        if let Err(e) = self.rebuild_tree() {
+        // Under `C` (the rebuild after a discard) the list is the changed files, not the walk:
+        // the rebuild goes through the one place that owns that rule.
+        let rebuilt = if self.tab.changed_filter {
+            let anchor = self.changed_filter_anchor();
+            self.rebuild_tree_under_changed_list(anchor)
+        } else {
+            self.rebuild_tree()
+        };
+        if let Err(e) = rebuilt {
             self.flash = Some(format!(
                 "{}{e}",
                 crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
@@ -3738,51 +2823,19 @@ impl App {
     }
 
     // --- Sort (FR, M7 helper) -------------------------------------------------
-    /// Whether the `s` sort-selection menu is showing.
-    pub fn is_sort_menu(&self) -> bool {
-        self.sort_menu
-    }
-    /// Open the sort menu with `s`. main routes the next key here.
-    pub fn open_sort_menu(&mut self) {
-        self.sort_menu = true;
-    }
-    /// Close the sort menu (Esc or an out-of-scope key).
-    pub fn close_sort_menu(&mut self) {
-        self.sort_menu = false;
-    }
-    /// Key handling for the sort menu. n/s/m/e=select the key (closes after selecting), r=flip asc/desc, .=directories first
-    /// (toggles keep it open). Out-of-scope keys close it. If the order changes, rebuild (while filtering, applied after clearing).
+    /// Apply one sort operation of the tree's `,` menu (`SortSet`, `SortToggleReverse`,
+    /// `SortToggleDirsFirst`; `c` is the letter the old overlay used for each). The menu closes
+    /// after the one operation. If the order changes, rebuild (while filtering, applied after clearing).
     pub fn sort_menu_key(&mut self, c: char) -> Result<()> {
-        let keep_open = match c {
-            'n' => {
-                self.sort.key = SortKey::Name;
-                false
-            }
-            's' => {
-                self.sort.key = SortKey::Size;
-                false
-            }
-            'm' => {
-                self.sort.key = SortKey::Modified;
-                false
-            }
-            'e' => {
-                self.sort.key = SortKey::Ext;
-                false
-            }
-            'r' => {
-                self.sort.reverse = !self.sort.reverse;
-                true
-            }
-            '.' => {
-                self.sort.dirs_first = !self.sort.dirs_first;
-                true
-            }
-            _ => {
-                self.sort_menu = false;
-                return Ok(());
-            }
-        };
+        match c {
+            'n' => self.sort.key = SortKey::Name,
+            's' => self.sort.key = SortKey::Size,
+            'm' => self.sort.key = SortKey::Modified,
+            'e' => self.sort.key = SortKey::Ext,
+            'r' => self.sort.reverse = !self.sort.reverse,
+            '.' => self.sort.dirs_first = !self.sort.dirs_first,
+            _ => return Ok(()),
+        }
         // While filtering, don't change the result order (it takes effect on tree rebuild after clearing).
         if self.tab.tree_filter.is_none() {
             // Anchor captured before the rebuild below — same hazard as `toggle_hidden`/
@@ -3790,14 +2843,12 @@ impl App {
             // reading it again would name a different file (or, while `C` is up, a plain-tree
             // directory that was never in the changed list).
             let anchor = self.visibility_change_anchor();
-            self.rebuild_tree()?;
-            // `rebuild_tree` always produces the plain tree, so while `C` is up it must be
-            // reapplied here too, the same way `toggle_hidden` does — otherwise the header keeps
+            // `rebuild_tree` always produces the plain tree, so while `C` is up the list must be
+            // put back here too, the same way `toggle_hidden` does — otherwise the header keeps
             // claiming CHANGED while the list underneath silently becomes the ordinary tree (the
             // sort order itself never applies to `C`'s list, which stays a fixed path order).
-            self.refilter_after_visibility_change(anchor);
+            self.rebuild_tree_refiltered(anchor)?;
         }
-        self.sort_menu = keep_open;
         Ok(())
     }
     /// Current sort display for the top context bar (e.g. `sort: mod ↑`).
@@ -3834,6 +2885,7 @@ impl App {
             kind: match self.tab.mode {
                 Mode::Preview if self.is_image_preview() => BaseKind::PreviewImage,
                 Mode::Preview if self.is_table_preview() => BaseKind::PreviewTable,
+                Mode::Preview if self.is_canvas_preview() => BaseKind::PreviewCanvas,
                 Mode::Preview => BaseKind::PreviewText,
                 Mode::Tree => BaseKind::Tree,
             },
@@ -3852,6 +2904,58 @@ impl App {
     ///
     /// Off the render path in the sense that it only reads existing `bool` predicates — the same
     /// work the two hand-written cascades did.
+    /// Whether a project screen is in front and so covers the screen under it (the file diff, the
+    /// tree and preview inputs, the outline, the table cell popup, the visual selection, the
+    /// plugin input). The one predicate the layer walk, the gate of the keys that act on that
+    /// screen and the draw of its overlays share.
+    pub fn project_screen_covers(&self) -> bool {
+        self.project_active()
+    }
+
+    /// Whether `ctx` is the context of an overlay that is drawn in FRONT of an open project
+    /// screen (help, the bookmark list, the tab list, Info; their `/` filters read text and never
+    /// ask the keymap). A project screen covers the layers behind it and nothing in front of it,
+    /// so these keep their own actions ([`crate::ops::gate`]). The match has no wildcard: a new
+    /// context must be classified here.
+    pub fn overlay_in_front_of_project(&self, ctx: crate::keymap::Context) -> bool {
+        if !self.project_screen_covers() {
+            return false;
+        }
+        use crate::keymap::Context;
+        match ctx {
+            Context::Help | Context::Bookmarks | Context::Tabs | Context::Info => true,
+            Context::Tree
+            | Context::TreeVisual
+            | Context::Text
+            | Context::Document
+            | Context::TextVisual
+            | Context::Image
+            | Context::Table
+            | Context::Canvas
+            | Context::TableCell
+            | Context::Outline
+            | Context::Diff => false,
+            #[cfg(feature = "git")]
+            Context::Screen(..) => false,
+        }
+    }
+
+    /// Whether the project screen is the frontmost layer (nothing is drawn in front of it).
+    pub fn project_is_frontmost(&self) -> bool {
+        self.frontmost_layer(|_| true) == UiLayer::Project
+    }
+
+    /// The key as the frontmost layer reads it, for every host lookup (keymap, plugin keys, fixed
+    /// keys). The project screen compares modifiers exactly (Alt is part of its keys), so a chord
+    /// with Alt is a key of no host table while it is in front: `None`. Every other layer, and the
+    /// host without a project, reads the key through [`KeyPress::norm`] as before.
+    pub fn layer_key(&self, key: &crossterm::event::KeyEvent) -> Option<crate::keymap::KeyPress> {
+        if self.project_is_frontmost() {
+            return konoma_plugin::host::project::project_key_press(key);
+        }
+        Some(crate::keymap::KeyPress::norm(key))
+    }
+
     fn frontmost_layer(&self, visible: impl Fn(UiLayer) -> bool) -> UiLayer {
         macro_rules! layer {
             ($active:expr, $l:expr) => {
@@ -3877,52 +2981,45 @@ impl App {
             input && self.pending_is_batch_rename_input(),
             UiLayer::InputBatchRename
         );
-        layer!(input && self.pending_is_git_commit(), UiLayer::InputCommit);
-        layer!(
-            input && self.pending_is_git_create_branch(),
-            UiLayer::InputCreateBranch
-        );
-        layer!(
-            input && self.pending_is_worktree_create(),
-            UiLayer::InputCreateWorktree
-        );
         layer!(input, UiLayer::InputRename);
 
         // --- Help, above everything but the dialogs ---
         layer!(self.show_help, UiLayer::Help);
 
-        // --- The git views. The commit detail sits over the log, and the branch panel sits over
-        // the graph (`is_git_graph` is still true underneath it), so each goes before what it covers. ---
-        layer!(self.is_git_detail(), UiLayer::GitDetail);
-        layer!(self.is_git_log(), UiLayer::GitLog);
-        layer!(self.is_git_graph_picker(), UiLayer::GitGraphPicker);
-        layer!(self.is_git_graph(), UiLayer::GitGraph);
-        let branches = self.is_git_branches();
-        layer!(
-            branches && self.git_branch_filtering(),
-            UiLayer::GitBranchFilter
-        );
-        layer!(branches, UiLayer::GitBranches);
-        let worktrees = self.is_git_worktrees();
-        layer!(
-            worktrees && self.git_worktree_filtering(),
-            UiLayer::GitWorktreeFilter
-        );
-        layer!(worktrees, UiLayer::GitWorktrees);
-        layer!(self.is_git_view(), UiLayer::GitChanges);
-        layer!(self.is_git_diff_preview(), UiLayer::GitDiff);
+        // A project screen covers the screen under it: the layers marked below as masked are not
+        // in front while it is, however their state was left (see [`UiLayer`]).
+        let project = self.project_screen_covers();
+
+        // --- The file diff ---
+        layer!(!project && self.is_git_diff_preview(), UiLayer::GitDiff);
 
         // --- Input surfaces / menus / lists / popups ---
-        layer!(self.is_filtering(), UiLayer::Filter);
-        layer!(self.is_searching(), UiLayer::Search);
-        layer!(self.is_sort_menu(), UiLayer::Sort);
-        layer!(self.is_marking(), UiLayer::Mark);
-        layer!(self.is_bookmark_list(), UiLayer::Bookmarks);
-        layer!(self.is_tab_list(), UiLayer::Tabs);
-        layer!(self.is_outline(), UiLayer::Outline);
+        layer!(!project && self.is_filtering(), UiLayer::Filter);
+        layer!(!project && self.is_searching(), UiLayer::Search);
+        layer!(!project && self.is_marking(), UiLayer::Mark);
+        let bookmarks = self.is_bookmark_list();
+        layer!(
+            bookmarks && self.list_filtering(list_filter::ListId::Bookmarks),
+            UiLayer::BookmarksFilter
+        );
+        layer!(bookmarks, UiLayer::Bookmarks);
+        let tabs = self.is_tab_list();
+        layer!(
+            tabs && self.list_filtering(list_filter::ListId::Tabs),
+            UiLayer::TabsFilter
+        );
+        layer!(tabs, UiLayer::Tabs);
+        let outline = self.is_outline();
+        layer!(
+            !project && outline && self.list_filtering(list_filter::ListId::Outline),
+            UiLayer::OutlineFilter
+        );
+        layer!(!project && outline, UiLayer::Outline);
         layer!(self.is_info(), UiLayer::Info);
-        layer!(self.is_table_cell_open(), UiLayer::TableCell);
-        layer!(self.is_visual(), UiLayer::Visual);
+        layer!(!project && self.is_table_cell_open(), UiLayer::TableCell);
+        layer!(!project && self.is_visual(), UiLayer::Visual);
+        layer!(!project && self.is_plugin_input(), UiLayer::PluginInput);
+        layer!(project, UiLayer::Project);
 
         UiLayer::Base(self.base_layer())
     }
@@ -3935,7 +3032,7 @@ impl App {
 
     /// The **frontmost surface** that currently receives keys (the single source of truth for Run2
     /// keymap dispatch). A projection of the frontmost layer that has a surface on this build — see
-    /// [`UiLayer`] for the priority order and [`UiLayer::surface`] for the one case that has none.
+    /// [`UiLayer`] for the priority order.
     pub fn surface(&self) -> crate::keymap::Surface {
         let layer = self.frontmost_layer(|l| l.surface().is_some());
         match layer.surface() {
@@ -3944,6 +3041,82 @@ impl App {
             // base layer always has a surface. Degrade rather than panic (design principle #3).
             None => self.base_layer().surface(),
         }
+    }
+
+    /// Whether the text preview on screen is a decorated *document* (rendered Markdown, a Word
+    /// document, slides, a mermaid diagram) rather than source or plain text. A windowed preview
+    /// (code, plain text, a document's raw source after `R`) is text; so is a preview that cannot
+    /// be shown yet or at all (a Word file still converting, an unsupported type).
+    pub(crate) fn shows_document(&self) -> bool {
+        !self.is_windowed() && self.is_decorated_kind() && !self.document_text_missing()
+    }
+
+    /// The **key context** the next key is looked up in (`None` for text input and confirm
+    /// modals, which do not use the keymap). A projection of [`App::surface`] refined by what is on
+    /// screen: a decorated document vs source for the text preview, and git vs jj for the
+    /// version-control screens. The one place that decides the context; `handle_key` uses nothing
+    /// else. A project canvas is `Context::Canvas` whatever plugin screen it shows; the screen is
+    /// [`App::canvas_screen`].
+    pub fn key_context(&self) -> Option<crate::keymap::Context> {
+        let sfc = self.surface();
+        crate::keymap::Context::of_surface(sfc, self.shows_document())
+    }
+
+    /// The plugin screen (`git.changes`, `jj.log`, ...) a version-control project canvas shows,
+    /// built from the plugin id and screen key the canvas's navigation already carries. It is the
+    /// identity the config's `[keys."<plugin id>.<screen>"]` section addresses: those keys are
+    /// layered over the canvas's (`KeyMap::resolve_on` and its siblings take it). `None` for every
+    /// other surface and for the canvases of other plugins. It names what the canvas shows, so it
+    /// holds while an overlay (help, a menu) is in front of it; [`App::screen_keys_for`] says when
+    /// a lookup applies it.
+    #[cfg(feature = "git")]
+    pub fn canvas_screen(&self) -> Option<crate::keymap::Context> {
+        use crate::keymap::{Backend, Context, Screen};
+        let nav = self.tab.project_navigation.as_ref()?;
+        let frame = nav.frame()?;
+        // The diff a worktrees row's `d` pushes is the old hub's `Screen::Detail` (one detail
+        // screen for a commit and for a worktree).
+        let screen = match frame.key.screen.as_str() {
+            "worktree_diff" => Screen::Detail,
+            name => Screen::from_name(name)?,
+        };
+        Some(Context::Screen(
+            Backend::from_id(&nav.project.plugin)?,
+            screen,
+        ))
+    }
+
+    /// No version-control screens without the `git` feature.
+    #[cfg(not(feature = "git"))]
+    pub fn canvas_screen(&self) -> Option<crate::keymap::Context> {
+        None
+    }
+
+    /// The screen whose config keys layer over a lookup in `ctx`: the canvas's own screen for the
+    /// contexts the canvas takes its keys from (`Canvas`, and the `Text` table its motion keys
+    /// are read from) while the canvas shows a list or text. `None` for the `Diff` table, for a
+    /// canvas that shows a diff (the diff's own table wins there, as in the released hub), for an
+    /// overlay's own context (help, menus, dialogs) and for everything outside a canvas. Every key
+    /// lookup and hint on a canvas passes this to the `KeyMap::*_on` functions.
+    pub fn screen_keys_for(&self, ctx: crate::keymap::Context) -> Option<crate::keymap::Context> {
+        use crate::keymap::Context;
+        let own_content = !self
+            .project_content()
+            .is_some_and(|c| matches!(c.as_ref(), project_screens::ProjectContent::Diff(_)));
+        (matches!(ctx, Context::Canvas | Context::Text) && own_content)
+            .then(|| self.canvas_screen())
+            .flatten()
+    }
+
+    /// The context of the screen at the bottom of the stack (the tree, or the preview underneath),
+    /// ignoring every overlay in front of it. The footer of the tree and of the previews is the
+    /// plan of this context (`ops::footer`).
+    pub fn base_context(&self) -> crate::keymap::Context {
+        if self.project_active() {
+            return crate::keymap::Context::Canvas;
+        }
+        crate::keymap::Context::of_surface(self.base_layer().surface(), self.shows_document())
+            .unwrap_or(crate::keymap::Context::Tree)
     }
 
     // --- Copy/cut & paste (M7 Phase B, default keys Y/X/P, changeable via keymap) ---
@@ -4243,12 +3416,20 @@ impl App {
     /// `visual_anchor` is an entries index, so it goes stale under a different root. The filter and preview search are also
     /// for the old root, so they are cleared together (rebuild_tree also invalidates visual_anchor, but we do it explicitly).
     fn clear_for_root_change(&mut self) {
+        self.tab.project_navigation = None;
+        self.tab.project_return = None;
+        self.project_dialog = None;
+        self.tab.project_enter_pending = false;
+        self.tab.project_enter_op = None;
+        self.tab.project_pending_acts.clear();
+        #[cfg(feature = "git")]
+        self.follow_worker.cancel();
         self.tab.selection.clear();
         self.tab.visual_anchor = None;
         self.clear_filter_state();
         self.search_clear();
-        // A spreadsheet's sheet number belongs to the file shown under the old root.
-        self.tab.sheet_idx = 0;
+        // A spreadsheet's sheet number (the page) belongs to the file shown under the old root.
+        self.tab.page = 1;
     }
 
     /// Move to the parent directory (raise the root). For `h`. While filtering, first clear the filter (the normal tree of the current root).
@@ -4309,24 +3490,19 @@ impl App {
 
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.tab.show_hidden = !self.tab.show_hidden;
-        // Which file the cursor is on, captured **before** the rebuild below replaces `entries` with
-        // the unfiltered listing — same hazard, and same ordering, as `refresh_fs_inner`. Goes
-        // through `visibility_change_anchor` (not a plain `filter_anchor` read) so that, while `C`
-        // is up, an already-published still-pending anchor from a deferred rebuild is honored
-        // rather than clobbered by a read of `entries` in the wrong (whole-tree) state — see
-        // `changed_filter_anchor`.
+        // Which file the cursor is on, captured **before** the rebuild below replaces `entries` —
+        // same hazard, and same ordering, as `refresh_fs_inner`. Goes through
+        // `visibility_change_anchor` (not a plain `filter_anchor` read) so that, while `C` is up,
+        // an already-published still-pending anchor from a deferred rebuild is honored rather than
+        // clobbered by a read of the kept list — see `changed_filter_anchor`.
         let anchor = self.visibility_change_anchor();
-        // Keep the tree's Err (a rebuild can fail transiently) but don't let it skip the filter
-        // work below, which depends on the pool rather than on the new tree — same reasoning as
-        // `refresh_fs_inner`.
-        let tree = self.rebuild_tree();
         // `rebuild_tree` puts the *whole* tree back into `entries`, so while a filter is up the
         // screen would go from filtered results to a plain directory listing under a heading that
-        // still says it is filtering. Re-apply it. The pool also has to be collected again: it was
-        // walked with the previous `show_hidden`, so without this `.` could reveal dotfiles in the
-        // tree that `/` still refused to find.
-        self.refilter_after_visibility_change(anchor);
-        tree
+        // still says it is filtering: the filter is put back on top. The pool also has to be
+        // collected again: it was walked with the previous `show_hidden`, so without this `.`
+        // could reveal dotfiles in the tree that `/` still refused to find. The tree's Err (a
+        // rebuild can fail transiently) is kept, but the filter work runs anyway.
+        self.rebuild_tree_refiltered(anchor)
     }
 
     /// The diff lines for a GitDiff preview of `path`. `follow` = this is a follow-opened diff, so
@@ -4340,15 +3516,275 @@ impl App {
     ) -> Vec<crate::git::DiffLine> {
         #[cfg(feature = "git")]
         if follow && !self.follow_diff_full {
+            if self.jj_follow_workers() {
+                return self.follow_worker.lines(path).unwrap_or_default();
+            }
             if let Some(lines) = self.follow_baseline_diff(path) {
                 return lines;
             }
         }
-        let _ = follow;
+        use crate::vcs::{Preference, Vcs};
+        if !follow {
+            match self.tab.diff_read_context.backend {
+                Preference::Git => return crate::vcs::Git.file_diff(&self.tab.root, path),
+                #[cfg(feature = "git")]
+                Preference::Jj => return crate::vcs::Jj.file_diff(&self.tab.root, path),
+                _ => {}
+            }
+        }
         crate::vcs::file_diff(&self.tab.root, path)
     }
 
+    /// Everything that follows from a preview kind being known, in the order it needs: the
+    /// representation and deck slide start afresh, the kind is set, the media job starts, the
+    /// windowed reader is armed and a non-picture plugin is opened. The one place both roads use:
+    /// `enter_preview` without a resolution worker, and the worker's reply. (`preview_kind` must
+    /// be set **before** `start_media_load`: a sync-fallback media path applies its payload inside
+    /// that call and `setup_windowed` reads the kind.)
+    pub(super) fn apply_resolved_preview(
+        &mut self,
+        kind: PreviewKind,
+        path: &Path,
+        landing: Landing,
+    ) {
+        // A new file starts in the plugin's default representation (the rendered document for
+        // Markdown, Word and slides), and this must hold *before* the load: a document that lands
+        // synchronously decides there whether the source view is the one wanted.
+        self.tab.repr = None;
+        self.tab.deck_pending_slide = None;
+        self.set_preview_kind(Some(kind.clone()));
+        self.start_media_load(&kind, path);
+        self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
+        self.load_plugin();
+        self.land_when_ready(path, landing);
+    }
+
+    /// Does what the opener wanted once the preview can be positioned. A document whose text has
+    /// not arrived cannot (a Markdown line is found in its source, a first change in its text), nor
+    /// can a text a command or a plugin is still making: the landing waits as the tab's pending
+    /// resolution and `land_pending_document` runs it when the text lands.
+    pub(super) fn land_when_ready(&mut self, path: &Path, landing: Landing) {
+        if landing == Landing::None {
+            return;
+        }
+        if self.document_text_missing() {
+            // A document that failed has no text on its way: nothing is waited for.
+            if self.document_error().is_some() {
+                return;
+            }
+            self.wait_for_text(path, landing);
+            return;
+        }
+        if self.made_text_awaited() {
+            self.wait_for_text(path, landing);
+            return;
+        }
+        self.run_landing(landing);
+    }
+
+    fn wait_for_text(&mut self, path: &Path, landing: Landing) {
+        self.tab.pending = Some(PendingResolution {
+            path: path.to_path_buf(),
+            landing,
+            kind_known: true,
+        });
+    }
+
+    /// A text a delegated command or a made-text plugin is still producing: the reader cannot be
+    /// opened (and a line cannot be found) before it lands. A failure ends the wait.
+    fn made_text_awaited(&self) -> bool {
+        match self.tab.preview_kind {
+            Some(PreviewKind::Command { ref render_as, .. }) => {
+                render_as.as_deref() != Some("image")
+                    && self.tab.command_out.is_none()
+                    && self.command_err.is_none()
+            }
+            _ => {
+                self.text_plugin_is_generated()
+                    && self.windowed_src().is_none()
+                    && self.plugin_failure().is_none()
+            }
+        }
+    }
+
+    /// Test-only: the zoom and pan of the focused inline diagram and the stash a full-screen
+    /// diagram returns to.
+    #[cfg(test)]
+    pub(crate) fn fence_state_for_test(&self) -> String {
+        format!(
+            "zoom={} center={:?} return={:?}",
+            self.tab.fence_zoom, self.tab.fence_center, self.tab.fence_return
+        )
+    }
+
+    /// Test-only: the colour of the middle pixel of the picture the preview holds (the page a PDF
+    /// picture was made for shows in its colour).
+    #[cfg(test)]
+    pub(crate) fn picture_centre_rgb_for_test(&self) -> Option<(u8, u8, u8)> {
+        use image::GenericImageView;
+        let img = self.image_src.as_ref()?;
+        let (w, h) = img.dimensions();
+        let p = img.get_pixel(w / 2, h / 2);
+        Some((p[0], p[1], p[2]))
+    }
+
+    /// Test-only: whether the preview is a full-screen diagram.
+    #[cfg(test)]
+    pub(crate) fn is_full_screen_fence_for_test(&self) -> bool {
+        matches!(self.tab.preview_kind, Some(PreviewKind::MermaidFence(_)))
+    }
+
+    /// Test-only: where the preview is being read, as a value the tests compare.
+    #[cfg(test)]
+    pub(crate) fn reading_position_for_test(
+        &self,
+    ) -> (u16, u16, usize, usize, usize, Option<usize>, u32) {
+        (
+            self.tab.preview_scroll,
+            self.tab.preview_hscroll,
+            self.tab.preview_top_line,
+            self.tab.preview_cursor_line,
+            self.tab.preview_cursor_col,
+            self.tab.focused_item,
+            self.tab.page,
+        )
+    }
+
+    /// Reads the windowed text at a line: the byte of that line is found in the file as it is now
+    /// (the same seek the line jump makes), never copied from the file as it was. A file that got
+    /// shorter stops at its last line: the top is the last page and the caret is on the last line
+    /// that exists.
+    fn seek_windowed_line(&mut self, top_line: usize, cursor_line: usize, cursor_col: usize) {
+        #[cfg(test)]
+        LINE_SEEKS.with(|c| c.set(c.get() + 1));
+        if self.preview_win.is_none() {
+            return;
+        }
+        let Some(total) = self.win_total() else {
+            return;
+        };
+        if total == 0 {
+            self.tab.preview_byte_top = 0;
+            self.tab.preview_top_line = 0;
+            self.tab.preview_cursor_line = 0;
+            self.tab.preview_cursor_col = 0;
+            return;
+        }
+        if top_line >= total {
+            // `reached` counts newlines: the lines are 0..total, and the top shown is the last page.
+            self.preview_to_bottom();
+            self.tab.preview_cursor_col = cursor_col;
+            return;
+        }
+        let Some(win) = self.preview_win.as_mut() else {
+            return;
+        };
+        if let Ok((off, reached)) = win.advance(0, top_line) {
+            self.tab.preview_byte_top = off;
+            self.tab.preview_top_line = reached;
+            self.tab.preview_cursor_line = cursor_line.min(total - 1);
+            self.tab.preview_cursor_col = cursor_col;
+        }
+    }
+
+    /// Settles a windowed position after the tab's saved state was put back. The reader was
+    /// opened afresh by `setup_windowed`: when the file is the one the position was saved in (same
+    /// length and mtime) the saved byte offset stands (no scan); otherwise the position is read at
+    /// the same line. A text that is not here yet gets the line as a landing for when it arrives.
+    fn settle_windowed_position(&mut self, saved: Option<(u64, Option<std::time::SystemTime>)>) {
+        let (top_line, cursor_line, cursor_col) = (
+            self.tab.preview_top_line,
+            self.tab.preview_cursor_line,
+            self.tab.preview_cursor_col,
+        );
+        // A diff is read by its own scroll (`preview_scroll`), restored with the tab: it has no
+        // line of a file to seek, and a seek to line 0 would throw that scroll away.
+        if matches!(self.tab.preview_kind, Some(PreviewKind::GitDiff(_))) {
+            return;
+        }
+        if self.preview_win.is_some() {
+            // The stamp is of a file; the text a command or plugin generated is a new file every
+            // time it is made, so the stamp of the one read before says nothing about this one:
+            // it is landed by line, which holds across a change of the text.
+            let generated = self.tab.command_out.is_some()
+                && self.windowed_src() == self.tab.command_out.as_deref();
+            let unchanged = !generated && saved.is_some() && saved == self.tab.preview_win_stamp;
+            if !unchanged {
+                self.seek_windowed_line(top_line, cursor_line, cursor_col);
+            }
+            return;
+        }
+        if self.tab.pending.is_none()
+            && (top_line > 0 || cursor_line > 0)
+            && (self.made_text_awaited()
+                || (self.document_text_missing() && self.document_error().is_none()))
+        {
+            if let Some(path) = self.tab.preview_path.clone() {
+                self.wait_for_text(
+                    &path,
+                    Landing::Line {
+                        top_line,
+                        cursor_line,
+                        cursor_col,
+                    },
+                );
+            }
+        }
+    }
+
+    fn run_landing(&mut self, landing: Landing) {
+        match landing {
+            Landing::None => {}
+            Landing::GotoLine(line) => self.preview_goto_line(line),
+            Landing::FirstChange => self.follow_scroll_to_first_change(),
+            #[cfg(feature = "git")]
+            Landing::DiffPreview { .. } => self.follow_scroll_to_first_change(),
+            Landing::Line {
+                top_line,
+                cursor_line,
+                cursor_col,
+            } => self.seek_windowed_line(top_line, cursor_line, cursor_col),
+        }
+    }
+
+    /// The document's text has landed: runs the landing that waited for it.
+    pub(super) fn land_pending_document(&mut self) {
+        if self.document_text_missing() || self.made_text_awaited() {
+            return;
+        }
+        let waiting = self.tab.pending.as_ref().is_some_and(|p| {
+            p.kind_known && self.tab.preview_path.as_deref() == Some(p.path.as_path())
+        });
+        if waiting {
+            if let Some(p) = self.tab.pending.take() {
+                self.run_landing(p.landing);
+            }
+        }
+    }
+
+    /// Gives the tab a new preview load identity (`PerTab::load_id`): called wherever the tab's
+    /// preview is opened or left, so a load is never mistaken for the one that came before it
+    /// (even when it is the same file).
+    pub(super) fn begin_preview_load(&mut self) {
+        self.load_seq += 1;
+        self.tab.load_id = self.load_seq;
+    }
+
     fn enter_preview(&mut self, path: &Path) {
+        self.enter_preview_landing(path, Landing::None);
+    }
+
+    /// `enter_preview`, then `landing` once the kind is known (see `Landing`).
+    pub(super) fn enter_preview_landing(&mut self, path: &Path, landing: Landing) {
+        self.enter_preview_in(path, landing, false);
+    }
+
+    /// `enter_preview_landing` for the same open going on (`same_open`): the automatic progress of
+    /// an open the user already made (the diff's target answer choosing the Preview
+    /// representation, `R`, a full-screen fence returning to its document) keeps the preview load
+    /// identity (`PerTab::load_id`); only a new open the user makes renews it.
+    pub(super) fn enter_preview_in(&mut self, path: &Path, landing: Landing, same_open: bool) {
+        self.tab.diff_read_context = Default::default();
         // Is this re-entering the same file (returning via `q` from a full-screen fence)? If so,
         // keep the inline-image cache warm: discarding it would restart every fence from Loading
         // = the one render pass with the collapsed layout would clamp the restored scroll/focus,
@@ -4366,6 +3802,9 @@ impl App {
         // than only from apply_payload's CommandText handler, is what covers "left a command
         // preview for something else entirely") is done for.
         self.clear_command_out();
+        if !same_open {
+            self.begin_preview_load();
+        }
         self.tab.preview_path = Some(path.to_path_buf());
         // Resolve the preview kind via config. Unsupported kinds become CanNotPreview.
         //
@@ -4382,7 +3821,9 @@ impl App {
         // `text::is_probably_text`) — a `File::open` on a FIFO with no writer on the other end
         // blocks forever (POSIX `open(2)`), and this all runs on the key-processing thread, so an
         // unguarded open here froze the whole UI (not even `q`/`Ctrl-C` got processed again).
-        let kind = if crate::preview::is_previewable(path) {
+        let kind = if self.preview_resolution_tx.is_some() {
+            PreviewKind::can_not_preview(path)
+        } else if crate::preview::is_previewable(path) {
             self.cfg.resolve_preview(path)
         } else {
             PreviewKind::can_not_preview(path)
@@ -4399,61 +3840,33 @@ impl App {
         // `enter_diff_preview_representation`) re-arms it immediately after this call returns, via
         // `follow_scroll_to_first_change`.
         self.tab.diff_scroll_pending = None;
+        self.tab.diff_answer_awaited = false;
         // Reset image state every time. SVG/GIF start loading on a separate thread (doesn't block the UI).
         self.clear_image();
-        // A new preview target: the previous spreadsheet (if any) and its sheet number are done
-        // for. Must precede `start_media_load` below, whose synchronous fallback can land the new
-        // workbook right away.
-        self.set_workbook(None);
-        self.workbook_error = None;
+        // A new preview target: the previous Word document (if any) is done for. (The previous
+        // spreadsheet and its sheet number went with `clear_image` above: the plugin show and the
+        // page.) Must precede `start_media_load` below, whose synchronous fallback can land the
+        // new document right away.
         self.set_document(None);
-        self.document_error = None;
-        self.tab.sheet_idx = 0;
-        // For a PDF, get the page count first (hayro-syntax, pure Rust, no external process, ~a
-        // few ms). Now that `hayro` is the first-choice renderer, it can draw any page without an
-        // external tool, so "can count ⟹ can draw" holds almost universally (there is no
-        // "first-page-only" constraint like qlmanage/sips has) — the navigation suppression that
-        // used to live here via `arbitrary_page_renderer_available()` (whether poppler was present)
-        // has been removed, and poppler itself is no longer in the fallback chain at all.
-        // `[external] pdf` doesn't affect getting the page count either: `page_count` is a pure
-        // Rust read that never launches an external process, so it keeps working the same whether
-        // `pdf=false` (= never launch an external rendering tool) or not (an external tool is
-        // only involved when `render_page` degrades to its fallback).
-        if matches!(kind, PreviewKind::Pdf(_)) {
-            self.tab.pdf_pages = crate::preview::pdf::page_count(path);
-        }
-        // Set `preview_kind` **before** `start_media_load`, not after: the sync-fallback media path
-        // (no media_tx — tests, or a picker-less terminal) runs `apply_payload` synchronously inside
-        // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
-        // `setup_windowed`, which decides whether to open the windowed reader by reading
-        // `self.tab.preview_kind` — it must already be the new kind, not whatever was showing before.
-        // A new file starts decorated, and this must hold *before* the load: a Word document that
-        // lands synchronously (no media_tx) decides there whether to build its raw view.
-        self.tab.md_raw = false;
-        self.tab.deck_text_view = None;
-        self.tab.deck_pending_slide = None;
-        self.set_preview_kind(Some(kind.clone()));
-        self.start_media_load(&kind, path);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
-        self.tab.md_raw = false; // A new file starts in decorated display (Markdown/Mermaid). `R` switches to raw.
-                                 // This preview is not the diff's own `Preview` representation unless the one caller that
-                                 // wants that (`App::cycle_diff_view`'s `enter_diff_preview_representation`) re-sets it
-                                 // immediately after this call returns — every *other* way of reaching a preview (a tree
-                                 // `Enter`, a Markdown link, `Ctrl-n`/`Ctrl-p` file paging, a bookmark jump, ...) must start
-                                 // `false`, matching this field's own doc comment ("Cleared by `App::enter_preview`'s own
-                                 // reset"). Without this, `R`/`q` from a *later* file reached via one of those (after first
-                                 // having been on the diff's own `Preview` representation) kept routing back into a stale
-                                 // diff for the *original* file instead of behaving like an ordinary preview.
+        // This preview is not the diff's own `Preview` representation unless the one caller that
+        // wants that (`App::cycle_diff_view`'s `enter_diff_preview_representation`) re-sets it
+        // immediately after this call returns — every *other* way of reaching a preview (a tree
+        // `Enter`, a Markdown link, `Ctrl-n`/`Ctrl-p` file paging, a bookmark jump, ...) must start
+        // `false`, matching this field's own doc comment ("Cleared by `App::enter_preview`'s own
+        // reset"). Without this, `R`/`q` from a *later* file reached via one of those (after first
+        // having been on the diff's own `Preview` representation) kept routing back into a stale
+        // diff for the *original* file instead of behaving like an ordinary preview.
         self.tab.preview_from_diff = false;
         self.md_cache = None; // Switching to a different file: invalidate the decoration cache
         self.md_items.clear();
         if !same_file {
-            self.md_image_cache.clear(); // A different file: also discard the inline-image cache
+            self.md_images.cache.clear(); // A different file: also discard the inline-image cache
         }
         self.tab.focused_item = None;
-        self.outline_open = false; // A new preview closes the outline overlay
+        self.close_outline(); // A new preview closes the outline overlay
         self.table_cell_open = false; // Likewise closes the table cell full-text popup
         self.details_open.clear(); // <details> open/closed state is per document = reset on a different file
         self.tab.preview_search = None;
@@ -4461,8 +3874,8 @@ impl App {
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
-        self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
-                               // Reset the windowed preview's 2D caret/selection to the start.
+        self.tab.search_stale = false;
+        // Reset the windowed preview's 2D caret/selection to the start.
         self.tab.preview_cursor_line = 0;
         self.tab.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
@@ -4487,13 +3900,41 @@ impl App {
         if self.is_visual() {
             self.exit_visual_cancel();
         }
-        // CSV/TSV/archives are parsed into a table. Reset the cursor/scroll to the start before loading.
+        // A plugin's file (CSV/TSV, an archive listing) is opened on a worker. Reset the cursor/scroll
+        // to the start before loading.
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
-        self.load_table();
+        // The diff's own `Preview` representation is tagged before anything resolves.
+        #[cfg(feature = "git")]
+        if let Landing::DiffPreview {
+            read_context,
+            follow_scope,
+        } = &landing
+        {
+            self.tab.diff_read_context = *read_context;
+            self.diff_follow_scope = *follow_scope;
+            self.tab.preview_from_diff = true;
+        }
         self.tab.mode = Mode::Preview;
+        if self.preview_resolution_tx.is_some() {
+            // The kind is decided on the worker: until its reply lands the screen shows the
+            // provisional kind (which also drops the previous file's plugin show), and
+            // `apply_resolved_preview` runs from the reply with the landing kept in the tab.
+            self.tab.repr = None;
+            self.tab.deck_pending_slide = None;
+            self.set_preview_kind(Some(kind));
+            self.setup_windowed();
+            self.tab.pending = Some(PendingResolution {
+                path: path.to_path_buf(),
+                landing,
+                kind_known: false,
+            });
+            self.resolve_preview_on_worker(path);
+        } else {
+            self.apply_resolved_preview(kind, path, landing);
+        }
     }
 
     /// Code/Text previews use less-style windowed reading **regardless of size**.
@@ -4501,14 +3942,16 @@ impl App {
     /// opening is instant even for small files and behavior is symmetric with huge files. Images/md/mermaid are excluded
     /// (md/mermaid need their whole structure understood and are usually small).
     fn setup_windowed(&mut self) {
+        #[cfg(test)]
+        crate::test_support::note_tab_view_load();
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
         // Determine whether we're in the heavy-highlight-wait state: if it's Code, highlighting
         // is enabled, and the grammar isn't compiled yet (cold), a loading display / staged
         // display is needed just for the first time. If already warm, it colors instantly from the start.
-        self.hl_pending = self.cfg.ui.syntax_highlight
-            && matches!(self.tab.preview_kind, Some(PreviewKind::Code(_)))
+        self.hl_pending = crate::plugins::syntax_highlight_on(&self.cfg)
+            && self.shows_file_text_plugin()
             && !crate::preview::code::is_ext_warm(self.current_preview_ext());
         self.hl_warming = false;
         // Code/Text are always windowed. Markdown/Mermaid become windowed only in raw display
@@ -4524,10 +3967,9 @@ impl App {
                 self.tab.preview_kind,
                 Some(PreviewKind::Command { ref render_as, .. }) if render_as.as_deref() != Some("image")
             );
-        let windowed_kind = matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Code(_)) | Some(PreviewKind::Text(_))
-        ) || self.is_raw_source()
+        let windowed_kind = self.shows_text_plugin()
+            || matches!(self.tab.preview_kind, Some(PreviewKind::Text(_)))
+            || self.is_raw_source()
             || is_text_command;
         if !windowed_kind {
             return;
@@ -4536,7 +3978,12 @@ impl App {
             return;
         };
         if let Ok(w) = crate::preview::window::FileWindow::open(&path) {
+            self.tab.preview_win_stamp = Some((w.len(), file_mtime(&path)));
             self.preview_win = Some(w);
+            // A landing that waited for this text (a command's output, a made text) runs now.
+            self.land_pending_document();
+            // A search the tab came back with is found again on this text.
+            self.rescan_stale_search();
         }
     }
 
@@ -4591,7 +4038,7 @@ impl App {
         // A git write is the same class of thing: the user pressed `s`/`c`/Enter and is waiting on
         // it. It comes before the scan label below so a `git commit` stuck in a pre-commit hook is
         // never mistaken for the routine background status scan.
-        if self.git_op_running() {
+        if self.git_write_running() {
             v.push(crate::i18n::Msg::BusyGitOp);
         }
         // Both the ignored set and status are "git scan in progress" = represented by the same label (shown if either is running).
@@ -4610,11 +4057,12 @@ impl App {
         if self.filter_pool_scanning_current() {
             v.push(crate::i18n::Msg::BusyFilterScan);
         }
-        if self.media_loading {
+        // (The `code` plugin's answer is not media: the text is on screen before it lands.)
+        if self.media_loading && !self.shows_file_text_plugin() {
             // Name what is being read: "media" is wrong for a Word document or a workbook.
-            v.push(match self.tab.preview_kind {
-                Some(PreviewKind::Document(_)) => crate::i18n::Msg::BusyDocument,
-                Some(PreviewKind::Spreadsheet(_)) => crate::i18n::Msg::BusySheet,
+            v.push(match &self.tab.preview_kind {
+                Some(k) if k.is_document_kind() => crate::i18n::Msg::BusyDocument,
+                Some(k) if k.is_spreadsheet() => crate::i18n::Msg::BusySheet,
                 _ => crate::i18n::Msg::BusyMedia,
             });
         }
@@ -4646,7 +4094,7 @@ impl App {
         if self.busy_jobs().is_empty() {
             return false;
         }
-        self.cfg.ui.busy_indicator || self.fileop_pending.is_some() || self.git_op_running()
+        self.cfg.ui.busy_indicator || self.fileop_pending.is_some() || self.git_write_running()
     }
 
     /// Advance the spinner by one frame (the run loop calls this periodically while waiting = keeps it spinning).
@@ -4656,30 +4104,44 @@ impl App {
 
     /// The current spinner glyph (no emoji; the classic braille-pattern spinner = single-width and color-free in the terminal).
     pub fn spinner_glyph(&self) -> &'static str {
-        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        FRAMES[self.spinner_frame % FRAMES.len()]
+        konoma_widgets::loading::spinner_glyph(self.spinner_frame)
     }
 
     /// `e`: decide the target to open in the external editor and raise the request. Tree=the selected file / Preview=the file being shown.
     /// For a directory or no target, notify via flash and do nothing (only files can be edited).
     /// In Preview the editor is asked to open at the on-screen position (see `preview_edit_line`).
     pub fn request_edit(&mut self) {
-        let target = match self.tab.mode {
-            Mode::Tree => match self.tab.entries.get(self.tab.selected) {
-                Some(e) if e.is_dir => {
-                    self.flash = Some(tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());
-                    return;
-                }
-                Some(e) => Some(e.path.clone()),
-                None => None,
-            },
-            Mode::Preview => self.tab.preview_path.clone(),
+        let target = match self.verb_target() {
+            open_app::VerbTarget::File(p) => Some(p),
+            open_app::VerbTarget::Dir => {
+                self.flash = Some(tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());
+                return;
+            }
+            open_app::VerbTarget::None => None,
         };
+        if let Some(path) = &target {
+            if self.defer_file_verb(konoma_plugin::Verb::Edit, path, self.preview_edit_line()) {
+                return;
+            }
+        }
         match target {
             Some(p) if self.try_open_in_office(&p) => {}
-            Some(p) => self.pending_edit = Some((p, self.preview_edit_line())),
+            Some(p) => {
+                // The declaration says whether the editor is asked for a line.
+                let line = konoma_plugin::host::launch::edit_line(
+                    &self.edit_launch(&p),
+                    self.preview_edit_line(),
+                );
+                self.pending_edit = Some((p, line));
+            }
             None => self.flash = Some(tr(self.lang, crate::i18n::Msg::NoFileToEdit).into()),
         }
+    }
+
+    /// Test-only: the line `e` would open the editor at.
+    #[cfg(test)]
+    pub fn preview_edit_line_for_test(&self) -> Option<usize> {
+        self.preview_edit_line()
     }
 
     /// The 1-based file line to open the external editor at, matching the on-screen position.
@@ -4691,37 +4153,81 @@ impl App {
     ///   section being read; see `preview_edit_line` verification).
     /// - Otherwise (tree edits, Mermaid, images): None (open at the top).
     fn preview_edit_line(&self) -> Option<usize> {
+        // A project screen in front hides the preview: its caret, scroll and diff are not what
+        // the target (the project's own row) is at, so the editor is given no line.
+        if self.project_screen_covers() {
+            return None;
+        }
         if self.tab.mode != Mode::Preview {
             return None;
         }
+        // A diff opens the editor at the change block on screen (new-file line number).
+        #[cfg(feature = "git")]
+        if self.is_git_diff_preview() {
+            return self.diff_edit_line();
+        }
         // The converted Markdown of a Word document has no line in the .docx to open at.
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+        if self.is_document() {
+            return None;
+        }
+        // Text a plugin made (a hex dump) has a line in the file only if the plugin says so.
+        if self.text_plugin_is_generated() && !self.text_plugin_lines_are_file_lines() {
             return None;
         }
         if self.is_windowed() {
-            return Some(self.tab.preview_cursor_line + 1);
+            return Some(konoma_widgets::caret::text_edit_line(
+                self.tab.preview_cursor_line,
+            ));
         }
         // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Anchor on a
         // logical line (a Tab-focused item if one is visible, else the top of the view), estimate its
         // source line proportionally, then refine by content (see md_content_anchor_line).
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_))) {
+        if self
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown)
+        {
             if let Some(c) = &self.md_cache {
                 let same = self.tab.preview_path.as_ref().is_some_and(|p| *p == c.path);
-                if same && c.src_lines > 0 && self.md_view_rows > 0 {
+                if same {
                     // Prefer the on-screen Tab focus (the visible "cursor"); otherwise the top of view.
-                    let (logical, row) = match self.md_focused_visible_line() {
-                        Some(hit) => hit,
-                        None => (
-                            self.md_top_logical_line().unwrap_or(0),
-                            self.tab.preview_scroll as usize,
-                        ),
+                    let focus = self.md_focused_visible_line();
+                    let view = konoma_widgets::caret::MdView {
+                        scroll: self.tab.preview_scroll as usize,
+                        view_rows: self.md_view_rows,
+                        src_lines: c.src_lines,
+                        lines: &c.lines,
+                        row_prefix: &c.row_prefix,
+                        wrap: self.cfg.ui.wrap,
+                        width_known: c.width != 0,
+                        focus,
                     };
-                    let est = (row * c.src_lines / self.md_view_rows).min(c.src_lines - 1);
-                    return Some(self.md_content_anchor_line(logical, est).unwrap_or(est) + 1);
+                    // Re-reads the file so it matches what the editor will open (an agent may have
+                    // edited it since the preview was built).
+                    return konoma_widgets::caret::md_edit_line(&view, &|| {
+                        let content = crate::preview::text::load(c.path.as_path()).ok()?;
+                        Some(content.lines.iter().map(|l| l.to_string()).collect())
+                    });
                 }
             }
         }
         None
+    }
+
+    /// The 0-based decorated (logical) line at the top of the current Markdown view.
+    fn md_top_logical_line(&self) -> Option<usize> {
+        let c = self.md_cache.as_ref()?;
+        konoma_widgets::caret::md_top_logical_line(&konoma_widgets::caret::MdView {
+            scroll: self.tab.preview_scroll as usize,
+            view_rows: self.md_view_rows,
+            src_lines: c.src_lines,
+            lines: &c.lines,
+            row_prefix: &c.row_prefix,
+            wrap: self.cfg.ui.wrap,
+            width_known: c.width != 0,
+            focus: None,
+        })
     }
 
     /// The (decorated logical line, top display row) of the Tab-focused Markdown item, but only when it
@@ -4735,64 +4241,16 @@ impl App {
         (row < scroll + vh && row + h > scroll).then_some((item.line, row))
     }
 
-    /// The 0-based decorated (logical) line at the top of the current Markdown view, resolving wrapping
-    /// so it matches what the renderer draws (`preview_scroll` is in post-wrap display rows).
-    fn md_top_logical_line(&self) -> Option<usize> {
-        let c = self.md_cache.as_ref()?;
-        if c.lines.is_empty() {
-            return None;
-        }
-        let scroll = self.tab.preview_scroll as usize;
-        if !self.cfg.ui.wrap || c.width == 0 || c.row_prefix.len() != c.lines.len() + 1 {
-            return Some(scroll.min(c.lines.len() - 1));
-        }
-        // prefix is each line's starting display row (monotonically increasing). The line
-        // containing scroll = pp(p <= scroll) - 1.
-        let i = c
-            .row_prefix
-            .partition_point(|&p| p <= scroll)
-            .saturating_sub(1);
-        Some(i.min(c.lines.len() - 1))
-    }
-
-    /// Refine the proportional editor-open estimate for rendered Markdown by content: take the longest
-    /// visible span of decorated logical line `logical` (a single span carries no Markdown markers, so its
-    /// text is a verbatim substring of the source) and find the source line containing it, closest to
-    /// `est`. Returns a 0-based source line, or None to fall back to `est`. Re-reads the file so it
-    /// matches what the editor will open (an agent may have edited it since the preview was built).
-    fn md_content_anchor_line(&self, logical: usize, est: usize) -> Option<usize> {
-        use ratatui::style::Modifier;
-        let c = self.md_cache.as_ref()?;
-        let line = c.lines.get(logical)?;
-        // Longest non-hidden, non-blank span (hidden spans carry link/URL targets, not on-screen text).
-        let key = line
-            .spans
-            .iter()
-            .filter(|s| !s.style.add_modifier.contains(Modifier::HIDDEN))
-            .map(|s| s.content.trim())
-            .filter(|t| !t.is_empty())
-            .max_by_key(|t| t.chars().count())?;
-        if key.chars().count() < 4 {
-            return None;
-        }
-        let content = crate::preview::text::load(c.path.as_path()).ok()?;
-        let mut best: Option<usize> = None;
-        let mut best_d = usize::MAX;
-        for (i, sl) in content.lines.iter().enumerate() {
-            if sl.contains(key) {
-                let d = i.abs_diff(est);
-                if d < best_d {
-                    best_d = d;
-                    best = Some(i);
-                }
-            }
-        }
-        best
-    }
-
     /// Taken by the run loop: if set, return the editor-launch target path (+ line) and clear it.
     pub fn take_pending_edit(&mut self) -> Option<(PathBuf, Option<usize>)> {
         self.pending_edit.take()
+    }
+
+    /// The terminal chain `e` / `o` asked for (see `pending_terminal`), if any.
+    pub fn take_pending_terminal(
+        &mut self,
+    ) -> Option<(Vec<konoma_plugin::launch::Attempt>, PathBuf)> {
+        self.pending_terminal.take()
     }
 
     /// `!`: request launching the backend's own external tool (lazygit for git, `[jj] tool` --
@@ -4813,9 +4271,59 @@ impl App {
         std::mem::take(&mut self.pending_git_tool)
     }
 
+    /// An external program (the editor, a terminal launch chain, the git tool) returned. The
+    /// screen in front is brought up to date: the shown file for `File`, the listing, git state
+    /// and views for `Tree`. While a project screen covers the tab's screen, that screen was left
+    /// as a tab is left: the project in front refreshes, the `App`-level freshness of `Tree` runs
+    /// (as for a watch event, `refresh_fs_watched`), and the tab's view is read again from the
+    /// files when it is in front again (`put_tab_back`, then `refresh_fs_after_tab_switch`).
+    pub(crate) fn external_returned(&mut self, what: ExternalReturn) {
+        if self.project_screen_covers() {
+            self.project_refresh();
+            if what == ExternalReturn::Tree {
+                // Routed: the `App`-level freshness only (`refresh_fs_routed`).
+                let _ = self.refresh();
+            }
+            return;
+        }
+        match what {
+            ExternalReturn::File => self.reload_preview(),
+            ExternalReturn::Tree => {
+                let _ = self.refresh();
+            }
+        }
+    }
+
+    /// Test seam: the status is out of date, as after a file system event.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn mark_git_status_dirty(&mut self) {
+        self.git_status_dirty = true;
+    }
+
+    /// Test accessors: a status scan is in flight / a changed-files rebuild is left to it.
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn git_status_in_flight(&self) -> bool {
+        self.git_status_pending.is_some()
+    }
+
+    #[cfg(all(test, feature = "git"))]
+    pub(crate) fn changed_anchor_left_to_status(&self) -> bool {
+        self.tab.changed_anchor_pending.is_some()
+    }
+
     /// Reopen the preview after the external editor exits (reflect the edited content). Caches are also discarded.
     /// Even if the editor replaces the file (temp→rename), the FileWindow is reopened so the latest is read.
     pub fn reload_preview(&mut self) {
+        self.reload_preview_named(false);
+    }
+
+    /// [`App::reload_preview`]. `named` is true when the FS event names the shown file itself:
+    /// then a plugin's file is opened again although its stamp is equal when the file was modified
+    /// within [`RACY_WINDOW`] of the moment the stamp was taken (a coarse-mtime filesystem can
+    /// leave the stamp equal across a real rewrite); an old file's equal stamp is believed.
+    pub(crate) fn reload_preview_named(&mut self, named: bool) {
+        #[cfg(test)]
+        crate::test_support::note_tab_view_load();
         self.md_cache = None;
         self.win_cache = None;
         // The ordinary preview's own change-gutter baseline (`docs/STATUS.md` ★未修正 item 4) is a
@@ -4825,16 +4333,63 @@ impl App {
         if matches!(self.tab.mode, Mode::Preview) {
             self.setup_windowed();
             self.reload_media_if_changed();
-            // CSV/TSV/archive content can change from an external edit. Re-parse and clamp the
-            // cursor within range (preserving its position).
-            if matches!(
-                self.tab.preview_kind,
-                Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
-            ) {
-                self.load_table();
+            // A plugin's file (CSV/TSV, an archive listing) can change from an external edit. Open
+            // it again (the old table stays on screen until the new one lands) and clamp the
+            // cursor within range (preserving its position). The picture plugins were handled
+            // just above (`reload_media_if_changed`, with its mtime guard); `reload_plugin` reads a
+            // picture's file again unconditionally, so it must not be reached from here for them.
+            // (The `code` plugin has nothing to read again: its styler works on the lines the
+            // window reader has just reopened.)
+            if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
+                && !self.shows_media_plugin()
+                && !self.shows_file_text_plugin()
+            {
+                if !self.plugin_file_unchanged(named) {
+                    self.reload_plugin();
+                }
                 self.clamp_table_cursor();
             }
         }
+    }
+
+    /// Whether the open plugin show reads heavily (its manifest names a work group) or keeps a
+    /// state of its own (it declares a canvas), and the file it shows is the one it was opened on,
+    /// unchanged since: reading it again would only repeat the work, or lose the state (an FS
+    /// event for `.git`, or for another file, or of an unknown cause, reaches `reload_preview` as
+    /// well). Such a plugin is opened again only when the file's stamp (mtime, size, inode, ctime)
+    /// changed -- or, for an event that names the shown file itself (`named`), also when the stamp
+    /// cannot be trusted yet ([`named_event_rereads`]: the file was modified within
+    /// [`RACY_WINDOW`] of the moment the stamp was taken, so a coarse-mtime rewrite may have left
+    /// it equal). A plugin that reads cheaply and keeps nothing (a CSV, an archive listing) is
+    /// opened again every time, as it always was.
+    fn plugin_file_unchanged(&self, named: bool) -> bool {
+        let Some(PreviewKind::Plugin { path, id, .. }) = &self.tab.preview_kind else {
+            return false;
+        };
+        let canvas = crate::plugins::profile_of(id).canvas;
+        // The user's own `r` forces a reopen only for a canvas (a state of its own the user may
+        // want rebuilt); every other plugin keeps the stamp rule, as before.
+        if self.plugin_reopen_forced && canvas {
+            return false;
+        }
+        let heavy = crate::plugins::shared_registry(&self.cfg.plugin_disabled())
+            .manifest(id)
+            .is_some_and(|m| m.work_group.is_some())
+            || canvas;
+        let stamp_equal = heavy
+            && self
+                .plugin
+                .as_ref()
+                .is_some_and(|p| p.id == *id && p.path == *path)
+            && self.plugin_stamp.is_some()
+            && file_stamp(path) == self.plugin_stamp;
+        if stamp_equal && named {
+            if let (Some(stamp), Some(taken)) = (&self.plugin_stamp, self.plugin_stamp_taken) {
+                return !named_event_rereads(stamp.modified, taken, std::time::SystemTime::now());
+            }
+            return false; // no time on record: believe the event
+        }
+        stamp_equal
     }
 
     /// On an FS-driven reload, re-load media (image/svg/gif/video/pdf) **only when the previewed file
@@ -4860,34 +4415,24 @@ impl App {
         if file_mtime(&path) == self.preview_media_mtime {
             return; // the target file is unchanged → avoid a wasted re-decode / external-tool run
         }
-        // Preserve the display state (zoom/center/page) and reload.
-        let (zoom, center, page) = (
-            self.tab.image_zoom,
-            self.tab.image_center,
-            self.tab.pdf_page,
-        );
-        self.clear_image(); // reset zoom/center/page/media generation
-        if matches!(kind, PreviewKind::Pdf(_)) {
-            // See the comment on the enter_preview side for the gating rationale (page_count has
-            // no external process, and hayro can draw any page, so there's no navigation
-            // suppression via arbitrary_page_renderer_available).
-            let (pages, page) = Self::pdf_page_state_for(&path, page);
-            self.tab.pdf_pages = pages;
-            self.tab.pdf_page = page;
-        }
-        self.start_media_load(&kind, &path); // also updates preview_media_mtime
-        self.tab.image_zoom = zoom;
-        self.tab.image_center = center;
+        self.restart_media_load_keeping_view(&kind, &path);
     }
 
-    /// The page count of the PDF at `path` as it is on disk now, and `page` clamped into it. The one
-    /// place that decides the page a PDF is (re)loaded at when its file may have changed: used by
-    /// `reload_media_if_changed` and by `load_active` (a tab switched back to after the file was
-    /// rewritten). `page_count` runs no external process, so this is cheap.
-    pub(super) fn pdf_page_state_for(path: &Path, page: u32) -> (Option<u32>, u32) {
-        let pages = crate::preview::pdf::page_count(path);
-        let page = page.clamp(1, pages.unwrap_or(1).max(1));
-        (pages, page)
+    /// Load the media again from scratch, keeping the display state (zoom/center/page). The page
+    /// count is the plugin's to report again (the file may have gained or lost pages); until it
+    /// lands the page asked for is the one the user was on. Shared by the file-change reload and a
+    /// picture plugin's `Outcome::Reload`, so both read the file again the same way.
+    pub(crate) fn restart_media_load_keeping_view(&mut self, kind: &PreviewKind, path: &Path) {
+        let (zoom, center, page) = (
+            self.tab.image_view.zoom,
+            self.tab.image_view.center,
+            self.tab.page,
+        );
+        self.clear_image(); // reset zoom/center/page/media generation
+        self.tab.page = page.max(1);
+        self.start_media_load(kind, path); // also updates preview_media_mtime
+        self.tab.image_view.zoom = zoom;
+        self.tab.image_view.center = center;
     }
 
     /// The directory to watch **in addition** to the tree root so external (agent) edits to the
@@ -4911,32 +4456,46 @@ impl App {
         p.parent().map(|d| d.to_path_buf())
     }
 
-    /// The git directory to watch **non-recursively** when it is not already covered by the
-    /// recursive root watch. Without this, an external git op that touches only the git directory
-    /// (a commit of already-staged files, an external checkout) fires no event under root, so the
-    /// cached `git status` / branch would linger stale — the per-workdir status cache no longer
-    /// re-verifies on `h`/`l`. Two cases land here:
-    /// - **root is a subdirectory of the repo**: the parent `.git` sits above `root`, outside the
-    ///   recursive watch.
-    /// - **root is a linked worktree** (`git worktree add`): that worktree's own `HEAD`/`index` live
-    ///   under `<main-repo>/.git/worktrees/<name>/`, not under the worktree's own checkout at all —
-    ///   so *no* event ever reaches the recursive root watch, no matter how deep the tree goes.
-    ///   ([`crate::git::git_dir`] returns this location; [`crate::git::workdir`] would instead
-    ///   return the worktree's own root, which is exactly what makes this case easy to miss.)
-    ///
-    /// `HEAD`/`index` are direct children of the git directory, so a non-recursive watch catches
-    /// the signals that change status/branch. Returns None when the git directory is already under
-    /// `root` (nothing extra to watch) or outside any repo. konoma's own reads are lock-free
-    /// (`--no-optional-locks`), so this does not create a self-feedback loop.
+    /// Cached extra VCS watch outside the recursive root watch. Git watches its HEAD/index
+    /// directory; jj watches operation heads (see `vcs::jj::watch_dir`). The extra watch is
+    /// non-recursive because these signals are direct children of the selected directory.
+    /// Root/backend checkpoints resolve and canonicalize it once, including the decision that
+    /// no extra watch is needed. Loop ticks only read this tab's cached value, with no discovery.
     pub fn git_dir_watch(&self) -> Option<PathBuf> {
-        let gd = crate::git::git_dir(&self.tab.root)?;
+        self.tab
+            .vcs_watch
+            .as_ref()
+            .and_then(|c| c.directory.clone())
+    }
+
+    /// Root navigation and a landed backend change are the only watch-resolution checkpoints.
+    fn refresh_vcs_watch(&mut self, kind: crate::vcs::VcsKind) {
+        if self
+            .tab
+            .vcs_watch
+            .as_ref()
+            .is_some_and(|c| c.root == self.tab.root && c.kind == kind)
+        {
+            return;
+        }
+        let backend: &dyn crate::vcs::Vcs = match kind {
+            crate::vcs::VcsKind::Git => &crate::vcs::Git,
+            #[cfg(feature = "git")]
+            crate::vcs::VcsKind::Jj => &crate::vcs::Jj,
+        };
+        let directory = backend.watch_dir(&self.tab.root);
         let root = self
             .tab
             .root
             .canonicalize()
             .unwrap_or_else(|_| self.tab.root.clone());
         // Watch it only when it is NOT already covered by the recursive root watch.
-        (!gd.starts_with(&root)).then_some(gd)
+        let directory = directory.filter(|dir| !dir.starts_with(&root));
+        self.tab.vcs_watch = Some(VcsWatchCache {
+            root: self.tab.root.clone(),
+            kind,
+            directory,
+        });
     }
 
     /// Whether in windowed (large file) mode. Used for the render and scroll branching.
@@ -4959,6 +4518,60 @@ impl App {
         self.tab.preview_top_line
     }
 
+    /// The file names in the tab's tree-filter pool. Test-only.
+    #[cfg(all(test, feature = "git"))]
+    pub fn filter_pool_names_for_test(&self) -> Vec<String> {
+        self.tab
+            .filter_pool
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Test-only: whether the tab still waits to land a diff's Preview representation on its
+    /// first change, and whether the draw still has the reservation to scroll there.
+    #[cfg(all(test, feature = "git"))]
+    pub fn diff_landing_state_for_test(&self) -> (bool, bool) {
+        (
+            matches!(
+                self.tab.pending.as_ref().map(|p| &p.landing),
+                Some(Landing::DiffPreview { .. })
+            ),
+            self.tab.diff_scroll_pending.is_some(),
+        )
+    }
+
+    /// Test-only: the preview load identity (`PerTab::load_id`) of the working tab.
+    #[cfg(all(test, feature = "git"))]
+    pub fn load_id_for_test(&self) -> u64 {
+        self.tab.load_id
+    }
+
+    /// Test-only: whether the tab's pending landing waits with the kind resolved (`Some(true)`:
+    /// only the document body is awaited), still unresolved (`Some(false)`), or there is none.
+    #[cfg(all(test, feature = "git"))]
+    pub fn pending_kind_known_for_test(&self) -> Option<bool> {
+        self.tab.pending.as_ref().map(|p| p.kind_known)
+    }
+
+    /// Test-only: whether the tab has any landing pending.
+    #[cfg(all(test, feature = "git"))]
+    pub fn has_pending_landing_for_test(&self) -> bool {
+        self.tab.pending.is_some()
+    }
+
+    /// Test-only: whether a confirmed search waits for the table that is still loading.
+    #[cfg(all(test, feature = "git"))]
+    pub fn search_waits_for_table_for_test(&self) -> bool {
+        self.tab.search_pending
+    }
+
+    /// The windowed preview's caret line (0-based). Test-only.
+    #[cfg(test)]
+    pub fn preview_caret_line(&self) -> usize {
+        self.tab.preview_cursor_line
+    }
+
     /// The link targets in the current Markdown preview's `md_items`, in document order (E2E: assert
     /// exactly which URLs became focusable links — e.g. that a URL inside code did NOT).
     #[cfg(test)]
@@ -4972,37 +4585,38 @@ impl App {
             .collect()
     }
 
-    /// Whether the current preview is a Markdown/Mermaid file shown as its raw source (`R` toggled on).
-    /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
+    /// Whether the current preview is a Markdown/Mermaid file (or a Word document) shown as its raw
+    /// source (`R` toggled on). Such a preview is windowed like a code file, so the 2D caret
+    /// selection/copy applies.
     pub fn is_raw_source(&self) -> bool {
-        self.tab.md_raw
-            && matches!(
-                self.tab.preview_kind,
-                Some(PreviewKind::Markdown(_))
-                    | Some(PreviewKind::Mermaid(_))
-                    | Some(PreviewKind::Document(_))
-            )
+        self.is_md_raw()
+            && (self
+                .tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(PreviewKind::is_markdown)
+                || self.is_document()
+                || self.shows_plugin(konoma_mermaid::MERMAID_ID))
     }
 
     /// Whether the current preview is Markdown/Mermaid (has a decorated render, so `R` can toggle raw source).
     pub fn is_decorated_kind(&self) -> bool {
-        matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Markdown(_))
-                | Some(PreviewKind::Mermaid(_))
-                | Some(PreviewKind::Document(_))
-        )
-    }
-
-    /// Whether raw source view is currently on (for the footer/title indicator).
-    pub fn is_md_raw(&self) -> bool {
-        self.tab.md_raw
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown)
+            || self.is_document()
+            || self.shows_plugin(konoma_mermaid::MERMAID_ID)
     }
 
     /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source. No-op for other kinds.
-    /// Rebuilds the windowed reader and resets the caret/scroll/selection so the new view starts at the top.
+    /// Asks the plugin for the other representation (a Markdown file or a converted Word
+    /// document: `rendered` / `source`), then resets the caret/scroll/selection so the new view
+    /// starts at the top and rebuilds the windowed reader (source) / decoration (rendered).
     pub fn toggle_md_raw(&mut self) {
-        if !self.is_decorated_kind() {
+        // Only where the toggle is the host's own (a document that declares exactly `rendered` and
+        // `source`, a diagram file) or a presentation's.
+        if !(self.host_source_view() || self.is_deck()) {
             return;
         }
         // A document still converting (also in a saved raw view) or failed has no text to switch
@@ -5016,16 +4630,17 @@ impl App {
             self.toggle_deck_view();
             return;
         }
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
-            if self.tab.md_raw {
-                // Leaving the raw view: the converted-Markdown temp file is done for.
-                self.clear_command_out();
-            } else if !self.write_document_raw() {
-                return; // nothing converted yet (still loading / failed): there is no raw view
-            }
+        let want_source = !self.is_md_raw();
+        if !self.choose_source_repr(want_source) {
+            return;
         }
-        self.tab.md_raw = !self.tab.md_raw;
-        // A view switch = start from the top. Rebuild the windowed reader (raw) / decoration (rendered).
+        self.reset_view_for_repr_change();
+    }
+
+    /// What every change of representation resets: a view switch = start from the top, with no
+    /// selection and no stale decoration. The windowed reader is rebuilt (source) or dropped
+    /// (rendered) from the state the new representation left.
+    pub(super) fn reset_view_for_repr_change(&mut self) {
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
         self.tab.preview_scroll = 0;
@@ -5071,12 +4686,13 @@ impl App {
 
     pub fn back_to_tree(&mut self) {
         // `q` from a full-screen fence display returns not "to the tree" but "back to the original
-        // Markdown view" (the same "return to where you came from" convention as git diff's
-        // came_from_git_view). Scroll/focus are also restored.
+        // Markdown view". Scroll/focus are also restored.
         if matches!(self.tab.preview_kind, Some(PreviewKind::MermaidFence(_))) {
             if let Some(md) = self.tab.preview_path.clone() {
                 let ret = self.tab.fence_return.take();
-                self.enter_preview(&md);
+                // The same open going on (the document the fence came from): the load identity
+                // is kept.
+                self.enter_preview_in(&md, Landing::None, true);
                 if let Some((scroll, focus)) = ret {
                     self.tab.preview_scroll = scroll;
                     self.tab.focused_item = focus;
@@ -5095,6 +4711,7 @@ impl App {
         // bypassed for this deliberate re-verify — otherwise the stale markers would linger.
         self.git_status_for = None;
         self.git_status_dirty = true;
+        self.begin_preview_load();
         self.tab.preview_path = None;
         self.set_preview_kind(None);
         self.clear_command_out(); // release any delegated-command temp output
@@ -5104,7 +4721,7 @@ impl App {
                             // otherwise sit in `md_image_cache` orphaned forever (see that fn's own doc comment).
         self.prune_media_diff_picture_cache();
         self.md_cache = None;
-        self.tab.md_raw = false;
+        self.tab.repr = None;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
@@ -5119,13 +4736,8 @@ impl App {
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
-        self.tab.came_from_git_view = false;
-        self.table_data = None;
-        self.set_workbook(None);
-        self.workbook_error = None;
+        self.drop_plugin();
         self.set_document(None);
-        self.document_error = None;
-        self.tab.sheet_idx = 0;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
@@ -5152,7 +4764,7 @@ impl App {
     /// Remember the media currently on screen before a tab switch discards it, so switching back can
     /// reuse it. Skips animated GIFs (frames live in separate state) and anything without a source image.
     fn stash_media_cache(&mut self) {
-        if !self.gif_frames.is_empty() {
+        if self.gif.has_frames() {
             return;
         }
         let (Some(path), Some(src)) = (self.tab.preview_path.clone(), self.image_src.clone())
@@ -5174,11 +4786,12 @@ impl App {
             path,
             mtime: self.preview_media_mtime,
             len: meta.map(|m| m.len()),
-            page: self.tab.pdf_page.max(1),
+            page: self.tab.page.max(1),
             fence_ord: self.preview_fence_ord(),
             src,
             logical: self.image_logical,
             vector_svg: self.vector_svg.clone(),
+            vector_trust: self.vector_trust.clone(),
         });
     }
 
@@ -5203,7 +4816,14 @@ impl App {
     fn preview_fence_ord(&self) -> Option<usize> {
         match &self.tab.preview_kind {
             Some(PreviewKind::MermaidFence(ord)) => Some(*ord),
-            _ => None,
+            Some(
+                PreviewKind::Plugin { .. }
+                | PreviewKind::Text(_)
+                | PreviewKind::GitDiff(_)
+                | PreviewKind::Command { .. }
+                | PreviewKind::CanNotPreview { .. },
+            )
+            | None => None,
         }
     }
 
@@ -5225,30 +4845,23 @@ impl App {
         let c = self.media_cache.as_ref().expect("checked above");
         self.image_logical = c.logical;
         self.vector_svg = c.vector_svg.clone();
+        self.vector_trust = c.vector_trust.clone();
         self.preview_media_mtime = c.mtime;
         // The Arc's contents are shared, so the image is not duplicated. protocol was already
-        // dropped by the preceding `clear_image`, and `image_crop = None` is the signal to rebuild
+        // dropped by the preceding `clear_image`, and `image_viewer.set_crop(None)` is the signal to rebuild
         // it on the next render (clear_image also handles sweeping kitty-side ghost artifacts).
         self.image_src = Some(c.src.clone());
-        self.image_crop = None;
+        self.image_viewer.set_crop(None);
         true
     }
 
     fn kind_loads_media(&self, kind: &PreviewKind) -> bool {
-        matches!(
-            kind,
-            PreviewKind::Image(_)
-                | PreviewKind::Svg(_)
-                | PreviewKind::Video(_)
-                | PreviewKind::Pdf(_)
-                // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed
-                // reload must re-read it exactly like the image kinds.
-                | PreviewKind::Spreadsheet(_)
-                // A Word document is converted on the same worker; a tab switch / mtime-changed
-                // reload re-reads it exactly like a spreadsheet.
-                | PreviewKind::Document(_)
-        ) || (matches!(kind, PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
-            && self.mermaid_image_mode())
+        // A mermaid file loads a picture in image mode only (in text mode it draws via the
+        // decorated path).
+        (kind.is_media_plugin() && (!kind.is_mermaid_file() || self.mermaid_image_mode()))
+            // (A Word document, a presentation and a spreadsheet are plugin shows: opened again
+            // by `load_plugin`.)
+            || (matches!(kind, PreviewKind::MermaidFence(_)) && self.mermaid_image_mode())
             // A non-detached delegated command (image or text render_as): its output is a
             // function of the source file, so a tab switch / mtime-changed reload must re-run it
             // exactly like every other media kind. `detached=true` is deliberately excluded — that
@@ -5259,30 +4872,30 @@ impl App {
 
     /// Release and reset the image display state (protocol, source image, zoom/pan).
     fn clear_image(&mut self) {
-        self.image = None;
-        self.kitty_image = None;
-        // Discard any in-flight kitty build from the file we are leaving (gen bump) and clear the
+        self.release_image();
+        self.tab.image_view.reset();
+        self.tab.page = 1;
+        self.tab.page_count = None;
+    }
+
+    /// The live part of [`App::clear_image`]: everything the shown media and the plugin show hold
+    /// on `App`, and the work still running for them. The tab's own view of them (zoom, page) is
+    /// left as it is: a tab that is left keeps it in its saved copy ([`App::leave_tab_view`]).
+    fn release_image(&mut self) {
+        // Also discards any in-flight kitty build from the file we are leaving and clears the
         // wanted geometry so the next image triggers a fresh (synchronous first) build.
-        self.kitty_gen = self.kitty_gen.wrapping_add(1);
-        self.kitty_want = None;
-        self.kitty_shown = None;
+        self.image_viewer.clear();
         self.image_src = None;
-        self.tab.image_zoom = 1.0;
-        self.tab.image_center = (0.5, 0.5);
-        self.image_crop = None;
-        self.image_vis_frac = (1.0, 1.0);
         self.vector_svg = None;
+        self.vector_trust = None;
         self.image_logical = None;
-        self.gif_frames = Vec::new();
-        self.gif_idx = 0;
-        self.gif_shown_at = None;
-        self.gif_protocol = None;
-        self.gif_proto_key = None;
-        self.tab.pdf_page = 1;
-        self.tab.pdf_pages = None;
+        self.gif.clear();
+        // The plugin's show (its session and view) goes with the picture it made, and with a
+        // table: whatever is opened next opens its own.
+        self.drop_plugin();
         // Advance the generation, so an old file's media result that arrives while loading a different file is treated as stale.
         self.bump_media_gen();
-        self.wb_queued = None;
+        self.drop_queued_plugin_work();
         self.media_loading = false;
         self.vector_reraster_inflight = false;
         // When image state is discarded, also discard the mtime claim (an invariant). Leaving it
@@ -5320,12 +4933,18 @@ impl App {
     /// one), so the temp path never leaks into the UI.
     pub fn windowed_src(&self) -> Option<&Path> {
         // A Word document's raw view is the converted Markdown, written to a private temp file
-        // (`App::write_document_raw`) so the less-style reader can window it; the .docx itself is a
-        // zip and never readable as text.
-        if matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Command { .. } | PreviewKind::Document(_))
-        ) {
+        // (`App::source_view_landed`) so the less-style reader can window it; the .docx itself is a
+        // zip and never readable as text. The same for any source view a plugin hands over as a
+        // string (`TextSource::Owned`) rather than as a file.
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. }))
+            || self.is_document()
+            || self.source_view_is_owned()
+            || self.text_plugin_is_generated()
+        {
+            // (A text plugin that names a file of its own is read in place: see below.)
+            if let Some(p) = self.text_plugin_own_file() {
+                return Some(p);
+            }
             return self.tab.command_out.as_deref();
         }
         self.tab.preview_path.as_deref()
@@ -5379,26 +4998,41 @@ impl App {
     /// and the last page) and reposition the caret at the row it occupied before the move, so the
     /// caret and the window always move together on a page/half-page step.
     fn windowed_page_scroll(&mut self, delta: i32) {
-        let row_in_view = self
-            .tab
-            .preview_cursor_line
-            .saturating_sub(self.tab.preview_top_line);
-        self.win_scroll_lines(delta);
+        // The total is counted (and cached) first so the window stops at the last page.
         let total = self.win_total().unwrap_or(usize::MAX);
-        let maxl = total.saturating_sub(1);
-        self.tab.preview_cursor_line = self
-            .tab
-            .preview_top_line
-            .saturating_add(row_in_view)
-            .min(maxl);
+        let mut c = self.caret();
+        c.page(delta, total, self.tab.preview_viewport as usize);
+        self.apply_caret(c);
+    }
+
+    /// The caret and the window as the pure [`konoma_widgets::caret::Caret`] sees them.
+    fn caret(&self) -> konoma_widgets::caret::Caret {
+        konoma_widgets::caret::Caret {
+            top: self.tab.preview_top_line,
+            line: self.tab.preview_cursor_line,
+            col: self.tab.preview_cursor_col,
+        }
+    }
+
+    /// Take the caret `c` the pure moves computed: the window follows by the lines its top moved
+    /// (the byte position is found from the line starts), then the caret is written.
+    fn apply_caret(&mut self, c: konoma_widgets::caret::Caret) {
+        let moved = c.top as i64 - self.tab.preview_top_line as i64;
+        if moved != 0 {
+            self.win_scroll_lines(moved.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+        }
+        self.tab.preview_cursor_line = c.line;
+        self.tab.preview_cursor_col = c.col;
     }
 
     /// To the top of the preview.
     pub fn preview_to_top(&mut self) {
         if self.is_windowed() {
-            self.tab.preview_cursor_line = 0;
+            let mut c = self.caret();
+            c.to_top();
             self.tab.preview_byte_top = 0;
-            self.tab.preview_top_line = 0;
+            self.tab.preview_top_line = c.top;
+            self.tab.preview_cursor_line = c.line;
         } else {
             self.tab.preview_scroll = 0;
         }
@@ -5415,17 +5049,18 @@ impl App {
         let vh = self.tab.preview_viewport.max(1) as usize;
         // Always fetch the total line count (it's cached) since clamping the line cursor to the end needs it.
         let total = self.win_total();
-        let cur = self.tab.preview_top_line;
         if let Some(b) = self
             .preview_win
             .as_mut()
             .map(|w| w.last_page_top(vh).unwrap_or(0))
         {
             self.tab.preview_byte_top = b;
-            self.tab.preview_top_line = total.map(|t| t.saturating_sub(vh)).unwrap_or(cur);
         }
         if let Some(t) = total {
-            self.tab.preview_cursor_line = t.saturating_sub(1);
+            let mut c = self.caret();
+            c.to_bottom(t, vh);
+            self.tab.preview_top_line = c.top;
+            self.tab.preview_cursor_line = c.line;
         }
     }
 
@@ -5444,10 +5079,7 @@ impl App {
         let Ok(resp) = resp else {
             return false; // ignore an encode failure (does not crash)
         };
-        match self.image.as_mut() {
-            Some(state) => state.update_resized_protocol(resp),
-            None => false,
-        }
+        self.image_viewer.apply_resize(resp)
     }
 
     pub fn preview_scroll(&mut self, delta: i32) {
@@ -5465,23 +5097,9 @@ impl App {
     /// In visual mode the anchor stays fixed, so moving the cursor extends the selection.
     fn preview_cursor_move(&mut self, delta: i32) {
         let total = self.win_total().unwrap_or(usize::MAX);
-        let maxl = total.saturating_sub(1) as i64;
-        let next =
-            (self.tab.preview_cursor_line as i64 + delta as i64).clamp(0, maxl.max(0)) as usize;
-        self.tab.preview_cursor_line = next;
-        self.follow_cursor();
-    }
-
-    /// Scroll the window (byte-based) just enough that the line cursor is on screen.
-    fn follow_cursor(&mut self) {
-        let vh = self.tab.preview_viewport.max(1) as usize;
-        let top = self.tab.preview_top_line;
-        let cur = self.tab.preview_cursor_line;
-        if cur < top {
-            self.win_scroll_lines(-((top - cur) as i32));
-        } else if cur >= top + vh {
-            self.win_scroll_lines((cur + 1 - (top + vh)) as i32);
-        }
+        let mut c = self.caret();
+        c.step(delta, total, self.tab.preview_viewport as usize);
+        self.apply_caret(c);
     }
 
     /// Windowed scroll (delta lines). Computes the surrounding line-head bytes each time to move preview_byte_top, and
@@ -5547,75 +5165,91 @@ impl App {
         let top = self.tab.preview_byte_top;
         let path = self.tab.preview_path.clone().unwrap_or_default();
         // Whether to attach syntax: plain if highlighting is disabled (off-switch) / progressive is still waiting (hl_pending).
-        // Code is always a target. Text is a target only "when an existing grammar can be resolved
+        // The `code` plugin's files are always a target. Text is a target only "when an existing grammar can be resolved
         // from the extension/filename" = colors config files like .bashrc/Makefile/Dockerfile while
         // keeping truly plain text uncolored.
         // Only while progressive is waiting is it "plain text before the swap", so it isn't cached (it's replaced by the colored version later).
+        // A text plugin whose text is made (not the file itself) is colored by its own styler
+        // alone: the host never builds a grammar for it, and the grammar switch (`syntax_highlight`)
+        // is the `code` plugin's, not its.
+        let made_text = self.text_plugin_is_generated();
         let syntax_kind = match &self.tab.preview_kind {
-            Some(PreviewKind::Code(_)) => true,
+            Some(k) if k.is_text_plugin() => !made_text || self.text_plugin_has_styler(),
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
             // Markdown/Mermaid in raw source display (`R`) is colored by the file's grammar (.md→Markdown, etc.).
-            Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) if self.tab.md_raw => {
+            Some(k @ PreviewKind::Plugin { path: p, .. })
+                if (k.is_markdown() || k.is_mermaid_file()) && self.is_md_raw() =>
+            {
                 crate::preview::code::has_named_syntax(p)
             }
             // The converted Markdown of a Word document (`R`): colored as Markdown.
-            Some(PreviewKind::Document(_)) if self.tab.md_raw => true,
+            Some(k) if k.is_office_document() && self.is_md_raw() => true,
             _ => false,
         };
         // The grammar is picked from the path's name: a Word document's raw view is Markdown, but
         // its own name says .docx.
-        let hl_path = if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+        let hl_path = if self.is_document() {
             PathBuf::from("document.md")
         } else {
             path.clone()
         };
-        let want_syntax = self.cfg.ui.syntax_highlight
+        let syntax_on = made_text || crate::plugins::syntax_highlight_on(&self.cfg);
+        // The `code` plugin colors through the styler it returned; until its first result lands
+        // the window is plain and uncached.
+        let want_syntax = syntax_on
             && syntax_kind
+            && !self.text_plugin_pending()
             && (!self.hl_pending || self.loading_is_indicator());
         // Only the plain text while progressive is waiting is left uncached (since it gets
         // replaced by the colored version later). Everything else is cached by (path, top, height)
         // even as plain text = never re-reads the file every frame. `styled` is part of the key so
         // the colored and plain versions are never confused.
-        let cacheable = want_syntax || !(self.cfg.ui.syntax_highlight && syntax_kind);
-        let mut content: Vec<Line<'static>> = if cacheable {
-            let hit = matches!(
-                &self.win_cache,
-                Some(c) if c.path == path && c.byte_top == top && c.height == height
-                    && c.styled == want_syntax
-            );
-            if !hit {
+        let cacheable = want_syntax || !(syntax_on && syntax_kind);
+        let mut content: Vec<Line<'static>> =
+            if let Some(lines) = self.made_text_window(self.tab.preview_top_line, h) {
+                // The plugin handed over its lines already colored: the window is a slice of them
+                // (the file the reader windows holds the same lines as plain text, for the caret, the
+                // search and the copy).
+                lines
+            } else if cacheable {
+                let hit = matches!(
+                    &self.win_cache,
+                    Some(c) if c.path == path && c.byte_top == top && c.height == height
+                        && c.styled == want_syntax
+                );
+                if !hit {
+                    let raw = self
+                        .preview_win
+                        .as_mut()
+                        .and_then(|w| w.read_lines(top, h).ok())
+                        .unwrap_or_default();
+                    let lines = if want_syntax {
+                        let src = raw.join("\n");
+                        self.style_text_window(&src, self.tab.preview_top_line, &hl_path)
+                    } else {
+                        raw.into_iter().map(Line::from).collect()
+                    };
+                    self.win_cache = Some(WinCache {
+                        path,
+                        byte_top: top,
+                        height,
+                        styled: want_syntax,
+                        lines,
+                    });
+                }
+                self.win_cache
+                    .as_ref()
+                    .map(|c| c.lines.clone())
+                    .unwrap_or_default()
+            } else {
+                // Plain text while progressive is waiting (not cached = replaced once coloring completes).
                 let raw = self
                     .preview_win
                     .as_mut()
                     .and_then(|w| w.read_lines(top, h).ok())
                     .unwrap_or_default();
-                let lines = if want_syntax {
-                    let src = raw.join("\n");
-                    crate::preview::code::highlight(&src, &hl_path, &self.cfg.ui.theme.code_theme)
-                } else {
-                    raw.into_iter().map(Line::from).collect()
-                };
-                self.win_cache = Some(WinCache {
-                    path,
-                    byte_top: top,
-                    height,
-                    styled: want_syntax,
-                    lines,
-                });
-            }
-            self.win_cache
-                .as_ref()
-                .map(|c| c.lines.clone())
-                .unwrap_or_default()
-        } else {
-            // Plain text while progressive is waiting (not cached = replaced once coloring completes).
-            let raw = self
-                .preview_win
-                .as_mut()
-                .and_then(|w| w.read_lines(top, h).ok())
-                .unwrap_or_default();
-            raw.into_iter().map(Line::from).collect()
-        };
+                raw.into_iter().map(Line::from).collect()
+            };
         // Expand tabs into a visible marker (→) + tab-stop spaces (since terminals don't align tabs to columns).
         // Done before the line-number gutter/search highlight = column tracking is based on the body's start (column 0). Only the window's visible lines = cheap.
         content = crate::preview::code::expand_tabs(content, self.cfg.ui.tab_width);
@@ -5653,18 +5287,16 @@ impl App {
                 .collect();
         }
         let top_line = self.tab.preview_top_line;
-        // Clamp the 2D caret column to the visible cursor line's actual length and write it back (correcting `l`/`$` overrun).
-        // Since the caret line is always visible via viewport follow, its actual length can be obtained from content here.
-        if self.tab.preview_cursor_line >= top_line
-            && self.tab.preview_cursor_line < top_line + content.len()
-        {
-            let ln = &content[self.tab.preview_cursor_line - top_line];
-            let len: usize = ln.spans.iter().map(|s| s.content.chars().count()).sum();
-            // The read-only caret always sits on an actual character (0 for an empty line). `$` goes to the last character.
-            self.tab.preview_cursor_col = self.tab.preview_cursor_col.min(len.saturating_sub(1));
-        }
+        // Clamp the 2D caret column to the visible cursor line's actual length and write it back.
+        self.tab.preview_cursor_col = konoma_widgets::caret::settled_col(
+            &content,
+            top_line,
+            h,
+            self.tab.preview_cursor_line,
+            self.tab.preview_cursor_col,
+        );
         // Highlight the line cursor/selection range (before the gutter = column index is aligned to the body's start at 0).
-        let content = apply_preview_caret(
+        let content = konoma_widgets::caret::apply_caret(
             content,
             top_line,
             self.tab.preview_cursor_line,
@@ -5694,7 +5326,11 @@ impl App {
         };
         let hit = matches!(&self.gutter_cache, Some(c) if c.path == path);
         if !hit {
-            let diff = crate::vcs::file_diff(&self.tab.root, &path);
+            let diff = if self.tab.preview_from_diff {
+                self.compute_gitdiff_lines(&path, false)
+            } else {
+                crate::vcs::file_diff(&self.tab.root, &path)
+            };
             let marks = gutter_marks(&diff);
             self.gutter_cache = Some(GutterCache {
                 path: path.clone(),
@@ -5747,7 +5383,31 @@ impl App {
     }
 
     pub fn cycle_path_style(&mut self) {
-        self.path_style = self.path_style.next();
+        self.apply_view_option(konoma_host_core::keymap::CoreAction::CyclePathStyle);
+    }
+
+    /// Applies a `,` item through the core both hosts share, and does what it asks to redo.
+    fn apply_view_option(&mut self, action: konoma_host_core::keymap::CoreAction) {
+        let mut o = konoma_host_core::view_options::ViewOptions {
+            wrap: self.cfg.ui.wrap,
+            path_style: self.path_style,
+        };
+        let effect = o.apply(action);
+        self.cfg.ui.wrap = o.wrap;
+        self.path_style = o.path_style;
+        if effect.relayout {
+            self.md_cache = None;
+        }
+        if effect.hscroll_home {
+            self.tab.preview_hscroll = 0;
+        }
+    }
+
+    /// Toggle line wrapping of the text and document preview for this session (`,` then `w`;
+    /// `[ui] wrap` is the value it starts with). The decorated document caches its line breaks,
+    /// so the cache is dropped; a horizontal offset means nothing once the lines wrap.
+    pub fn toggle_wrap(&mut self) {
+        self.apply_view_option(konoma_host_core::keymap::CoreAction::ToggleWrap);
     }
 
     /// Toggle the `?` help. When opening, reset scroll to the top.
@@ -5789,11 +5449,7 @@ impl App {
 
     /// Format a path into a display string using the current path_style (shared by the tree/preview title).
     pub fn format_path(&self, path: &Path) -> String {
-        match self.path_style {
-            PathStyle::Full => path.display().to_string(),
-            PathStyle::Home => home_relative(path),
-            PathStyle::Relative => rel_to_open(&self.tab.open_dir, path),
-        }
+        self.path_style.format(&self.tab.open_dir, path)
     }
 }
 
@@ -5893,108 +5549,18 @@ fn highlight_query_in_line(
     Line::from(out).style(style)
 }
 
-/// Editor-style git change status of one line in the previewed (working-tree) file, for the left gutter.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum GutterMark {
-    /// Newly inserted line (no matching removal): green bar.
-    Added,
-    /// Line replaced/edited (part of a hunk that also removed lines): blue bar.
-    Modified,
-    /// One or more lines were removed just above this line: red boundary marker.
-    Deleted,
-}
+use konoma_plugin::host::project::preview_gutter::GutterMark;
 
-// Gutter marker colors, matching Zed: green added, amber modified, red deleted.
-const GUTTER_ADDED: ratatui::style::Color = ratatui::style::Color::Rgb(87, 171, 90);
-const GUTTER_MODIFIED: ratatui::style::Color = ratatui::style::Color::Rgb(216, 166, 74);
-const GUTTER_DELETED: ratatui::style::Color = ratatui::style::Color::Rgb(199, 84, 80);
-
-/// Derive a per-new-line git gutter map from a file's working-tree diff. Keyed by 1-based new-file line
-/// number. A change block is a maximal run of Added/Removed lines (Context breaks it): with additions it
-/// marks each added line Modified (if the block also removed lines) or Added (pure insertion); a
-/// pure-deletion block marks the following line Deleted (or the preceding line if the deletion is at EOF).
 fn gutter_marks(diff: &[crate::git::DiffLine]) -> std::collections::HashMap<u32, GutterMark> {
-    use crate::git::DiffLineKind;
-    let mut marks = std::collections::HashMap::new();
-    let mut i = 0;
-    while i < diff.len() {
-        if diff[i].kind == DiffLineKind::Context {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        let mut removed = 0usize;
-        let mut added: Vec<u32> = Vec::new();
-        while i < diff.len() && diff[i].kind != DiffLineKind::Context {
-            match diff[i].kind {
-                DiffLineKind::Removed => removed += 1,
-                DiffLineKind::Added => {
-                    if let Some(n) = diff[i].new_no {
-                        added.push(n);
-                    }
-                }
-                DiffLineKind::Context => {}
-            }
-            i += 1;
-        }
-        if !added.is_empty() {
-            let mark = if removed > 0 {
-                GutterMark::Modified
-            } else {
-                GutterMark::Added
-            };
-            for n in added {
-                marks.insert(n, mark);
-            }
-        } else if removed > 0 {
-            // Pure deletion: anchor the marker to the line just below the removed block; if the block is
-            // at EOF, anchor to the last real line above it (deletion below).
-            let anchor = diff
-                .get(i)
-                .and_then(|d| d.new_no)
-                .or_else(|| diff[..start].iter().rev().find_map(|d| d.new_no));
-            if let Some(a) = anchor {
-                marks.entry(a).or_insert(GutterMark::Deleted);
-            }
-        }
-    }
-    marks
+    konoma_plugin::host::project::preview_gutter::line_gutter_marks(diff)
 }
 
-/// Prepend a one-cell git change marker to each line (before the line-number gutter, Zed-style). Only
-/// applied when the file has changes (`marks` non-empty) — unchanged files / non-repos keep their layout.
-/// The displayed line `i` maps to 1-based file line `top_line + i + 1`; unchanged lines get a blank cell.
 fn with_git_gutter(
     lines: Vec<Line<'static>>,
     top_line: usize,
     marks: &std::collections::HashMap<u32, GutterMark>,
 ) -> Vec<Line<'static>> {
-    use ratatui::style::{Color, Style};
-    if marks.is_empty() {
-        return lines;
-    }
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let n = (top_line + i + 1) as u32;
-            let (glyph, color) = match marks.get(&n) {
-                Some(GutterMark::Added) => ("▌", GUTTER_ADDED),
-                Some(GutterMark::Modified) => ("▌", GUTTER_MODIFIED),
-                // Thin bar hugging the TOP edge of the line below a deletion, so it
-                // sits on the seam between the two lines instead of looking like the
-                // line itself was removed. (A terminal cell can't draw in the inter-row
-                // gap, so the top edge is the closest we can get without adding a row.)
-                Some(GutterMark::Deleted) => ("▔", GUTTER_DELETED),
-                None => (" ", Color::Reset),
-            };
-            let style = line.style;
-            let mut spans = Vec::with_capacity(line.spans.len() + 1);
-            spans.push(Span::styled(glyph, Style::new().fg(color)));
-            spans.extend(line.spans);
-            Line::from(spans).style(style)
-        })
-        .collect()
+    konoma_plugin::host::project::preview_gutter::with_line_gutter(lines, top_line, marks)
 }
 
 /// The diff's `Rendered`-presentation counterpart of [`with_git_gutter`]: prepends a one-cell
@@ -6009,40 +5575,7 @@ fn with_diff_gutter(
     lo: usize,
     marks: &[(std::ops::Range<usize>, crate::preview::markdown::DiffMark)],
 ) -> Vec<Line<'static>> {
-    use crate::preview::markdown::DiffMark;
-    use ratatui::style::{Color, Modifier, Style};
-    if marks.is_empty() {
-        return lines;
-    }
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let row = lo + i;
-            let mark = marks
-                .iter()
-                .find(|(range, _)| range.contains(&row))
-                .map(|(_, m)| *m);
-            let (glyph, color) = match mark {
-                Some(DiffMark::Added) => ("▌", GUTTER_ADDED),
-                Some(DiffMark::Modified) => ("▌", GUTTER_MODIFIED),
-                Some(DiffMark::Removed) => ("▌", GUTTER_DELETED),
-                None => (" ", Color::Reset),
-            };
-            let style = line.style;
-            let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
-            spans.push(Span::styled(glyph, Style::new().fg(color)));
-            if mark == Some(DiffMark::Removed) {
-                spans.extend(line.spans.into_iter().map(|s| {
-                    let st = s.style.add_modifier(Modifier::DIM);
-                    Span::styled(s.content, st)
-                }));
-            } else {
-                spans.extend(line.spans);
-            }
-            Line::from(spans).style(style)
-        })
-        .collect()
+    konoma_plugin::host::project::rendered_diff::with_diff_gutter(lines, lo, marks)
 }
 
 /// The **ordinary** decorated Markdown preview's own change gutter (`docs/FEATURE-MD-RENDERED-DIFF.md`
@@ -6061,33 +5594,7 @@ fn with_preview_diff_gutter(
         crate::preview::markdown::PreviewMark,
     )],
 ) -> Vec<Line<'static>> {
-    use crate::preview::markdown::PreviewMark;
-    use ratatui::style::{Color, Style};
-    if marks.is_empty() {
-        return lines;
-    }
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let row = lo + i;
-            let mark = marks
-                .iter()
-                .find(|(range, _)| range.contains(&row))
-                .map(|(_, m)| *m);
-            let (glyph, color) = match mark {
-                Some(PreviewMark::Added) => ("▌", GUTTER_ADDED),
-                Some(PreviewMark::Modified) => ("▌", GUTTER_MODIFIED),
-                Some(PreviewMark::Deleted) => ("▔", GUTTER_DELETED),
-                None => (" ", Color::Reset),
-            };
-            let style = line.style;
-            let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
-            spans.push(Span::styled(glyph, Style::new().fg(color)));
-            spans.extend(line.spans);
-            Line::from(spans).style(style)
-        })
-        .collect()
+    konoma_plugin::host::project::preview_gutter::with_preview_gutter(lines, lo, marks)
 }
 
 /// Prepend a line-number gutter (right-aligned + a space) to each line. The first line's number is `top_line+1` (1-based).
@@ -6111,112 +5618,59 @@ fn with_line_numbers(lines: Vec<Line<'static>>, top_line: usize) -> Vec<Line<'st
         .collect()
 }
 
-/// The rectangle that centers an image of size `cells` (natural size) within `inner` while preserving the aspect ratio.
-/// With `allow_upscale=false`, downscale only (scale<=1=fit behavior); with `true`, it may upscale to fill the area.
-fn centered_rect(cells: (u16, u16), inner: Rect, allow_upscale: bool) -> Rect {
-    let (cw, ch) = cells;
-    if cw == 0 || ch == 0 || inner.width == 0 || inner.height == 0 {
-        return inner;
-    }
-    let mut scale = (inner.width as f64 / cw as f64).min(inner.height as f64 / ch as f64);
-    if !allow_upscale {
-        scale = scale.min(1.0);
-    }
-    let w = ((cw as f64 * scale).round() as u16).clamp(1, inner.width);
-    let h = ((ch as f64 * scale).round() as u16).clamp(1, inner.height);
-    let x = inner.x + (inner.width - w) / 2;
-    let y = inner.y + (inner.height - h) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
-}
+use konoma_plugin::document_pictures::SLIDE_CHROME_ROWS;
+#[cfg(test)]
+use konoma_plugin::document_pictures::{decode_with_cap, decode_with_smaller_retries};
 
-/// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
-const MD_IMAGE_MAX_ROWS: u16 = 24;
-/// Rows around a slide picture that are not the picture: its heading line and the blank line
-/// between the heading and the picture.
-const SLIDE_CHROME_ROWS: u16 = 2;
+// The document-picture rules every host shares (where an image URL points, the remote download and
+// its cache, the file decoders) live in `konoma_plugin::document_pictures`; konoma re-exports them
+// here under the names its modules and tests have always used.
+pub use konoma_plugin::document_pictures::RemoteFetch;
+pub(crate) use konoma_plugin::document_pictures::MD_IMAGE_MAX_ROWS;
+#[cfg(test)]
+pub(crate) use konoma_plugin::document_pictures::MD_IMAGE_RESOLVES;
+pub(crate) use konoma_plugin::document_pictures::{
+    cache_root, fetch_remote_image, md_image_local_path, md_remote_cache_path,
+    resolve_md_image_path,
+};
+#[cfg(test)]
+pub(crate) use konoma_plugin::document_pictures::{
+    cache_root_from, fetch_remote_bytes_capped, fetch_remote_image_capped, md_image_dims,
+    prune_remote_cache, MD_IMAGE_MAX_SIDE, MD_REMOTE_MAX_BYTES,
+};
 
-/// Where a Markdown image URL points **in the local filesystem**, without asking whether the file
-/// is actually there. `None` for anything that is not a local file reference: `data:` URLs, and
-/// remote (`http(s)://`) URLs — those name konoma's own download cache rather than a path in the
-/// tree, which is the caller's business (`resolve_md_image_path`), not this function's. Relative
-/// paths are resolved against the Markdown file's directory.
-///
-/// Split out of `resolve_md_image_path` for the one caller that must recognize a picture which has
-/// just been **deleted**: `App::md_image_source_paths` has to match a filesystem event against the
-/// images the open document draws from, and a deleted file no longer resolves — yet its reserved
-/// box is still on screen, waiting to collapse back to the `🖼 alt` label.
-fn md_image_local_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
-    let u = url.trim();
-    if u.is_empty() || crate::preview::markdown::is_remote_image_url(u) {
-        return None;
-    }
-    if u.to_ascii_lowercase().starts_with("data:") {
-        return None;
-    }
-    let u = u.strip_prefix("file://").unwrap_or(u);
-    let p = PathBuf::from(u);
-    Some(match base {
-        Some(b) if !p.is_absolute() => b.join(p),
-        _ => p,
-    })
-}
-
-/// Resolve a Markdown image URL to a local file path. A remote (`http(s)://`) URL resolves to its
-/// download-cache path, but only once it has been fetched (so callers treat a cached remote image
-/// exactly like a local one). `data:` URLs return None. Relative paths are resolved against the
-/// Markdown file's directory. Returns the path only if the file exists.
-fn resolve_md_image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
-    let u = url.trim();
-    if u.is_empty() {
-        return None;
-    }
-    if crate::preview::markdown::is_remote_image_url(u) {
-        let p = md_remote_cache_path(u)?;
-        return p.is_file().then_some(p);
-    }
-    let p = md_image_local_path(u, base)?;
-    p.is_file().then_some(p)
-}
-
-/// Pixel dimensions of a cached inline-image file, accepting both raster formats and SVG (parsed cheaply
-/// via usvg, without rasterizing). None if the file is neither a known raster image nor an SVG.
-fn md_image_dims(path: &Path) -> Option<(u32, u32)> {
-    md_image_dims_why(path).ok()
-}
-
-/// [`md_image_dims`] that says why an SVG has no size, when there is something to tell: `Err(Some)`
-/// is a refusal (too large, nested too deeply, ...), `Err(None)` is "not an image we can size".
-/// An SVG's size is read from its root element alone (`svg::intrinsic_size`), so this is cheap
-/// whatever the file holds.
-fn md_image_dims_why(
+/// [`konoma_plugin::document_pictures::md_decode_image_within`] with konoma's own SVG drawing
+/// (the supervised child process).
+#[cfg(test)]
+fn md_decode_image_within(
     path: &Path,
-) -> Result<(u32, u32), Option<crate::preview::svg_guard::SvgFail>> {
-    if let Some(d) = crate::preview::image::dimensions(path) {
-        return Ok(d);
-    }
-    crate::preview::svg::intrinsic_size(path).map_err(refusal_worth_telling)
+    svg_max_px: u32,
+    roots: Option<&[PathBuf]>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    konoma_plugin::document_pictures::md_decode_image_within(
+        path,
+        svg_max_px,
+        roots,
+        &media_plugin::SvgChild,
+        cancelled,
+    )
 }
 
-/// A failure the user should be told about (everything except "this is not a valid SVG", which for
-/// a file that failed as an image too is just a picture that cannot be shown).
-fn refusal_worth_telling(
-    why: crate::preview::svg_guard::SvgFail,
-) -> Option<crate::preview::svg_guard::SvgFail> {
-    use crate::preview::svg_guard::SvgFail;
-    (why != SvgFail::Invalid).then_some(why)
+/// [`konoma_plugin::document_pictures::md_decode_bytes_why`] with konoma's own SVG drawing.
+#[cfg(test)]
+fn md_decode_bytes_why(
+    bytes: &[u8],
+    svg_max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    konoma_plugin::document_pictures::md_decode_bytes_why(
+        bytes,
+        svg_max_px,
+        &media_plugin::SvgChild,
+        cancelled,
+    )
 }
-
-/// Longest side, in pixels, that an inline Markdown image is kept at after decoding. The terminal
-/// never shows more than its own width (a 250-column terminal at 20 px per cell is 5,000 px) and the
-/// in-place zoom of diagrams re-rasterizes from the SVG rather than from this copy, so a larger
-/// decode is memory the user cannot see: an 11,000 x 11,000 screenshot would keep 480 MB, this keeps
-/// 64 MB. Matches the 4096 cap on SVG rasters (`preview::svg::HARD_MAX_PX`).
-const MD_IMAGE_MAX_SIDE: u32 = 4096;
 
 /// Decode a cached inline-image file to an image, rasterizing SVG (at `svg_max_px`) when the raster
 /// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.
@@ -6231,283 +5685,13 @@ fn md_decode_image(path: &Path, svg_max_px: u32) -> Option<image::DynamicImage> 
 /// raster decoder's reason stands when the file is not a valid SVG either. An SVG is drawn by a
 /// supervised child process (`svg_proc`), so this blocks for as long as that takes (at most its
 /// time limit): call it from a worker. `cancelled` stops that drawing.
+#[cfg(test)]
 fn md_decode_image_why(
     path: &Path,
     svg_max_px: u32,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg::RasterError;
-    use crate::preview::svg_guard::SvgFail;
-    match crate::preview::image::decode_static_capped_why(path, MD_IMAGE_MAX_SIDE) {
-        Ok(img) => Ok(img),
-        Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
-        // A damaged PNG or JPEG is not an SVG either, and drawing it would cost a process hand-off.
-        Err(e) if !crate::preview::svg::file_can_be_svg(path) => Err(e),
-        Err(e) => match crate::preview::svg::rasterize(path, svg_max_px, cancelled) {
-            Ok(img) => Ok(img),
-            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
-            Err(f) => Err(f.into()),
-        },
-    }
-}
-
-/// Runs `attempt` at `start_px` and, when `shrink` is set and the drawing process refused the
-/// picture as too heavy, too slow or too memory-hungry (costs that grow with the square of the
-/// raster size), again at a smaller size, never below `floor_px`. Cost and memory refusals are
-/// the same on every run and fail fast, so they halve the side each time. A time-out is the
-/// expensive kind (it holds the decode gate for the whole time limit) and says as much about the
-/// machine's load as about the slide: the first one is retried once at half the side (a quarter
-/// of the work), and a second goes straight to the floor, so a loaded machine is held for at most
-/// three time limits, not one per halving. Any other failure is final, and so is a request the
-/// user moved on from. A crash is not retried smaller: it is a stack overflow (the same at any
-/// size) or an allocation failure under memory pressure (an immediate retry meets the same
-/// pressure); [`cap_lesson`] makes its cap expire so the slide is tried again later.
-///
-/// Returns the last result, the size it was made at, and the refusals on the way as
-/// `(size, failure)` (the last failure included), which [`record_slide_attempts`] turns into what
-/// the slide remembers.
-fn decode_with_smaller_retries(
-    start_px: u32,
-    floor_px: u32,
-    shrink: bool,
-    cancelled: &dyn Fn() -> bool,
-    mut attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-) -> (
-    Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-    u32,
-    Vec<(u32, crate::preview::image::ImageFailure)>,
-) {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg_guard::SvgFail;
-    let floor = floor_px.min(start_px);
-    let mut px = start_px;
-    let mut timeouts = 0u32;
-    let mut trail = Vec::new();
-    loop {
-        let res = attempt(px);
-        if let Err(f) = &res {
-            trail.push((px, *f));
-        }
-        let refused = match &res {
-            Err(ImageFailure::Svg(
-                f @ (SvgFail::TooHeavy | SvgFail::Timeout | SvgFail::Memory),
-            )) => Some(*f),
-            _ => None,
-        };
-        let Some(why) = refused.filter(|_| shrink && px > floor && !cancelled()) else {
-            return (res, px, trail);
-        };
-        px = if why == SvgFail::Timeout {
-            timeouts += 1;
-            if timeouts == 1 {
-                (px / 2).max(floor)
-            } else {
-                floor
-            }
-        } else {
-            (px / 2).max(floor)
-        };
-    }
-}
-
-/// Decodes a picture with `attempt`, and when it is a slide (`cap` is Some) draws it again
-/// smaller if the drawing process refuses it, then teaches `cap` what happened (see
-/// [`decode_with_smaller_retries`] and [`record_slide_attempts`]). Anything that is not a slide
-/// is attempted once at `start_px`. `clock` is read when a refusal is recorded (not before the
-/// drawing starts), so an expiring cap counts its lifetime from the refusal.
-fn decode_with_cap(
-    cap: Option<&crate::app::office_doc::SlideRasterCap>,
-    start_px: u32,
-    floor_px: u32,
-    moved_on: &dyn Fn() -> bool,
-    clock: &dyn Fn() -> std::time::Instant,
-    attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    let (res, used, trail) =
-        decode_with_smaller_retries(start_px, floor_px, cap.is_some(), moved_on, attempt);
-    if let Some(cap) = cap {
-        record_slide_attempts(cap, &trail, &res, used, floor_px, moved_on(), clock);
-    }
-    res
-}
-
-/// What one refused attempt of a slide's draw says about the slide's raster size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CapLesson {
-    /// The same at this size on every run: the cap is kept for good.
-    Permanent,
-    /// Says as much about the machine's load as about the slide: the cap expires.
-    Expiring,
-    /// Does not depend on the raster size (drawing smaller would not help). It says nothing
-    /// about what size the slide can be drawn at, so it is not retried smaller and teaches no
-    /// size, but when the draw never worked the same request must not be made again at once (a
-    /// failed sharpening redraw is asked for again by every frame otherwise): the cap is held at
-    /// the floor for a while, like a time-out.
-    SizeIndependent,
-    /// Nobody wants the result (cancelled): nothing is learned.
-    Nothing,
-}
-
-/// Classifies a failure of a slide's draw. An exhaustive match on purpose (no catch-all): a new
-/// failure kind has to be given a decision here.
-fn cap_lesson(failure: crate::preview::image::ImageFailure) -> CapLesson {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg_guard::SvgFail;
-    match failure {
-        // Costs that grow with the raster size and are the same on every run.
-        ImageFailure::Svg(SvgFail::TooHeavy | SvgFail::Memory) => CapLesson::Permanent,
-        // Timeout: the clock, i.e. the load. Crashed: the drawing process died by itself, which is
-        // an allocation failure (transient under memory pressure) or a stack overflow (not size
-        // dependent, but then the next try after the lifetime costs one more crash, no more).
-        ImageFailure::Svg(SvgFail::Timeout | SvgFail::Crashed) => CapLesson::Expiring,
-        // Decided by the picture itself, whatever size it is drawn at.
-        ImageFailure::Svg(
-            SvgFail::TooDeep | SvgFail::TooLarge | SvgFail::TooComplex | SvgFail::Invalid,
-        )
-        | ImageFailure::TooLarge
-        | ImageFailure::Corrupt
-        | ImageFailure::UnsupportedFormat => CapLesson::SizeIndependent,
-        ImageFailure::Cancelled => CapLesson::Nothing,
-    }
-}
-
-/// Teaches `cap` what the attempts of one slide draw showed. Each refused size lowers the cap to
-/// the size tried next (the one that worked, or the one after it also failed); the last failure
-/// of a draw that never worked caps it at `floor_px` (the raster already shown, or the base
-/// size), so a sharpening redraw does not ask for more again and again. What each failure means
-/// is decided by [`cap_lesson`]; an expiring cap starts its lifetime when it is recorded
-/// (`clock`); so does a failure that does not depend on the size (see [`CapLesson::SizeIndependent`]). A cancelled attempt says nothing about the slide, and neither does the last
-/// attempt of a request the user moved on from (the refusals confirmed before it still count).
-fn record_slide_attempts(
-    cap: &crate::app::office_doc::SlideRasterCap,
-    trail: &[(u32, crate::preview::image::ImageFailure)],
-    result: &Result<image::DynamicImage, crate::preview::image::ImageFailure>,
-    used: u32,
-    floor_px: u32,
-    moved_on: bool,
-    clock: &dyn Fn() -> std::time::Instant,
-) {
-    let floor = floor_px.min(trail.first().map_or(used, |t| t.0));
-    // The user moved on during the last attempt: it is not a confirmed refusal.
-    let confirmed = trail.len().saturating_sub(usize::from(moved_on));
-    for (i, (_, failure)) in trail.iter().enumerate().take(confirmed) {
-        let next = match trail.get(i + 1) {
-            Some((px, _)) => *px,
-            None if result.is_ok() => used,
-            None => floor,
-        };
-        match cap_lesson(*failure) {
-            CapLesson::Permanent => cap.lower_permanent(next),
-            CapLesson::Expiring => cap.lower_timed_out(next, clock()),
-            // Only the final failure of a draw that never worked (`next` is then the floor, the
-            // raster already shown): the sizes before it were refusals, not this.
-            CapLesson::SizeIndependent => cap.lower_timed_out(next, clock()),
-            CapLesson::Nothing => {}
-        }
-    }
-}
-
-/// [`md_decode_image_why`] for a picture held in memory (inside a Word / OpenDocument file):
-/// the same limits and reasons. An embedded SVG is not a file, so it is drawn by the supervised
-/// child process with no directory to read from (`<image href>` inside it paints nothing). Blocks
-/// for as long as that takes: call it from a worker.
-fn md_decode_bytes_why(
-    bytes: &[u8],
-    svg_max_px: u32,
-    cancelled: &dyn Fn() -> bool,
-) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
-    use crate::preview::image::ImageFailure;
-    use crate::preview::svg::RasterError;
-    use crate::preview::svg_guard::SvgFail;
-    match crate::preview::image::decode_static_bytes_capped_why(bytes, MD_IMAGE_MAX_SIDE) {
-        Ok(img) => Ok(img),
-        Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
-        Err(e) if !crate::preview::svg::can_begin_svg(bytes) => Err(e),
-        Err(e) => match crate::preview::svg::rasterize_embedded(bytes, svg_max_px, cancelled) {
-            Ok(img) => Ok(img),
-            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
-            Err(f) => Err(f.into()),
-        },
-    }
-}
-
-/// The source-pixel band `(y0, height)` of an image `dh` pixels tall that corresponds to the visible
-/// cell rows `[row_off, row_off + vis_rows)` out of `full_rows` total. The result is always within
-/// `[0, dh]` (so `crop_imm(0, y0, _, height)` never exceeds the image and never panics), and the height
-/// is at least 1.
-fn md_band_pixels(full_rows: u16, row_off: u16, vis_rows: u16, dh: u32) -> (u32, u32) {
-    let fr = full_rows.max(1) as u32;
-    let y0 = (row_off as u32 * dh) / fr;
-    let y1 = ((row_off as u32 + vis_rows as u32).min(fr) * dh) / fr;
-    (y0, y1.saturating_sub(y0).max(1))
-}
-
-/// Pure core of `cache_root`. Falls back to the system temp directory (`std::env::temp_dir()` —
-/// always an absolute path, `$TMPDIR` or `/tmp` on Unix) when neither `$XDG_CACHE_HOME` nor `$HOME`
-/// is available, instead of the old `None`.
-///
-/// This is a *cache*, not persistent user data (unlike `bookmarks::default_base`/
-/// `config::dirs_config_path`), so losing it across a reboot is harmless — the next Markdown preview
-/// just re-downloads the image. Returning `None` here used to leave
-/// `app/md_media.rs::ensure_remote_md_fetch`'s `let (Some(tx), Some(dest)) = (.., md_remote_cache_path(url))
-/// else { return false; }` permanently un-taken: the background fetch thread never spawns, no
-/// `RemoteFetch` message ever arrives, and the URL is never recorded in `md_remote_failed` either —
-/// so a Markdown image behind an unresolvable cache root would sit at "loading" forever, never
-/// reaching principle #3's safe-degrade text placeholder. Falling through to a location that is
-/// always available restores that: the fetch is actually attempted and its real success/failure is
-/// reported through the existing `RemoteFetch`/`apply_remote_fetch` machinery.
-fn cache_root_from(xdg_or_home: Option<PathBuf>) -> PathBuf {
-    xdg_or_home.unwrap_or_else(std::env::temp_dir)
-}
-
-/// Root of konoma's on-disk cache (`$XDG_CACHE_HOME`, or `$HOME/.cache`, or a system-temp fallback
-/// when neither is available — see `cache_root_from`'s doc for why).
-#[cfg(not(test))]
-fn cache_root() -> PathBuf {
-    cache_root_from(crate::bookmarks::xdg_base_dir(
-        std::env::var_os("XDG_CACHE_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-        ".cache",
-    ))
-}
-
-/// Test-build twin of the function above. Prefers `test_support::get_test_cache_root()` when a test
-/// has set one, otherwise falls back to the exact same environment-reading formula production uses.
-///
-/// This is deliberately *not* a hard redirect (unlike `set_clipboard`'s test body, which always
-/// routes to the sink): `cache_root()` and `md_remote_cache_path` are pure path arithmetic and never
-/// touch the filesystem by themselves, so the many tests that call them read-only (a stable cache
-/// key, or `cache_root_tests` below exercising the real-environment fallback formula on purpose)
-/// should keep seeing the real formula. The actual disk write lives in
-/// `ensure_remote_md_fetch`'s spawned download thread, and that function refuses to spawn one
-/// without an override in place — see its `#[cfg(test)]` guard — so this soft fallback can't let a
-/// test silently write under the developer's real `~/.cache/konoma/remote-images`.
-#[cfg(test)]
-fn cache_root() -> PathBuf {
-    crate::test_support::get_test_cache_root().unwrap_or_else(|| {
-        cache_root_from(crate::bookmarks::xdg_base_dir(
-            std::env::var_os("XDG_CACHE_HOME").as_deref(),
-            std::env::var_os("HOME").as_deref(),
-            ".cache",
-        ))
-    })
-}
-
-/// Deterministic cache path for a remote image URL: `<cache>/konoma/remote-images/<hash>`. The file is
-/// stored without an extension (the content type is unknown until fetched) and read via content sniffing.
-/// Kept `Option`-returning (always `Some` now that `cache_root` is total) because
-/// `app/md_media.rs::ensure_remote_md_fetch` pattern-matches `Some(dest)`.
-pub(crate) fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
-    use std::hash::{Hash, Hasher};
-    let root = cache_root();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    url.trim().hash(&mut hasher);
-    Some(
-        root.join("konoma")
-            .join("remote-images")
-            .join(format!("{:016x}", hasher.finish())),
-    )
+    md_decode_image_within(path, svg_max_px, None, cancelled)
 }
 
 /// Distinct from the `mod tests;` at the bottom of this file (`src/app/tests.rs`, off-limits to a
@@ -6573,347 +5757,10 @@ mod cache_root_tests {
     }
 }
 
-/// Maximum bytes to download for one remote image (guards against huge / hostile responses).
-const MD_REMOTE_MAX_BYTES: u64 = 25 * 1024 * 1024;
-
-/// Download a remote image with `ureq` into `dest` (atomically, via a temp file), validating that the
-/// bytes decode as an image before committing. Returns whether a valid image now exists at `dest`.
-/// Runs on a background thread. `ureq` is pure Rust (rustls + webpki-roots, no OpenSSL/native-tls),
-/// so this adds no external process and no system TLS dependency — replaces a former `curl` spawn.
-fn fetch_remote_image(url: &str, dest: &Path) -> bool {
-    fetch_remote_image_capped(url, dest, MD_REMOTE_MAX_BYTES)
-}
-
-/// Same as `fetch_remote_image`, but with the body-size cap taken as a parameter instead of always
-/// being `MD_REMOTE_MAX_BYTES`. Split out purely so a test can exercise the exact `.limit()`
-/// enforcement this uses in production against a tiny response (a handful of bytes over a small
-/// cap), instead of actually transferring 25MiB over a loopback socket just to prove the number is
-/// wired through — see `app/tests.rs`'s `fetch_remote_bytes_capped_rejects_a_body_over_the_cap`.
-/// Production code only ever calls `fetch_remote_image`, which always passes `MD_REMOTE_MAX_BYTES`,
-/// so this refactor changes no production behavior.
-fn fetch_remote_image_capped(url: &str, dest: &Path, max_bytes: u64) -> bool {
-    let Some(parent) = dest.parent() else {
-        return false;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return false;
-    }
-    let tmp = dest.with_extension("part");
-    let Some(bytes) = fetch_remote_bytes_capped(url, max_bytes) else {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    };
-    if std::fs::write(&tmp, &bytes).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    // Reject non-images (e.g. an HTML error page served with 200) before caching them (accepts SVG).
-    if md_image_dims(&tmp).is_none() && !crate::preview::svg::is_svg(&tmp) {
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    let ok = std::fs::rename(&tmp, dest).is_ok();
-    if ok {
-        prune_remote_cache(parent, MD_REMOTE_CACHE_MAX);
-    }
-    ok
-}
-
-/// Perform the actual HTTP GET, bounded by a global timeout (principle #4 — don't let a background
-/// thread hang forever even though it's already off the UI thread) and a max body size (mirrors the
-/// old `curl --max-filesize`, taken as a parameter — see `fetch_remote_image_capped`'s doc for why:
-/// production always passes `MD_REMOTE_MAX_BYTES`, a test can inject a small cap instead). Redirects
-/// are followed automatically (up to ureq's default of 10 — GitHub proxies images through camo, so
-/// this matters, same as the old `curl -L`). `gzip` is transparently decoded. Returns None on any
-/// failure: bad URL, connect/TLS error, non-2xx status (ureq treats those as errors by default,
-/// mirroring `curl --fail`), or an oversized body.
-fn fetch_remote_bytes_capped(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(20)))
-        .user_agent("konoma image preview")
-        .build()
-        .into();
-    let mut resp = agent.get(url).call().ok()?;
-    resp.body_mut()
-        .with_config()
-        .limit(max_bytes)
-        .read_to_vec()
-        .ok()
-}
-
-/// Keep at most `keep` files in the remote-image cache directory, deleting the oldest (by mtime).
-/// The cache is content-addressed (one file per distinct URL) with no cleanup, so without this it
-/// grows unbounded over a machine's lifetime. Runs only after a **new** download (rare), so the
-/// directory scan is cheap. Best-effort: any IO error just leaves the cache as-is.
-fn prune_remote_cache(dir: &Path, keep: usize) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
-        .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .filter_map(|e| {
-            let p = e.path();
-            // Exclude an in-progress temp file (.part).
-            if p.extension().is_some_and(|x| x == "part") {
-                return None;
-            }
-            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
-            Some((mtime, p))
-        })
-        .collect();
-    if files.len() <= keep {
-        return;
-    }
-    files.sort_by_key(|(t, _)| *t); // oldest first
-    for (_, p) in files.iter().take(files.len() - keep) {
-        let _ = std::fs::remove_file(p);
-    }
-}
-
-/// Max files kept in the remote-image disk cache (`~/.cache/konoma/remote-images`).
-const MD_REMOTE_CACHE_MAX: usize = 256;
-
-/// Compute the display size in terminal cells for an image of `pw`x`ph` pixels, given the terminal
-/// font cell size (`fw`x`fh` px). The image is fit to `avail_cols` (never upscaled beyond its natural
-/// cell size) and then capped to `max_rows`, preserving aspect ratio in both steps.
-fn md_image_cells(
-    pw: u32,
-    ph: u32,
-    fw: u16,
-    fh: u16,
-    avail_cols: u16,
-    max_rows: u16,
-) -> (u16, u16) {
-    let fw = (fw.max(1)) as f64;
-    let fh = (fh.max(1)) as f64;
-    let nat_cols = (pw as f64 / fw).ceil().max(1.0);
-    let nat_rows = (ph as f64 / fh).ceil().max(1.0);
-    let avail = avail_cols.max(1) as f64;
-    let (mut cols, mut rows) = if nat_cols <= avail {
-        (nat_cols, nat_rows)
-    } else {
-        let s = avail / nat_cols;
-        (avail, (nat_rows * s).round().max(1.0))
-    };
-    let maxr = max_rows.max(1) as f64;
-    if rows > maxr {
-        let s = maxr / rows;
-        rows = maxr;
-        cols = (cols * s).round().max(1.0);
-    }
-    (cols as u16, rows as u16)
-}
-
-/// Cell box of a slide picture of `pw`x`ph` pixels: the full width `avail_cols` (a slide is a vector
-/// drawing, so it is enlarged or shrunk to the width), with the aspect ratio kept in the terminal's
-/// cells (`fw`x`fh` px each), and no taller than `max_rows` (the width then shrinks to match).
-fn slide_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail_cols: u16, max_rows: u16) -> (u16, u16) {
-    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
-    let (pw, ph) = (pw.max(1) as f64, ph.max(1) as f64);
-    let avail = avail_cols.max(1) as f64;
-    let maxr = max_rows.max(1) as f64;
-    // Cell rows for a picture `cols` wide: rows * fh / (cols * fw) = ph / pw.
-    let rows_for = |cols: f64| (cols * fw * ph / (pw * fh)).round().max(1.0);
-    let rows = rows_for(avail);
-    if rows <= maxr {
-        return (avail as u16, rows as u16);
-    }
-    let cols = (maxr * fh * pw / (ph * fw)).round().clamp(1.0, avail);
-    (cols as u16, maxr as u16)
-}
-
-/// Cell box for an inline mermaid diagram, sized so the diagram's **own text matches the
-/// terminal's body text** rather than always filling `target_rows`. `pw`x`ph` is the diagram's
-/// *intrinsic* SVG size in the same px domain the renderer lays out glyphs in
-/// (`text_metrics::FONT_SIZE` px, "1 SVG user unit = 1px" — see `layout_px`'s doc comment for
-/// mermaid fences in `md_media.rs`), **not** the raster's pixel dimensions (those are scaled by
-/// `[ui] svg_max_px` and would drag an unrelated setting into the text-size math).
-///
-/// A terminal cell is ~1.2em tall (same convention `math_cells` uses for RaTeX's em units), so the
-/// scale that makes a `FONT_SIZE`-px glyph in the diagram equal one line of terminal text is
-/// `(fh / 1.2) / FONT_SIZE`; applying it to the diagram's own px size gives its natural cell box.
-///
-/// `target_rows` (`[ui] mermaid_rows`) is an **upper limit**, not a fill target: a diagram whose
-/// natural size is smaller than the cap is shown at that natural size — never enlarged. Only a
-/// diagram taller than the cap (or wider than `avail`) is shrunk, aspect preserved in both steps.
-/// Unlike raster images (`md_image_cells`), a diagram is vector-backed, so a *downscaled* cell box
-/// still re-rasters sharp on zoom — but "vector-backed" is not license to enlarge past natural size
-/// for a reader who never zoomed, which is the bug this sizing exists to avoid.
-fn mermaid_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail: u16, target_rows: u16) -> (u16, u16) {
-    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
-    let (pw, ph) = (pw.max(1) as f64, ph.max(1) as f64);
-    let font_size = crate::preview::mermaid::text_metrics::FONT_SIZE as f64;
-    let scale = (fh / 1.2) / font_size;
-    let mut rows = (ph * scale / fh).max(1.0);
-    let mut cols = (pw * scale / fw).max(1.0);
-
-    // Upper limit, never a fill target (see doc comment above).
-    let cap = target_rows.max(1) as f64;
-    if rows > cap {
-        let s = cap / rows;
-        rows = cap;
-        cols *= s;
-    }
-
-    // Never wider than the available column budget either, aspect preserved.
-    let avail = avail.max(1) as f64;
-    if cols > avail {
-        let s = avail / cols;
-        cols = avail;
-        rows *= s;
-    }
-
-    (cols.round().max(1.0) as u16, rows.round().max(1.0) as u16)
-}
-
-/// Cell box for an inline math image, sized proportionally from the SVG's intrinsic **em** units
-/// (RaTeX renders at 40 units/em) so equations sit at roughly text scale: em-height → rows, intrinsic
-/// aspect → cols. Display math gets a touch more height than inline. Clamped to the available width
-/// (aspect preserved) and a sane row cap. Vector-backed, so the once-rendered raster is fit crisply.
-///
-/// Inline math (`display == false`) is always `rows == 1` — placed **in the running text**, like
-/// ordinary Markdown/browser rendering (`render_math_slot`'s own `!display && rows == 1` branch reads
-/// that as "place this expression in the current line, not on a placeholder line of its own"). An
-/// expression too wide for `avail` at one row's height is shrunk to `avail` columns, still at one row
-/// — never lifted onto a taller line of its own (confirmed exhaustively, not merely derived: an
-/// earlier version of this function had a "fall back to the taller lifted-line formula" branch for
-/// this case, and a sweep of 212,520 `(uw, uh, fw, fh, avail)` combinations found it changed the
-/// output in exactly zero of them — the avail clamp below always overrides both `cols` *and* `rows`
-/// regardless, making that branch dead code; removed rather than kept for a distinction it never
-/// actually produced).
-fn math_cells(uw: u32, uh: u32, fw: u16, fh: u16, avail: u16, display: bool) -> (u16, u16) {
-    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
-    let em_h = (uh.max(1) as f64) / 40.0;
-    let ar = (uw.max(1) as f64) / (uh.max(1) as f64);
-    let avail = avail.max(1) as f64;
-    let mut rows = if display {
-        (em_h * 1.5).round().max(1.0)
-    } else {
-        1.0
-    };
-    let mut cols = (rows * fh * ar / fw).round().max(1.0);
-    if cols > avail {
-        cols = avail;
-        rows = (cols * fw / ar / fh).round().max(1.0);
-    }
-    // A cap so an extremely tall expression (e.g. a matrix) doesn't fill the whole screen.
-    let maxr = 24.0;
-    if rows > maxr {
-        let s = maxr / rows;
-        rows = maxr;
-        cols = (cols * s).round().max(1.0);
-    }
-    (cols as u16, rows as u16)
-}
-
-/// Source-pixel crop rectangle (x, y, w, h).
-type PxRect = (u32, u32, u32, u32);
-
-/// Crop window for the in-place zoom of an inline diagram. `f` is the visible fraction, i.e.
-/// 1/zoom, of the source; `center` is clamped so the window stays inside the image. Returns the
-/// crop px rect plus the clamped center. Fractions are scale-free, so the same zoom and center
-/// map onto a sharper re-raster unchanged.
-fn fence_crop(dims: (u32, u32), f: f64, center: (f64, f64)) -> (PxRect, (f64, f64)) {
-    let (sw, sh) = dims;
-    let f = f.clamp(0.0, 1.0);
-    let cx = center.0.clamp(f / 2.0, 1.0 - f / 2.0);
-    let cy = center.1.clamp(f / 2.0, 1.0 - f / 2.0);
-    let cw = ((sw as f64 * f).round() as u32).clamp(1, sw);
-    let ch = ((sh as f64 * f).round() as u32).clamp(1, sh);
-    let x0 = ((cx * sw as f64) as i64 - cw as i64 / 2).clamp(0, (sw - cw) as i64) as u32;
-    let y0 = ((cy * sh as f64) as i64 - ch as i64 / 2).clamp(0, (sh - ch) as i64) as u32;
-    ((x0, y0, cw, ch), (cx, cy))
-}
-
-/// Result of [`image_layout`]. `center` and `frac` are both `(f64, f64)` pairs with different
-/// meanings (image-space center vs. per-axis visible fraction), so this struct keeps them from
-/// being swapped at the call site.
-///
-/// - `target`  : the render-target rectangle (centered; z=1=fit, grows when zooming, clips when exceeding the viewport)
-/// - `crop_rect`: the source-image window of the visible portion (px: x,y,w,h)
-/// - `center`  : the center clamped to where the visible window fits within the image [0,1]
-/// - `frac`    : the visible fraction per axis (<1=clipped=pan possible)
-#[derive(Clone, Copy)]
-struct ImageLayout {
-    target: Rect,
-    crop_rect: PxRect,
-    center: (f64, f64),
-    frac: (f64, f64),
-}
-
-/// Compute the display layout for an image/GIF frame (a pure function shared by prepare_image / prepare_gif).
-/// From (source image src, font_size, zoom, center[0,1], display area inner, render_scale), returns
-/// an [`ImageLayout`] (None if size 0).
-fn image_layout(
-    src: &image::DynamicImage,
-    font_size: ratatui_image::FontSize,
-    zoom: f64,
-    center: (f64, f64),
-    inner: Rect,
-    render_scale: f64,
-    logical: Option<(u32, u32)>,
-) -> Option<ImageLayout> {
-    use image::GenericImageView;
-    let (sw, sh) = src.dimensions();
-    if sw == 0 || sh == 0 || inner.width == 0 || inner.height == 0 {
-        return None;
-    }
-    // The z=1 fit display size (cells, never enlarged). A vector-derived preview is measured by its
-    // **logical size** (the initial raster's dimensions), so swapping in a sharper raster never
-    // moves the on-screen size or the crop window at all (the HiDPI backing-store approach — the
-    // crop itself is mapped to real pixels by ratio).
-    let (nw, nh) = match logical {
-        Some((lw, lh)) if lw > 0 && lh > 0 => (
-            (lw as u16).div_ceil(font_size.width.max(1)),
-            (lh as u16).div_ceil(font_size.height.max(1)),
-        ),
-        _ => {
-            let n = Resize::natural_size(src, font_size);
-            (n.width, n.height)
-        }
-    };
-    let base = centered_rect((nw, nh), inner, false);
-    // The logical display size after zoom.
-    let disp_w = (base.width as f64 * zoom).max(1.0);
-    let disp_h = (base.height as f64 * zoom).max(1.0);
-    // The on-screen size = min(display size, display area).
-    let tw = (disp_w.min(inner.width as f64).round() as u16).max(1);
-    let th = (disp_h.min(inner.height as f64).round() as u16).max(1);
-    // The visible fraction on each axis (<1 means it's clipped = pan is possible).
-    let fw = (tw as f64 / disp_w).min(1.0);
-    let fh = (th as f64 / disp_h).min(1.0);
-    // Clamp the center so the visible window stays within the image.
-    let cx = center.0.clamp(fw / 2.0, 1.0 - fw / 2.0);
-    let cy = center.1.clamp(fh / 2.0, 1.0 - fh / 2.0);
-    // Crop the visible window out of the original image (px).
-    let cw = ((sw as f64 * fw).round() as u32).clamp(1, sw);
-    let ch = ((sh as f64 * fh).round() as u32).clamp(1, sh);
-    let x0 = ((cx * sw as f64) as i64 - cw as i64 / 2).clamp(0, (sw - cw) as i64) as u32;
-    let y0 = ((cy * sh as f64) as i64 - ch as i64 / 2).clamp(0, (sh - ch) as i64) as u32;
-    let crop_rect = (x0, y0, cw, ch);
-    // The display rect (centered). Optionally downscaled by render_scale (reduces transfer size = less render wait).
-    let scale = render_scale.clamp(0.1, 1.0);
-    let (tw, th) = if scale >= 0.999 {
-        (tw, th)
-    } else {
-        (
-            ((tw as f64 * scale).round() as u16).max(1),
-            ((th as f64 * scale).round() as u16).max(1),
-        )
-    };
-    let target = Rect {
-        x: inner.x + (inner.width - tw.min(inner.width)) / 2,
-        y: inner.y + (inner.height - th.min(inner.height)) / 2,
-        width: tw.min(inner.width),
-        height: th.min(inner.height),
-    };
-    Some(ImageLayout {
-        target,
-        crop_rect,
-        center: (cx, cy),
-        frac: (fw, fh),
-    })
+#[cfg(test)]
+thread_local! {
+    /// Test-only: how many times a windowed position was found by line (a scan of the file).
+    pub(crate) static LINE_SEEKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The modification time of `path`, or None if it cannot be read. Used by the FS-driven media auto-reload guard.
@@ -6921,124 +5768,64 @@ fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// Assemble the copy string (a pure function; does not touch the clipboard).
-/// `open_dir` is the base for relative paths (the launch directory).
-fn copy_text(path: &Path, open_dir: &Path, kind: CopyKind) -> String {
-    match kind {
-        CopyKind::Name => path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        CopyKind::Full => path.display().to_string(),
-        CopyKind::Parent => path
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        // Use exactly the same basis as the top-left title display (format_path's Relative).
-        CopyKind::Relative => rel_to_open(open_dir, path),
-        CopyKind::AtRef => at_ref_text(open_dir, path),
-    }
+/// What identifies the content of a file as far as the metadata can tell: the modification time,
+/// the size, the **inode and device** (a file replaced by a rename is another file) and the change
+/// time (`ctime`, which a program cannot set back: `touch -r` restores the modification time of
+/// a file whose content was rewritten, but not this).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    modified: std::time::SystemTime,
+    len: u64,
+    dev: u64,
+    ino: u64,
+    ctime: (i64, i64),
 }
 
-/// `@path` reference for AI agents (Claude Code's `@file` context syntax). Under `open_dir` the path is
-/// strictly relative to it (`src/app.rs` — no leading dir name, unlike `rel_to_open`); outside it is
-/// `..`-relative; if neither works, absolute. Prefixed with `@`.
-fn at_ref_text(open_dir: &Path, path: &Path) -> String {
-    let rel = match path.strip_prefix(open_dir) {
-        Ok(r) if !r.as_os_str().is_empty() => r.display().to_string(),
-        _ => match rel_from(open_dir, path) {
-            Some(r) if !r.as_os_str().is_empty() => r.display().to_string(),
-            _ => path.display().to_string(),
-        },
+/// How close a file's modification time must be to the moment its stamp was taken (or to now) for
+/// the stamp to be unreliable: the coarsest timestamps a filesystem keeps are 2 s (FAT).
+pub(crate) const RACY_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether an FS event that names the shown file reads it again although its stamp is equal --
+/// git's "racily clean" rule. The stamp of a file modified within [`RACY_WINDOW`] of the moment it
+/// was taken (`taken`), or of `now`, proves nothing: a rewrite in the same coarse timestamp tick
+/// leaves it equal. A file whose modification time is long before both is believed: an event that
+/// reaches it late for a save already read (a second event of one save) finds the stamp equal and
+/// does not read a large workbook again.
+pub(crate) fn named_event_rereads(
+    modified: std::time::SystemTime,
+    taken: std::time::SystemTime,
+    now: std::time::SystemTime,
+) -> bool {
+    let near = |a: std::time::SystemTime, b: std::time::SystemTime| {
+        a.duration_since(b)
+            .or_else(|e| Ok::<_, ()>(e.duration()))
+            .is_ok_and(|d| d < RACY_WINDOW)
     };
-    format!("@{rel}")
+    near(modified, taken) || near(modified, now)
 }
 
-/// A relative display string based on `open_dir` (the launch directory). For paths underneath, it puts the launch directory name first (e.g. `A/sub/x`),
-/// and for things outside open_dir (siblings/ancestors) it relativizes with `..` (e.g. `../B/aaa.md`, `..`). If it cannot be relativized, `~/...`.
-/// A shared function to guarantee the **same base** for the top-left path display (`format_path`'s Relative) and path copy (`cr`/`yr`).
-fn rel_to_open(open_dir: &Path, path: &Path) -> String {
-    if path.starts_with(open_dir) {
-        // Under open_dir: relativize against its parent so the launch directory name comes first (e.g. A/sub/x).
-        let base = open_dir.parent().unwrap_or(open_dir);
-        match path.strip_prefix(base) {
-            Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
-            _ => home_relative(path),
-        }
-    } else {
-        // Outside open_dir (siblings/ancestors, etc.): show a path relative to open_dir, including `..` (e.g. ../B/aaa.md).
-        // Without this, a file in sibling B would look like `B/aaa.md` and be mistaken for something underneath.
-        match rel_from(open_dir, path) {
-            Some(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
-            _ => home_relative(path),
-        }
-    }
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some(FileStamp {
+        modified: m.modified().ok()?,
+        len: m.len(),
+        dev: m.dev(),
+        ino: m.ino(),
+        ctime: (m.ctime(), m.ctime_nsec()),
+    })
 }
 
-/// Write to the clipboard. Returns Err on environments where arboard is unavailable (the caller shows a flash).
-///
-/// Test builds never touch arboard: see `test_support::set_test_clipboard` and the module doc there
-/// for why (`cargo test` was overwriting the developer's real system clipboard on every copy key).
-/// The arboard-calling body below is entirely absent from a `#[cfg(test)]` build.
-///
-/// Why the old (pre-seam) tests happened to pass on headless Linux CI without ever visibly
-/// clobbering anything: `arboard`'s Linux backend opens an X11 connection in `Clipboard::new()`
-/// (`RustConnection::connect(None)`), which fails fast to `Err` with no `DISPLAY` — GitHub Actions'
-/// `ubuntu-latest` runner has none, so every copy in that job hit this function's `Err` branch and
-/// touched no real clipboard at all (there wasn't one to touch). macOS is different: `NSPasteboard`
-/// is a system service reachable from any logged-in session, headless CI included, so `cargo test`
-/// on macOS (the developer's own machine, and the macOS CI job) really did write through to a real
-/// pasteboard every time — CI's is just a throwaway VM nobody minds, whereas the developer's is the
-/// one this bug report was about. The seam above makes both platforms behave identically under
-/// `cargo test`: neither ever calls arboard, so this asymmetry can no longer matter.
-#[cfg(not(test))]
+/// Assemble the copy string (a pure function; does not touch the clipboard). The shared
+/// implementation lives in `konoma_host_core::copy`.
+fn copy_text(path: &Path, open_dir: &Path, kind: CopyKind) -> String {
+    konoma_host_core::copy::path_text(path, open_dir, kind)
+}
+
+/// Write to the clipboard (the shared part lives in `konoma_host_core::clipboard`, which also holds
+/// the Linux selection owner and the test-build sink). Err where the clipboard is unavailable.
 fn set_clipboard(text: &str) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux the clipboard content is owned by the process holding the X11/Wayland
-        // selection: dropping the Clipboard releases it and the copied text is lost unless a
-        // clipboard manager grabbed it. Probe on the main thread first so the caller still gets
-        // an Err (and shows its flash) on headless/unavailable environments, then hold the
-        // selection in a detached thread via SetExtLinux::wait() so paste works. wait() returns
-        // (and the thread exits) as soon as another app — or the next copy — takes ownership, so
-        // at most one holder thread is alive at a time. Not unit-tested (requires an X11/Wayland
-        // display); verified in a Linux VM.
-        use arboard::SetExtLinux;
-        let _ = arboard::Clipboard::new()?;
-        let owned = text.to_string();
-        std::thread::spawn(move || {
-            if let Ok(mut cb) = arboard::Clipboard::new() {
-                let _ = cb.set().wait().text(owned);
-            }
-        });
-        Ok(())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let mut cb = arboard::Clipboard::new()?;
-        cb.set_text(text.to_string())?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-fn set_clipboard(text: &str) -> Result<()> {
-    crate::test_support::set_test_clipboard(text);
-    Ok(())
-}
-
-/// `~/...` if under HOME, otherwise the full path.
-pub(crate) fn home_relative(path: &Path) -> String {
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        if let Ok(rel) = path.strip_prefix(&home) {
-            if rel.as_os_str().is_empty() {
-                return "~".to_string();
-            }
-            return format!("~/{}", rel.display());
-        }
-    }
-    path.display().to_string()
+    konoma_host_core::clipboard::set_text(text)
 }
 
 /// Resolve a dropped (=pasted) string into a list of **existing paths**. Terminals (Ghostty, etc.) pass a drop
@@ -7161,35 +5948,6 @@ fn char_byte(s: &str, char_idx: usize) -> usize {
         .unwrap_or(s.len())
 }
 
-/// Compute the relative path from `base` to `target`, including `..` (equivalent to pathdiff). It removes the common leading components and
-/// pushes one `..` for each remaining level on the base side. None if the root kinds (absolute/drive) disagree and it cannot be relativized.
-fn rel_from(base: &Path, target: &Path) -> Option<PathBuf> {
-    use std::path::Component;
-    let bc: Vec<Component> = base.components().collect();
-    let tc: Vec<Component> = target.components().collect();
-    let mut i = 0;
-    while i < bc.len() && i < tc.len() && bc[i] == tc[i] {
-        i += 1;
-    }
-    // No common component, and one side starts at the root (absolute/Prefix) = cannot be relativized.
-    if i == 0 {
-        let is_root = |c: Option<&Component>| {
-            matches!(c, Some(Component::Prefix(_)) | Some(Component::RootDir))
-        };
-        if is_root(bc.first()) || is_root(tc.first()) {
-            return None;
-        }
-    }
-    let mut rel = PathBuf::new();
-    for _ in i..bc.len() {
-        rel.push("..");
-    }
-    for c in &tc[i..] {
-        rel.push(c.as_os_str());
-    }
-    Some(rel)
-}
-
 /// Append one directory's worth of entries to out. Recurse into expanded subdirectories.
 /// Bundles the decision info for one entry for sorting. Lowercased sort keys are precomputed
 /// once per entry (sort_by runs O(n log n) comparisons — lowercasing inside the comparator
@@ -7272,20 +6030,6 @@ fn sort_cmp(a: &ChildMeta, b: &ChildMeta, sort: Sort) -> std::cmp::Ordering {
     }
     // Stabilize equal values by name (ascending) so the ordering never wobbles.
     ord.then_with(|| a.name_lower.cmp(&b.name_lower))
-}
-
-/// Take the title label for the graph base from refs (`%D`). From `(HEAD -> main, origin/main)`, etc.,
-/// pick one branch name (strip the HEAD-> and skip tag:). If there is no branch ref, the short hash.
-#[cfg_attr(not(feature = "git"), allow(dead_code))]
-fn base_label_from(refs: &str, short: &str) -> String {
-    for part in refs.split(',').map(str::trim) {
-        let p = part.strip_prefix("HEAD -> ").unwrap_or(part);
-        if p.is_empty() || p.starts_with("tag:") {
-            continue;
-        }
-        return p.to_string();
-    }
-    short.to_string()
 }
 
 fn build_dir(
@@ -7521,7 +6265,44 @@ mod tests;
 // separate file/module from `tests` since it is a standalone corpus-dump harness, not a bag of
 // `#[test]` functions exercising `App` behavior.
 #[cfg(test)]
-mod md_snapshot_tests;
+pub(crate) mod md_snapshot_tests;
+
+#[cfg(test)]
+mod embed_plugin_tests;
+
+#[cfg(test)]
+mod plugin_host_tests;
+
+#[cfg(test)]
+mod write_guard_tests;
+
+// The read scope of the pictures in a document a plugin the user added returned.
+#[cfg(test)]
+mod md_read_scope_tests;
+
+// Rules of the canvas road that need state no key reaches (mutation audit, stage 2.5).
+#[cfg(test)]
+mod canvas_survivor_tests;
+
+// What the host keeps of a canvas answer is bounded by the request (stage-3 carry-over).
+#[cfg(test)]
+mod canvas_bounds_tests;
+
+// The built-in `command` plugin: a delegated command through the plugin road.
+#[cfg(test)]
+mod command_plugin_tests;
+
+// The message on the footer at start: old setting names, unknown plugin keys, order and fit.
+#[cfg(test)]
+mod startup_notice_tests;
+
+#[cfg(test)]
+mod text_plugin_tests;
+
+// The Markdown plugin on the host: a file and a converted document as the document display type,
+// the options they are drawn with, and `R` as a request for the plugin's other representation.
+#[cfg(test)]
+mod markdown_plugin_tests;
 // The same kind of safety net, over the new Markdown block model instead of rendering — see its
 // own module doc comment. Reuses `md_snapshot_tests`'s corpus/preprocessing/compare machinery
 // directly (a sibling, not a descendant, so those are `pub(super)` there).
@@ -7533,11 +6314,19 @@ mod md_model_snapshot_tests;
 mod md_table_gap_tests;
 
 #[cfg(test)]
+mod spreadsheet_plugin_tests;
+
+#[cfg(test)]
 mod survivor_tests;
 
 // A presentation's slide pictures: their box, their size and how a converted deck becomes them.
 #[cfg(test)]
 mod deck_view_tests;
+
+// The Word and presentation plugins on the host: the representations (`R`) and the anchored pages
+// (`J`/`K`, the chip) their layout reports.
+#[cfg(test)]
+mod office_plugin_tests;
 
 // Inline-image cache behaviour around eviction, failure reasons and the decode queue.
 #[cfg(test)]

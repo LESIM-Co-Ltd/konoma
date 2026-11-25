@@ -1,0 +1,34 @@
+[package]
+name = "konoma-svg"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared drawing parts of konoma: font database, text measurement, SVG guard rails and rasterization, image decoding"
+
+[dependencies]
+# The rasterizer (usvg/resvg), the fonts it reads, and the SVG length parser it uses.
+# Same versions and reasons as in the `konoma` package: SVG text and embedded images need the
+# default features; `skrifa` is the very crate (same version) that usvg reads glyph metrics with,
+# so `text_metrics` measures what resvg will draw.
+resvg.workspace = true
+svgtypes.workspace = true
+skrifa.workspace = true
+image.workspace = true
+# svgz (gzip) handling.
+flate2.workspace = true
+# The fallback `sans-serif` face (KaTeX SansSerif) is read from here when a machine has no usable
+# font; the bytes are already in the binary through the math previewer.
+ratex-katex-fonts.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+base64.workspace = true
+libc.workspace = true
+
+[features]
+# Keeps the `cfg(test)` seams (the decode gate's test pool, queue introspection, ...) active when
+# another package's tests call into this crate. Enabled by the root package's `[dev-dependencies]`.
+test-hooks = []

@@ -154,20 +154,8 @@ pub fn file_info(path: &Path) -> Result<FileInfo> {
     })
 }
 
-/// Format a byte count as human-readable (base 1024, "B/KB/MB/GB/TB/PB").
-pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut v = bytes as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    format!("{v:.1} {}", UNITS[i])
-}
+// Byte-count formatting lives in `konoma-base` (the table plugin lists archive sizes with it); re-exported here.
+pub use konoma_base::size::human_size;
 
 /// Just the rwx part of permissions, "rwxr-xr-x" (low 9 bits, for column display).
 pub fn permission_rwx(mode: u32) -> String {
@@ -208,31 +196,8 @@ pub fn permission_string(mode: u32) -> String {
     )
 }
 
-/// Convert UNIX epoch seconds to "YYYY-MM-DD HH:MM:SS UTC" (calendar math with no extra dependency, Howard Hinnant's method).
-pub fn format_epoch_utc(secs: u64) -> String {
-    let days = (secs / 86400) as i64;
-    let rem = secs % 86400;
-    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    // civil_from_days: days since 1970-01-01 → calendar date.
-    let z = days + 719468;
-    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
-    let doe = z - era * 146097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-    let mut y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    if m <= 2 {
-        y += 1;
-    }
-    format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02} UTC")
-}
-
-/// Short date-time for column display, "YYYY-MM-DD HH:MM" (UTC, no seconds/label).
-pub fn format_epoch_short(secs: u64) -> String {
-    format_epoch_utc(secs)[..16].to_string()
-}
+// Date formatting lives in `konoma-base` (the VCS core needs it too); re-exported here.
+pub use konoma_base::epoch::{format_epoch_short, format_epoch_utc};
 
 /// Lightweight per-row metadata for column display (`symlink_metadata` only; no `read_dir`; does not follow symlinks).
 pub struct RowMeta {

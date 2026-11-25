@@ -1,0 +1,142 @@
+//! The actions of the open plugin as the host's operations.
+//!
+//! What a plugin declares in `Manifest::actions` (a key, a label, a help text, a footer priority,
+//! whether it writes) is read once at startup (`plugins::PluginKeys`); here is what depends on the
+//! screen: which of them belong to the context on screen, whether each works now, and running one.
+//!
+//! **Whether an action works** has one answer, the session's (`Session::enabled`), asked on the
+//! worker each time the session comes back from a job and kept in `PluginShow::enabled`. The key
+//! handler (`ops::gate`), the footer, the help and the `Space` menu all read that answer, so a hint
+//! is shown exactly while its key acts, and the UI thread never waits for a session that a job
+//! holds (the same shape holds when the session lives in a child process).
+
+use super::*;
+use crate::keymap::{Action, Context, KeyPress};
+use crate::plugins::{ActBinding, PluginAct};
+use konoma_plugin::host::acts;
+
+impl App {
+    /// The execution boundary also uses the write policy: callers that do not come from a key
+    /// and presses queued before a dialog/config change cannot bypass it.
+    pub(super) fn allow_plugin_write(&mut self, action: &str) -> bool {
+        let Some(show) = self.plugin.as_ref() else {
+            return false;
+        };
+        let id = show.acting().to_string();
+        let writes = self
+            .plugin_keys
+            .acts_of(&id)
+            .iter()
+            .any(|b| b.act.act() == action && b.writes);
+        self.allow_write(&id, writes, false)
+    }
+
+    /// The id of the plugin whose session the show holds (the destination after a `Reopen`), if the
+    /// show is the current one: its declared actions are the ones offered and run.
+    fn acting_plugin(&self) -> Option<&str> {
+        let Some(PreviewKind::Plugin { id, path, .. }) = &self.tab.preview_kind else {
+            return None;
+        };
+        self.plugin
+            .as_ref()
+            .filter(|p| p.id == *id && p.path == *path)
+            .map(|p| p.acting())
+    }
+
+    /// The declared actions of the plugin on screen that belong to `ctx`, in declaration order.
+    /// Empty off the plugin views.
+    pub fn plugin_acts_in(&self, ctx: Context) -> Vec<&ActBinding> {
+        let mut bindings = self.project_acts_in(ctx);
+        if !self.project_active() {
+            if let Some(id) = self.acting_plugin() {
+                bindings.extend(
+                    acts::acts_in(self.plugin_keys.acts_of(id), &ctx.name())
+                        .into_iter()
+                        .filter(|b| {
+                            self.plugin_keys
+                                .declaration(b.act)
+                                .is_some_and(|a| a.project_context.is_none())
+                        }),
+                );
+            }
+        }
+        bindings
+    }
+
+    /// The operation a key runs in the plugin's layer. Layers 0 to 3 are the host's and a plugin
+    /// cannot take their keys, so this is asked after the fixed keys and before the keymap
+    /// without any chance of shadowing either.
+    pub fn plugin_action_for_key(&self, ctx: Context, kp: KeyPress) -> Option<Action> {
+        self.plugin_acts_in(ctx)
+            .into_iter()
+            .find(|binding| self.plugin_key_of(ctx, binding.act) == Some(kp))
+            .map(|binding| Action::Plugin(binding.act))
+    }
+
+    /// The declared action `p`, if it exists and belongs to `ctx`.
+    pub fn plugin_binding_in(&self, ctx: Context, p: PluginAct) -> Option<&ActBinding> {
+        self.plugin_acts_in(ctx).into_iter().find(|b| b.act == p)
+    }
+
+    /// Whether the session says `p` works now. False before the first answer (while the file is
+    /// loading) and when the plugin could not open the file. **While a job holds the session** the
+    /// answer is the last the session gave, for a canvas (its presses wait in line, so the key does
+    /// act: [[hint-shown-iff-key-acts]], and the hint does not flicker with a redraw timer's
+    /// ticks); for any other display it is false, because the press would be ignored -- except while the file is read again (`ShowFlow::reopening`): then the press waits for the new session, so the hint stays.
+    pub fn plugin_act_enabled(&self, p: PluginAct) -> bool {
+        if self
+            .plugin_keys
+            .declaration(p)
+            .is_some_and(|a| a.project_context.is_some())
+        {
+            return self.project_act_enabled(p).unwrap_or(false);
+        }
+        let canvas = self.is_canvas_preview();
+        let facts = match self.plugin.as_ref() {
+            Some(s) => acts::ShowFacts {
+                same_plugin: s.acting() == p.plugin(),
+                ready: matches!(s.phase, plugin_host::PluginPhase::Ready),
+                session_present: s.session.is_some(),
+                canvas,
+                reopening: s.flow.reopening,
+                says: s.enabled.get(p.act()).copied(),
+            },
+            None => acts::ShowFacts::default(),
+        };
+        acts::act_enabled(&facts)
+    }
+
+    /// The key of `p` in `ctx`, if it has one. A canvas's screen keys win over the plugin's
+    /// layer: a key the screen's effective keys give to another operation (or unbind) is not the
+    /// action's key there, as the entry replaced the default in the released hub's screen table.
+    /// The key handling (`plugin_action_for_key`) and every hint read this one answer.
+    pub fn plugin_key_of(&self, ctx: Context, p: PluginAct) -> Option<KeyPress> {
+        let key = self.plugin_binding_in(ctx, p)?.key?;
+        let key = self.project_action_key(ctx, p, key)?;
+        self.keymaps
+            .fixed_key_acts_on(self.screen_keys_for(ctx), key, &[Action::Plugin(p)])
+            .then_some(key)
+    }
+
+    pub(crate) fn plugin_context_bindings(&self, ctx: Context) -> Vec<ActBinding> {
+        self.plugin_acts_in(ctx)
+            .into_iter()
+            .map(|binding| {
+                let mut binding = binding.clone();
+                binding.key = self.plugin_key_of(ctx, binding.act);
+                binding
+            })
+            .collect()
+    }
+
+    /// Run a declared action of the open plugin on the worker. While a job still holds the
+    /// session of a canvas the press waits in line and goes when the session returns; for any
+    /// other display it is ignored, and so is its hint (`plugin_act_enabled`), unless the file is
+    /// being read again: then it waits for the new session.
+    pub fn run_plugin_action(&mut self, p: PluginAct) {
+        if self.request_project_act(p) {
+            return;
+        }
+        let _ = self.plugin_act(p.act());
+    }
+}

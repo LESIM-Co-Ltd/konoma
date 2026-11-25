@@ -6,7 +6,7 @@
 use super::*;
 
 impl App {
-    /// Space/Enter on a focused checkbox: cycle its state to the next entry of `ui.md_task_states`
+    /// Space/Enter on a focused checkbox: cycle its state to the next entry of the document's `task_states` option
     /// and write the single state char back to the file. On any mismatch with the file on disk
     /// (changed externally) nothing is written — flash + reload instead (safe fallback, principle #3).
     ///
@@ -58,7 +58,13 @@ impl App {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
-        let states = self.cfg.ui.md_task_state_chars();
+        // A document that did not come from this file (or whose plugin says it cannot be written
+        // back) is never written: the toggle would change another file.
+        if !self.doc_tasks_writable() {
+            return;
+        }
+        let opts = self.doc_options();
+        let states = opts.task_states.clone();
 
         // Read the full text once: the write is done against the full text (writing back a
         // truncated prefix would blow away the end of the file). Only the verification below is
@@ -83,7 +89,7 @@ impl App {
         // a task). Strip it with the same rule and add the removed line count back onto the found
         // line number as an offset (offset=0 if there's no front matter / the setting is OFF, so
         // nothing is stripped).
-        let (front_matter, body) = if self.cfg.ui.md_frontmatter {
+        let (front_matter, body) = if opts.front_matter {
             crate::preview::markdown::strip_front_matter(&capped)
         } else {
             (None, capped.clone())

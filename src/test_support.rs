@@ -6,7 +6,56 @@
 //! `main.rs` (as `watch_test_unique_tmp`), and `e2e_tests.rs` (inlined into `sandbox()`).
 
 use std::cell::{Cell, RefCell};
+
+/// A media job's final answer, applying any layout announcements that precede it.
+#[track_caller]
+pub(crate) fn recv_media_final(
+    app: &mut crate::app::App,
+    rx: &std::sync::mpsc::Receiver<crate::app::MediaResult>,
+    timeout: std::time::Duration,
+    step: &str,
+) -> crate::app::MediaResult {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or_else(|| panic!("{step}: media job did not finish"));
+        let result = rx
+            .recv_timeout(left)
+            .unwrap_or_else(|e| panic!("{step}: media worker did not answer: {e:?}"));
+        if !result.is_layout_only() {
+            return result;
+        }
+        app.apply_media(result);
+    }
+}
+pub(crate) mod command {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/command.rs"
+    ));
+}
 use std::path::PathBuf;
+pub(crate) mod plugin_english_lower {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/plugin_english_lower.rs"
+    ));
+}
+pub(crate) mod plugin_language {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/plugin_language.rs"
+    ));
+}
+
+mod program_fixture {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/program_fixture.rs"
+    ));
+}
+pub(crate) use program_fixture::ProgramFixture;
 
 thread_local! {
     /// How many stat syscalls the instrumented directory-walk helpers (`app::stat_follow`) issued
@@ -66,99 +115,90 @@ pub(crate) fn count_apply_diff_view_calls<T>(f: impl FnOnce() -> T) -> (T, usize
 }
 
 thread_local! {
-    /// How many times `vcs::base_contents` ran **on this thread** — the call this measures is a
-    /// real backend invocation (a `jj log` + `jj file show` subprocess pair under jj, ~20-25ms), so
-    /// a caller that reaches it more than once per logical "what did the committed version look
-    /// like" question is doing real, avoidable work. Since `docs/STATUS.md` ★未修正 item 4, the
-    /// only production caller is `App::compute_md_diff` (`src/app/md_diff.rs`), which runs on a
-    /// background worker thread — a test attaching `md_diff_tx` and driving the UI thread through
-    /// `count_base_contents_calls` should therefore see **zero** calls on the UI thread's own copy
-    /// of this counter (the worker's calls land on its own thread's copy instead). Thread-local for
-    /// the same reason `STAT_CALLS` is.
-    static BASE_CONTENTS_CALLS: Cell<usize> = const { Cell::new(0) };
+    /// How many diff target resolutions `App::resolve_diff_on_worker` asked of its worker **on
+    /// this thread** (thread-local for the same reason as `STAT_CALLS`).
+    static DIFF_RESOLUTION_ASKS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Called by `vcs::base_contents` right before it dispatches to a backend. Cheap enough to be
-/// unconditional in test builds; compiled out entirely otherwise (the call site is `#[cfg(test)]`).
-pub(crate) fn note_base_contents_call() {
-    let _ = BASE_CONTENTS_CALLS.try_with(|c| c.set(c.get() + 1));
+/// Called by `App::resolve_diff_on_worker` when it starts a resolution.
+pub(crate) fn note_diff_resolution_ask() {
+    let _ = DIFF_RESOLUTION_ASKS.try_with(|c| c.set(c.get() + 1));
 }
 
-/// Runs `f` and returns `(its value, how many times base_contents ran while it did)`. Only ever
-/// called from `#[cfg(feature = "git")]` tests (`vcs::base_contents` itself only does real work on
-/// a `git`-feature build) — unused, not unreachable, on a no-`git` test build.
+/// Runs `f` and returns `(its value, how many diff target resolutions were asked while it ran)`.
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
-pub(crate) fn count_base_contents_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
-    let before = BASE_CONTENTS_CALLS.with(|c| c.get());
+pub(crate) fn count_diff_resolution_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = DIFF_RESOLUTION_ASKS.with(|c| c.get());
     let out = f();
     (
         out,
-        BASE_CONTENTS_CALLS.with(|c| c.get()).saturating_sub(before),
+        DIFF_RESOLUTION_ASKS
+            .with(|c| c.get())
+            .saturating_sub(before),
     )
 }
 
 thread_local! {
-    /// How many times `vcs::file_diff` ran **on this thread** — the unified line-diff (a real
-    /// backend invocation, distinct from `base_contents`/`diff_align`'s block-diff machinery above).
-    /// `App::open_git_diff_with`'s own `seeded_diff` exists precisely so a diff the caller already
-    /// computed (`follow_jump`'s own `compute_gitdiff_lines`, `diff_jump_changed`'s `n`/`N`) is
-    /// reused rather than recomputed the moment `App::git_diff_lines()` is first asked for it —
-    /// this counter is what `count_file_diff_calls` uses to pin that reuse. Thread-local for the
-    /// same reason `STAT_CALLS` is.
-    static FILE_DIFF_CALLS: Cell<usize> = const { Cell::new(0) };
+    /// How many times the view of the tab in front started reading its file again **on this
+    /// thread**: `App::reload_preview_named`, `App::open_plugin`, `App::start_media_load` and
+    /// `App::setup_windowed` (the windowed reader). Thread-local for the same reason as
+    /// `STAT_CALLS`.
+    static TAB_VIEW_LOADS: Cell<usize> = const { Cell::new(0) };
+    /// How many filter-pool scans of the tree were asked for **on this thread**
+    /// (`App::kick_filter_pool_start`, `App::kick_filter_pool_refresh`, whether the refresh then
+    /// runs a walk or records the request for the walk already out).
+    static FILTER_POOL_ASKS: Cell<usize> = const { Cell::new(0) };
+    /// How many block diffs (a Markdown diff's Rendered presentation, the preview's change
+    /// gutter) were asked of the block-diff worker **on this thread** (`App::kick_md_diff`).
+    static MD_DIFF_ASKS: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Called by `vcs::file_diff` right before it dispatches to a backend. Cheap enough to be
-/// unconditional in test builds; compiled out entirely otherwise (the call site is `#[cfg(test)]`).
-pub(crate) fn note_file_diff_call() {
-    let _ = FILE_DIFF_CALLS.try_with(|c| c.set(c.get() + 1));
+/// Called where a block diff is asked of its worker (see `MD_DIFF_ASKS`).
+pub(crate) fn note_md_diff_ask() {
+    let _ = MD_DIFF_ASKS.try_with(|c| c.set(c.get() + 1));
 }
 
-/// Runs `f` and returns `(its value, how many times file_diff ran while it did)`. Only ever called
-/// from `#[cfg(feature = "git")]` tests (`vcs::file_diff` itself only does real work on a
-/// `git`-feature build) — unused, not unreachable, on a no-`git` test build.
+/// Runs `f` and returns `(its value, how many block diffs were asked for while it ran)`.
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
-pub(crate) fn count_file_diff_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
-    let before = FILE_DIFF_CALLS.with(|c| c.get());
+pub(crate) fn count_md_diff_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = MD_DIFF_ASKS.with(|c| c.get());
+    let out = f();
+    (out, MD_DIFF_ASKS.with(|c| c.get()).saturating_sub(before))
+}
+
+/// Called where the tab view starts reading its file again (see `TAB_VIEW_LOADS`).
+pub(crate) fn note_tab_view_load() {
+    let _ = TAB_VIEW_LOADS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many tab view loads started while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_tab_view_loads<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = TAB_VIEW_LOADS.with(|c| c.get());
+    let out = f();
+    (out, TAB_VIEW_LOADS.with(|c| c.get()).saturating_sub(before))
+}
+
+/// Called where a filter-pool scan is asked for (see `FILTER_POOL_ASKS`).
+pub(crate) fn note_filter_pool_ask() {
+    let _ = FILTER_POOL_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many filter-pool scans were asked for while it ran)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_filter_pool_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = FILTER_POOL_ASKS.with(|c| c.get());
     let out = f();
     (
         out,
-        FILE_DIFF_CALLS.with(|c| c.get()).saturating_sub(before),
+        FILTER_POOL_ASKS.with(|c| c.get()).saturating_sub(before),
     )
 }
 
-thread_local! {
-    /// How many times `preview::markdown::diff_align` ran **on this thread** — the call this
-    /// measures is a `Doc::parse` pair + a Myers diff over block keys (`block_ops`), a real,
-    /// measurable CPU cost on a large document (see `diff_align`'s own doc comment: ~3ms on a
-    /// 20k-line document in a release build). Since `docs/STATUS.md` ★未修正 item 4, the only
-    /// production caller is `App::compute_md_diff` (`src/app/md_diff.rs`), which runs on a
-    /// background worker thread — see `BASE_CONTENTS_CALLS`'s own doc comment above for what that
-    /// means for a UI-thread assertion via `count_diff_align_calls`. Thread-local for the same
-    /// reason `STAT_CALLS` is.
-    static DIFF_ALIGN_CALLS: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Called by `preview::markdown::diff_align` right before it parses either side. Cheap enough to
-/// be unconditional in test builds; compiled out entirely otherwise (the call site is
-/// `#[cfg(test)]`).
-pub(crate) fn note_diff_align_call() {
-    let _ = DIFF_ALIGN_CALLS.try_with(|c| c.set(c.get() + 1));
-}
-
-/// Runs `f` and returns `(its value, how many times diff_align ran while it did)`. Only ever
-/// called from `#[cfg(feature = "git")]` tests (the two scenarios it pins — the ordinary preview's
-/// gutter and the diff's `Rendered` presentation — both need a real backend to set up) — unused,
-/// not unreachable, on a no-`git` test build.
-#[cfg_attr(not(feature = "git"), allow(dead_code))]
-pub(crate) fn count_diff_align_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
-    let before = DIFF_ALIGN_CALLS.with(|c| c.get());
-    let out = f();
-    (
-        out,
-        DIFF_ALIGN_CALLS.with(|c| c.get()).saturating_sub(before),
-    )
-}
+// The `diff_align` call counter lives in `konoma-widgets` (the function does); the host's tests
+// reach it through this path.
+#[allow(unused_imports)]
+pub(crate) use konoma_widgets::markdown::count_diff_align_calls;
 
 thread_local! {
     /// How many times `config::resolve_preview_kind` ran **on this thread** — the call both
@@ -196,6 +236,45 @@ pub(crate) fn count_resolve_preview_calls<T>(f: impl FnOnce() -> T) -> (T, usize
 }
 
 thread_local! {
+    /// How many times `plugins::plugin_id_of` got past its gate and read the file, **on this thread**.
+    static PLUGIN_ID_READS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `plugins::plugin_id_of` after the `is_previewable` gate, right before it sniffs.
+pub(crate) fn note_plugin_id_read() {
+    let _ = PLUGIN_ID_READS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times `plugin_id_of` read a file while it did)`.
+pub(crate) fn count_plugin_id_reads<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = PLUGIN_ID_READS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        PLUGIN_ID_READS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
+thread_local! {
+    /// How many times the idle-child reaper was asked to run (`plugins::external::reap_if_due`,
+    /// before its throttle) **on this thread**.
+    static REAP_ASKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `plugins::external::reap_if_due` on entry, before the throttle decides.
+pub(crate) fn note_reap_ask() {
+    let _ = REAP_ASKS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times the reaper was asked to run while it did)`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_reap_asks<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = REAP_ASKS.with(|c| c.get());
+    let out = f();
+    (out, REAP_ASKS.with(|c| c.get()).saturating_sub(before))
+}
+
+thread_local! {
     /// How many times `App::dispatch_media_diff` actually dispatched a media-diff request (spawned a
     /// worker thread, or ran the synchronous no-`Sender` fallback) **on this thread** —
     /// `App::kick_media_diff`/`App::apply_media_diff`'s own "at most one worker in flight, latest
@@ -225,221 +304,24 @@ pub(crate) fn count_media_diff_dispatch_calls<T>(f: impl FnOnce() -> T) -> (T, u
     )
 }
 
-/// Writes `contents` to `path` as an executable file that this process never holds open for
-/// writing. Writing the file here and then running it races with other test threads: a thread that
-/// forks while the write fd is open hands the fd to its child until that child execs, and running
-/// the file in that window fails with ETXTBSY ("Text file busy") on Linux. So the bytes go to a
-/// staging file that is never run, a `cp` child makes the real file (its write fd lives and dies
-/// inside `cp`), and only `chmod` touches `path` here.
+// `TmpDir`, `unique_tmp` and `sample_path_or_skip` live in the `konoma-test-support` crate (so the
+// tests of the crates under `crates/` can use them too); re-exported so every `crate::test_support::...`
+// path in this package keeps working.
 #[cfg(unix)]
-pub(crate) fn write_executable(path: &std::path::Path, contents: impl AsRef<[u8]>) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut staged = path.as_os_str().to_owned();
-    staged.push(".staged");
-    let staged = PathBuf::from(staged);
-    std::fs::write(&staged, contents).unwrap();
-    let status = std::process::Command::new("cp")
-        .arg(&staged)
-        .arg(path)
-        .status()
-        .unwrap();
-    assert!(status.success(), "cp failed: {status}");
-    let _ = std::fs::remove_file(&staged);
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-/// Owning guard for a path returned by [`unique_tmp`]: removes it (recursively, if it turned out to
-/// be a directory; as a single file otherwise) when dropped, so a fixture can never outlive the test
-/// that created it. Derefs to `Path`, so the overwhelming majority of call sites (`.join(...)`,
-/// `&dir`, `dir.exists()`, handing `&dir` to a function expecting `impl AsRef<Path>`, ...) need no
-/// change at all: the fixture simply lives exactly as long as the guard stays in scope, which for a
-/// `#[test]` fn that binds it with `let dir = unique_tmp(...)` and uses `dir` for the rest of the
-/// function is already "until the test returns" — correct with zero extra code.
-///
-/// **The one thing this type deliberately does not provide is a way to detach the path from the
-/// guard by value** — no `Into<PathBuf>`, no `From<TmpDir> for PathBuf`. A helper that builds a
-/// fixture with `unique_tmp` and hands the path back to its caller for further use must return the
-/// `TmpDir` itself (or a struct/tuple that holds it), never just the inner path — returning a bare
-/// `PathBuf` extracted from a local `TmpDir` would drop the guard (and `rm -rf` the fixture) at the
-/// end of the helper, before the caller ever touches it. This is enforced by the type system: any
-/// call site that needs an owned, detached `PathBuf` must call `.to_path_buf()` (available via
-/// `Deref`) *while the guard is still alive*, which makes the lifetime dependency visible at the
-/// call site instead of silently wrong.
-pub(crate) struct TmpDir {
-    path: PathBuf,
-}
-
-impl TmpDir {
-    /// Mirrors `PathBuf::as_path` (`Path` itself has no `as_path` method — without this, method
-    /// resolution falls off the end of the `Deref` chain and rustc's "did you mean" fallback lands on
-    /// an unrelated, nightly-gated `as_str`, producing a confusing `E0658` instead of a straightforward
-    /// "no method" error).
-    pub(crate) fn as_path(&self) -> &std::path::Path {
-        &self.path
-    }
-
-    /// A new guard for `self`'s path with a different extension (mirrors `Path::with_extension`, but
-    /// returns an owned, cleanup-guarded path rather than a bare `PathBuf`). Exists for fixtures that
-    /// reserve a unique base name via `unique_tmp` and then need a specific extension (for
-    /// extension-based preview-rule matching) before creating anything on disk — the un-extended path
-    /// `self` held is never created in those call sites, so `self`'s own `Drop` is a harmless no-op.
-    pub(crate) fn with_extension(&self, ext: impl AsRef<std::ffi::OsStr>) -> TmpDir {
-        TmpDir {
-            path: self.path.with_extension(ext),
-        }
-    }
-
-    /// Resolves this guard's path through `Path::canonicalize` (e.g. macOS's `/var` ->
-    /// `/private/var` symlink) and returns a *new* guard for the resolved path — consuming `self`
-    /// **without** running its `Drop` (`std::mem::forget`). The canonical path names the exact same
-    /// directory on disk as `self` did, so responsibility for removing it transfers to the returned
-    /// guard: running both `Drop` impls would either remove the same directory twice (racy against
-    /// anything else touching it in between) or delete it out from under the caller if `self` were a
-    /// temporary that dropped first. Used by fixtures that need the canonical form of their root (to
-    /// compare against `App::new`'s own canonicalized `tab.root`, or to pass to `git`/`jj`).
-    ///
-    /// Deliberately **not** named `canonicalize`: `Path` already has that method (reachable
-    /// through `Deref`, borrowing `&self` and returning a bare `PathBuf`), and giving this one the
-    /// same name would make inherent-method lookup pick this by-value, `TmpDir`-returning version
-    /// at *every* `some_tmp_dir.canonicalize()` call site in the whole crate — including the ~280
-    /// that rely on the borrowing `Path` version and never meant to consume the guard.
-    // Its only two call sites (`app::tests::git_repo_with_one_change`, `git_view::tests::
-    // sandbox_with_worktree`) are both `#[cfg(feature = "git")]`, so this is unused — not
-    // unreachable — on a no-`git` test build.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    pub(crate) fn into_canonical(self) -> std::io::Result<TmpDir> {
-        let canon = self.path.canonicalize()?;
-        std::mem::forget(self);
-        Ok(TmpDir { path: canon })
-    }
-}
-
-impl std::ops::Deref for TmpDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl AsRef<std::path::Path> for TmpDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl AsRef<std::ffi::OsStr> for TmpDir {
-    fn as_ref(&self) -> &std::ffi::OsStr {
-        self.path.as_os_str()
-    }
-}
-
-impl std::fmt::Debug for TmpDir {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&self.path, f)
-    }
-}
-
-impl PartialEq<std::path::Path> for TmpDir {
-    fn eq(&self, other: &std::path::Path) -> bool {
-        self.path == *other
-    }
-}
-
-impl PartialEq<PathBuf> for TmpDir {
-    fn eq(&self, other: &PathBuf) -> bool {
-        self.path == *other
-    }
-}
-
-// The reverse direction too (`assert_eq!(some_pathbuf, tmp_dir_guard)`) — `PartialEq` is not
-// symmetric at the trait level, so both directions need their own impl.
-impl PartialEq<TmpDir> for PathBuf {
-    fn eq(&self, other: &TmpDir) -> bool {
-        *self == other.path
-    }
-}
-
-impl PartialEq<TmpDir> for std::path::Path {
-    fn eq(&self, other: &TmpDir) -> bool {
-        *self == other.path
-    }
-}
-
-impl Drop for TmpDir {
-    fn drop(&mut self) {
-        // Best effort: a fixture that was never created (a test that only ever probes "missing
-        // path" behaviour), already removed itself, or lost a filesystem race with a sibling
-        // cleanup is not an error here — ignore it exactly like the ad-hoc `let _ =
-        // std::fs::remove_dir_all(...)` calls this type replaces used to. A handful of fixtures
-        // are a single file (not a directory) rather than a tree, so try both.
-        if self.path.is_dir() {
-            let _ = std::fs::remove_dir_all(&self.path);
-        } else {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
-/// A unique temp directory *path* per call (pid + a process-global counter), wrapped in a guard
-/// that removes it when dropped (see [`TmpDir`]). Tests that build a fixture under
-/// `std::env::temp_dir()` must never use a fixed name: two `cargo test` binaries (git-feature and
-/// no-git-feature builds, or two concurrent CI/dev runs) sharing one machine's temp directory would
-/// otherwise race on `create_dir_all` / `remove_dir_all` / file writes on the identical path — one
-/// process's fixture reset could delete or overwrite another process's still-running test. The pid
-/// disambiguates across processes; the counter disambiguates multiple calls with the same prefix
-/// within one process (parallel test threads, or a helper called more than once in the same test).
-///
-/// Callers are responsible for `create_dir_all` / `File::create` / etc. as appropriate for their
-/// fixture — this only reserves a unique path and guarantees its eventual cleanup.
-pub(crate) fn unique_tmp(prefix: &str) -> TmpDir {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    TmpDir {
-        path: std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id())),
-    }
-}
-
-/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
-/// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
-/// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test --manifest-path
-/// …`, is a real, supported invocation), so a bare relative path would silently miss the fixture
-/// and silently skip every assertion in every test that used it.
-///
-/// Returns `None` when the fixture is legitimately absent: `samples/` is excluded from the
-/// published crate (`Cargo.toml`'s `exclude`), so `cargo test` against the packaged tarball (not a
-/// git checkout) has nothing to read. Says so loudly (visible with `--nocapture`, or in the
-/// captured-output dump whenever the process later exits non-zero for any reason) instead of
-/// quietly passing zero assertions with no trace anywhere in the test output.
-pub(crate) fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("samples")
-        .join(name);
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!(
-            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-        );
-        None
-    }
-}
-
-/// Initializes a bare git repository at `dir` via `git2` (no commits) with a fixed, sandboxed
-/// identity (`user.name`/`user.email`) and `commit.gpgsign` forced off, so a test-machine's real
-/// gpg-signing configuration (or lack of one) never affects a commit a test makes. `dir` must
-/// already exist. Distinct from `app::follow::tests::init_git_repo`, a shell (`git init` +
-/// `git config`) variant that fixture also needs — kept separate rather than folded in here (see
-/// that module for why).
+pub(crate) use konoma_test_support::write_executable;
+pub(crate) use konoma_test_support::{sample_path_or_skip, unique_tmp, TmpDir};
+// Only the end-to-end tests (all `git`-gated) build PDFs by hand now that the PDF renderer's own
+// tests live in `konoma-media-core`.
 #[cfg(feature = "git")]
-pub(crate) fn init_git_repo(dir: &std::path::Path) {
-    let repo = git2::Repository::init(dir).unwrap();
-    let mut cfg = repo.config().unwrap();
-    cfg.set_str("user.name", "Test").unwrap();
-    cfg.set_str("user.email", "test@example.com").unwrap();
-    cfg.set_str("commit.gpgsign", "false").ok();
-}
+pub(crate) use konoma_test_support::build_minimal_one_page_pdf;
+
+// The VCS core owns the backend-call counters (its `vcs::file_diff` / `base_contents` bump them) and
+// the repository fixture; re-exported so every `crate::test_support::...` path keeps working.
+#[cfg(feature = "git")]
+pub(crate) use konoma_vcs_core::testing::init_git_repo;
+#[cfg(test)]
+#[cfg_attr(not(feature = "git"), allow(unused_imports))]
+pub(crate) use konoma_vcs_core::testing::{count_base_contents_calls, count_file_diff_calls};
 
 /// Runs the `git` CLI in `dir` and asserts it succeeded (panicking with `git`'s own stderr
 /// otherwise) — for the handful of operations (`add`, `commit`, ...) that are simplest done via the
@@ -467,49 +349,6 @@ pub(crate) fn write_solid_png(path: &std::path::Path, w: u32, h: u32, px: [u8; 3
     image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(px)))
         .save(path)
         .unwrap();
-}
-
-/// Serializes a minimal, valid, single-page PDF (hand-built, no external tool needed) from its bare
-/// essentials — a page size in points and a raw content-stream body — factoring out the
-/// object/xref/trailer plumbing shared by every hand-built PDF fixture in this crate (a Catalog, a
-/// one-page Pages tree, and a single Content stream holding `content` verbatim, with `/Length` set
-/// to its exact byte length). Passing `content: b""` produces a genuinely blank page (`/Length 0`,
-/// no operators) — the PDF-syntax-level blank a page needs to look like, as opposed to a
-/// corrupted/truncated file.
-pub(crate) fn build_minimal_one_page_pdf(w_pt: u32, h_pt: u32, content: &[u8]) -> Vec<u8> {
-    let mut content_obj = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
-    content_obj.extend_from_slice(content);
-    content_obj.extend_from_slice(b"\nendstream");
-    let objs: [Vec<u8>; 4] = [
-        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Contents 4 0 R /Resources << >> >>"
-        )
-        .into_bytes(),
-        content_obj,
-    ];
-    let mut out = Vec::new();
-    out.extend_from_slice(b"%PDF-1.4\n");
-    let mut offsets = vec![0usize];
-    for (i, body) in objs.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-        out.extend_from_slice(body);
-        out.extend_from_slice(b"\nendobj\n");
-    }
-    let xref_offset = out.len();
-    let n = objs.len() + 1;
-    out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
-    out.extend_from_slice(b"0000000000 65535 f \n");
-    for off in &offsets[1..] {
-        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-    }
-    out.extend_from_slice(
-        format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
-            .as_bytes(),
-    );
-    out
 }
 
 /// Runs `jj` inside `dir`, isolated from the running machine's real jj configuration (`HOME`
@@ -560,85 +399,39 @@ pub(crate) fn jj_scratch_seeded(name: &str) -> Option<TmpDir> {
     Some(dir)
 }
 
-thread_local! {
-    /// Test-only stand-in for the OS clipboard (see `app::set_clipboard` / `paste_jump::read_clipboard`).
-    ///
-    /// Every copy key (`y c`, `Y`, table copy, git-log copy, ...) used to call `arboard` for real in
-    /// `cargo test`, which overwrote whatever the *developer* had on their real system clipboard —
-    /// a reported, reproducible bug (running the suite could clobber an in-progress paste). Routing
-    /// both the write side and the read side (`P`/paste-jump) through this sink instead of arboard
-    /// makes `cargo test` clipboard-independent by construction: the arboard-calling code isn't even
-    /// compiled into a `#[cfg(test)]` build (see the `#[cfg(not(test))]` bodies of those functions).
-    ///
-    /// Thread-local, not a process-wide static, for the same reason as `STAT_CALLS` above: `cargo
-    /// test`'s default runner reuses a fixed pool of OS threads across many tests, but never runs two
-    /// tests *concurrently* on the same thread, so a thread-local sink can never let one test's copy
-    /// leak into another test running at the same time. It can still leak into a *later* test that
-    /// happens to land on the same worker thread and forgets to set its own value first — every test
-    /// that asserts an "empty clipboard" state must call `clear_test_clipboard()` before reading.
-    static CLIPBOARD: RefCell<Option<String>> = const { RefCell::new(None) };
-}
+// The test-only stand-in for the OS clipboard lives in `konoma_host_core::clipboard` (the real
+// `set_clipboard` / `read_clipboard` go through it in test builds, so `cargo test` never touches
+// the developer's clipboard). These wrappers keep the tests' call sites unchanged. The sink is
+// thread-local: a test asserting an "empty clipboard" must call `clear_test_clipboard()` first.
 
-/// Test-only stand-in for the clipboard's write side. `set_clipboard` writes here instead of arboard
-/// when built for tests.
+/// Write side of the sink (`set_clipboard` writes here in test builds).
 pub(crate) fn set_test_clipboard(text: &str) {
-    CLIPBOARD.with(|c| *c.borrow_mut() = Some(text.to_string()));
+    konoma_host_core::clipboard::set_test_clipboard(text);
 }
 
-/// Test-only stand-in for the clipboard's read side (`P` / paste-jump). `read_clipboard` reads from
-/// here instead of arboard when built for tests.
+/// Read side of the sink (`P` / paste-jump reads here in test builds).
 pub(crate) fn get_test_clipboard() -> Option<String> {
-    CLIPBOARD.with(|c| c.borrow().clone())
+    konoma_host_core::clipboard::get_test_clipboard()
 }
 
-/// Reset the test clipboard sink to "empty" (mirrors an environment where the real clipboard is
-/// unavailable). Tests that assert the "no clipboard" flash must call this first — see the
-/// thread-reuse caveat on `CLIPBOARD` above.
+/// Reset the sink to "empty" (an environment where the clipboard is unavailable).
 pub(crate) fn clear_test_clipboard() {
-    CLIPBOARD.with(|c| *c.borrow_mut() = None);
+    konoma_host_core::clipboard::clear_test_clipboard();
 }
 
-thread_local! {
-    /// Test-only override for `app::cache_root()` (see that function's `#[cfg(test)]` body).
-    ///
-    /// Without this, `cargo test` computed the remote-image download cache root exactly the way
-    /// the shipped binary does — `$XDG_CACHE_HOME`/`$HOME/.cache`, no test-only branch at all — so
-    /// any test that reached `app::ensure_remote_md_fetch`'s background-download path (a Markdown
-    /// document with an unresolved `http(s)://` image, previewed with the remote loader attached)
-    /// created real directories under the developer's actual `~/.cache/konoma/remote-images/` on
-    /// every run — confirmed by inspecting that directory's mtime around such a test. Same shape of
-    /// bug as the clipboard one above, same fix: give production code a seam it reads from instead
-    /// of the environment, and make test builds not compile the environment-reading path in at the
-    /// one place that actually writes to disk.
-    ///
-    /// `cache_root()` itself keeps reading the real environment when no override is set (unlike
-    /// `CLIPBOARD`, which always redirects in test builds) — `cache_root()` and
-    /// `md_remote_cache_path()` are pure path arithmetic and never touch the filesystem on their
-    /// own, so the many tests that call them read-only (to get a stable cache key, or to check the
-    /// real-environment fallback formula itself) stay exercising the real formula. The actual
-    /// filesystem write only happens inside `ensure_remote_md_fetch`'s spawned download thread, and
-    /// that function asserts an override is set before ever spawning one — see its `#[cfg(test)]`
-    /// guard — so a future test that reaches that spawn without opting in fails loudly instead of
-    /// silently writing to the real cache.
-    ///
-    /// Thread-local, not a process-wide static, for the same reason as `CLIPBOARD`: `cargo test`'s
-    /// default runner never runs two tests concurrently on the same thread, but does reuse threads
-    /// across tests, so a test that sets this must not assume a clean slate — only the guard in
-    /// `ensure_remote_md_fetch` cares whether *some* override is set, not which test set it, so a
-    /// stale value from an earlier test on the same thread is harmless (it still points at a
-    /// sandboxed directory, never the real cache root).
-    static CACHE_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
-
-/// Test-only override for `app::cache_root()`. Call with a sandboxed directory (e.g.
-/// `unique_tmp(...)`) before triggering any code path that downloads a remote Markdown image.
+/// Test-only override for the remote-image cache root (`app::cache_root()`). Call with a sandboxed
+/// directory (e.g. `unique_tmp(...)`) before triggering any code path that downloads a remote
+/// document image. The override itself lives with the cache-root rule in
+/// `konoma_plugin::document_pictures` (thread-local there, like the clipboard sink above); without
+/// one the root is computed from the environment, and the download path refuses to start (see
+/// `ensure_remote_md_fetch`), so a test can never write under the real cache.
 pub(crate) fn set_test_cache_root(path: PathBuf) {
-    CACHE_ROOT.with(|c| *c.borrow_mut() = Some(path));
+    konoma_plugin::document_pictures::set_test_cache_root(path);
 }
 
-/// Read side of the `cache_root()` override; `None` means no test on this thread has set one yet.
+/// The override [`set_test_cache_root`] set on this thread, if any.
 pub(crate) fn get_test_cache_root() -> Option<PathBuf> {
-    CACHE_ROOT.with(|c| c.borrow().clone())
+    konoma_plugin::document_pictures::get_test_cache_root()
 }
 
 thread_local! {
@@ -677,74 +470,126 @@ pub(crate) fn clear_test_trashed() {
     TRASHED.with(|t| t.borrow_mut().clear());
 }
 
-/// Root of the MAIN checkout (the parent of the git common dir), falling back to the crate root.
-///
-/// Linked worktrees live outside the main checkout, and the git-ignored `evidence/` and
-/// `docs/` materials exist only there, so `CARGO_MANIFEST_DIR` alone would point at a checkout
-/// that lacks them.
-fn main_checkout_root() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let common = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&manifest)
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| PathBuf::from(s.trim()));
-    common
-        .filter(|p| p.is_absolute() && p.file_name().is_some_and(|n| n == ".git"))
-        .and_then(|p| p.parent().map(PathBuf::from))
-        .unwrap_or(manifest)
+/// A buffer as text a snapshot test can pin: the rows as the terminal shows them (a wide glyph
+/// takes its cell and the next one counts as covered; trailing blanks are cut, `|` ends a row),
+/// then one line per run of equally styled cells whose style is not the default. A run is
+/// `row col..col fg bg mods |text|`, so a snapshot sees colors and attributes as well as glyphs.
+pub(crate) fn buffer_dump(buf: &ratatui::buffer::Buffer) -> String {
+    use ratatui::style::{Color, Modifier};
+    use unicode_width::UnicodeWidthStr;
+    let area = buf.area;
+    let mut rows = String::new();
+    let mut runs = String::new();
+    for y in area.top()..area.bottom() {
+        let mut line = String::new();
+        // (start col, style key, text) of the run being built.
+        let mut run: Option<(u16, (Color, Color, Modifier), String)> = None;
+        let mut flush = |run: &mut Option<(u16, (Color, Color, Modifier), String)>, end: u16| {
+            if let Some((start, (fg, bg, m), text)) = run.take() {
+                if (fg, bg, m) != (Color::Reset, Color::Reset, Modifier::empty()) {
+                    runs.push_str(&format!(
+                        "r{y} c{start}..{} fg={fg:?} bg={bg:?} mod={m:?} |{}|\n",
+                        end - 1,
+                        text.trim_end()
+                    ));
+                }
+            }
+        };
+        let mut x = area.left();
+        while x < area.right() {
+            let cell = &buf[(x, y)];
+            let sym = cell.symbol();
+            let w = sym.width().max(1) as u16;
+            line.push_str(sym);
+            let key = (cell.fg, cell.bg, cell.modifier);
+            match &mut run {
+                Some((_, k, text)) if *k == key => text.push_str(sym),
+                _ => {
+                    flush(&mut run, x);
+                    run = Some((x, key, sym.to_string()));
+                }
+            }
+            x += w;
+        }
+        flush(&mut run, x);
+        rows.push_str(&format!("{y:>2}|{}|\n", line.trim_end()));
+    }
+    format!("{rows}--- styles ---\n{runs}")
 }
 
-/// `<main checkout>/evidence`: local, never-committed Office materials read by the `#[ignore]`
-/// dump / survey tests (public corpus, reference renders, self-made decks, survey work).
-pub(crate) fn evidence_dir() -> PathBuf {
-    main_checkout_root().join("evidence")
-}
-
-/// `<main checkout>/.cache/<branch>/<purpose>`: where tests put heavy or regenerable output
-/// (git-ignored, may be deleted at any time). `<branch>` is the branch of the checkout being
-/// built, with `/` replaced by `-`; `detached` when git fails or HEAD is detached.
-/// `evidence/` is read-only for tests: never write there.
-pub(crate) fn cache_dir(purpose: &str) -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let branch = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&manifest)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().replace('/', "-"))
-        .filter(|b| !b.is_empty() && b != "HEAD")
-        .unwrap_or_else(|| "detached".to_string());
-    main_checkout_root()
-        .join(".cache")
-        .join(branch)
-        .join(purpose)
-}
-
-/// `<main checkout>/docs/render-check`: where the dump tests write pictures for a human to review.
-pub(crate) fn render_check_dir() -> PathBuf {
-    main_checkout_root().join("docs/render-check")
-}
+/// The top edge of a framed project list (the one implementation is in `konoma-test-support`,
+/// shared with the standalone app's tests).
+pub(crate) use konoma_test_support::top_edge;
 
 // ---------------------------------------------------------------------------------------------
+/// A terminal's grid with the semantics the buffer diff has to be right about: a symbol written
+/// over the first half of a wide character blanks its second half, and a wide symbol covers the
+/// cell after it.
+#[cfg(feature = "git")]
+pub(crate) struct TermModel {
+    rows: Vec<Vec<(String, bool)>>,
+}
+
+#[cfg(feature = "git")]
+impl TermModel {
+    pub(crate) fn new(width: u16, height: u16) -> Self {
+        Self {
+            rows: vec![vec![(" ".to_string(), false); usize::from(width)]; usize::from(height)],
+        }
+    }
+
+    fn write(&mut self, x: u16, y: u16, symbol: &str) {
+        use unicode_width::UnicodeWidthStr;
+        let (x, w) = (usize::from(x), symbol.width().max(1));
+        let row = &mut self.rows[usize::from(y)];
+        // Overwriting the second half of a wide character blanks its first half.
+        if row[x].1 && x > 0 {
+            row[x - 1] = (" ".to_string(), false);
+        }
+        // Overwriting the first half of a wide character blanks its second half.
+        if row[x].0.width() > 1 && x + 1 < row.len() {
+            row[x + 1] = (" ".to_string(), false);
+        }
+        row[x] = (symbol.to_string(), false);
+        for k in 1..w {
+            if x + k < row.len() {
+                // A wide character that loses its first cell here loses its second half too.
+                if row[x + k].0.width() > 1 && x + k + 1 < row.len() {
+                    row[x + k + 1] = (" ".to_string(), false);
+                }
+                row[x + k] = (" ".to_string(), true);
+            }
+        }
+    }
+
+    pub(crate) fn apply(&mut self, prev: &ratatui::buffer::Buffer, next: &ratatui::buffer::Buffer) {
+        for (x, y, cell) in prev.diff(next) {
+            self.write(x, y, cell.symbol());
+        }
+    }
+
+    pub(crate) fn row(&self, y: u16) -> String {
+        self.rows[usize::from(y)]
+            .iter()
+            .filter(|(_, hidden)| !hidden)
+            .map(|(s, _)| s.as_str())
+            .collect()
+    }
+}
+
 // Regression guard: nothing outside this module should call `std::env::temp_dir()` to build a
 // *fixed*-name path ever again (that's exactly the bug this module was written to fix — see the
 // module doc). Scans `src/**/*.rs`'s own text, so it catches a reintroduced fixed name wherever it
-// lands, not just in the files that had one at the time this guard was written.
+// lands, not just in the files that had one at the time this guard was written. The scan covers
+// the host's `src/` and every `crates/*/src` (the code that moved out of `src/` is still code).
 #[cfg(test)]
 mod guard {
     use std::path::{Path, PathBuf};
 
-    /// Files this guard does not scan at all:
-    ///   - `test_support.rs` itself: the one legitimate `std::env::temp_dir()` call is
-    ///     `unique_tmp`'s own implementation above.
+    /// Files this guard does not scan (paths relative to the repository root):
+    ///   - `src/test_support.rs` and `crates/konoma-test-support/src/lib.rs`: the one legitimate
+    ///     `std::env::temp_dir()` call is `unique_tmp`'s own implementation (it moved into the
+    ///     latter; the former re-exports it).
     ///   - Three **production** (non-test) one-shot temp-file paths that are already unique on
     ///     their own terms (pid + an atomic/monotonic counter baked into the filename itself —
     ///     `konoma-pdf-…` / `konoma-cmd-…` / `konoma-vthumb-…`), just not routed through this
@@ -752,10 +597,13 @@ mod guard {
     ///     not exist). Editing these to use `unique_tmp` is explicitly out of scope for this
     ///     guard — it must never ask for it.
     const EXEMPT_FILES: &[&str] = &[
-        "test_support.rs",
-        "preview/pdf.rs",
-        "preview/command.rs",
-        "preview/video.rs",
+        "src/test_support.rs",
+        "crates/konoma-test-support/src/lib.rs",
+        // (`pdf.rs` and `video.rs` live in `konoma-media-core` now; `src/preview/{pdf,video}.rs`
+        // are one-line re-exports with nothing to scan.)
+        "crates/konoma-media-core/src/pdf.rs",
+        "src/preview/command.rs",
+        "crates/konoma-media-core/src/video.rs",
     ];
 
     /// Recursively collect every `.rs` file under `dir` (plain `std::fs`, no extra dependency —
@@ -902,21 +750,26 @@ mod guard {
     /// source, which is why every heuristic here (word-boundary identifier matching, an explicit
     /// path-builder/mutator vocabulary, a function-boundary trace cutoff) errs toward under- rather
     /// than over-detection.
-    fn find_offenders(src_dir: &Path) -> (usize, Vec<String>) {
+    ///
+    /// `src_dir` is one source directory and `label` its path relative to the repository root
+    /// (`src` or `crates/<name>/src`), so the exemptions mean the same thing wherever the code
+    /// lives. The first number is how many `.rs` files the walk found (exempt ones included).
+    fn find_offenders(src_dir: &Path, label: &str) -> (usize, Vec<String>) {
         let mut rs_files = Vec::new();
         collect_rs_files(src_dir, &mut rs_files);
-        let mut files_scanned = 0usize;
+        let files_scanned = rs_files.len();
         let mut offenders = Vec::new();
         for path in &rs_files {
-            let rel = path
-                .strip_prefix(src_dir)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = format!(
+                "{label}/{}",
+                path.strip_prefix(src_dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            );
             if EXEMPT_FILES.iter().any(|f| rel == *f) {
                 continue;
             }
-            files_scanned += 1;
             let Ok(text) = std::fs::read_to_string(path) else {
                 continue;
             };
@@ -963,17 +816,51 @@ mod guard {
         (files_scanned, offenders)
     }
 
-    /// Safety valve for the scan itself: if the directory walk broke (wrong path, `src/` moved),
-    /// it must fail LOUD by finding too few files — not silently scan zero and vacuously pass.
-    /// `src/` currently has 60+ `.rs` files (minus the 4 exempt ones); 20 is a conservative floor.
+    /// Every source directory the guard covers, as `(label relative to the repository root, path)`:
+    /// the host's `src` first, then `crates/<name>/src` for each crate.
+    fn source_dirs() -> Vec<(String, PathBuf)> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut dirs = vec![("src".to_string(), root.join("src"))];
+        let mut crates: Vec<String> = std::fs::read_dir(root.join("crates"))
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.path().join("Cargo.toml").is_file())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        crates.sort();
+        for name in crates {
+            dirs.push((
+                format!("crates/{name}/src"),
+                root.join("crates").join(&name).join("src"),
+            ));
+        }
+        dirs
+    }
+
+    /// Safety valve for the scan itself: if the directory walk broke (wrong path, `src/` or
+    /// `crates/` moved), it must fail LOUD by finding too few files — not silently scan zero and
+    /// vacuously pass. Two independent floors, so that either search breaking is caught on its own:
+    /// the host's `src/` alone has 60+ `.rs` files (20 is a conservative floor), and `crates/` must
+    /// yield at least one crate, each with at least one `.rs` file.
     #[test]
     fn scan_finds_at_least_20_source_files() {
-        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let (files_scanned, _) = find_offenders(&src_dir);
+        let dirs = source_dirs();
+        let (host_label, host_dir) = &dirs[0];
+        let (host_files, _) = find_offenders(host_dir, host_label);
         assert!(
-            files_scanned >= 20,
-            "スキャン対象が少なすぎる(安全弁): {files_scanned} 件 — src/ の探索が壊れている可能性"
+            host_files >= 20,
+            "スキャン対象が少なすぎる(安全弁): {host_files} 件 — src/ の探索が壊れている可能性"
         );
+        assert!(
+            dirs.len() > 1,
+            "crates/*/ が1つも見つからない(安全弁) — crates/ の探索が壊れている可能性"
+        );
+        for (label, dir) in &dirs[1..] {
+            let (n, _) = find_offenders(dir, label);
+            assert!(n >= 1, "{label} に .rs ファイルが見つからない(安全弁)");
+        }
     }
 
     /// The guard itself: every `temp_dir()` call that targets a specific path, outside the exempt
@@ -981,8 +868,14 @@ mod guard {
     /// instead, which doesn't call `temp_dir()` by name at the call site at all).
     #[test]
     fn no_fixed_name_temp_dirs_outside_unique_tmp() {
-        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let (files_scanned, offenders) = find_offenders(&src_dir);
+        let dirs = source_dirs();
+        let mut files_scanned = 0usize;
+        let mut offenders = Vec::new();
+        for (label, dir) in &dirs {
+            let (n, mut o) = find_offenders(dir, label);
+            files_scanned += n;
+            offenders.append(&mut o);
+        }
         assert!(
             files_scanned >= 20,
             "スキャン対象が少なすぎる(安全弁): {files_scanned} 件"

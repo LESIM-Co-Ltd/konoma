@@ -4,13 +4,32 @@
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::app::App;
 use crate::i18n::tr;
 
+#[cfg(test)]
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let presentation = project_presentation(app);
+    render_with_project_dialog(frame, app, area, presentation.as_ref());
+}
+
+pub(super) fn render_with_project_dialog(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    presentation: Option<&konoma_plugin::host::project::draw::ProjectDialogPresentation>,
+) {
+    if let Some(presentation) = presentation {
+        konoma_plugin::host::project::draw::draw_project_dialog(
+            frame.buffer_mut(),
+            area,
+            presentation,
+        );
+        return;
+    }
     // The batch-rename preview uses dedicated rendering (an old → new list + scrolling).
     if let Some((title, pairs, scroll)) = app.dialog_preview_view() {
         render_preview(frame, app, area, title, pairs, scroll);
@@ -40,18 +59,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::DlgCancel)).dim());
             (tr(app.lang, crate::i18n::Msg::DlgDropTitle), Color::Cyan)
         } else if app.dialog_allow_permanent() {
-            // Destructive operation = red-ish. y/!/n change wording by context (file delete or branch delete).
-            let (y_label, bang_label) = if app.confirm_is_branch_delete() {
-                (
-                    tr(app.lang, crate::i18n::Msg::DlgDeleteSafe),
-                    tr(app.lang, crate::i18n::Msg::DlgForceDeleteHint),
-                )
-            } else {
-                (
-                    tr(app.lang, crate::i18n::Msg::DlgTrash),
-                    tr(app.lang, crate::i18n::Msg::DlgDeletePermanentHint),
-                )
-            };
+            // Destructive operation = red-ish.
+            let (y_label, bang_label) = (
+                tr(app.lang, crate::i18n::Msg::DlgTrash),
+                tr(app.lang, crate::i18n::Msg::DlgDeletePermanentHint),
+            );
             lines.push(Line::from(y_label).dim());
             lines.push(Line::from(bang_label).fg(Color::Red));
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::DlgCancel)).dim());
@@ -95,29 +107,58 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         (tr(app.lang, crate::i18n::Msg::DlgInputTitle), Color::Cyan)
     };
 
-    // Popup dimensions (follows the bookmarks style).
-    let w = 66.min(area.width.saturating_sub(2)).max(24);
-    let h = (lines.len() as u16 + 2)
-        .min(area.height.saturating_sub(2))
-        .max(3);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let popup = Rect {
-        x,
-        y,
-        width: w,
-        height: h,
+    render_box(frame, area, lines, title, accent);
+}
+
+fn render_box(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    title: &str,
+    accent: Color,
+) {
+    konoma_widgets::dialog::draw_dialog_box(frame.buffer_mut(), area, lines, title, accent, 0);
+}
+
+/// Resolve paths and plugin names on the host; prompt drawing only sees values.
+pub(super) fn project_presentation(
+    app: &App,
+) -> Option<konoma_plugin::host::project::draw::ProjectDialogPresentation> {
+    use crate::app::project_screens::ProjectDialog;
+    use crate::i18n::Msg;
+    use konoma_plugin::host::project::draw::{
+        present_project_dialog, ProjectDialogLabel, ProjectDialogWords,
     };
-
-    let block = Block::bordered()
-        .title(title)
-        .border_style(Style::new().fg(accent));
-    let para = Paragraph::new(lines)
-        .block(block)
-        .alignment(Alignment::Left);
-
-    frame.render_widget(Clear, popup); // clear the background before drawing
-    frame.render_widget(para, popup);
+    let dialog = app.project_dialog.as_ref()?;
+    let lang = app.plugin_lang();
+    let labels = match dialog {
+        ProjectDialog::Projects { projects, .. } => projects
+            .iter()
+            .map(|project| ProjectDialogLabel {
+                name: app
+                    .plugin_keys
+                    .name_of(&project.plugin)
+                    .map(|n| n.get(lang))
+                    .unwrap_or(&project.plugin)
+                    .to_string(),
+                path: app.format_path(&project.root),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    Some(present_project_dialog(
+        dialog,
+        &labels,
+        &ProjectDialogWords {
+            lang,
+            choose: tr(app.lang, Msg::ProjectChoose),
+            confirm_title: tr(app.lang, Msg::DlgConfirmTitle),
+            input_title: tr(app.lang, Msg::DlgInputTitle),
+            keys: tr(app.lang, Msg::ProjectDialogKeys),
+            confirm_cancel: tr(app.lang, Msg::ProjectConfirmCancel),
+            confirm_cancel_status: tr(app.lang, Msg::ProjectConfirmCancelStatus),
+        },
+    ))
 }
 
 /// Batch-rename preview (old → new list). Cyan border, scrollable, applied with y.
@@ -159,6 +200,6 @@ fn render_preview(
         .block(block)
         .alignment(Alignment::Left);
 
-    frame.render_widget(Clear, popup);
+    konoma_widgets::overlay::clear_overlay(frame.buffer_mut(), popup);
     frame.render_widget(para, popup);
 }

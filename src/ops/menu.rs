@@ -1,0 +1,712 @@
+// The menus behind `y`, `Space` and `,`: what a menu holds in a context, as the which-key line
+// draws it, the key handler resolves it and the `?` help lists it (plugin stage 2 / B3b,
+// `docs/FEATURE-PLUGIN-ARCHITECTURE.md` §10-3-3 layer 1).
+//
+// One mechanism for all of them. A menu is *what the context lets you do with that key*:
+//
+// - `y` copies: the copy menu of the context (path, table cell, commit info, branch name), kept in
+//   the keymap (`KeyMap::menu`) so `[keys.<context>] "y x"` can change one context's menu.
+// - `,` sorts and shows: the options of the context (the tree sorts, a preview wraps, a diff picks
+//   what the follow shows), also kept in the keymap.
+// - `Space` operates. In the tree it is the file menu (kept in the keymap, as before); everywhere
+//   else it is *built here* from the operation declarations: every operation that acts in the
+//   context now (`ops::gate`), each under the single key it already has when that is free, else a
+//   letter of its own. So an operation that lost its key — to a conflict, or to a rebinding — is
+//   still one `Space` away (design principle 5).
+//
+// The items of the two built menus are decided over *all* the candidate operations, before the
+// gate is asked: a letter does not move because another operation happens not to act right now.
+//
+// The `Space` menu lists its items by how often the context uses them — the order of the footer
+// plan (`footer::priority`: the footer cuts from the end, so the front is what matters most), then
+// the rest in the order the help declares them, then whatever neither names — and calls each by
+// the footer's short label, not by the help's sentence.
+
+use crate::app::App;
+use crate::i18n::{tr, Msg};
+use crate::keymap::{Action, Context, KeyPress, LeaderId, ProjectMenuControl};
+
+use super::{action_enabled, decl, footer, help, keys};
+use crate::plugins::PluginAct;
+use konoma_host_core::menu::{self as menu_core, Skeleton};
+use konoma_plugin::host::acts::{fixed_menu_items, FixedMenuLabel};
+use konoma_plugin::host::project::diff_presentation::{DiffPresentation, DiffUiOp};
+
+/// One entry of an open menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub key: KeyPress,
+    pub action: Action,
+    /// The label in the language of the interface.
+    pub label: String,
+}
+
+/// A menu as it stands now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Menu {
+    pub id: LeaderId,
+    pub title: String,
+    pub items: Vec<MenuItem>,
+}
+
+/// What `menu` is asked for: the menu as it opens (only what acts now) or as the help lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// The which-key line and the key handler: an item that does not act is not offered.
+    Open,
+    /// The `?` help: the same items as `Open` today (a hint is shown only while its key acts, so
+    /// the code-block copy is listed only while a code block is focused). Kept as its own entry so
+    /// a caller says which of the two it is.
+    Help,
+}
+
+/// The menu `id` of `ctx`, or `None` when `ctx` has no such menu.
+pub fn menu(app: &App, ctx: Context, id: LeaderId, view: View) -> Option<Menu> {
+    if ctx == Context::Diff {
+        return menu_with_diff(app, id, view, &app.diff_presentation());
+    }
+    match id {
+        LeaderId::Actions => Some(actions_menu(app, ctx)),
+        _ => fixed_menu(app, ctx, id, view),
+    }
+}
+
+pub(crate) fn menu_with_diff(
+    app: &App,
+    id: LeaderId,
+    view: View,
+    p: &DiffPresentation,
+) -> Option<Menu> {
+    if id == LeaderId::Actions {
+        return Some(Menu {
+            id,
+            title: tr(app.lang, Msg::WkActionsTitle).into(),
+            items: build_actions_in(app, Context::Diff, true, Some(p)),
+        });
+    }
+    fixed_menu_in(app, Context::Diff, id, view, Some(p))
+}
+
+pub(crate) fn diff_options_declaration(
+    app: &App,
+    p: &DiffPresentation,
+) -> Option<Vec<menu_core::Item<DiffUiOp, FixedMenuLabel>>> {
+    let menu = app.keymaps.menu(Context::Diff, LeaderId::Options)?;
+    let priority = footer::diff_priority(app, p);
+    Some(
+        menu.items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let label = fixed_label(app, Context::Diff, item.action, item.label, &priority);
+                menu_core::Item {
+                    key: item.key,
+                    action: super::decl::diff_op(item.action).unwrap_or(DiffUiOp::Host(index)),
+                    label,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The operation key `kp` runs in the open menu `id` of `ctx` (`None` = the key is not in it).
+pub fn find(app: &App, ctx: Context, id: LeaderId, kp: KeyPress) -> Option<Action> {
+    if app.project_active() && ctx == Context::Canvas && id == LeaderId::Copy {
+        let (presentation, actions) = app.project_presentation()?;
+        return presentation
+            .copy_action(kp)
+            .map(|index| Action::Plugin(actions[index]));
+    }
+    menu(app, ctx, id, View::Open)?
+        .items
+        .into_iter()
+        .find(|it| it.key == kp)
+        .map(|it| it.action)
+}
+
+/// Whether pressing the key that opens `id` in `ctx` opens anything: a menu with nothing to offer
+/// does not open (the key then does nothing).
+pub fn opens(app: &App, ctx: Context, id: LeaderId) -> bool {
+    menu(app, ctx, id, View::Open).is_some_and(|m| !m.items.is_empty())
+}
+
+/// A menu kept in the keymap (`y`, `,`, the tree's `Space`).
+fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu> {
+    fixed_menu_in(app, ctx, id, _view, None)
+}
+
+fn fixed_menu_in(
+    app: &App,
+    ctx: Context,
+    id: LeaderId,
+    _view: View,
+    diff: Option<&DiffPresentation>,
+) -> Option<Menu> {
+    fixed_menu_with_preview(app, ctx, id, _view, diff, true)
+}
+
+#[cfg(all(test, feature = "git"))]
+pub(crate) fn preview_options_legacy_for_test(app: &App, ctx: Context) -> Option<Menu> {
+    if ctx == Context::Diff {
+        return menu_with_diff(app, LeaderId::Options, View::Open, &app.diff_presentation());
+    }
+    fixed_menu_with_preview(app, ctx, LeaderId::Options, View::Open, None, false)
+}
+
+fn fixed_menu_with_preview(
+    app: &App,
+    ctx: Context,
+    id: LeaderId,
+    _view: View,
+    diff: Option<&DiffPresentation>,
+    shared_preview: bool,
+) -> Option<Menu> {
+    if let Some(p) = diff.filter(|_| id == LeaderId::Options) {
+        let declaration = diff_options_declaration(app, p)?;
+        let menu = app.keymaps.menu(ctx, id)?;
+        let items = p
+            .options_menu(&declaration)
+            .into_iter()
+            .filter_map(|item| {
+                Some(MenuItem {
+                    key: item.key,
+                    action: match item.action {
+                        DiffUiOp::Host(index) => menu.items.get(index)?.action,
+                        op => super::decl::diff_action(op)?,
+                    },
+                    label: item.label,
+                })
+            })
+            .collect();
+        return Some(Menu {
+            id,
+            title: tr(app.lang, menu.title).into(),
+            items,
+        });
+    }
+    if app.project_active() && ctx == Context::Canvas && id == LeaderId::Copy {
+        let (presentation, actions) = app.project_presentation()?;
+        let items = presentation
+            .copy_menu()
+            .iter()
+            .map(|item| MenuItem {
+                key: item.key,
+                action: Action::Plugin(actions[item.action]),
+                label: item.label.clone(),
+            })
+            .collect();
+        return Some(Menu {
+            id,
+            title: tr(app.lang, Msg::CopyHint).into(),
+            items,
+        });
+    }
+    let m = app.keymaps.menu(ctx, id)?;
+    if shared_preview && id == LeaderId::Options {
+        if let Some(values) = crate::ops::preview_plan::front_values(app, ctx) {
+            let priority = footer::priority(app, ctx);
+            let declaration: Vec<_> = m
+                .items
+                .iter()
+                .map(|item| menu_core::Item {
+                    key: item.key,
+                    action: item.action,
+                    label: fixed_label(app, ctx, item.action, item.label, &priority),
+                })
+                .collect();
+            let items = values
+                .options_menu(
+                    &declaration,
+                    |action| {
+                        action
+                            .core()
+                            .map(konoma_host_core::preview_plan::PreviewOp::Core)
+                            .or_else(|| {
+                                values
+                                    .bindings
+                                    .iter()
+                                    .find(|b| {
+                                        crate::ops::preview_plan::action_of(b.op) == Some(action)
+                                    })
+                                    .map(|b| b.op)
+                            })
+                    },
+                    |action| action_enabled(app, ctx, action),
+                )
+                .into_iter()
+                .map(|item| MenuItem {
+                    key: item.key,
+                    action: item.action,
+                    label: item.label,
+                })
+                .collect();
+            return Some(Menu {
+                id,
+                title: tr(app.lang, m.title).into(),
+                items,
+            });
+        }
+    }
+    // `,` offers what acts here; the copy and file menus list all their items (the code-block
+    // copy only while a code block is focused: the menu, the footer and the help alike).
+    let gated = |a: Action| match id {
+        LeaderId::Options => action_enabled(app, ctx, a),
+        _ => !matches!(a, Action::CopyCodeBlock) || action_enabled(app, ctx, a),
+    };
+    let priority = diff
+        .map(|p| footer::diff_priority(app, p))
+        .unwrap_or_else(|| footer::priority(app, ctx));
+    let declaration: Vec<_> = m
+        .items
+        .iter()
+        .map(|item| menu_core::Item {
+            key: item.key,
+            action: item.action,
+            label: item.label,
+        })
+        .collect();
+    let mut items: Vec<_> = fixed_menu_items(&declaration, gated, |message, action| {
+        fixed_label(app, ctx, action, *message, &priority)
+    })
+    .into_iter()
+    .map(|item| MenuItem {
+        key: item.key,
+        action: item.action,
+        label: item.label,
+    })
+    .collect();
+    if id == LeaderId::File {
+        let bindings = app.plugin_context_bindings(ctx);
+        let declared =
+            konoma_plugin::host::acts::menu_candidates(&bindings.iter().collect::<Vec<_>>());
+        let mut candidates: Vec<_> = items
+            .iter()
+            .map(|item| (item.action, Some(item.key)))
+            .collect();
+        candidates.extend(
+            declared
+                .into_iter()
+                .map(|(act, key)| (Action::Plugin(act), key)),
+        );
+        let assigned = menu_core::assign(&candidates, mnemonic);
+        for ((action, _), key) in candidates.into_iter().zip(assigned).skip(items.len()) {
+            if let (Action::Plugin(plugin), Some(key)) = (action, key) {
+                if action_enabled(app, ctx, action) {
+                    if let Some(label) = plugin_label(app, ctx, plugin) {
+                        items.push(MenuItem { key, action, label });
+                    }
+                }
+            }
+        }
+    }
+    Some(Menu {
+        id,
+        title: tr(app.lang, m.title).to_string(),
+        items,
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// The `Space` menu outside the tree.
+// ---------------------------------------------------------------------------------------------
+
+/// Operations a context has that no key is bound to by default (they used to have one, or never
+/// did): the menu is where they are always reachable.
+pub(crate) fn unkeyed(ctx: Context) -> Vec<Action> {
+    // The preview screens' are described once (the standalone app's menu reads the same list).
+    if let Some(cctx) = super::preview_plan::core_of(ctx) {
+        return konoma_host_core::preview_plan::unkeyed(cctx)
+            .into_iter()
+            .filter_map(super::preview_plan::action_of)
+            .collect();
+    }
+    let mut v: Vec<Action> = Vec::new();
+    match ctx {
+        Context::Bookmarks => v.push(Action::BookmarkDelete),
+        Context::Diff => {
+            #[cfg(feature = "git")]
+            v.push(Action::ToggleFollowDiffScope);
+            v.push(Action::CyclePathStyle);
+        }
+        #[cfg(feature = "git")]
+        Context::Screen(_, crate::keymap::Screen::Changes) => {
+            v.extend([Action::GitOpenLog, Action::GitOpenGraph])
+        }
+        _ => {}
+    }
+    v
+}
+
+/// A label for an operation the declarations leave unnamed because it has no footer or help row
+/// of its own (the bookmark and tab lists' operations).
+fn special_label(a: Action) -> Option<Msg> {
+    Some(match a {
+        Action::BookmarkEdit => Msg::HintEdit,
+        Action::BookmarkDelete => Msg::WkDelete,
+        Action::BookmarkJump | Action::TabListActivate => Msg::HintOpen,
+        Action::BookmarkClose | Action::InfoClose => Msg::FtClose,
+        Action::TabListClose => Msg::HintCloseTab,
+        Action::OutlineJump => Msg::HintJump,
+        _ => return None,
+    })
+}
+
+/// A short label for an operation that has none in the footer or its declaration (the help's
+/// sentence is too long for a menu line). `search` in a footer is `n/N:match`, a status; here the
+/// two directions are items of their own.
+fn short_label(a: Action) -> Option<Msg> {
+    Some(match a {
+        Action::SearchNext => Msg::WkNextMatch,
+        Action::SearchPrev => Msg::WkPrevMatch,
+        Action::Refresh => Msg::WkRefresh,
+        Action::TabNewAfter => Msg::HintNewTab,
+        _ => return None,
+    })
+}
+
+/// What `a` is called in a menu of `ctx`: the menu's own label where the footer's would not tell
+/// it apart from its pair (`decl::menu_label`), else the footer's label for it (`prio` is the footer plan,
+/// `footer::priority`), else the declaration's label as it reads now, else a short label of the
+/// menu's own. Never the help's sentence. `None` = the operation is not named, so it is not
+/// offered.
+fn label_of(app: &App, ctx: Context, a: Action, prio: &[(Action, Option<Msg>)]) -> Option<Msg> {
+    // The few operations whose footer label is shared with their pair say which way in a menu.
+    decl::menu_label(app, ctx, a)
+        .or_else(|| {
+            prio.iter()
+                .find_map(|(p, l)| (*p == a).then_some(*l).flatten())
+        })
+        .or_else(|| decl::text(app, ctx, a).label)
+        .or_else(|| short_label(a))
+        .or_else(|| special_label(a))
+}
+
+fn fixed_label(
+    app: &App,
+    ctx: Context,
+    action: Action,
+    message: Msg,
+    priority: &[(Action, Option<Msg>)],
+) -> FixedMenuLabel {
+    if message == Msg::Empty {
+        FixedMenuLabel {
+            declared: None,
+            fallback: label_of(app, ctx, action, priority).map(|m| tr(app.lang, m).into()),
+        }
+    } else {
+        FixedMenuLabel {
+            declared: Some(
+                tr(
+                    app.lang,
+                    crate::ui::status::relabel_for_backend(app, message),
+                )
+                .into(),
+            ),
+            fallback: None,
+        }
+    }
+}
+
+/// A letter that says what the operation is, tried before the free letters in order. The table
+/// is shared with the standalone app (`konoma_host_core::keymap::mnemonic_of_name`), keyed by the
+/// operation's config name.
+fn mnemonic(a: Action) -> Option<char> {
+    konoma_host_core::keymap::mnemonic_of_name(&crate::keymap::action_name(a))
+}
+
+/// Every operation `ctx` can run, in the order the menu lists them: the keyed ones by their key
+/// (with that key when it is a plain character), then the fixed keys' operations, then the ones
+/// without a key. Movement and the closing of overlays are not operations to offer.
+fn candidates(
+    app: &App,
+    ctx: Context,
+    prio: &[(Action, Option<Msg>)],
+) -> Vec<(Action, Option<KeyPress>)> {
+    // Every operation the open plugin declared, keyed or not: the menu is how an action that lost
+    // its key (a collision, a rebinding) is still reachable.
+    let bindings = app.plugin_context_bindings(ctx);
+    let declared: Vec<_> =
+        konoma_plugin::host::acts::menu_candidates(&bindings.iter().collect::<Vec<_>>())
+            .into_iter()
+            .map(|(act, key)| (Action::Plugin(act), key))
+            .collect();
+    if app.project_active() && ctx == Context::Canvas {
+        return declared;
+    }
+    let skeleton = Skeleton {
+        bound: app.keymaps.bound_actions_on(ctx, app.screen_keys_for(ctx)),
+        // What the context has by default but no key reaches now (moved away by `[keys]`, or lost
+        // to a conflict).
+        defaults: app
+            .keymaps
+            .default_ops
+            .get(&ctx)
+            .cloned()
+            .unwrap_or_default(),
+        fixed: keys::fixed_bindings(ctx)
+            .into_iter()
+            .filter(|f| !f.alias)
+            .map(|f| f.action)
+            .collect(),
+        unkeyed: unkeyed(ctx),
+        declared,
+    };
+    skeleton.candidates(|a| {
+        if matches!(
+            a,
+            Action::Noop | Action::Navigate(_) | Action::TabGoto(_) | Action::Cancel
+        ) {
+            return false;
+        }
+        // A plugin's operation is named by the plugin, not by a message of ours.
+        matches!(a, Action::Plugin(_))
+            || decl::repr_label(app, a).is_some()
+            || label_of(app, ctx, a, prio).is_some()
+    })
+}
+
+/// The shared assignment, with this host's mnemonics (the menu tests call it directly).
+#[cfg(test)]
+fn assign(cands: &[(Action, Option<KeyPress>)]) -> Vec<Option<KeyPress>> {
+    menu_core::assign(cands, mnemonic)
+}
+
+/// The shared rank, over the footer plan's pairs (the menu tests call it directly).
+#[cfg(test)]
+fn rank(
+    a: Action,
+    prio: &[(Action, Option<Msg>)],
+    own: &[Action],
+    everywhere: &[Action],
+) -> (usize, u8, usize) {
+    let prio: Vec<Action> = prio.iter().map(|(p, _)| *p).collect();
+    menu_core::rank(a, &prio, own, everywhere)
+}
+
+/// The label of a plugin's operation in the language of the interface.
+fn plugin_label(app: &App, ctx: Context, p: PluginAct) -> Option<String> {
+    konoma_plugin::host::acts::menu_label(&app.plugin_acts_in(ctx), &p, app.plugin_lang())
+        .map(str::to_string)
+}
+
+/// The `Space` menu of `ctx` as it is built: every item (when `gated` is false) or the ones that
+/// act now.
+fn build_actions(app: &App, ctx: Context, gated: bool) -> Vec<MenuItem> {
+    if ctx == Context::Diff {
+        return build_actions_in(app, ctx, gated, Some(&app.diff_presentation()));
+    }
+    build_actions_in(app, ctx, gated, None)
+}
+
+/// The host's shared operations a project canvas offers in its `Space` menu, in the order the
+/// legacy hub listed them. Each is listed iff its key acts there (the gate), like the plugin's own
+/// items; the canvas's other keys (`/`, `Tab`, `h`) are the project controls, not these.
+/// (`GitLaunchTool` exists only with the `git` feature.)
+fn project_shared_ops() -> Vec<Action> {
+    let mut ops = Vec::new();
+    #[cfg(feature = "git")]
+    ops.push(Action::GitLaunchTool);
+    ops.extend(PROJECT_SHARED_REST);
+    ops
+}
+
+/// The shared operations after the tool.
+const PROJECT_SHARED_REST: [Action; 9] = [
+    Action::Refresh,
+    Action::TabNewAfter,
+    Action::TabPrev,
+    Action::TabNext,
+    Action::ToggleTabList,
+    Action::PasteJump,
+    Action::ToggleHelp,
+    Action::ToggleFollow,
+    Action::Quit,
+];
+
+fn project_shared_rest_len() -> usize {
+    PROJECT_SHARED_REST.len()
+}
+
+/// Whether the canvas shows the changes screen (the old hub itself, which words back as `close`).
+fn on_changes_screen(app: &App) -> bool {
+    #[cfg(feature = "git")]
+    {
+        matches!(
+            app.canvas_screen(),
+            Some(Context::Screen(_, crate::keymap::Screen::Changes))
+        )
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+/// The project canvas's `Space` menu: the plugin's declared operations (their letters as the
+/// presentation assigned them) followed by the host's shared operations, all through the one
+/// shared builder. Items are decided over every candidate, so a letter does not move when another
+/// operation happens not to act right now.
+fn build_project_actions(app: &App, gated: bool) -> Vec<MenuItem> {
+    let ctx = Context::Canvas;
+    let Some((presentation, actions)) = app.project_presentation() else {
+        return vec![];
+    };
+    let declared = presentation.declared_actions_menu();
+    let acting = presentation.actions_menu();
+    let plugin = |index: usize| Action::Plugin(actions[index]);
+    let mut cands: Vec<(Action, Option<KeyPress>)> = declared
+        .iter()
+        .map(|item| (plugin(item.action), Some(item.key)))
+        .collect();
+    let own: Vec<Action> = cands.iter().map(|(a, _)| *a).collect();
+    let bound = app.keymaps.bound_actions_on(ctx, app.screen_keys_for(ctx));
+    let defaults = app
+        .keymaps
+        .default_ops
+        .get(&ctx)
+        .cloned()
+        .unwrap_or_default();
+    // The canvas's own controls (search, the screen cycle, back) are ordinary candidates on every
+    // screen, so the letters are assigned over the whole list; the gate below hides the ones whose
+    // key does not act here (`App::project_control_key_in`, the one answer to that).
+    let mut project_controls: Vec<Action> = Vec::new();
+    for control in [
+        ProjectMenuControl::Search,
+        ProjectMenuControl::NextScreen,
+        ProjectMenuControl::PrevScreen,
+        ProjectMenuControl::Back,
+    ] {
+        let action = Action::ProjectControl(control);
+        menu_core::add_candidate(&mut cands, action, app.project_control_letter(control));
+        project_controls.push(action);
+    }
+    let shared = project_shared_ops();
+    for &a in &shared {
+        let key = bound
+            .iter()
+            .find(|(_, b)| *b == a)
+            .and_then(|(k, _)| menu_core::plain_key(*k));
+        if key.is_some() || bound.iter().any(|(_, b)| *b == a) || defaults.contains(&a) {
+            menu_core::add_candidate(&mut cands, a, key);
+        }
+    }
+    // The old hub's order: the tool, then the canvas's controls, then the rest.
+    let tools = shared.len() - project_shared_rest_len();
+    let order: Vec<Action> = shared[..tools]
+        .iter()
+        .chain(project_controls.iter())
+        .chain(shared[tools..].iter())
+        .copied()
+        .collect();
+    menu_core::build_items(
+        cands,
+        &own,
+        &[],
+        &order,
+        mnemonic,
+        |a| {
+            !gated
+                || match a {
+                    Action::Plugin(_) => acting.iter().any(|i| plugin(i.action) == a),
+                    // Listed iff the control's key acts on this screen.
+                    Action::ProjectControl(control) => {
+                        app.project_control_key_in(&presentation, control).is_some()
+                    }
+                    _ => action_enabled(app, ctx, a),
+                }
+        },
+        |a| match a {
+            Action::Plugin(_) => declared
+                .iter()
+                .find(|i| plugin(i.action) == a)
+                .map(|i| i.label.clone()),
+            // The old hub worded back as `close` on the changes screen (the hub itself) and as
+            // `back` on every other.
+            Action::ProjectControl(control) => Some(
+                tr(
+                    app.lang,
+                    match control {
+                        ProjectMenuControl::Search => Msg::HintSearch,
+                        ProjectMenuControl::NextScreen => Msg::MenuNextScreen,
+                        ProjectMenuControl::PrevScreen => Msg::MenuPrevScreen,
+                        ProjectMenuControl::Back if on_changes_screen(app) => Msg::FtClose,
+                        ProjectMenuControl::Back => Msg::GitBack,
+                    },
+                )
+                .to_string(),
+            ),
+            _ => label_of(app, ctx, a, &[]).map(|m| tr(app.lang, m).to_string()),
+        },
+    )
+    .into_iter()
+    .map(|i| MenuItem {
+        key: i.key,
+        action: i.action,
+        label: i.label,
+    })
+    .collect()
+}
+
+fn build_actions_in(
+    app: &App,
+    ctx: Context,
+    gated: bool,
+    diff: Option<&DiffPresentation>,
+) -> Vec<MenuItem> {
+    if app.project_active() && ctx == Context::Canvas {
+        return build_project_actions(app, gated);
+    }
+    let prio = diff
+        .map(|p| footer::diff_priority(app, p))
+        .unwrap_or_else(|| footer::priority(app, ctx));
+    let cands = candidates(app, ctx, &prio);
+    let (own, everywhere) = diff
+        .map(help::diff_declared_groups)
+        .unwrap_or_else(|| help::declared_groups(app, ctx));
+    let prio_actions: Vec<Action> = prio.iter().map(|(a, _)| *a).collect();
+    menu_core::build_items(
+        cands,
+        &prio_actions,
+        &own,
+        &everywhere,
+        mnemonic,
+        |a| !gated || action_enabled(app, ctx, a),
+        |a| match a {
+            Action::Plugin(p) => plugin_label(app, ctx, p),
+            #[cfg(feature = "git")]
+            Action::OpenGitView => Some(
+                konoma_plugin::host::project::preview_presentation::project_menu_label(app.lang)
+                    .into(),
+            ),
+            _ if decl::repr_label(app, a).is_some() => decl::repr_label(app, a),
+            _ => label_of(app, ctx, a, &prio).map(|m| tr(app.lang, m).to_string()),
+        },
+    )
+    .into_iter()
+    .map(|i| MenuItem {
+        key: i.key,
+        action: i.action,
+        label: i.label,
+    })
+    .collect()
+}
+
+/// Every item the `Space` menu of `ctx` can hold, whether or not it acts right now, in menu order.
+#[cfg(test)]
+pub fn declared_actions_menu(app: &App, ctx: Context) -> Vec<MenuItem> {
+    build_actions(app, ctx, false)
+}
+
+fn actions_menu(app: &App, ctx: Context) -> Menu {
+    let items = build_actions(app, ctx, true);
+    Menu {
+        id: LeaderId::Actions,
+        title: tr(app.lang, Msg::WkActionsTitle).to_string(),
+        items,
+    }
+}
+
+#[cfg(test)]
+#[path = "menu_tests.rs"]
+mod tests;

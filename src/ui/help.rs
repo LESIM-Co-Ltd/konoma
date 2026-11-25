@@ -4,15 +4,11 @@
 // Shows a bordered popup centered on the screen, clearing what's underneath with Clear. Reflects
 // configured keys (copy, etc.).
 
-use crossterm::event::KeyCode;
-use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::layout::Rect;
+use ratatui::text::Line;
 use ratatui::Frame;
 
-use crate::app::{App, Mode};
-use crate::i18n::tr;
+use crate::app::App;
 use crate::keymap::{KeyPress, LeaderId};
 
 /// One help section = heading + a sequence of "key notation / description" rows. Each view builds and returns this.
@@ -35,150 +31,64 @@ impl HelpSection {
     }
 }
 
-/// Help body (lines). **View-specific sections are owned by each view** (`tree`/`preview`). Here we just gather the active
-/// view's sections + the common ones (Tabs/Copy/Global) and format them into a Line sequence. Reflects configured keys and language.
+/// Help body (lines): the sections of the screen the help was opened over, generated from the
+/// operations that act there and the keys they are bound to (`ops::help`).
 pub fn help_lines(app: &App) -> Vec<Line<'static>> {
-    // If a git overlay (o/L/G/b/detail) is in front, show its git-specific section (mode stays
-    // Tree/Preview underneath, so branching on mode alone would hide the git keys — the bug this
-    // fixes). Otherwise use the section for the normal mode.
-    let git_active = app.is_git_view()
-        || app.is_git_log()
-        || app.is_git_graph()
-        || app.is_git_branches()
-        || app.is_git_worktrees()
-        || app.is_git_detail();
-    let mut sections = if git_active {
-        crate::ui::git::help_sections(app)
-    } else {
-        match app.tab.mode {
-            Mode::Tree => crate::ui::tree::help_sections(app),
-            Mode::Preview => crate::ui::preview::help_sections(app),
-        }
-    };
-    sections.extend(common_sections(app));
-    render_sections(&sections)
+    render_sections(&crate::ops::help::sections(app))
 }
 
-/// Turn the sections into a Line sequence. Heading = bold underline, row = "  key (16-wide) description (dim)", with blank lines between.
+/// Turn the sections into a Line sequence (the one look every host's help has).
 fn render_sections(sections: &[HelpSection]) -> Vec<Line<'static>> {
-    let mut out: Vec<Line<'static>> = Vec::new();
-    for sec in sections {
-        if !out.is_empty() {
-            out.push(Line::from(""));
-        }
-        out.push(Line::from(
-            Span::from(sec.title.clone())
-                .add_modifier(Modifier::BOLD)
-                .underlined(),
-        ));
-        for (key, desc) in &sec.rows {
-            out.push(Line::from(vec![
-                Span::from(format!("  {key:<16}")).bold(),
-                Span::from(desc.clone()).dim(),
-            ]));
-        }
-    }
-    out
+    let view: Vec<(&str, &[(String, String)])> = sections
+        .iter()
+        .map(|s| (s.title.as_str(), s.rows.as_slice()))
+        .collect();
+    konoma_widgets::help_panel::help_lines(&view)
 }
 
 /// Build the help section for one leader (`y`/`Space`) from the actual keymap (with config applied).
 /// `prefix` is the trigger-key string to display (e.g. "y" / "Space"). Each view reuses this for the File/Copy sections.
-pub fn leader_section(app: &App, id: LeaderId, prefix: &str) -> Option<HelpSection> {
-    let menu = app.keymaps.leaders.get(&id)?;
-    let title = tr(app.lang, menu.title);
-    let mut sec = HelpSection::new(title.to_string());
-    for it in &menu.items {
-        let label = tr(app.lang, super::status::relabel_for_backend(app, it.label));
-        sec = sec.row(
-            format!("{prefix} {}", leader_key_str(it.key)),
-            label.to_string(),
-        );
+pub fn leader_section(
+    app: &App,
+    ctx: crate::keymap::Context,
+    id: LeaderId,
+    prefix: &str,
+) -> Option<HelpSection> {
+    let menu = crate::ops::menu::menu(app, ctx, id, crate::ops::menu::View::Help)?;
+    if menu.items.is_empty() {
+        return None;
+    }
+    let pairs: Vec<(KeyPress, String)> = menu
+        .items
+        .iter()
+        .map(|i| (i.key, i.label.clone()))
+        .collect();
+    let shared = konoma_host_core::help::menu_section(&menu.title, prefix, &pairs)?;
+    let mut sec = HelpSection::new(shared.title);
+    for (keys, label) in shared.rows {
+        sec = sec.row(keys, label);
     }
     Some(sec)
 }
 
-/// Turn a leader's suffix key into a display string (handles Space/modifiers/special keys).
-fn leader_key_str(kp: KeyPress) -> String {
-    let base = match kp.code {
-        KeyCode::Char(' ') => "Space".to_string(),
-        KeyCode::Char(c) => c.to_string(),
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Tab => "Tab".to_string(),
-        other => format!("{other:?}"),
-    };
-    if kp.ctrl {
-        format!("Ctrl-{base}")
-    } else {
-        base
-    }
-}
-
-/// Common operations that work in any mode (tabs, path copy, common keys). The copy keys reflect the config.
-fn common_sections(app: &App) -> Vec<HelpSection> {
-    let lang = app.lang;
-    let l = |m| tr(lang, m);
-    let mut out = vec![HelpSection::new(l(crate::i18n::Msg::HelpTabs))
-        .row("t", l(crate::i18n::Msg::HelpNewTab))
-        .row("I", l(crate::i18n::Msg::HelpNewTabAfter))
-        .row("[ / ]", l(crate::i18n::Msg::PrevNextTab))
-        .row("1 - 9", l(crate::i18n::Msg::HelpJumpTab))
-        .row("T", l(crate::i18n::Msg::HelpTabList))];
-    // Path copy comes from the `y` leader (reflects config). The title is "Copy path".
-    if let Some(sec) = leader_section(app, LeaderId::Copy, "y") {
-        out.push(sec);
-    }
-    out.push(
-        HelpSection::new(l(crate::i18n::Msg::HelpGlobal))
-            .row("p", l(crate::i18n::Msg::CyclePathStyle))
-            .row("P", l(crate::i18n::Msg::PasteJumpHelp))
-            .row("?", l(crate::i18n::Msg::ToggleHelp))
-            .row("q", l(crate::i18n::Msg::QuitOrCloseTab))
-            .row("Q", l(crate::i18n::Msg::Quit)),
-    );
-    out
-}
-
-/// The help popup's frame and the number of body rows inside it. Width caps at 66, height is
-/// content + border; both are fitted to `area`. Shared by `render` and the e2e tests so the
-/// tests know which help lines are actually on screen.
+/// The help popup's frame and the number of body rows inside it (shared with the standalone
+/// app). Used by the e2e tests to know which help lines are actually on screen.
+#[cfg(test)]
 pub fn popup_layout(line_count: usize, area: Rect) -> (Rect, u16) {
-    let w = 66.min(area.width.saturating_sub(2)).max(20);
-    let h = (line_count as u16 + 2)
-        .min(area.height.saturating_sub(2))
-        .max(3);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    (
-        Rect {
-            x,
-            y,
-            width: w,
-            height: h,
-        },
-        h.saturating_sub(2),
-    )
+    konoma_widgets::help_panel::popup_layout(line_count, area)
 }
 
 /// Render the full key list in a centered popup. `area` is the whole screen.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let lines = help_lines(app);
-    let (popup, inner_h) = popup_layout(lines.len(), area);
-
-    // Clamp the body's vertical scroll to the inner height.
-    let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
-    let scroll = app.help_scroll.min(max_scroll);
-
-    let title = tr(app.lang, crate::i18n::Msg::HelpTitle);
-    let block = Block::bordered()
-        .title(title)
-        .border_style(Style::new().fg(ratatui::style::Color::Cyan));
-    let para = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll, 0))
-        .alignment(Alignment::Left);
-
-    frame.render_widget(Clear, popup); // clear what's underneath before drawing
-    frame.render_widget(para, popup);
+    let title = crate::ops::core_help::help_title(app);
+    konoma_widgets::help_panel::render_panel(
+        frame.buffer_mut(),
+        area,
+        lines,
+        app.help_scroll,
+        title,
+    );
 }
 
 #[cfg(test)]

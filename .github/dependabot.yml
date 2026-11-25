@@ -10,16 +10,15 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     ignore:
-      # Vendored as a local fork under vendor/mermaid-text via [patch.crates-io], carrying a
-      # CJK char-boundary fix upstream has not applied to its class-diagram parser. Bumping the
-      # version in Cargo.toml without re-syncing that vendored tree by hand produces a build that
-      # silently ignores the patch, so this one is upgraded manually.
-      - dependency-name: "mermaid-text"
       # konoma measures mermaid text with skrifa at the exact version usvg reads glyph metrics
-      # with (see the note above `skrifa` in Cargo.toml and src/preview/mermaid/text_metrics.rs).
+      # with (see the note above `skrifa` in Cargo.toml and crates/konoma-svg/src/text_metrics.rs).
       # A bump of skrifa alone puts measurement and drawing on different versions and adds a
       # second copy of the crate, so skrifa only moves together with resvg/usvg, by hand.
       - dependency-name: "skrifa"
+      # 0.2.3 counts the halfwidth voiced marks as one column and ratatui-core 0.1.2 adds one more
+      # for each, so ratatui draws "ｶﾞ" three columns wide. Held back until ratatui-core is fixed.
+      - dependency-name: "unicode-width"
+        versions: [">=0.2.3"]
 
   - package-ecosystem: github-actions
     directory: "/"

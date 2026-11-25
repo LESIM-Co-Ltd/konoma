@@ -10,6 +10,45 @@
 //! machine* around all three presentations, not the rendering of any one of them.
 
 use super::*;
+use konoma_host_core::project::{self, DiffTarget, LandedMedia};
+
+/// Reduce the host's preview kinds to the shared diff decision's inputs. Keep every kind named
+/// so a new preview kind has to say what its diff offers.
+#[cfg(test)]
+pub(super) fn classify_diff_target(kind: &PreviewKind) -> DiffTarget {
+    use konoma_plugin::host::file_preview::{
+        test_hooks::plan_diff_target, FilePreviewFacts, FilePreviewPlan,
+    };
+    let (plan, path) = match kind {
+        PreviewKind::Plugin { id, hint, path } => (
+            FilePreviewPlan::Plugin {
+                id: id.clone(),
+                hint: hint.clone(),
+            },
+            path.as_path(),
+        ),
+        PreviewKind::Text(path) => (FilePreviewPlan::Text, path.as_path()),
+        PreviewKind::Command {
+            path,
+            template,
+            render_as,
+            detached,
+        } => (
+            FilePreviewPlan::Command {
+                template: template.clone(),
+                output: render_as.clone(),
+                detached: *detached,
+            },
+            path.as_path(),
+        ),
+        _ => (FilePreviewPlan::Unavailable, Path::new("")),
+    };
+    plan_diff_target(
+        &crate::plugins::shared_registry(&[]),
+        &plan,
+        FilePreviewFacts { path, bytes: None },
+    )
+}
 
 impl App {
     /// Test-only view of the current diff presentation — `Source`/`Rendered`/`Preview`
@@ -21,6 +60,14 @@ impl App {
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn diff_view_for_test(&self) -> DiffView {
         self.tab.diff_view
+    }
+
+    /// Test-only: the worker's answer for the diff's target kind has landed (without it the
+    /// diff offers no `Preview` representation).
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn diff_target_resolved_for_test(&self) -> bool {
+        self.diff_target_kind_cache.is_some()
     }
 
     /// Test-only view of `PerTab::diff_view_choice` — the presentation the user actually chose,
@@ -39,6 +86,14 @@ impl App {
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn preview_from_diff_for_test(&self) -> bool {
         self.tab.preview_from_diff
+    }
+
+    /// Test-only view of `PerTab::diff_read_context` (the baseline backend of the diff the
+    /// preview belongs to).
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn diff_read_context_for_test(&self) -> konoma_plugin::host::project::DiffReadContext {
+        self.tab.diff_read_context
     }
 
     /// Test-only view of the `Rendered` presentation's own gutter marks (row range, `DiffMark`) —
@@ -144,78 +199,48 @@ impl App {
         }
     }
 
-    /// The ordered list of presentations `path`'s diff can actually show: `[Source, Rendered,
-    /// Preview]` for Markdown, `[Source, Preview]` for a windowed-capable text kind (code, plain
-    /// text, `.mmd`, a text-mode delegated command), `[Rendered, Preview]` for Image/GIF/PDF (no text
-    /// `Source` to speak of — `Rendered` **is** the side-by-side view there, `App::diff_media_
-    /// active`), `[Source, Rendered, Preview]` for SVG (it is both a picture and real text), and
-    /// `[Source]` for anything else (video/archive/table/unsupported/an image-mode delegated command
-    /// — the binary-summary-line-only case, `App::diff_binary_summary_eligible`).
-    ///
-    /// A **deleted** file (`!path.exists()`) never has `Preview` — pruned unconditionally at the end.
-    /// Its kind is still judged by `resolve_preview` first (a glob rule matches by filename alone, so
-    /// Markdown/Code/Mermaid/SVG/PDF classify correctly even when deleted); only when that comes back
-    /// `CanNotPreview` (the remaining rules are MIME-based and need bytes to sniff) does this defer to
-    /// the media-diff worker's own byte-sniffed classification (`App::media_landed_outcome_for`),
-    /// which resolves in the same order: `Ready` names a real kind, `Summary`/`Unavailable` means
-    /// "not a picture" (`[Source]`), and `None` (not landed yet) treats a missing path as `[Rendered]`
-    /// with the computing body in the meantime.
+    /// Classify the host's preview and, only for a deleted `Other` target, consult the media
+    /// worker. The ordered presentations are decided by the shared project rules.
     pub(super) fn diff_representations(&self, path: &Path) -> Vec<DiffView> {
-        use DiffView::{Preview, Rendered, Source};
-        let resolved = self.diff_target_kind(path);
-        let mut reps = match resolved {
-            PreviewKind::Markdown(_) => vec![Source, Rendered, Preview],
-            PreviewKind::Code(_) | PreviewKind::Text(_) | PreviewKind::Mermaid(_) => {
-                vec![Source, Preview]
-            }
-            PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
-                vec![Source, Preview]
-            }
-            PreviewKind::Image(_) | PreviewKind::Pdf(_) => vec![Rendered, Preview],
-            PreviewKind::Svg(_) => vec![Source, Rendered, Preview],
-            _ if !path.exists() => match self.media_landed_outcome_for(path) {
-                Some(MediaDiffOutcome::Ready {
-                    kind: MediaDiffKind::Image | MediaDiffKind::Pdf,
-                    ..
-                }) => vec![Rendered],
-                Some(MediaDiffOutcome::Ready {
-                    kind: MediaDiffKind::Svg,
-                    ..
-                }) => vec![Source, Rendered],
-                Some(MediaDiffOutcome::Summary { .. }) | Some(MediaDiffOutcome::Unavailable) => {
-                    vec![Source]
-                }
-                None => vec![Rendered], // not landed yet — the "computing" body either way.
-            },
-            _ => vec![Source],
+        let (target, exists) = match &self.diff_target_kind_cache {
+            Some((p, resolved, exists)) if p == path => (resolved.diff_target, *exists),
+            _ if self.preview_resolution_tx.is_none() => (
+                crate::plugins::resolve_file(
+                    &self.cfg.preview.rules,
+                    &self.cfg.plugin_disabled(),
+                    self.cfg.external.preview_commands,
+                    path,
+                    None,
+                )
+                .diff_target,
+                path.exists(),
+            ),
+            _ => (DiffTarget::Other, false),
         };
-        if !path.exists() {
-            reps.retain(|v| *v != Preview);
-        }
-        reps
+        let landed = if target == DiffTarget::Other && !exists {
+            self.media_landed_outcome_for(path)
+                .map(|outcome| match outcome {
+                    MediaDiffOutcome::Ready {
+                        kind: MediaDiffKind::Image | MediaDiffKind::Pdf,
+                        ..
+                    } => LandedMedia::Picture,
+                    MediaDiffOutcome::Ready {
+                        kind: MediaDiffKind::Svg,
+                        ..
+                    } => LandedMedia::Svg,
+                    MediaDiffOutcome::Summary { .. } | MediaDiffOutcome::Unavailable => {
+                        LandedMedia::NotPicture
+                    }
+                })
+        } else {
+            None
+        };
+        project::diff_representations(target, exists, landed)
     }
 
-    /// `view` rounded to what `path` can actually show (`diff_representations`): the requested
-    /// presentation is used as-is if it's in the list; otherwise `Rendered`/`Source` substitute for
-    /// each other (whichever of the pair *is* in the list); failing that (a `Preview` request with
-    /// no substitute, or a substitute that also isn't in the list), the list's own first entry is
-    /// used.
+    /// Round `view` to the presentations for `path` using the shared project rules.
     pub(super) fn round_diff_view(&self, view: DiffView, path: &Path) -> DiffView {
-        let reps = self.diff_representations(path);
-        if reps.contains(&view) {
-            return view;
-        }
-        let substitute = match view {
-            DiffView::Rendered => Some(DiffView::Source),
-            DiffView::Source => Some(DiffView::Rendered),
-            DiffView::Preview => None,
-        };
-        if let Some(sub) = substitute {
-            if reps.contains(&sub) {
-                return sub;
-            }
-        }
-        reps.first().copied().unwrap_or(DiffView::Source)
+        project::round_diff_view(view, &self.diff_representations(path))
     }
 
     /// `R` in `Surface::PreviewGitDiff`: cycles through `diff_representations(path)` in list order
@@ -236,15 +261,14 @@ impl App {
             return;
         };
         let reps = self.diff_representations(&path);
-        if reps.len() < 2 {
+        let Some(transition) = konoma_plugin::host::project::diff_keys::diff_view_transition(
+            self.tab.diff_view,
+            &reps,
+        ) else {
             return;
-        }
-        let idx = reps
-            .iter()
-            .position(|&v| v == self.tab.diff_view)
-            .unwrap_or(0);
-        let next = reps[(idx + 1) % reps.len()];
-        self.tab.diff_view_choice = next;
+        };
+        self.tab.diff_view_choice = transition.choice;
+        let next = transition.effective;
         if next == DiffView::Preview {
             #[cfg(feature = "git")]
             self.enter_diff_preview_representation(&path);
@@ -283,7 +307,7 @@ impl App {
     /// same "keep a little context above" convention `follow_scroll_to_first_change`'s own windowed-
     /// preview branch already uses for the byte-offset case.
     pub(crate) fn scroll_preview_to_row_with_context(&mut self, row: usize) {
-        let top = row.saturating_sub(3);
+        let top = konoma_plugin::host::project::preview_gutter::first_change_position(row).top;
         self.tab.preview_scroll = top.min(u16::MAX as usize) as u16;
     }
 
@@ -311,23 +335,22 @@ impl App {
     /// ([[hint-shown-iff-key-acts]])", generalized to "only when it would actually change anything":
     /// `None` when the target has just one representation (mirrors `cycle_diff_view`'s own no-op
     /// gate exactly), otherwise the `Msg` naming whichever presentation `R` would switch *to*.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn diff_view_cycle_hint(&self) -> Option<crate::i18n::Msg> {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
         };
         let reps = self.diff_representations(path);
-        if reps.len() < 2 {
-            return None;
-        }
-        let idx = reps
-            .iter()
-            .position(|&v| v == self.tab.diff_view)
-            .unwrap_or(0);
-        Some(match reps[(idx + 1) % reps.len()] {
-            DiffView::Source => crate::i18n::Msg::DiffViewSource,
-            DiffView::Rendered => crate::i18n::Msg::DiffViewRendered,
-            DiffView::Preview => crate::i18n::Msg::DiffViewPreview,
-        })
+        Some(
+            match konoma_plugin::host::project::diff_keys::next_diff_view(
+                self.tab.diff_view,
+                &reps,
+            )? {
+                DiffView::Source => crate::i18n::Msg::DiffViewSource,
+                DiffView::Rendered => crate::i18n::Msg::DiffViewRendered,
+                DiffView::Preview => crate::i18n::Msg::DiffViewPreview,
+            },
+        )
     }
 
     /// `R`'s **description** for the `?` help row in `Surface::PreviewGitDiff` — unlike
@@ -338,6 +361,7 @@ impl App {
     /// `R` to do), `DiffViewCycleHelpPair` ("source ⇄ preview") for a target with two (also used
     /// for Image/PDF's `Rendered ⇄ Preview`), and `DiffViewCycleHelp` ("source → rendered →
     /// preview") for a target with three (Markdown, and SVG).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn diff_view_help_hint(&self) -> Option<crate::i18n::Msg> {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
@@ -355,11 +379,17 @@ impl App {
     /// `main.rs`'s `Action::PreviewBack` already routing `q` back through `close_git_diff` whenever
     /// this flag is set. Falls through to the ordinary `toggle_md_raw` for every other preview
     /// (including a plain non-diff Markdown one), so rebinding nothing and adding no new keymap
-    /// entry keeps this a drop-in replacement for `main.rs`'s old `Action::ToggleMarkdownRaw` arm.
+    /// entry keeps this a drop-in replacement for `main.rs`'s old `Action::CycleRepresentation` arm.
     pub fn toggle_md_raw_or_return_to_diff(&mut self) {
         #[cfg(feature = "git")]
         if self.tab.preview_from_diff {
             self.return_to_diff_from_preview();
+            return;
+        }
+        // A plugin that declares several representations: the host walks them.
+        // (When the walk is the key's business but the session is busy, nothing happens: the
+        // host's own toggle must not answer for a plugin whose representations it does not own.)
+        if self.cycle_repr() || self.repr_step().is_some() {
             return;
         }
         self.toggle_md_raw();
@@ -373,29 +403,23 @@ impl App {
     /// to — `toggle_md_raw` only acts on a *decorated* kind, excluding every image preview, so
     /// falling through would have been a no-op regardless *except* for a standalone `.mmd`/`.mermaid`
     /// file's full-screen image preview (`[ui] mermaid = "image"`, still `is_decorated_kind`): pressing
-    /// `R` there, never advertised by any hint on that surface, silently flipped `md_raw` and changed
+    /// `R` there, never advertised by any hint on that surface, silently flipped the chosen representation (`tab.repr`) and changed
     /// what a *later* Markdown preview in the same tab would show, entirely outside any diff.
     /// [[hint-shown-iff-key-acts]]: the key must act *only* when its hint is shown, and the image
     /// surface's own hint is never shown outside the `preview_from_diff` case — so the handler must
-    /// not act outside it either.
+    /// not act outside it either. The one other thing `R` does here: a picture plugin that declares
+    /// several representations is walked by the host (`App::cycle_repr`); a diagram's picture
+    /// declares none for the host to walk, so it stays a no-op.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn image_return_to_diff(&mut self) {
         #[cfg(feature = "git")]
         if self.tab.preview_from_diff {
             self.return_to_diff_from_preview();
+            return;
         }
-    }
-
-    /// `R`'s meaning in `Surface::PreviewText` right now — `Some(HintDiff)` while `preview_from_diff`
-    /// is set (this preview *is* the diff's `Preview` representation), otherwise the ordinary raw/
-    /// rendered toggle hint `ui/preview.rs::footer_hints` already computes for every other Markdown/
-    /// Mermaid preview. Kept here (rather than inlined at the one call site) so the "which case am I
-    /// in" logic lives next to `toggle_md_raw_or_return_to_diff`, the key handler it mirrors.
-    pub fn diff_preview_raw_hint(&self) -> Option<crate::i18n::Msg> {
-        if self.tab.preview_from_diff {
-            return Some(crate::i18n::Msg::HintReturnToDiff);
-        }
-        None
+        // Not a diff's preview: a plugin that declares several representations is walked by the
+        // host (a standard picture plugin, and a diagram's picture, declare none to walk).
+        self.cycle_repr();
     }
 
     /// Enters the diff's `Preview` representation for `path` — an ordinary content preview
@@ -415,13 +439,19 @@ impl App {
     /// already-open diff).
     #[cfg(feature = "git")]
     pub(super) fn enter_diff_preview_representation(&mut self, path: &Path) {
-        let came_from_git_view = self.tab.came_from_git_view;
+        let read_context = self.tab.diff_read_context;
         let diff_follow_scope = self.diff_follow_scope;
-        self.enter_preview(path);
-        self.tab.came_from_git_view = came_from_git_view;
-        self.diff_follow_scope = diff_follow_scope;
-        self.tab.preview_from_diff = true;
-        self.follow_scroll_to_first_change();
+        // Always the same open going on: a diff's target answer choosing this representation, `R`,
+        // or the open that just made its own identity (`open_git_diff_with`) — never a new open
+        // by itself, so the load identity (`PerTab::load_id`) is kept.
+        self.enter_preview_in(
+            path,
+            super::Landing::DiffPreview {
+                read_context,
+                follow_scope: diff_follow_scope,
+            },
+            true,
+        );
     }
 
     /// The reverse of `enter_diff_preview_representation`: `R` from the `Preview` representation
@@ -429,8 +459,8 @@ impl App {
     /// explicit choice: "`R`＝Source の diff に戻る", not a fresh open). Reuses `open_git_diff_with`
     /// for every other bit of state it resets (the windowed reader, `md_cache`, the raw-diff cache,
     /// ...) and overrides just the fields that a fresh open would otherwise get wrong: the
-    /// presentation (`Source`, not the config default) and `came_from_git_view`/`diff_follow_scope`
-    /// (which a fresh open always resets to their own rules — carried over here instead, for the
+    /// presentation (`Source`, not the config default) and `diff_follow_scope`
+    /// (which a fresh open always resets to its own rule — carried over here instead, for the
     /// same reason `diff_jump_changed` carries them over around its own call: this is a *return*,
     /// not a fresh open).
     #[cfg(feature = "git")]
@@ -438,12 +468,21 @@ impl App {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
+        let transition = konoma_plugin::host::project::diff_keys::diff_view_transition(
+            DiffView::Preview,
+            // Reopening refreshes and rounds the target below. Returning from Preview selects
+            // Source independently of those capabilities; do not resolve the file twice here.
+            &[],
+        )
+        .expect("Preview returns to Source");
         self.open_git_diff_with(
             &path,
             super::git_view::DiffOpen {
+                read_context: self.tab.diff_read_context,
                 follow_scope: self.diff_follow_scope,
-                view: Some(DiffView::Source),
-                came_from_git_view: Some(self.tab.came_from_git_view),
+                view: Some(transition.choice),
+                // `R` is a representation change of the open the user made: same identity.
+                same_open: true,
                 ..Default::default()
             },
         );

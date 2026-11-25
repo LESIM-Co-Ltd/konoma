@@ -53,7 +53,7 @@ flowchart LR
 konoma lays a diagram out at the size of the text around it and never blows it up: a small diagram
 stays small. A busy one is genuinely wide, so it uses the whole pane — this is konoma's own preview
 dispatch, every format it knows and the three ways a picture can reach a terminal. Press `Tab` then
-`Enter` to open it full screen, `+`/`-` to zoom, `0` to fit.
+`Enter` to open it full screen, `+`/`-` to zoom, `=` to fit.
 
 ```mermaid
 flowchart LR

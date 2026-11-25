@@ -1,0 +1,39 @@
+[package]
+name = "konoma-vcs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's Git and Jujutsu project screens"
+
+[dependencies]
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
+konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0" }
+konoma-file-plugins = { path = "../konoma-file-plugins", version = "0.1.0", default-features = false, optional = true }
+
+[features]
+default = ["git", "app"]
+git = ["konoma-vcs-core/git"]
+# Only the standalone host carries the standard file Preview plugins. Their rendering is
+# app-free; their own standalone entry points are not needed here.
+app = ["konoma-plugin/app", "dep:konoma-file-plugins"]
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+
+[[bin]]
+name = "konoma-vcs"
+path = "src/main.rs"
+required-features = ["app"]
+
+[[test]]
+name = "program"
+path = "tests/program.rs"
+required-features = ["app"]
+
+[[test]]
+name = "child_icons"
+path = "tests/child_icons.rs"
+required-features = ["app"]

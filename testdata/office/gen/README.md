@@ -2,7 +2,7 @@
 
 Own content only (no third-party files). Test-only: `Cargo.toml` excludes `/testdata` like
 `/snapshots`, and the tests skip when a file is absent. Used by
-`src/preview/office/tests_complex.rs` and the `e2e_complex_*` tests in `src/e2e_tests.rs`.
+`crates/konoma-office-core/src/tests_complex.rs` and the `e2e_complex_*` tests in `src/e2e_tests.rs`.
 
 | files | what is in them | made by |
 |---|---|---|

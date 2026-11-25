@@ -17,16 +17,37 @@ else they fall back to half-blocks, which is too coarse to judge a rendering cha
 
 ## Before submitting a PR
 
-The definition of done is **zero warnings and all tests green** for both feature
-configurations:
+While you work, run only the tests related to your change — `cargo nextest run -p <crate>`,
+narrowed with `-E 'test(<name>)'` if you like — and `cargo clippy -p <crate> --all-targets`.
+Repeating the whole suite after every edit is the largest cost in waiting time.
+
+Run the whole suite once, before the PR is merged, on a branch brought up to date with the
+branch it merges into. The definition of done is **zero warnings and all tests green** for both
+feature configurations:
 
 ```bash
 cargo fmt --all
-cargo clippy --all-targets -- -D warnings
-cargo clippy --all-targets --no-default-features -- -D warnings
-cargo test
-cargo test --no-default-features
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo nextest run --workspace               # install once: cargo install cargo-nextest --locked
+cargo test --workspace --doc                # nextest does not run doctests
+cargo nextest run --no-default-features -p konoma -p konoma-vcs-core -p konoma-widgets
 ```
+
+`--no-default-features` changes only `konoma`, `konoma-vcs-core` and `konoma-widgets` (the crates
+that see the `git` feature); every other crate builds the same test binary either way, so the
+no-git tests are run for those three. CI runs the whole suite for both feature sets.
+
+The repository is a Cargo workspace: the `konoma` binary at the root (`src/`) plus the
+host-independent engines under `crates/` — `konoma-base` (small shared utilities),
+`konoma-svg` (SVG rasterising and fonts), `konoma-math-core`, `konoma-mermaid-core`,
+`konoma-media-core` (PDF / video), `konoma-office-core` (Word / spreadsheet / slide
+documents), `konoma-vcs-core` (git / jj), `konoma-markdown-core` (the Markdown block model
+and diff), `konoma-widgets` (display parts for ratatui that do not depend on the app: windowed file
+reading, kitty graphics transmit, image layout, diff rows, icon glyphs and the Markdown document
+renderer), and `konoma-test-support` (shared test helpers). The cores know nothing about
+the UI, the config or the i18n catalogue; the host passes in whatever text they show.
+Use `--workspace` so every crate is checked, and `-p <crate>` to work on one.
 
 - The `git` feature is on by default; `--no-default-features` drops it. Keep both building.
 - Avoid panics in runtime code paths: return `Result` and add context with `anyhow`.

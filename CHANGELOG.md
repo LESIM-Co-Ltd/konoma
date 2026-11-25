@@ -6,10 +6,305 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-11-25
+
+- Plugin architecture, stage 5: the standard feature crates are published on crates.io (`konoma-base`, `konoma-svg`, `konoma-plugin`, `konoma-widgets` and the `*-core` / plugin crates). Eight of them (table, code, markdown, mermaid, math, media, office, vcs) also live in their own repositories under LESIM-Co-Ltd, split with their history.
+- `mermaid-text` moves to upstream 0.58 and the vendored fork is removed (the CJK class-diagram guard is now upstream).
+- `konoma-test-support` resolves sample files and the repository root from the run-time package directory, so tests in a split repository no longer skip silently.
+- `THIRD-PARTY-LICENSES.md` is regenerated and now lists `rmp-serde`, `semver` and `toml_edit`.
+
+- Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
+- `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
+- Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
+- Internal: move the graph's branch panel into a pushed `konoma-vcs` screen alongside the legacy hub. Graph `b` takes precedence over the shared branches-tab key; changes/log retain that tab shortcut. The panel preserves legacy rows, tentative visibility, HEAD protection, priority reordering (including order retained on cancel), apply/base derivation, navigation, and localized footer/help. It has no filter and closes on tab changes. SDK screens can disable filtering and declare a transient lifetime; `PopScreen` returns to the underlying cursor. Project-screen actions may use Enter and J/K. The host still supplies title/tabs/frame; graph preferences retain the plugin settings described below.
+
+- Internal: full-screen project views now refetch on a second tab because their cache keys include the tab; movement on every project list now skips non-selectable rows and uses the keymap. Graph Left returns like `h` (legacy Left was a no-op); non-graph lists retain the prior fallback and detail keeps horizontal panning. Closing an active or inactive tab evicts its cached project views and notifies shared sessions to release only that tab's state; late view replies cannot recreate those entries. Protocol-2 children opt into `TabClosed` notices, and list-strip wire data has explicit chip and width limits.
+
+- Internal: move the Git/jj commit graph into `konoma-vcs` alongside the legacy hub, with styled lanes, a fixed legend, per-tab base/branch/range state and shared detail/copy actions. The SDK carries list titles/strips and tab/icon contexts. The project host supplies the tabs, frame, title and footer; `g` keeps its reserved top-of-list meaning, git omits the no-op `a`, empty repositories show a non-selectable message, worktree-row copy is silent, and `q` follows project-screen navigation. Graph preferences live under `[plugins.git]` / `[plugins.jj]`; legacy `[ui]` aliases follow in PR 5.
+
+- Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
+
+- Project confirmations keep cancellation visible when fitting narrow/CJK status lines, safely cancel malformed prompt stages, and color choices by an explicit `ConfirmChoice::destructive()` declaration instead of their key. Child-process fallback rows are always non-selectable and all appear when filtering has no matches; VCS builds without the `git` feature omit write actions on every screen.
+
+- Worktree changes compute once per `d` and reuse that snapshot for the first diff view; empty refreshes show a message. Worktree filters match branch and path separately, and vanished switch targets keep the project screen. Project help keeps open-key aliases not covered by plugin help. Project list filters ignore control/Alt chords and control characters while preserving Shift text; the legacy hub already ignores Ctrl chords and is unchanged.
+
+- Project list help now lists `/` on log and changes screens, where it filters rows, and hides `V` on both because they do not enable marks. Markable project lists still show `V` and toggle row marks.
+
+- Project confirmations now cancel with `n` / `N` / `Esc` and the host's localized cancellation flash, accept uppercase fallback keys, and ignore `Enter`; `n` and `N` are reserved for cancelling.
+
+- Plugin actions can declare hint groups to share one footer token and help row, with enabled, rebound keys and independent `Space` menu entries.
+
+- Project actions can opt into `TextInput::keep_on_failure()` to reopen a failed action's text prompt with its submitted text and original context when focus permits a retry.
+
+- Project confirmations can include the invoked row's short `ListRow::name` through `{row}`, and non-destructive confirmations can use `Confirmation::setting` to respect a boolean plugin preference.
+
+- Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
+- `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
+
+### Added
+- **Project host API data.** Project view requests carry the screen and pushed selection; action contexts carry row values, marked rows and dialog answers. Plugins can declare static read-only mode and typed refresh targets. These fields require protocol 2, preserve legacy bytes when absent, and validate named refresh screens.
+- **Project host API data.** Project view requests carry the screen and pushed selection; action contexts carry row values, marked rows and dialog answers. Plugins can declare static read-only mode and typed refresh targets. These fields require protocol 2, preserve legacy bytes when absent, and validate named refresh screens.
+- **Project declaration checks.** The plugin registry bounds and validates project paths, markers, screen keys and choice prompts, with typed English/Japanese refusals. Project screen key contexts no longer collide with host context names. Standalone apps report unsupported project navigation; protocol refusals report the actual supported versions and handle manifest panics. The expanded SDK data types are non-exhaustive and list rows have field builders.
+
+- **Git and jj project screens.** `p` now opens version-control screens supplied by the standard `git` and `jj` plugins (crate `konoma-vcs`) instead of the built-in hub, with the same frame, titles, footers and help. The screens are tabs drawn on the right of the top edge; `Tab` / `Shift-Tab` walk them, and each has a jump key (`p` changes, `b` branches, `w` worktrees; the log and the graph have none by default) that you rebind in `[keys.git]` / `[keys.jj]` as `goto_changes`, `goto_log`, `goto_graph`, `goto_branches`, `goto_worktrees`. `q` / `h` on a top-level screen return to where `p` was pressed (on a pushed screen such as a commit's detail, `q` returns to the screen below it, and on the Git detail `h` scrolls sideways), and `Esc` on a preview opened from a project returns to the project.
+- The log and the branches screens show an empty row (`(no commits)`, `(no branches)`) instead of refusing to open; checkout and create on the branches screen stay there; a discard from a diff opened in the tree goes to the changes screen.
+- While a write runs, the other action keys are hidden and do nothing, and quitting konoma asks first.
+- The standalone program `konoma-vcs [directory]` opens the version-control project of a directory (the current one if omitted); it exits with 2 when the directory does not exist, is not a directory or holds no project (or the arguments are wrong), and with 1 when reading the directory fails, the project cannot be opened, or the terminal is unusable.
+- Project input received during a view fetch is retained for the current screen and dispatched
+  after its reply, including dialogs and navigation. Refreshes preserve row identities, queued
+  actions recheck their guards, and screen-jump collisions only suppress keys in project screens.
+- Project providers now open from `p`, with declared screen tabs, row actions and pushed screens.
+  The host renders their lists, diffs, text and documents, supplies selection and prompt answers,
+  runs one worker per project and refreshes only the action's declared targets. The shared write
+  policy also respects a plugin's own read-only declaration.
+- Static project marker discovery runs on a worker and keeps its results with each host tab.
+  Project watch paths and ancestor marker changes trigger discovery again.
+- Plugin navigation outcomes open files at a line, full-screen diffs, worktree roots and new tabs
+  through the host's existing navigation paths.
+- One host write policy checks plugin actions and the existing git/jj write executors, including
+  checkout through Enter and writes resumed after dialogs. `[plugins.git] read_only = true` and
+  `[plugins.jj] read_only = true` also cover the host's current version-control screens.
+- **Project plugin API.** Plugins can declare detection markers, screens and row kinds, a chip, watch paths and a static-only version-control capability flag. Actions gain typed project contexts and confirmation, text and list prompts; list rows gain an independent multi-selection mark. Project input and five navigation outcomes use protocol 2, while ordinary file plugins retain protocol 1 support. Host project screens and the write guard follow in a later change.
+- **Plugin update status.** Startup checks the public crates.io sparse index at most once per day and reports compatible updates separately from versions requiring a newer konoma. `konoma plugin list` also lists standard plugins and queries their current update status with a bounded timeout, without changing the saved startup check time. It reports unavailable or disabled checks; `[external] update_check = false` disables both startup and list queries.
+- **Extensible SDK validation errors.** The registry error and manifest reason enums are non-exhaustive, allowing new rejection reasons without breaking callers' matches.
+- **Plugins that are programs of their own.** `[plugins.<id>] command = "my-viewer"` (with optional `args`) registers a program
+  that speaks konoma's plugin protocol over a pipe, and `konoma --plugin PATH` loads one for a single run (repeatable, for
+  developing a plugin). konoma asks the program for its manifest once and keeps it in its cache directory (keyed by the
+  program's real path and its `args`; a change of the program's size, mtime or inode makes it stale, and a script edited under
+  an unchanged interpreter is corrected when the program next starts), so starting konoma does not run it; the program is started when a file it
+  takes is opened, stopped when idle, started again after it is rebuilt (`r`), and stopped when konoma exits. A program that
+  is missing, does not start, does not answer in 5 seconds or whose id is taken is left out, and the start-up message says
+  why. konoma starts the program as `<command> <args> --serve` (it adds `--serve` itself, last, so a program run through an
+  interpreter works too; `args` are passed as written, and the program runs in a folder of its own, so name files by absolute path). It is a user's plugin: it reads only the tab's folder, the shown file's folder and `read_dirs`. `konoma --plugins`
+  lists these programs and their commands.
+- **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
+  `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
+  What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,
+  then the standard plugins), and `[plugins.<id>] enabled = false` switches one off: its files go on to plain text if they
+  read as text, otherwise to `[can not preview]`. An unknown id in `[plugins.*]` is reported at startup. A plugin's own
+  settings live in its table and replace the matching `[ui]` keys, which are still read when the plugin table does not set
+  the value: `[plugins.csv] rainbow` (and `[plugins.spreadsheet] rainbow`), `[plugins.code] syntax_highlight`,
+  `[plugins.svg] max_px`, `[plugins.mermaid] mode` / `theme` / `curve` / `routing` / `rows`, `[plugins.math] mode` / `color`.
+  A value of another type than the plugin declares (`[plugins.csv] rainbow = "yes"`) is named at startup and the plugin's
+  default is used.
+- **A plugin's own actions are part of konoma's key system.** What a plugin declares (`Manifest::actions`: a key, a short label, a
+  help text, a footer priority, whether it writes) now gets its key, its `w:width`-style entry in the footer, a section of the
+  `?` help under the plugin's name and a place in the `Space` menu, with no code of the plugin's own. Whether an action works
+  now is the open session's word (`Session::enabled`), asked once when the session comes back from a job and used by the key
+  handler, the footer, the help and the menu alike, so a hint is shown only while its key acts. The action runs on the worker
+  and `Outcome::Redraw` asks for the view again. `[keys.<plugin id>]` rebinds an action's key (`W = "width"`) or takes it away
+  (`w = "noop"`). A plugin cannot take a key of the host's layers: the action is registered without the key, stays in the
+  `Space` menu, and the startup message says so. A plugin built for another plugin API version is switched off with a message.
+  `[plugins.<id>] read_only = true` stops the actions a plugin declares as writing (the standard plugins declare no actions yet,
+  so it does not touch them). The plugin API gained `Manifest::shows` (what the main
+  view shows, so a text-only plugin can use `s`), `Act::context`, function keys `F1` to `F12`, `&str` where a translated text is
+  expected, and test helpers (`view_table`, `view_document`, `view_image`, `open_bytes`, `check_hints`).
+  The host draws a plugin by what it declares (`Manifest::shows`, `converts`, `file_text`, `unavailable`) and by the type of view
+  it returns, not by its id, so another plugin can stand in for a standard one (a text view a plugin makes is read in windows
+  like a file; what the host shows when a plugin cannot show a file is the plugin's own `Manifest::unavailable`); how to add a
+  plugin of your own is described in the "Write a plugin" guide. Only the standard `mermaid` and `math` plugins' own SVG is trusted: any other
+  plugin's SVG is drawn by the supervised child process, and an SVG that names no directory reads no file. `[plugins.math] color`
+  is checked inside the `math` plugin as well. A plugin that reads heavily (one that names a work group) is read again only when
+  its file changed (its modification time, size, inode or change time), or when an event names the file itself and the file was
+  modified within 2 seconds of when it was last read (see *Reading again* below). A plugin that assigns files but declares no `shows` is
+  named at startup (and by `testing::check_manifest`), and a view of a type it did not declare is explained on screen. The
+  side-by-side image diff and follow's handling of videos go by what a plugin declares and the file's format, so they work for
+  a plugin that stands in for a standard one too. `R` cycles any representations a plugin declares, whatever they are called;
+  only a document whose two representations are `rendered` and `source` gets the host's own source view.
+- **`O` lists the pages** of a PDF, a workbook and a presentation with two or more pages ("Page n", the sheet names, "Slide n: title"; the current page is marked and selected), and `Enter` goes to the chosen one. On a Markdown or Word document `O` is still the heading outline; on a one-page file it does nothing (and the hint is not shown).
+- **`konoma <file>`** opens the file's folder as the tree with the file selected and previewed at once (`q` goes back to the
+  tree, as for any preview). With saved tabs (`restore_tabs`) the tabs come back first and the file opens in the tab that is on
+  screen. A pipe or a device is refused as before.
+- **The startup message tells you about old setting names**, once: a `[ui]` setting that moved into `[plugins.<id>]`
+  (`md_*`, `mermaid*`, `math`, `math_color`, `csv_rainbow`, `syntax_highlight`, `svg_max_px`) is still read, and the footer says
+  `config: [ui] md_alerts is an old name — write [plugins.markdown] alerts instead` until you move it. A key a plugin does not
+  have (`[plugins.markdown] foo = 1`) is reported and ignored. What is wrong comes first on the footer and the hints last; what
+  does not fit the terminal width is counted as `(+n more)` instead of being cut off.
+- **`o` opens the file in another app** (the `open` verb; `e` edits). In the tree, in every preview and diff, and on a row of the
+  changes list: an Office file goes to the Office apps (Microsoft's, then LibreOffice, then the OS default, the same chain `e`
+  already used for Office files), anything else to the OS default (`open` / `xdg-open`). It runs on a worker, so the screen
+  never waits. `[external] office_apps` and `[external] open_links` stop it (the hint disappears with them); `[editor] ext` is
+  `e`'s and does not reach `o`. A directory is not opened. Action name: `open_external`.
+- **The project's screen and tool from everywhere**: `p` (the Git / jj hub) and `!` (lazygit / lazyjj, `[git] tool` / `[jj] tool`)
+  now work in the tree and in every kind of preview and diff, not only in the hub. Outside a repository, with
+  `[external] git_tool = false` for `!`, they are not offered and say why.
+- **`Tab` / `Shift-Tab` walk the version-control screens**: changes, log, graph, branches, worktrees (jj has no worktree screen,
+  so its cycle skips it), listed in the footer and the `?` help. `b` and `w` still go straight there. Action names:
+  `git_screen_next`, `git_screen_prev`.
+- **`/` filters the changes list, the log and the graph** by the text each row shows (case-insensitive), the way it already filtered
+  the branch and worktree lists, with the same input line in the footer, `Enter` to keep the query and `Esc` to drop it (a second
+  `Esc` leaves the screen). All five lists now share one filter, so a pasted text also reaches the worktree list's query.
+  **The outline / page list, the tab list and the bookmark list filter the same way** (the query shows in the title and starts
+  empty each time the list opens; in the bookmark list the letters are text while you type, and a hidden row cannot be deleted
+  or edited). Action name: `list_filter_start`.
+- **`n` / `N` step through the changes when nothing is being searched**: in a code or text preview to the next / previous block of
+  the git change gutter, in a rendered document to the next / previous changed block, in a diff to the next / previous change
+  block of the file (`diff_next_change`, `diff_prev_change`; moving between changed files is on `Ctrl-n` / `Ctrl-p` now). While a
+  search is active they step through its matches as before. The footer offers `n/N:change` only when the file has a change.
+- **`r` reads again everywhere** (it was the tree's only): a preview, a diff, and the changes list, the log, the graph, the branch
+  and worktree lists.
+- **`e` works in a diff and on the changes list**: in a diff it opens the editor at the line of the change block on screen (the
+  block `n` / `N` last landed on), on the changes list at the file of the row. **`Ctrl-t` on a row of the changes list** opens
+  that file in a new tab.
+- **Line wrapping can be switched while running**: `,` then `w` in a text or document preview (action `toggle_wrap`).
+- **Canvas views for plugin authors (free drawing).** A plugin that needs more than konoma's display types (a chart, a game, a form)
+  can answer `View::Canvas(CanvasView)`: a grid of styled cells plus picture placements, as plain data that konoma copies to the
+  screen (a plugin never draws into konoma's own buffer, so it works the same as a child process later). The size is the real one
+  (`ViewReq::cols` / `rows` / `cell_px`, asked again after a resize) and the terminal's colour depth is in `TermCaps::colors`
+  (konoma does not convert colours). A new key context `canvas`: konoma keeps the global keys, `q`, `Esc`, the menus (`Space`,
+  `,`), `e` `o` `p` `!`, `R` `J` `K` `O` and the keys every file preview shares (`y` `Y` `m` `'` `r` `Ctrl-n` `Ctrl-p`, and `Ctrl-t`, which is only reserved: it does nothing in a canvas);
+  everything else is the plugin's, through the actions it declares (they show in the footer, the `?` help and the `Space` menu
+  like any plugin action). A canvas can ask for text input (`CanvasView::text_input`): every key but `Esc` then goes to the new
+  `Session::key`, and `Esc` always leaves. It can ask to be drawn again (`redraw_after`, 33 ms to 24 h, only while it is fully
+  visible) and place pictures over the cells (`CanvasImage`: raw pixels, encoded images, SVG in the supervised child process,
+  files, animations; the plugin's `id` is the picture's identity, so a redraw that only moves it sends nothing and `None` means
+  unchanged), decoded on the worker with memory and count limits. `CanvasView::check` is the one contract of "plain data is safe",
+  and a canvas that fails it is refused with a message. The new crate `konoma-plugin-ratatui` converts a ratatui `Buffer`
+  into a canvas, so a plugin can draw with ratatui widgets (`examples/clock.rs` is a complete plugin). None of the standard plugins draws a canvas, and what they show does not change, with one
+  exception: the text mermaid diagram (`[ui] mermaid = "text"`, and `R` on a `.mmd` file) is laid out at the preview's real
+  width again, as it was in v0.31.0, instead of a fixed 80 columns (it is laid out again at the new width when the window is
+  resized).
+- **How a canvas and the plugin API behave around it (details for plugin authors).**
+  - *Reading again.* A plugin that keeps a state of its own (a canvas) or reads heavily (a work group) is opened again only when
+    its file's stamp (modification time, size, inode, change time) changed, so an event for `.git`, another file or an unknown
+    cause no longer throws a canvas's state away. An FS event that names the shown file itself reads it again too when the stamp
+    cannot be trusted yet -- the file was modified within 2 seconds of the moment the stamp was taken (git's "racily clean" rule: a
+    file system with coarse time cannot hide a rewrite made in the same tick). A late second event for a save that was already
+    read finds an old modification time and an equal stamp, and does not read a large workbook again. `r` reads a **canvas** file again even when nothing changed (it is you
+    asking); every other plugin keeps the rule above, so `r` on an unchanged workbook reads nothing.
+  - *`Manifest::sized`.* A plugin whose view depends on the width (a text diagram) says so and is asked again after a resize;
+    the answer comes through the worker and is drawn without another key.
+  - *Texts.* What a plugin says to the interface at run time (a failure's message and detail, a flash, a representation or page
+    name, a table's frame title) and the texts of its declarations that are shown (its name, an action's label and help, a
+    setting's help, a verb label) is cut at 512 characters and has its control characters (a newline and a tab stay) and the
+    kitty placeholder character U+10EEEE removed; a `Tr` keeps at most 16 other languages, a layout at most 64 representations
+    and 100,000 pages (a bigger count is read as that).
+  - *Declarations.* A manifest whose plugin id, action id, setting name, screen name, the screen an action names or work group is
+    not 1 to 64 characters of `[a-z0-9._-]`, or that declares more than 256 actions, 256 settings, 1,024 binds or 64 screens, is
+    refused when it is registered (the plugin does not run) and named in the startup message; the version string is cut at 64
+    characters and loses control characters.
+  - *Pictures.* `ImageData::File` is opened by one door for a canvas and for `View::Image`: a regular file only (checked before
+    and after opening, never a pipe or a device), opened without blocking, a relative path read from the folder of the file being
+    previewed. One picture id is placed at one size on a canvas (`CanvasIssue::ImageSizeMismatch`), and an animation that alone
+    costs more than one answer may do (over 32 SVG or file frames, which are decoded one by one; over 64 MiB of input) is
+    refused as too large, while ready `Rgba` frames are not counted, so a 100-frame animation of them runs (an `Encoded` frame is a decode like a file's,
+    however few bytes it is). At most four screens' worth of picture area (the sum of the placements, overlapping ones too) is
+    encoded per canvas; the placements past it, in the plugin's order, keep their cells. A picture placed several times on a canvas
+    taller than the area (each clipped differently) gets an encoding per placement. Leaving konoma (a quit, a
+    signal, a panic) deletes the canvas pictures from a kitty terminal, without landing inside a frame being written.
+  - *API.* `testing::send_keys` returns a `KeyRun` and goes on after a failed key; `Key`, `CanvasCell`, `Outcome`, `ImageData`
+    and `Style` are `#[non_exhaustive]`, so a plugin matches them with a `_` arm.
+- **A demo plugin that is a program of its own.** `crates/konoma-demo-clock` (not published) shows `*.konoma-demo` files as a canvas drawn with ratatui widgets (a clock with a gauge, a picture and a line editor): `cargo build -p konoma-demo-clock`, then `konoma --plugin target/debug/konoma-demo-clock samples/demo.konoma-demo`. It replaces the temporary `demo-canvas` build feature and its `KONOMA_CANVAS_TRACE` log, which are gone.
+
+### Changed
+- The old per-screen key tables (`[keys."git.changes"]`, `[keys."jj.log"]`, `[keys.git_log]`, ...) are still read: the plugin operations written there (`git_stage`, `git_open_branches`, ...) move to `[keys.git]` / `[keys.jj]` with a rename notice, while host actions written there (`git_close`, `git_launch_tool`, `refresh`, `noop` on a key several screens share) stay in the table and act on that screen only. A few old hub names are also routed when bound in another table such as `[keys.tree]` (no rename notice): `git_open_log`, `git_open_graph`, `git_open_branches`, `git_open_worktrees`, `git_worktree_diff`, `git_commit`, `git_stage_all`, `git_unstage_all`, `jj_sync`, `git_graph_toggle_all`, `branch_create` and `worktree_create` open the project like `p` and run the operation when the repository's plugin has it (on a project screen they run the open project's operation), and `worktree_close` opens the project like `p`. The other old names, which needed a row or a list of the old screens (`git_stage`, `git_open_detail`, `branch_checkout`, ...), do nothing outside a project screen.
+- The Git and jj settings moved into the plugin tables: `[plugins.jj] confirm_sync` (was `[ui] confirm_jj_sync`), `commit_meta_align`, `graph_max_branches` and `graph_base_branches` (were in `[ui]`) in `[plugins.git]` / `[plugins.jj]`, and `[plugins.git] worktree_dir` (was `[git] worktree_dir`). The old names are still read and the new name wins; a notice names the rename. `[plugins.git] read_only = true` makes the git screens read-only and `[plugins.jj] read_only = true` the jj screens. `[plugins.git]` / `[plugins.jj] path_style` is not a rename: it overrides `[ui] path_style` for the project screens (falling back to it), and no notice is shown for it.
+- jj bookmarks are read-only (only copying a name); jj `w` and git `R` do nothing on these screens; `y` with nothing to copy does nothing.
+- Internal: the git/jj reading core (`konoma-vcs-core`) no longer depends on ratatui; it describes graph colors with its own small types and the host converts them when drawing. No user-visible change.
+- **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
+  name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
+  new tab right of the current one (it was `I`; appending at the end, `tab_new`, and `I` have no default key); the diff switches
+  the changed file with `Ctrl-n` / `Ctrl-p` (it was `n` / `N`, which step through the change blocks of the file now); an image's `0` is gone (`=` resets the
+  fit); in the tree's range selection `q` cancels the selection like `Esc` (it quit the app; `Q` still quits); in a jj changes
+  screen `s` syncs (it was `R`, and git's `s` still stages); the branch list's `y` opens a menu whose item copies the
+  branch name; `Space` is no longer the key that toggles a checkbox or `<details>` (`Enter` does, as it already did) or pages
+  down under `ui.keys = "less"` (`f` does); the branch and worktree lists create with `c` (it was `n`, the next match);
+  the graph's base is cleared by `x` only (`0` is the line start); the graph's branch panel shows the current branch only
+  with `c` (it was `n`) and applies with `l`; in every list of the Git screens `l` opens (what `Enter` does) and `h` goes
+  back, and so it is in the outline / page list and the tab list (the bookmark list keeps `h` and `l` as bookmark names, like
+  every other letter). The tree's `s` (sort menu) and `p` (path style), the diff's `f` (the follow scope) and the hub's `g` / `l` (graph, log)
+  have no default key: the first three are in the `,` menu and the log and the graph are reached with `Tab`, and `[keys]`
+  can still bind them (`open_sort_menu`, `cycle_path_style`, `toggle_follow_diff_scope`, `git_open_graph`, `git_open_log`).
+  The footer and the `?` help show the new keys by themselves, as they are set.
+- **Three menus, each with the content of where you are.** `,` opens the sort and display options (the tree: name / size /
+  modified / extension, reverse, folders first, path style, hidden files; a text or document preview: path style and line
+  wrapping; a table or image: path style; a diff: the follow scope and path style), replacing the tree's `s` and the previews'
+  `p`. `Space` outside the tree opens a menu of every operation that acts on that screen, each under its own key where it has a
+  single one and a letter otherwise, so an operation whose key was moved or lost is still one keystroke away; in the tree it is
+  still the file menu. `y` opens the copy menu of the screen (paths, a table's cell / row / column, a commit's fields, a branch
+  name). A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) changes the menu of that context only; the old
+  `[keys.global]` spelling still reaches them all, and `[keys.sort]` is read as the tree's `,` menu. The `Space` menu lists its
+  operations in the order of the screen's footer (the ones used most first, then the rest in the help's order) and calls them by the
+  footer's short labels. The old sort overlay is gone: `open_sort_menu` opens the `,` menu of the screen you are on, which closes
+  after one choice (the overlay stayed open for reverse and folders-first). The bookmark list deletes
+  with `Space` `d` (`Ctrl-d` is the half page), and the graph's branch panel toggles a branch with `x` (`Space` is the menu).
+- **`R` is the operation `cycle_representation`** (it was `toggle_markdown_raw`): it cycles whatever the preview can be shown as — a
+  Markdown document's rendering and its source, a presentation's pictures and its text, a diff's presentations, and the representations a plugin declares when it declares two or more (the standard tables have one, so `R` is not offered there). `toggle_markdown_raw`
+  is still read in `[keys]` and does the same; the startup message says to write the new name.
+- **The `Space` menu names a pair of operations by direction.** Where the footer has room for only `[ ]:tab`, the menu says
+  `previous tab` / `next tab` / `tab list`, `previous page` / `next page` (`sheet`, `slide`), `next changed file`, `zoom in` /
+  `zoom out`, `stage the file` / `stage all` and so on; no two items of a menu read the same any more. The footer's short labels are unchanged.
+- **The `?` help names only what works now.** The copy section lists `y c` (copy the code block) only while a code block is focused,
+  the titles of the log and graph screens no longer carry the `l` / `g` keys they do not have, and the descriptions of `/ n N`, `o`
+  and the `Tab` screen cycle were shortened so they are not cut off at the popup's width.
+- **Key tables are per context, not per screen.** `[keys.<context>]` is keyed by what you are looking at: `text` (source and
+  plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are separate, and the version-control screens
+  exist per backend (`"git.changes"` / `"jj.changes"`, quoted because of the dot). A key is looked up in the context's own table,
+  then the keys shared by that kind of view, then `j`/`k`, then `global`. The old names (`preview_text`, `preview_text_visual`,
+  `preview_image`, `preview_table`, `preview_git_diff`, `git_changes` ...) are still read and apply to every context they now
+  cover; if both are written the new name wins. At startup the notice says *which* old name to rename to what, and shows the
+  first conflicting or ignored key setting instead of only a count.
+- **`[[preview.rules]]` now adds to the defaults instead of replacing them.** Which plugin shows a file is settled by
+  one rule order: your `[[preview.rules]]` first (top to bottom), then the standard plugins, then plain text, then
+  `[can not preview]`. With no rules of your own every file is decided exactly as before. If your config wrote
+  `[[preview.rules]]`, the files you did not name used to fall to plain text and now keep their standard viewer; to
+  keep the old effect for one kind, switch the standard plugin off with `[plugins.<id>] enabled = false`.
+  `builtin = "tsv"` reads as the CSV viewer with a tab separator, and `builtin = "document"` as Word or presentation
+  by extension.
+- **Plugin checks follow the host's manifest rules.** The checker rejects invalid ids, declarations and globs,
+  and reports a failed hints check when the view connection breaks or sends an unexpected reply.
+- **Linked plugins keep SVG rendering independent of their startup code.** Internal drawing processes start before
+  plugin factories, so a factory's stdout cannot corrupt their replies. Chained replacements resolve in either call order.
+- **Relative Cargo paths work for plugin installation and updates.** A relative `CARGO` value or `PATH` entry is
+  resolved before Cargo runs in the generated build directory.
+- **Plugin builds stop when konoma is killed.** A separate watcher stops Cargo and its process group even after
+  SIGKILL or an out-of-memory kill, on both macOS and Linux. Metadata queries and new-build checks use the same supervision.
+- **Plugin commands follow the configured language.** Confirmation prompts, permissions, lists, cleanup messages and
+  failure explanations use `ui.lang`, including the build watcher. Command usage stays English like the main help;
+  Cargo output and underlying system diagnostics retain their original text.
+- **External preview commands leave no background helpers.** A command that captures output stops its entire process
+  group when it finishes, including successful exits, so helpers do not remain between previews. It also stops when
+  either stdout or stderr exceeds the output limit. Running captures are also stopped when konoma exits, including
+  terminal hangup and SIGTERM; no new capture is started once exit cleanup begins.
+- A PDF's page count reaches the viewer as soon as the file is opened, before page 1 is drawn, so `J` / `K` work from the
+  first frame.
+- **The repository is now a Cargo workspace.** The parts that do not depend on the application moved into library crates
+  under `crates/`: `konoma-svg` (SVG drawing and fonts), `konoma-mermaid-core`, `konoma-math-core`, `konoma-media-core`
+  (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), `konoma-markdown-core` (the Markdown block model)
+  and `konoma-code-core` (syntax coloring), on top of `konoma-base`, plus `konoma-plugin` (the plugin API) and the plugin
+  crates `konoma-table`, `konoma-media`, `konoma-code`, `konoma-mermaid`, `konoma-math` and `konoma-office`, and
+  `konoma-widgets` (display parts for ratatui: the Markdown document renderer, windowed file reading, kitty graphics
+  transmit, image layout, diff rows and icon glyphs) and `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
+  from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
+
 ### Security
 - Updated `calamine` to 0.38 (RUSTSEC-2026-0436: malformed compound files could panic or cause unbounded allocation in its CFB reader). The XLS preview already checked the original CFB with its own guarded reader and passed only a newly built container holding the checked workbook bytes to `calamine`; the original malformed container did not reach that reader. Those checks remain. The formula and text budgets now follow 0.38's BIFF5 string literals and ODS text, including displayed error text, tabs and line breaks; malformed XLSB defined-name records are checked before `calamine` opens them.
 
+### Removed
+
+- The built-in Git/jj hub (its screens, controllers and state) is gone; the plugin screens above replace it. The old per-screen key tables and the old action names are still read (see Changed).
+
+### Plugin SDK
+
+Source breaks (a plugin that builds or matches these must change; none of the types is `#[non_exhaustive]`):
+- Struct literals and exhaustive field patterns. No feature: `ListView.heading` (`Option<ListHeading>`), `DiffView.title` (`Option<Line>`). `proc`: `WDiffView.title`, and `WView::ListDecorated.heading` (`Option<WListHeading>`). `app`: `app::Display.combined_status`, `app::AppActs.jumps`. `app` + `test-hooks`: `app::LaunchCx.gui_published`. Add the new fields (or `..Default::default()` where the type has one).
+- `app`: `app::AppError` gained the variants `NoDirectory`, `NotADirectory`, `NoProject`, `ProjectDetection` and `ProjectOpen`; an exhaustive `match` on it needs arms for them.
+- `app`: `Pictures::draw_document` takes two more arguments, `gutter: u16` and `focus: Option<DocPictureFocus>`.
+
+Source-compatible additions (new fields on `#[non_exhaustive]` types, default trait methods, re-exports): `ListRow.counted`, `ProjectScreen.jump_hint` / `new_tab_hint`, `HintGroup.members`; with `proc`, the wire fields `WProjectScreen.jump_footer` / `jump_label` / `new_tab_footer` and `WListRow.counted`. `EventSource` gained the default methods `project_fenced` / `project_idle` (`app` + `test-hooks`). `canvas_pictures::overlay::OverlaySig` is now a re-export of the `konoma-widgets` type and `add` takes `impl Hash` (`pictures`).
+
+New API, by gate:
+- No feature: `ListHeading` (and `ListRow::counted`, `DiffView::title`, `ProjectScreen::jump_hint` / `new_tab_hint`).
+- `proc`: `WListHeading`. `app` + `proc`: `cli_main_projects`.
+- `config`: `MovedProjectSetting`, `MOVED_PROJECT_SETTINGS`, `OldNameReading`, and the readers `confirm_jj_sync`, `commit_meta_align`, `graph_base_branches`, `graph_max_branches`, `worktree_dir`.
+- `host`: `FixedMenuLabel` / `fixed_menu_items`, `WriteVerdict` / `write_policy`, `JumpBinding` / `jump_op_id` / `jump_target` / `jump_key_of` / `bind_jumps`.
+- `widgets` + `ratatui`: `PictureRequests`, `RenderedDocument::requests`, `visible_line_range`. `pictures` + `project-host`: `DocumentPictures::place_media_diff_picture` / `rebuild_media_svg`.
+- `app`: the modules `app::project` (`prepare_projects`, `run_projects`, `run_project_with`, `ProjectServices`, `PreparedProjects`, `ProjectLaunchTarget`, `ProjectLoopCx`, `ProjectSettings`, `StandaloneSurface`, ...) and `app::diff_screen` (`DiffScreenState`, `FileDiffRequest`, `FileDiffData`, `DiffScreenAction`, ...); newly exported `DocPics`, `Laid` and the new `DocPictureFocus`.
+- `project-host`: `host::project` (project detection, the project screens' actions, input, drawing, presentation, runtime and the diff / Markdown-diff / media-diff workers, in submodules; main types `ProjectHost`, `ProjectDetection`, `ProjectPresentation`, `ProjectDrawValues`, `ProjectRuntime`, `MdDiffWorker`, `MediaDiffWorker`) and `host::file_preview` (`FilePreviewSource`, `FilePreviewPlan`, `resolve_file_preview`).
+- `test-hooks` adds test-only probes (`*_for_test` functions, `test_hooks` / `media_test_hooks` / `test_facts` modules, `TestCanvas`); they are not part of the supported API.
+
 ### Fixed
+- A dialog or popup (the input and confirm dialogs, the batch rename preview, the tab list, the bookmark list, the outline, the file info, the table cell popup and the `?` help) drawn over a wide character (CJK) that its left edge cut in two showed half of that character where its left border should be, in a real terminal. The character is now blanked before the overlay is drawn.
 - In a jj repository, a file moved into place with an old modification time was missed until some jj command took a new snapshot: after `mv a b` the tree showed `a` as deleted and no `b` at all (the same for `cp -p`, `tar x`, `rsync -t` and files restored from a backup). konoma decided whether a file was newer than the last snapshot from its modification time alone, which the writer can set back, and a directory moved with `mv dirA dirB` leaves every file inside with its old times. A path that is on disk but absent from the parent commit and from jj's own diff is now always shown as added, whatever its times; for a path the parent commit already tracks, konoma now reads the inode change time as well (which a rename, a write or a chmod sets) and uses the later of the two times.
 - With `[ui] wrap` on, a preview drawn as one block of plain text (not the line-windowed text view) scrolled two rows past its end on `G` and left a blank gap under the last line: the scroll limit counted the frame's top and bottom border as rows of text. It now counts only the wrapped rows of the text at the width inside the frame.
 - BIFF5 `.xls` text in multibyte code pages (including Japanese Shift-JIS) no longer acquires stray NUL or replacement characters. Formula string literals without a BIFF8 flags byte are read and charged to the formula budget correctly.
@@ -17,6 +312,15 @@ All notable changes to konoma are documented in this file. The format is based o
 - Whole-number RK cells in `.xlsb` with a date or duration format now have the date/time type in the cell detail. Their displayed value and date system are unchanged.
 - ODS cells longer than the former 1 MiB text-repair limit now keep their tabs and soft line breaks too. `calamine` 0.38 preserves these itself, so the format pass no longer collects a second copy of string cells to repair them.
 - The first keys typed after starting konoma were lost when the terminal did not answer the startup graphics query (a detached tmux, or a tmux pane without `allow-passthrough`, even inside Ghostty). The query ran on a helper thread inside `ratatui-image` that, after the 2 second timeout, stayed blocked reading stdin: it swallowed the next key, it could leave the main loop's own read waiting until the key after that (so a plugin redraw also stalled), and it later called `disable_raw_mode()` on its own. konoma now asks the terminal itself, on the main thread, with `poll(2)` and a hard deadline, using `ratatui-image`'s own query and reply parser, and reads exactly up to the final status report, so nothing is left reading stdin and keys typed after the reply (or typed while it was in flight) are kept.
+- The reason a file could not be read (a Markdown file, or a diagram file drawn as text) was always shown in Japanese,
+  whatever `[ui] lang` said (`[can not preview: 読み込み失敗] …`). It now follows the language setting.
+- A picture that was drawn again sharper (an inline mermaid diagram or formula that grew past its first
+  drawing, a GIF frame) could keep showing the encoding made from its old pixels: an encode that was already running
+  when the new pixels landed cleared the "needs encoding again" mark when it finished. Which pixels stayed depended only
+  on which thread finished first. An encode of replaced pixels is now shown but left marked, and the next pass encodes the
+  current pixels.
+- A `.mmd` / `.mermaid` file was read whole, however large. It is now refused above 1 MiB (the same limit as a Markdown file)
+  and when it is not a regular file, with the reason shown.
 
 ## [0.31.2] - 2026-10-21
 
@@ -1343,7 +1647,6 @@ All notable changes to konoma are documented in this file. The format is based o
   that happens on every filesystem event while a filter is open, which is every time an agent touches
   a file, no longer has a synchronous part at all.
 
-
 ## [0.23.6] - 2026-08-07
 
 ### Fixed
@@ -1370,7 +1673,6 @@ All notable changes to konoma are documented in this file. The format is based o
   below it leaking out as raw text, and a table row split in two with an empty cell. Across a
   populated registry this corrects 29 files, including feature tables in `image` and
   `portable-atomic` that had collapsed to a single row.
-
 
 ## [0.23.5] - 2026-08-06
 
@@ -2756,7 +3058,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.2...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.2...v0.32.0
 [0.31.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.1...v0.31.2
 [0.31.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...v0.31.0

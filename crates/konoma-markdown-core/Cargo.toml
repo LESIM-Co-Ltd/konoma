@@ -1,0 +1,26 @@
+[package]
+name = "konoma-markdown-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's Markdown core: the pulldown-cmark block model, block-level diff and source-text analysis, without any rendering"
+
+[dependencies]
+# Parser: konoma's own renderer walks it, and the write-back scanners (`parser_code_blocks`,
+# `task_source_locs`) ask the **same** parser instance-for-instance what is a code block, so the
+# renderer and its scanners can never disagree (it drifted six times when they re-implemented it).
+pulldown-cmark.workspace = true
+# Block-level alignment of two versions of a document (`diff`).
+similar.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+konoma-base = { path = "../konoma-base" }
+
+[features]
+# Makes the shared source corpora available when the root package's tests call into this crate
+# (a `cfg(test)` is only true while this crate's own tests build). Enabled by the root package's
+# `[dev-dependencies]` only.
+test-hooks = []

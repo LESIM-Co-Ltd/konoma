@@ -1,0 +1,760 @@
+### git en branches
+[Git branches (b)]
+   g / G            top / bottom
+   l / Enter        checkout
+   c                new branch
+   d                delete (y=-d / !=-D)
+   /                filter by name
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/branches/worktrees
+   h / Esc  ·  q    back to changes
+[Movement]
+   j / k            move
+[Copy branch]
+   y n              branch name
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git en changes
+[Git changes (p)]
+   g / G            top / bottom
+   s / S            stage / stage all
+   u / U            unstage / unstage all
+   x                discard file (confirm)
+   c                commit (staged)
+   l / Enter        file diff
+   d                diff of all changes (worktree)
+   b                branches
+   w                worktrees
+   Ctrl-t           open the entry under the cursor in a new tab
+   /                filter the rows by the text they show
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/branches/worktrees
+   !                external git tool (lazygit)
+   h / Esc  ·  q    close git view
+[Movement]
+   j / k            move
+[Launch]
+   e                edit in external editor ($EDITOR / config)
+   o                open in another app (OS default / Office)
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git en detail
+[Commit / worktree detail]
+   h / l  0 / $     hscroll / line ends
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp page
+   Ctrl-d / Ctrl-u  scroll 10 lines
+   s                layout: unified / split / auto
+   g / G            top / bottom
+   q / Esc          back
+[Movement]
+   j / k / ↑ ↓      scroll
+[Copy commit]
+   y s              short hash
+   y h              full hash
+   y t              subject
+   y m              message
+   y a              author
+   y d              date
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git en empty_changes
+[Git changes (p)]
+   g / G            top / bottom
+   S                stage all
+   U                unstage all
+   c                commit (staged)
+   d                diff of all changes (worktree)
+   b                branches
+   w                worktrees
+   /                filter the rows by the text they show
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/branches/worktrees
+   !                external git tool (lazygit)
+   h / Esc  ·  q    close git view
+[Movement]
+   j / k            move
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git en graph
+[Git graph]
+   g / G            top / bottom
+   l / Enter        detail (commit diff / worktree diff)
+   s                pin the selected commit's branch as the base (leftmost lane)
+   x                clear the pinned base
+   b                choose which branches are shown
+   /                filter the rows by the text they show
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/branches/worktrees
+   h / Esc  ·  q    back to changes
+[Movement]
+   j / k            move (commit / uncommitted)
+[Copy commit]
+   y s              short hash
+   y h              full hash
+   y t              subject
+   y m              message
+   y a              author
+   y d              date
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git en log
+[Git log]
+   g / G            top / bottom
+   l / Enter        commit detail (diff)
+   /                filter the rows by the text they show
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/branches/worktrees
+   h / Esc  ·  q    back to changes
+[Movement]
+   j / k            move
+[Copy commit]
+   y s              short hash
+   y h              full hash
+   y t              subject
+   y m              message
+   y a              author
+   y d              date
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git en worktree_detail
+[Commit / worktree detail]
+   h / l  0 / $     hscroll / line ends
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp page
+   Ctrl-d / Ctrl-u  scroll 10 lines
+   s                layout: unified / split / auto
+   g / G            top / bottom
+   q / Esc          back
+[Movement]
+   j / k / ↑ ↓      scroll
+[Copy commit]
+   y s              short hash
+   y h              full hash
+   y t              subject
+   y m              message
+   y a              author
+   y d              date
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git en worktrees_d_detail
+[Commit / worktree detail]
+   h / l  0 / $     hscroll / line ends
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp page
+   Ctrl-d / Ctrl-u  scroll 10 lines
+   s                layout: unified / split / auto
+   g / G            top / bottom
+   q / Esc          back
+[Movement]
+   j / k / ↑ ↓      scroll
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git en worktrees
+[Git worktrees (w)]
+   g / G            top / bottom
+   l / Enter        switch to it
+   c                new worktree (new or existing branch)
+   Ctrl-t           open the entry under the cursor in a new tab
+   d                diff since base (or uncommitted)
+   /                filter by name
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/branches/worktrees
+   h / Esc  ·  q    back to changes
+[Movement]
+   j / k            move
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### git ja branches
+[Git ブランチ (b)]
+   g / G            先頭 / 末尾
+   l / Enter        切替
+   c                新規ブランチ
+   d                削除 (y=-d / !=-D)
+   /                名前で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブランチ/worktree
+   h / Esc  ·  q    変更ハブへ戻る
+[移動 (Movement)]
+   j / k            移動
+[ブランチをコピー]
+   y n              ブランチ名
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### git ja changes
+[Git 変更ハブ (p)]
+   g / G            先頭 / 末尾
+   s / S            ステージ / 全ステージ
+   u / U            アンステージ / 全アンステージ
+   x                ファイル破棄 (確認)
+   c                コミット (ステージ済み)
+   l / Enter        ファイル差分
+   d                全変更まとめ diff (作業ツリー)
+   b                ブランチ
+   w                ワークツリー
+   Ctrl-t           カーソル下のエントリを別タブで開く
+   /                行の表示文字列で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブランチ/worktree
+   !                外部 git ツール (lazygit)
+   h / Esc  ·  q    Git ビューを閉じる
+[移動 (Movement)]
+   j / k            移動
+[起動 (Launch)]
+   e                外部エディタで編集 ($EDITOR / 設定)
+   o                他のアプリで開く(Office 文書は Office アプリ)
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### git ja detail
+[コミット / 作業ツリー詳細]
+   h / l  0 / $     横スクロール / 行頭・行末
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp ページ
+   Ctrl-d / Ctrl-u  10 行スクロール
+   s                並び: 縦 / 横 / Auto
+   g / G            先頭 / 末尾
+   q / Esc          戻る
+[移動 (Movement)]
+   j / k / ↑ ↓      スクロール
+[コミットをコピー]
+   y s              短ハッシュ
+   y h              完全ハッシュ
+   y t              件名
+   y m              メッセージ
+   y a              著者
+   y d              日付
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### git ja empty_changes
+[Git 変更ハブ (p)]
+   g / G            先頭 / 末尾
+   S                全ステージ
+   U                全アンステージ
+   c                コミット (ステージ済み)
+   d                全変更まとめ diff (作業ツリー)
+   b                ブランチ
+   w                ワークツリー
+   /                行の表示文字列で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブランチ/worktree
+   !                外部 git ツール (lazygit)
+   h / Esc  ·  q    Git ビューを閉じる
+[移動 (Movement)]
+   j / k            移動
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### git ja graph
+[Git グラフ]
+   g / G            先頭 / 末尾
+   l / Enter        詳細 (コミット差分 / 作業ツリー差分)
+   s                選択コミットの枝を基準(左端レーン)に固定
+   x                基準の固定を解除
+   b                表示するブランチを選ぶ
+   /                行の表示文字列で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブランチ/worktree
+   h / Esc  ·  q    変更ハブへ戻る
+[移動 (Movement)]
+   j / k            移動 (コミット / 未コミット)
+[コミットをコピー]
+   y s              短ハッシュ
+   y h              完全ハッシュ
+   y t              件名
+   y m              メッセージ
+   y a              著者
+   y d              日付
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### git ja log
+[Git ログ]
+   g / G            先頭 / 末尾
+   l / Enter        コミット詳細 (差分)
+   /                行の表示文字列で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブランチ/worktree
+   h / Esc  ·  q    変更ハブへ戻る
+[移動 (Movement)]
+   j / k            移動
+[コミットをコピー]
+   y s              短ハッシュ
+   y h              完全ハッシュ
+   y t              件名
+   y m              メッセージ
+   y a              著者
+   y d              日付
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### git ja worktree_detail
+[コミット / 作業ツリー詳細]
+   h / l  0 / $     横スクロール / 行頭・行末
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp ページ
+   Ctrl-d / Ctrl-u  10 行スクロール
+   s                並び: 縦 / 横 / Auto
+   g / G            先頭 / 末尾
+   q / Esc          戻る
+[移動 (Movement)]
+   j / k / ↑ ↓      スクロール
+[コミットをコピー]
+   y s              短ハッシュ
+   y h              完全ハッシュ
+   y t              件名
+   y m              メッセージ
+   y a              著者
+   y d              日付
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### git ja worktrees_d_detail
+[コミット / 作業ツリー詳細]
+   h / l  0 / $     横スクロール / 行頭・行末
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp ページ
+   Ctrl-d / Ctrl-u  10 行スクロール
+   s                並び: 縦 / 横 / Auto
+   g / G            先頭 / 末尾
+   q / Esc          戻る
+[移動 (Movement)]
+   j / k / ↑ ↓      スクロール
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### git ja worktrees
+[Git ワークツリー (w)]
+   g / G            先頭 / 末尾
+   l / Enter        切り替える
+   c                新規ワークツリー（新規/既存ブランチ）
+   Ctrl-t           カーソル下のエントリを別タブで開く
+   d                base からの diff（無ければ未コミットのみ）
+   /                名前で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブランチ/worktree
+   h / Esc  ·  q    変更ハブへ戻る
+[移動 (Movement)]
+   j / k            移動
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### jj en branches
+[Git branches (b)]
+   g / G            top / bottom
+   /                filter by name
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/bookmarks
+   h / Esc  ·  q    back to changes
+[Movement]
+   j / k            move
+[Copy branch]
+   y n              branch name
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### jj en changes
+[jj changes (p)]
+   g / G            top / bottom
+   l / Enter        file diff
+   d                diff of everything against @-
+   b                bookmarks
+   s                let jj snapshot the working copy (confirm)
+   Ctrl-t           open the entry under the cursor in a new tab
+   /                filter the rows by the text they show
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/bookmarks
+   !                external jj tool (lazyjj)
+   h / Esc  ·  q    close jj view
+[Movement]
+   j / k            move
+[Launch]
+   e                edit in external editor ($EDITOR / config)
+   o                open in another app (OS default / Office)
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### jj en detail
+[Commit / worktree detail]
+   h / l  0 / $     hscroll / line ends
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp page
+   Ctrl-d / Ctrl-u  scroll 10 lines
+   s                layout: unified / split / auto
+   g / G            top / bottom
+   q / Esc          back
+[Movement]
+   j / k / ↑ ↓      scroll
+[Copy commit]
+   y s              change id
+   y h              commit id
+   y t              subject
+   y m              message
+   y a              author
+   y d              date
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### jj en graph
+[jj graph]
+   g / G            top / bottom
+   l / Enter        detail (commit diff / worktree diff)
+   a                show every revision
+   b                bookmarks
+   /                filter the rows by the text they show
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/bookmarks
+   h / Esc  ·  q    back to changes
+[Movement]
+   j / k            move (commit / uncommitted)
+[Copy commit]
+   y s              change id
+   y h              commit id
+   y t              subject
+   y m              message
+   y a              author
+   y d              date
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### jj en log
+[Git log]
+   g / G            top / bottom
+   l / Enter        commit detail (diff)
+   /                filter the rows by the text they show
+   r                refresh listing & git status
+   Tab / ⇧Tab       cycle changes/log/graph/bookmarks
+   h / Esc  ·  q    back to changes
+[Movement]
+   j / k            move
+[Copy commit]
+   y s              change id
+   y h              commit id
+   y t              subject
+   y m              message
+   y a              author
+   y d              date
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### jj en worktree_detail
+[Commit / worktree detail]
+   h / l  0 / $     hscroll / line ends
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp page
+   Ctrl-d / Ctrl-u  scroll 10 lines
+   s                layout: unified / split / auto
+   g / G            top / bottom
+   q / Esc          back
+[Movement]
+   j / k / ↑ ↓      scroll
+[Copy commit]
+   y s              change id
+   y h              commit id
+   y t              subject
+   y m              message
+   y a              author
+   y d              date
+[Tabs]
+   t                new tab right of this one
+   1 - 9            jump to tab by number
+   T                tab list (switch / close)
+[Global]
+   P                paste a path / GitHub link and jump there (reveal + preview)
+   ?                toggle this help
+   F                follow mode: auto-preview externally changed files
+   Q                quit (back to tree in preview)
+### jj ja branches
+[Git ブランチ (b)]
+   g / G            先頭 / 末尾
+   /                名前で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブックマーク
+   h / Esc  ·  q    変更ハブへ戻る
+[移動 (Movement)]
+   j / k            移動
+[ブランチをコピー]
+   y n              ブランチ名
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### jj ja changes
+[jj 変更ハブ (p)]
+   g / G            先頭 / 末尾
+   l / Enter        ファイル差分
+   d                @- との差分をまとめて表示
+   b                ブックマーク
+   s                jj に作業コピーを取り込ませる (確認)
+   Ctrl-t           カーソル下のエントリを別タブで開く
+   /                行の表示文字列で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブックマーク
+   !                外部 jj ツール (lazyjj)
+   h / Esc  ·  q    jj ビューを閉じる
+[移動 (Movement)]
+   j / k            移動
+[起動 (Launch)]
+   e                外部エディタで編集 ($EDITOR / 設定)
+   o                他のアプリで開く(Office 文書は Office アプリ)
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### jj ja detail
+[コミット / 作業ツリー詳細]
+   h / l  0 / $     横スクロール / 行頭・行末
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp ページ
+   Ctrl-d / Ctrl-u  10 行スクロール
+   s                並び: 縦 / 横 / Auto
+   g / G            先頭 / 末尾
+   q / Esc          戻る
+[移動 (Movement)]
+   j / k / ↑ ↓      スクロール
+[コミットをコピー]
+   y s              change id
+   y h              commit id
+   y t              件名
+   y m              メッセージ
+   y a              著者
+   y d              日付
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### jj ja graph
+[jj グラフ]
+   g / G            先頭 / 末尾
+   l / Enter        詳細 (コミット差分 / 作業ツリー差分)
+   a                全リビジョンを表示
+   b                ブックマーク
+   /                行の表示文字列で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブックマーク
+   h / Esc  ·  q    変更ハブへ戻る
+[移動 (Movement)]
+   j / k            移動 (コミット / 未コミット)
+[コミットをコピー]
+   y s              change id
+   y h              commit id
+   y t              件名
+   y m              メッセージ
+   y a              著者
+   y d              日付
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### jj ja log
+[Git ログ]
+   g / G            先頭 / 末尾
+   l / Enter        コミット詳細 (差分)
+   /                行の表示文字列で絞り込み
+   r                一覧と git status を再読込
+   Tab / ⇧Tab       画面を巡回: 変更/ログ/グラフ/ブックマーク
+   h / Esc  ·  q    変更ハブへ戻る
+[移動 (Movement)]
+   j / k            移動
+[コミットをコピー]
+   y s              change id
+   y h              commit id
+   y t              件名
+   y m              メッセージ
+   y a              著者
+   y d              日付
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)
+### jj ja worktree_detail
+[コミット / 作業ツリー詳細]
+   h / l  0 / $     横スクロール / 行頭・行末
+   Ctrl-f / Ctrl-b  ·  PageDown / PageUp ページ
+   Ctrl-d / Ctrl-u  10 行スクロール
+   s                並び: 縦 / 横 / Auto
+   g / G            先頭 / 末尾
+   q / Esc          戻る
+[移動 (Movement)]
+   j / k / ↑ ↓      スクロール
+[コミットをコピー]
+   y s              change id
+   y h              commit id
+   y t              件名
+   y m              メッセージ
+   y a              著者
+   y d              日付
+[タブ (Tabs)]
+   t                右隣に新規タブ
+   1 - 9            番号でタブへジャンプ
+   T                タブ一覧(切替 / 閉じる)
+[共通 (Global)]
+   P                パス / GitHub リンクを貼り付けてその位置へ移動(reveal + preview)
+   ?                このヘルプの開閉
+   F                追尾モード: 外部で変更されたファイルを自動プレビュー
+   Q                終了 (プレビュー中はツリーへ戻る)

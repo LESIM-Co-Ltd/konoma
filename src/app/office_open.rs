@@ -5,205 +5,49 @@
 //! seconds; design principle #4), so the UI never blocks. The process launch itself goes through a
 //! [`Runner`] seam: tests install a fake and never start a real process.
 
-use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use super::App;
-use crate::i18n::{tr, Msg};
+use crate::i18n::Msg;
 
-/// Which Office application family a document belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OfficeKind {
-    Word,
-    Excel,
-    PowerPoint,
-}
+// The pure chain (what to try, in which order, and how a launch is judged) is shared with the
+// standalone plugin app; only the App side stays here.
+#[cfg(test)]
+pub(crate) use konoma_plugin::launch::{attempts_for_verb, plan, OfficeKind};
+pub(crate) use konoma_plugin::launch::{
+    office_kind, run_chain, Attempt, Launch, LaunchPolicy, OfficeOs, Opener, Runner,
+};
 
-/// The kind for `path`'s extension (case-insensitive), or `None` for anything that is not an Office
-/// document (csv, rtf, txt... stay with `$EDITOR`).
-pub(crate) fn office_kind(path: &Path) -> Option<OfficeKind> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "docx" | "docm" | "dotx" | "dotm" | "doc" | "odt" | "ott" => Some(OfficeKind::Word),
-        "xlsx" | "xlsm" | "xltx" | "xltm" | "xlsb" | "xls" | "ods" => Some(OfficeKind::Excel),
-        "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "odp" | "otp" => {
-            Some(OfficeKind::PowerPoint)
-        }
-        _ => None,
-    }
-}
-
-/// What `e` does for a file.
+/// What `e` does for a file, as the tests word it (a view of [`App::edit_launch`]; the footer, the
+/// help and the handler read `host::launch::edit_word` of the same launch).
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EditTarget {
     /// The external editor (`$EDITOR` / `[editor]`).
     Editor,
     /// An Office app of this kind (the platform chain in [`plan`]).
     OfficeApp(OfficeKind),
+    /// A GUI program chain the plugin that shows the file declares for `edit` (not an Office
+    /// document).
+    DeclaredApp,
     /// An Office document while `[external] office_apps = false`: `e` only flashes why.
     OfficeDisabled,
 }
 
-/// Which platform's chain to build. A parameter (not `cfg!`) so both chains are testable anywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OfficeOs {
-    MacOs,
-    Other,
-}
-
-impl OfficeOs {
-    pub(crate) const fn current() -> Self {
-        if cfg!(target_os = "macos") {
-            OfficeOs::MacOs
-        } else {
-            OfficeOs::Other
-        }
-    }
-}
-
-/// What a successful attempt opened the document with (drives the flash text).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Opener {
-    Microsoft(OfficeKind),
-    LibreOffice,
-    SystemDefault,
-}
-
-/// One command line to try.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Attempt {
-    pub opener: Opener,
-    pub prog: String,
-    pub args: Vec<String>,
-}
-
-/// Bundle ids of the Microsoft apps for macOS. `com.microsoft.Word` / `com.microsoft.Excel` /
-/// `com.microsoft.Powerpoint` (note: lowercase "p" in `Powerpoint`) are the apps' preference
-/// domains = bundle ids, as used in Microsoft's own `defaults write` guidance, e.g. the Microsoft Q&A
-/// answer https://learn.microsoft.com/en-us/answers/questions/5004550/how-do-i-disable-dark-mode-in-365-for-mac
-fn microsoft_bundle_id(kind: OfficeKind) -> &'static str {
-    match kind {
-        OfficeKind::Word => "com.microsoft.Word",
-        OfficeKind::Excel => "com.microsoft.Excel",
-        OfficeKind::PowerPoint => "com.microsoft.Powerpoint",
-    }
-}
-
-/// LibreOffice's bundle id on macOS (read from `/Applications/LibreOffice.app/Contents/Info.plist`).
-const LIBREOFFICE_BUNDLE_ID: &str = "org.libreoffice.script";
-
-/// The ordered attempts for opening `path`: macOS = `open -b <Microsoft id>`, `open -b <LibreOffice
-/// id>`, `open`; elsewhere = `libreoffice`, `soffice`, `xdg-open` (Microsoft Office has no Linux
-/// build). A missing app shows up as a spawn error / non-zero exit, which moves to the next attempt.
-pub(crate) fn plan(os: OfficeOs, kind: OfficeKind, path: &Path) -> Vec<Attempt> {
-    let p = path.to_string_lossy().into_owned();
-    let mk = |opener, prog: &str, args: &[&str]| Attempt {
-        opener,
-        prog: prog.to_string(),
-        args: args
-            .iter()
-            .map(|s| s.to_string())
-            .chain(std::iter::once(p.clone()))
-            .collect(),
-    };
-    match os {
-        OfficeOs::MacOs => vec![
-            mk(
-                Opener::Microsoft(kind),
-                "open",
-                &["-b", microsoft_bundle_id(kind)],
-            ),
-            mk(Opener::LibreOffice, "open", &["-b", LIBREOFFICE_BUNDLE_ID]),
-            mk(Opener::SystemDefault, "open", &[]),
-        ],
-        OfficeOs::Other => vec![
-            mk(Opener::LibreOffice, "libreoffice", &[]),
-            mk(Opener::LibreOffice, "soffice", &[]),
-            mk(Opener::SystemDefault, "xdg-open", &[]),
-        ],
-    }
-}
-
-/// How a launch went: `Ok(Some(code))` = the process exited with `code`; `Ok(None)` = still running
-/// after the wait budget (a GUI app that stays attached = launched); `Err` = could not start.
-pub(crate) type Runner = Arc<dyn Fn(&Attempt) -> io::Result<Option<i32>> + Send + Sync>;
-
-/// Walk `attempts` in order; the first that starts and does not exit non-zero wins. On total failure
-/// returns the last failure's reason.
-pub(crate) fn run_chain(
-    attempts: &[Attempt],
-    runner: &(dyn Fn(&Attempt) -> io::Result<Option<i32>> + Send + Sync),
-) -> Result<Opener, String> {
-    let mut last = String::from("no application to try");
-    for a in attempts {
-        match runner(a) {
-            Ok(None) | Ok(Some(0)) => return Ok(a.opener),
-            Ok(Some(code)) => last = format!("{} exited with status {code}", a.prog),
-            Err(e) => last = format!("{}: {e}", a.prog),
-        }
-    }
-    Err(last)
-}
-
-/// The exit code of a process that has finished. One killed by a signal has no code
-/// (`ExitStatus::code` is `None`); that is a failed launch, not a program that is "still running",
-/// so it maps to a non-zero code (the shell convention, 128 + the signal) and the chain goes on to
-/// the next application.
-pub(crate) fn status_code(status: std::process::ExitStatus) -> i32 {
-    use std::os::unix::process::ExitStatusExt;
-    match (status.code(), status.signal()) {
-        (Some(code), _) => code,
-        (None, Some(sig)) => 128 + sig,
-        // Stopped / unknown: still not a success.
-        (None, None) => -1,
-    }
-}
-
-/// The production runner: starts the process with all stdio detached (a TUI must not be scribbled
-/// on), waits up to 3 s for an exit code (`open -b <missing app>` fails fast), and if it is still
-/// running treats it as launched and hands the child to a reaper thread so no zombie is left.
+/// The runner the host installs. Tests must never start a process: it refuses there (tests install
+/// a fake). This `cfg(test)` seam lives in the host on purpose: one in the shared crate would not
+/// apply to the host's tests and they would really launch `open -b ...`.
 #[cfg(not(test))]
 pub(crate) fn real_runner() -> Runner {
-    Arc::new(|a: &Attempt| {
-        use std::process::Stdio;
-        use std::time::{Duration, Instant};
-        let mut child = std::process::Command::new(&a.prog)
-            .args(&a.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => return Ok(Some(status_code(status))),
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Ok(None) => {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                    return Ok(None);
-                }
-                Err(_) => {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                    return Ok(None);
-                }
-            }
-        }
-    })
+    konoma_plugin::launch::spawn_runner()
 }
 
 /// Tests must never start a process: the default runner refuses (tests install a fake).
 #[cfg(test)]
 pub(crate) fn real_runner() -> Runner {
-    Arc::new(|_| {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
+    std::sync::Arc::new(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
             "process launching is disabled in tests",
         ))
     })
@@ -226,31 +70,52 @@ impl App {
         self.office_runner = r;
     }
 
-    /// What `e` does for `path`. The one decision `try_open_in_office` acts on and the `?` help
-    /// row is worded from ([[hint-shown-iff-key-acts]]): an explicit per-extension `[editor] ext`
-    /// entry always wins (the user asked for it), then the Office-app switch.
-    pub(crate) fn edit_target(&self, path: &Path) -> EditTarget {
-        let Some(kind) = office_kind(path) else {
-            return EditTarget::Editor;
-        };
+    /// The settings the launch verbs read, for `path`.
+    pub(crate) fn launch_policy(&self, path: &Path) -> LaunchPolicy {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if self
-            .cfg
-            .editor
-            .ext
-            .get(&ext)
-            .is_some_and(|c| !c.trim().is_empty())
-        {
-            return EditTarget::Editor;
+        LaunchPolicy {
+            editor_ext_explicit: self
+                .cfg
+                .editor
+                .ext
+                .get(&ext)
+                .is_some_and(|c| !c.trim().is_empty()),
+            office_apps: self.cfg.external.office_apps,
+            open_links: self.cfg.external.open_links,
         }
-        if !self.cfg.external.office_apps {
-            return EditTarget::OfficeDisabled;
+    }
+
+    /// Where `e` goes for `path`: the shared [`konoma_plugin::launch::resolve_launch`] over the
+    /// `edit` verb the plugin that shows the file declares, `[editor] ext` and `[external]`. The
+    /// declaration comes from the same memoized full resolution `o` uses (`App::verb_plugin_id`),
+    /// and `e` acts on the same answer the hint is worded from ([[hint-shown-iff-key-acts]]).
+    pub(crate) fn edit_launch(&self, path: &Path) -> Launch {
+        let abs: PathBuf = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let decl = self.declared_verb(&abs, konoma_plugin::Verb::Edit);
+        konoma_plugin::launch::resolve_launch(
+            konoma_plugin::Verb::Edit,
+            OfficeOs::current(),
+            decl.as_ref(),
+            &abs,
+            &self.launch_policy(path),
+        )
+    }
+
+    /// What `e` does for `path` (test view of [`App::edit_launch`]).
+    #[cfg(test)]
+    pub(crate) fn edit_target(&self, path: &Path) -> EditTarget {
+        match self.edit_launch(path) {
+            Launch::Editor { .. } | Launch::Terminal(_) => EditTarget::Editor,
+            Launch::Disabled(_) => EditTarget::OfficeDisabled,
+            Launch::Gui(_) => match office_kind(path) {
+                Some(kind) => EditTarget::OfficeApp(kind),
+                None => EditTarget::DeclaredApp,
+            },
         }
-        EditTarget::OfficeApp(kind)
     }
 
     /// The help row for `e` as it acts *now*: the label to show (`editor_label` when it opens an
@@ -265,36 +130,60 @@ impl App {
     /// opens an editor, `office_label` when it opens an Office app, `None` when it only explains
     /// that Office documents are switched off.
     pub fn edit_label(&self, editor_label: Msg, office_label: Msg) -> Option<Msg> {
-        let path = match self.tab.mode {
-            crate::app::Mode::Tree => self
-                .tab
-                .entries
-                .get(self.tab.selected)
-                .filter(|e| !e.is_dir)
-                .map(|e| e.path.clone()),
-            crate::app::Mode::Preview => self.tab.preview_path.clone(),
+        let path = match self.verb_target() {
+            super::open_app::VerbTarget::File(p) => Some(p),
+            _ => None,
         };
-        match path.map(|p| self.edit_target(&p)) {
-            Some(EditTarget::OfficeApp(_)) => Some(office_label),
-            Some(EditTarget::OfficeDisabled) => None,
-            Some(EditTarget::Editor) | None => Some(editor_label),
+        use konoma_plugin::host::launch::{edit_word, EditWord};
+        match path.map(|p| edit_word(&self.edit_launch(&p))) {
+            Some(EditWord::App) => Some(office_label),
+            Some(EditWord::Off) => None,
+            Some(EditWord::Editor) | None => Some(editor_label),
         }
     }
 
-    /// Where `e` goes: an Office document without an explicit `[editor] ext` entry is opened in a GUI
-    /// app (returns `true` = handled here); everything else returns `false` and takes the `$EDITOR`
-    /// path unchanged.
+    /// Where `e` goes (see [`App::edit_launch`]): a chain of GUI programs the file's plugin
+    /// declares is walked from a worker (returns `true` = handled here); everything that opens the
+    /// editor returns `false` and takes the `$EDITOR` path unchanged.
     pub(super) fn try_open_in_office(&mut self, path: &Path) -> bool {
-        let kind = match self.edit_target(path) {
-            EditTarget::Editor => return false,
-            EditTarget::OfficeDisabled => {
-                self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into());
-                return true;
+        let launch = self.edit_launch(path);
+        match &launch {
+            Launch::Editor { .. } => false,
+            // A chain in terminal mode takes the terminal over like the editor does; the run loop
+            // walks it ([`App::take_pending_terminal`]).
+            Launch::Terminal(attempts) => {
+                let line =
+                    konoma_plugin::host::launch::edit_line(&launch, self.preview_edit_line());
+                self.queue_terminal_chain(attempts, line, path);
+                true
             }
-            EditTarget::OfficeApp(kind) => kind,
-        };
-        let abs: PathBuf = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let attempts = plan(OfficeOs::current(), kind, &abs);
+            Launch::Disabled(d) => {
+                self.flash = Some(konoma_plugin::host::launch::disabled_notice(self.lang, *d));
+                true
+            }
+            Launch::Gui(attempts) => {
+                self.start_chain(attempts.clone());
+                true
+            }
+        }
+    }
+
+    /// Ask the run loop to hand the terminal over and walk `attempts` (`{line}` filled in), in the
+    /// directory of `path`.
+    pub(super) fn queue_terminal_chain(
+        &mut self,
+        attempts: &[Attempt],
+        line: Option<usize>,
+        path: &Path,
+    ) {
+        let cwd = path.parent().unwrap_or(path).to_path_buf();
+        self.pending_terminal = Some((konoma_plugin::launch::with_line(attempts, line), cwd));
+    }
+
+    /// Walk `attempts` on a worker (the chain waits on exit codes, which can take seconds; the UI
+    /// never blocks) and report the outcome through the channel `main` attached. Without a channel
+    /// (the tests) the chain runs inline through the installed [`Runner`].
+    pub(super) fn start_chain(&mut self, attempts: Vec<Attempt>) {
         let runner = self.office_runner.clone();
         match self.office_tx.clone() {
             Some(tx) => {
@@ -308,28 +197,14 @@ impl App {
                 self.apply_office_open(OfficeOpenResult { outcome });
             }
         }
-        true
     }
 
     /// Report a finished attempt via flash. Returns whether anything changed (redraw).
     pub fn apply_office_open(&mut self, r: OfficeOpenResult) -> bool {
-        self.flash = Some(match r.outcome {
-            Ok(opener) => match opener {
-                Opener::Microsoft(k) => tr(self.lang, Msg::OfficeOpenedIn).replace(
-                    "{app}",
-                    match k {
-                        OfficeKind::Word => "Microsoft Word",
-                        OfficeKind::Excel => "Microsoft Excel",
-                        OfficeKind::PowerPoint => "Microsoft PowerPoint",
-                    },
-                ),
-                Opener::LibreOffice => {
-                    tr(self.lang, Msg::OfficeOpenedIn).replace("{app}", "LibreOffice")
-                }
-                Opener::SystemDefault => tr(self.lang, Msg::OfficeOpenedDefault).to_string(),
-            },
-            Err(e) => format!("{}{e}", tr(self.lang, Msg::OfficeOpenFailed)),
-        });
+        // The wording is the shared one (the standalone app tells the same).
+        self.flash = Some(konoma_plugin::host::launch::chain_notice(
+            self.lang, &r.outcome,
+        ));
         true
     }
 }
@@ -337,97 +212,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+    use std::sync::Arc;
     use std::sync::Mutex;
 
     fn p(name: &str) -> PathBuf {
         PathBuf::from(format!("/tmp/x/{name}"))
-    }
-
-    #[test]
-    fn kind_covers_every_listed_extension_in_any_case() {
-        let word = ["docx", "docm", "dotx", "dotm", "doc", "odt", "ott"];
-        let excel = ["xlsx", "xlsm", "xltx", "xltm", "xlsb", "xls", "ods"];
-        let ppt = [
-            "pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "odp", "otp",
-        ];
-        for (list, want) in [
-            (&word[..], OfficeKind::Word),
-            (&excel[..], OfficeKind::Excel),
-            (&ppt[..], OfficeKind::PowerPoint),
-        ] {
-            for e in list {
-                assert_eq!(office_kind(&p(&format!("a.{e}"))), Some(want), "{e}");
-                assert_eq!(
-                    office_kind(&p(&format!("a.{}", e.to_uppercase()))),
-                    Some(want),
-                    "{e} upper"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn kind_excludes_csv_rtf_txt_and_extensionless() {
-        for n in [
-            "a.csv",
-            "a.rtf",
-            "a.txt",
-            "a.tsv",
-            "a.md",
-            "xlsx",
-            "a.xlsx.bak",
-            ".xlsx",
-        ] {
-            assert_eq!(office_kind(&p(n)), None, "{n}");
-        }
-    }
-
-    #[test]
-    fn plan_macos_is_microsoft_then_libreoffice_then_open() {
-        let path = p("b.xlsx");
-        let a = plan(OfficeOs::MacOs, OfficeKind::Excel, &path);
-        let want = |opener, args: &[&str]| Attempt {
-            opener,
-            prog: "open".into(),
-            args: args.iter().map(|s| s.to_string()).collect(),
-        };
-        assert_eq!(
-            a,
-            vec![
-                want(
-                    Opener::Microsoft(OfficeKind::Excel),
-                    &["-b", "com.microsoft.Excel", "/tmp/x/b.xlsx"]
-                ),
-                want(
-                    Opener::LibreOffice,
-                    &["-b", "org.libreoffice.script", "/tmp/x/b.xlsx"]
-                ),
-                want(Opener::SystemDefault, &["/tmp/x/b.xlsx"]),
-            ]
-        );
-    }
-
-    #[test]
-    fn plan_macos_bundle_ids_per_kind() {
-        for (k, id) in [
-            (OfficeKind::Word, "com.microsoft.Word"),
-            (OfficeKind::Excel, "com.microsoft.Excel"),
-            (OfficeKind::PowerPoint, "com.microsoft.Powerpoint"),
-        ] {
-            let a = plan(OfficeOs::MacOs, k, &p("d.x"));
-            assert_eq!(a[0].args[1], id);
-            assert_eq!(a[0].opener, Opener::Microsoft(k));
-        }
-    }
-
-    #[test]
-    fn plan_linux_has_no_microsoft_and_ends_with_xdg_open() {
-        let a = plan(OfficeOs::Other, OfficeKind::Word, &p("c.docx"));
-        let progs: Vec<_> = a.iter().map(|x| x.prog.as_str()).collect();
-        assert_eq!(progs, ["libreoffice", "soffice", "xdg-open"]);
-        assert!(a.iter().all(|x| x.args == ["/tmp/x/c.docx"]));
-        assert!(!a.iter().any(|x| matches!(x.opener, Opener::Microsoft(_))));
-        assert_eq!(a[2].opener, Opener::SystemDefault);
     }
 
     /// A fake runner: `script(prog, args)` decides; every call is recorded.
@@ -445,100 +235,6 @@ mod tests {
 
     fn mac_chain() -> Vec<Attempt> {
         plan(OfficeOs::MacOs, OfficeKind::Excel, &p("b.xlsx"))
-    }
-
-    #[test]
-    fn chain_microsoft_present_stops_there() {
-        let (r, log) = fake(|_| Ok(Some(0)));
-        assert_eq!(
-            run_chain(&mac_chain(), &*r),
-            Ok(Opener::Microsoft(OfficeKind::Excel))
-        );
-        assert_eq!(log.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn chain_falls_to_libreoffice_when_microsoft_is_missing() {
-        let (r, log) = fake(|a| {
-            if a.args[1] == "com.microsoft.Excel" {
-                Ok(Some(1))
-            } else {
-                Ok(None)
-            }
-        });
-        assert_eq!(run_chain(&mac_chain(), &*r), Ok(Opener::LibreOffice));
-        assert_eq!(log.lock().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn chain_falls_to_default_when_both_are_missing() {
-        let (r, _) = fake(|a| {
-            if a.opener == Opener::SystemDefault {
-                Ok(Some(0))
-            } else {
-                Ok(Some(1))
-            }
-        });
-        assert_eq!(run_chain(&mac_chain(), &*r), Ok(Opener::SystemDefault));
-    }
-
-    #[test]
-    fn chain_reports_the_last_failure_when_everything_fails() {
-        let (r, log) = fake(|a| {
-            if a.opener == Opener::SystemDefault {
-                Ok(Some(3))
-            } else {
-                Err(io::Error::new(io::ErrorKind::NotFound, "nope"))
-            }
-        });
-        let e = run_chain(&mac_chain(), &*r).unwrap_err();
-        assert!(e.contains("open exited with status 3"), "{e}");
-        assert_eq!(log.lock().unwrap().len(), 3);
-    }
-
-    #[test]
-    fn chain_linux_skips_missing_binaries() {
-        let (r, log) = fake(|a| match a.prog.as_str() {
-            "libreoffice" => Err(io::Error::new(io::ErrorKind::NotFound, "not found")),
-            "soffice" => Ok(None),
-            _ => Ok(Some(0)),
-        });
-        let chain = plan(OfficeOs::Other, OfficeKind::Word, &p("c.docx"));
-        assert_eq!(run_chain(&chain, &*r), Ok(Opener::LibreOffice));
-        assert_eq!(log.lock().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn empty_chain_is_an_error_not_a_panic() {
-        let (r, _) = fake(|_| Ok(Some(0)));
-        assert!(run_chain(&[], &*r).is_err());
-    }
-
-    #[test]
-    fn a_child_killed_by_a_signal_is_a_failure_not_a_launch() {
-        use std::os::unix::process::ExitStatusExt;
-        use std::process::ExitStatus;
-        // Raw wait statuses (no process is started): exit(0), exit(3), SIGKILL, SIGSEGV.
-        assert_eq!(status_code(ExitStatus::from_raw(0)), 0);
-        assert_eq!(status_code(ExitStatus::from_raw(3 << 8)), 3);
-        assert_eq!(status_code(ExitStatus::from_raw(9)), 137);
-        assert_eq!(status_code(ExitStatus::from_raw(11)), 139);
-        // And the chain treats it as a failure and moves on to the next application.
-        let attempts = mac_chain();
-        let calls = std::sync::Mutex::new(0usize);
-        let runner = |_: &Attempt| -> io::Result<Option<i32>> {
-            let mut n = calls.lock().unwrap();
-            *n += 1;
-            let st = if *n == 1 {
-                ExitStatus::from_raw(9) // killed
-            } else {
-                ExitStatus::from_raw(0)
-            };
-            Ok(Some(status_code(st)))
-        };
-        let opener = run_chain(&attempts, &runner).unwrap();
-        assert_eq!(opener, attempts[1].opener);
-        assert_eq!(*calls.lock().unwrap(), 2);
     }
 
     // ---- the App side: flash text, the editor-vs-Office decision, the launched command line ----
@@ -616,16 +312,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_chain_says_there_was_nothing_to_try() {
-        let (r, log) = fake(|_| Ok(Some(0)));
-        assert_eq!(
-            run_chain(&[], &*r),
-            Err("no application to try".to_string())
-        );
-        assert!(log.lock().unwrap().is_empty());
-    }
-
-    #[test]
     fn a_failed_run_reports_why_through_the_flash_end_to_end() {
         let (mut app, d, _) = office_app("konoma_office_fail_flash");
         let book = d.join("b.xlsx");
@@ -676,6 +362,8 @@ mod tests {
         app.cfg.editor.ext.insert("xlsx".into(), "myeditor".into());
         for name in ["BOOK.XLSX", "Book.XlSx", "book.xlsx"] {
             let p = d.join(name);
+            // A real file: the decision passes the preview's gate, which a missing path does not.
+            std::fs::write(&p, b"x").unwrap();
             assert_eq!(app.edit_target(&p), EditTarget::Editor, "{name}");
             assert!(
                 !app.try_open_in_office(&p),
@@ -693,8 +381,17 @@ mod tests {
 
     #[test]
     fn a_relative_path_is_handed_to_the_application_as_an_absolute_one() {
-        let (mut app, _d, log) = office_app("konoma_office_abs");
-        let rel = Path::new("some/dir/b.xlsx");
+        let (mut app, d, log) = office_app("konoma_office_abs");
+        // A relative spelling of a real file (the gate needs it to exist): up out of the working
+        // directory, then down the temporary directory's absolute path.
+        std::fs::write(d.join("b.xlsx"), b"x").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let mut rel = PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            rel.push("..");
+        }
+        rel.push(d.join("b.xlsx").strip_prefix("/").unwrap());
+        let rel = rel.as_path();
         assert!(rel.is_relative());
         assert!(app.try_open_in_office(rel));
         let log = log.lock().unwrap();
@@ -702,7 +399,7 @@ mod tests {
         for a in log.iter() {
             let last = a.args.last().unwrap();
             assert!(Path::new(last).is_absolute(), "{a:?}");
-            assert!(last.ends_with("some/dir/b.xlsx"), "{a:?}");
+            assert!(last.ends_with(rel.to_str().unwrap()), "{a:?}");
         }
     }
 
@@ -758,5 +455,84 @@ mod tests {
     fn test_default_runner_never_launches() {
         let a = &mac_chain()[0];
         assert!((real_runner())(a).is_err());
+    }
+
+    /// A tab rooted at a sandbox holding `a.bin` (the test plugin `hexdump` takes `*.bin`), with
+    /// the plugin declaring `verbs`.
+    fn terminal_app(
+        name: &str,
+        verbs: Vec<konoma_plugin::VerbDecl>,
+    ) -> (App, crate::test_support::TmpDir, PathBuf) {
+        use crate::plugins::test_plugins::{self, Hexdump, Variant};
+        let dir = unique_tmp(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.bin");
+        std::fs::write(&file, b"0123456789abcdef0123").unwrap();
+        let marker = test_plugins::register(
+            name,
+            Arc::new(Hexdump(Variant {
+                verbs,
+                ..Default::default()
+            })),
+        );
+        let mut cfg = test_plugins::marker_config(&marker);
+        cfg.ui.lang = "en".into();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        let (r, _) = fake(|_| Ok(Some(0)));
+        app.set_office_runner(r);
+        app.tab.selected = app.tab.entries.iter().position(|e| e.path == file).unwrap();
+        (app, dir, file)
+    }
+
+    fn vim_like(verb: konoma_plugin::Verb) -> konoma_plugin::VerbDecl {
+        use konoma_plugin::{LaunchMode, Launcher, VerbDecl};
+        VerbDecl::new(verb)
+            .launcher(Launcher::Command(vec!["viewer".into(), "+{line}".into()]))
+            .launcher(Launcher::Command(vec!["fallback".into()]))
+            .mode(LaunchMode::Terminal)
+    }
+
+    /// A declared chain in terminal mode takes the terminal over: `e` queues it (not the editor,
+    /// not a worker), `{line}` is filled in with the caret like the editor's line, and the chain
+    /// runs in the file's directory.
+    #[test]
+    fn e_on_a_declared_terminal_chain_queues_a_hand_over_not_the_editor() {
+        let (mut app, dir, file) =
+            terminal_app("konoma_term_e", vec![vim_like(konoma_plugin::Verb::Edit)]);
+        app.request_edit();
+        assert!(app.take_pending_edit().is_none(), "not the editor");
+        let (attempts, cwd) = app.take_pending_terminal().expect("a terminal chain");
+        assert_eq!(cwd, dir.to_path_buf());
+        let abs = std::path::absolute(&file)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].prog, "viewer");
+        assert_eq!(attempts[0].args, ["+1".to_string(), abs.clone()]);
+        assert_eq!(attempts[1].prog, "fallback");
+        assert_eq!(attempts[1].args, [abs]);
+        assert!(app.take_pending_terminal().is_none(), "taken once");
+    }
+
+    #[test]
+    fn o_on_a_declared_terminal_chain_queues_a_hand_over_too() {
+        let (mut app, _dir, _file) =
+            terminal_app("konoma_term_o", vec![vim_like(konoma_plugin::Verb::Open)]);
+        app.open_in_other_app();
+        let (attempts, _) = app.take_pending_terminal().expect("a terminal chain");
+        assert_eq!(attempts[0].prog, "viewer");
+        assert_eq!(attempts[0].args[0], "+1");
+    }
+
+    /// A GUI-mode chain stays on the worker: nothing is queued for the terminal.
+    #[test]
+    fn a_gui_chain_does_not_take_the_terminal() {
+        let mut v = vim_like(konoma_plugin::Verb::Edit);
+        v.mode = konoma_plugin::LaunchMode::Gui;
+        let (mut app, _dir, _file) = terminal_app("konoma_term_gui", vec![v]);
+        app.request_edit();
+        assert!(app.take_pending_terminal().is_none());
+        assert!(app.take_pending_edit().is_none());
     }
 }

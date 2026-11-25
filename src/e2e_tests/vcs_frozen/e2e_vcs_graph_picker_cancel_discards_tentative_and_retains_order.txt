@@ -1,0 +1,211 @@
+# frozen vcs frames: e2e_vcs_graph_picker_cancel_discards_tentative_and_retains_order
+case cancel=Char('h') discarded
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Yellow	Reset	BOLD | REVERSED
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Reset	Reset	NONE
+style g	Cyan	Reset	NONE
+style h	Green	Reset	NONE
+style i	Yellow	Reset	NONE
+style j	DarkGray	Reset	NONE
+style k	Magenta	Reset	NONE
+style l	Reset	Reset	BOLD
+style m	Cyan	Reset	BOLD
+row 2 T|│ ●     Uncommitted changes                                                                                                1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b1c1b5c19b96d35|
+row 3 T|│ │ ●   (日 本 語 -branch) Unmerged 日 本 語                                                                                          1584d6c · Fixture · 2020-01-01|
+row 3 S|e1f1g1f1h1f3i2f1i1f1i1f1i9f104j30|
+row 4 T|│ ◆ │   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                        17c49bb · 作 者  Author · 2020-01-01|
+row 4 S|e1f1g1f1h1f3i49f67j11f1j1f1j20|
+row 5 T|│ ├─┼─┐                                                                                                                                                       |
+row 5 S|e1f1g1k1h1k2f151|
+row 6 T|├─┼─┼─┘                                                                                                                                                       |
+row 6 S|e1k1g1k1h1k2f151|
+row 7 T|● │ │   (priority-branch-with-a-long-name) Side 日 本 語                                                                       1b1491b · 作 者  Author · 2020-01-01|
+row 7 S|e1f1g1f1h1f3i35f81j11f1j1f1j20|
+row 8 T|│ ● │   Main commit                                                                                                         3b7da10 · 作 者  Author · 2020-01-01|
+row 8 S|e1f1g1f1h1f119j11f1j1f1j20|
+row 9 T|├─┴─┘                                                                                                                                                         |
+row 9 S|e1g2h2f153|
+row 10 T|●       0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  … 63748e3 · 作 者  Author · 2020-01-01|
+row 10 S|e1f123j11f1j1f1j20|
+row 11 T|                                                                                                                                                              |
+row 11 S|f158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|j158|
+row 13 T|⌖ ● priority-branch-with-a-long-name  ⎇ ● master  ● 日 本 語 -branch  ● second-branch-with-a-long-name                                                           |
+row 13 S|e1f1e1f35l1f1m1l7f2h1f16g1f90|
+case cancel=Char('h') order-retained
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Green	Reset	BOLD | REVERSED
+style d	Reset	Reset	NONE
+style e	Green	Reset	NONE
+row 2 T|[x] ⎇ master                                                                                                                                                  |
+row 2 S|a4b2c6d146|
+row 3 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 3 S|e4d154|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|e4d154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|e4d154|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|                                                                                                                                                              |
+row 12 S|d158|
+row 13 T|                                                                                                                                                              |
+row 13 S|d158|
+case cancel=Char('q') discarded
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Yellow	Reset	BOLD | REVERSED
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Reset	Reset	NONE
+style g	Cyan	Reset	NONE
+style h	Green	Reset	NONE
+style i	Yellow	Reset	NONE
+style j	DarkGray	Reset	NONE
+style k	Magenta	Reset	NONE
+style l	Reset	Reset	BOLD
+style m	Cyan	Reset	BOLD
+row 2 T|│ ●     Uncommitted changes                                                                                                1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b1c1b5c19b96d35|
+row 3 T|│ │ ●   (日 本 語 -branch) Unmerged 日 本 語                                                                                          1584d6c · Fixture · 2020-01-01|
+row 3 S|e1f1g1f1h1f3i2f1i1f1i1f1i9f104j30|
+row 4 T|│ ◆ │   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                        17c49bb · 作 者  Author · 2020-01-01|
+row 4 S|e1f1g1f1h1f3i49f67j11f1j1f1j20|
+row 5 T|│ ├─┼─┐                                                                                                                                                       |
+row 5 S|e1f1g1k1h1k2f151|
+row 6 T|├─┼─┼─┘                                                                                                                                                       |
+row 6 S|e1k1g1k1h1k2f151|
+row 7 T|● │ │   (priority-branch-with-a-long-name) Side 日 本 語                                                                       1b1491b · 作 者  Author · 2020-01-01|
+row 7 S|e1f1g1f1h1f3i35f81j11f1j1f1j20|
+row 8 T|│ ● │   Main commit                                                                                                         3b7da10 · 作 者  Author · 2020-01-01|
+row 8 S|e1f1g1f1h1f119j11f1j1f1j20|
+row 9 T|├─┴─┘                                                                                                                                                         |
+row 9 S|e1g2h2f153|
+row 10 T|●       0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  … 63748e3 · 作 者  Author · 2020-01-01|
+row 10 S|e1f123j11f1j1f1j20|
+row 11 T|                                                                                                                                                              |
+row 11 S|f158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|j158|
+row 13 T|⌖ ● priority-branch-with-a-long-name  ⎇ ● master  ● 日 本 語 -branch  ● second-branch-with-a-long-name                                                           |
+row 13 S|e1f1e1f35l1f1m1l7f2h1f16g1f90|
+case cancel=Char('q') order-retained
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Green	Reset	BOLD | REVERSED
+style d	Reset	Reset	NONE
+style e	Green	Reset	NONE
+row 2 T|[x] ⎇ master                                                                                                                                                  |
+row 2 S|a4b2c6d146|
+row 3 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 3 S|e4d154|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|e4d154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|e4d154|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|                                                                                                                                                              |
+row 12 S|d158|
+row 13 T|                                                                                                                                                              |
+row 13 S|d158|
+case cancel=Esc discarded
+region x=0..158 y=2..14
+style a	White	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Yellow	Reset	BOLD | REVERSED
+style d	DarkGray	Reset	REVERSED
+style e	White	Reset	NONE
+style f	Reset	Reset	NONE
+style g	Cyan	Reset	NONE
+style h	Green	Reset	NONE
+style i	Yellow	Reset	NONE
+style j	DarkGray	Reset	NONE
+style k	Magenta	Reset	NONE
+style l	Reset	Reset	BOLD
+style m	Cyan	Reset	BOLD
+row 2 T|│ ●     Uncommitted changes                                                                                                1 staged · 0 unstaged · 1 untracked|
+row 2 S|a1b1c1b5c19b96d35|
+row 3 T|│ │ ●   (日 本 語 -branch) Unmerged 日 本 語                                                                                          1584d6c · Fixture · 2020-01-01|
+row 3 S|e1f1g1f1h1f3i2f1i1f1i1f1i9f104j30|
+row 4 T|│ ◆ │   (HEAD -> master, second-branch-with-a-long-name) Merge 日 本 語                                                        17c49bb · 作 者  Author · 2020-01-01|
+row 4 S|e1f1g1f1h1f3i49f67j11f1j1f1j20|
+row 5 T|│ ├─┼─┐                                                                                                                                                       |
+row 5 S|e1f1g1k1h1k2f151|
+row 6 T|├─┼─┼─┘                                                                                                                                                       |
+row 6 S|e1k1g1k1h1k2f151|
+row 7 T|● │ │   (priority-branch-with-a-long-name) Side 日 本 語                                                                       1b1491b · 作 者  Author · 2020-01-01|
+row 7 S|e1f1g1f1h1f3i35f81j11f1j1f1j20|
+row 8 T|│ ● │   Main commit                                                                                                         3b7da10 · 作 者  Author · 2020-01-01|
+row 8 S|e1f1g1f1h1f119j11f1j1f1j20|
+row 9 T|├─┴─┘                                                                                                                                                         |
+row 9 S|e1g2h2f153|
+row 10 T|●       0 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 文  … 63748e3 · 作 者  Author · 2020-01-01|
+row 10 S|e1f123j11f1j1f1j20|
+row 11 T|                                                                                                                                                              |
+row 11 S|f158|
+row 12 T|──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+row 12 S|j158|
+row 13 T|⌖ ● priority-branch-with-a-long-name  ⎇ ● master  ● 日 本 語 -branch  ● second-branch-with-a-long-name                                                           |
+row 13 S|e1f1e1f35l1f1m1l7f2h1f16g1f90|
+case cancel=Esc order-retained
+region x=0..158 y=2..14
+style a	Green	Reset	REVERSED
+style b	Reset	Reset	REVERSED
+style c	Green	Reset	BOLD | REVERSED
+style d	Reset	Reset	NONE
+style e	Green	Reset	NONE
+row 2 T|[x] ⎇ master                                                                                                                                                  |
+row 2 S|a4b2c6d146|
+row 3 T|[x]   priority-branch-with-a-long-name                                                                                                                        |
+row 3 S|e4d154|
+row 4 T|[x]   日 本 語 -branch                                                                                                                                           |
+row 4 S|e4d154|
+row 5 T|[x]   second-branch-with-a-long-name                                                                                                                          |
+row 5 S|e4d154|
+row 6 T|                                                                                                                                                              |
+row 6 S|d158|
+row 7 T|                                                                                                                                                              |
+row 7 S|d158|
+row 8 T|                                                                                                                                                              |
+row 8 S|d158|
+row 9 T|                                                                                                                                                              |
+row 9 S|d158|
+row 10 T|                                                                                                                                                              |
+row 10 S|d158|
+row 11 T|                                                                                                                                                              |
+row 11 S|d158|
+row 12 T|                                                                                                                                                              |
+row 12 S|d158|
+row 13 T|                                                                                                                                                              |
+row 13 S|d158|

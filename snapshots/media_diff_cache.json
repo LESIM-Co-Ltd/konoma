@@ -1,0 +1,46 @@
+{
+  "page": 2,
+  "placement": {"target": [0, 0, 4, 3], "cols": 4, "rows": 4, "offset": 1, "visible": 3, "crop": [0, 0, 2, 1]},
+  "raster": [
+    64,
+    128
+  ],
+  "sides": [
+    {
+      "source": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 40 20\"><!-- old --></svg>",
+      "key": "media-diff://o/021809fcb15526b9/2/64x128",
+      "natural": [
+        40,
+        20
+      ],
+      "rgba": [
+        7,
+        11,
+        13,
+        255,
+        17,
+        19,
+        23,
+        127
+      ]
+    },
+    {
+      "source": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 60 30\"><!-- new --></svg>",
+      "key": "media-diff://n/ae43ac1a0d066b0d/2/64x128",
+      "natural": [
+        60,
+        30
+      ],
+      "rgba": [
+        29,
+        31,
+        37,
+        255,
+        41,
+        43,
+        47,
+        63
+      ]
+    }
+  ]
+}

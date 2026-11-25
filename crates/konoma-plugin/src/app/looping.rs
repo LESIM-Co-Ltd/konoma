@@ -1,0 +1,4802 @@
+//! The loop: ask the session for its view, draw it, wait for a key.
+
+#[path = "../host/project/diff_app.rs"]
+mod diff_app;
+
+#[cfg(test)]
+#[path = "inline_overlay_loop_tests.rs"]
+mod inline_overlay_loop_tests;
+
+#[cfg(test)]
+#[path = "file_loop_tests.rs"]
+mod file_loop_tests;
+
+use std::time::{Duration, Instant};
+
+use konoma_host_core::help::{
+    core_sections, ctrl_c_token, menu_view, render_foot, CoreFoot, CoreLookup, CoreSection,
+    CoreToken, HelpFacts, HelpOp, KeyLookup, MenuView,
+};
+use konoma_host_core::help_msg::CoreMsg;
+use konoma_host_core::keymap::{
+    scheme_from_str, CoreAction, CoreContext, CoreKeys, CoreMenu, CoreResolution, KeyPress, Motion,
+};
+use konoma_host_core::keys::KeysConfig;
+use konoma_host_core::lang::Lang;
+use konoma_svg::image::ImageFailure;
+use ratatui::backend::Backend;
+use ratatui::Terminal;
+
+use konoma_widgets::table::{popup_page_step, popup_scroll_by, popup_scroll_to, TableStep};
+
+use super::draw::{self, FailedImage, Frame, ImageFrame, PopupState, TableFrame};
+use super::pictures::Pictures;
+use super::space;
+use super::still::StillShape;
+use super::window;
+use super::AppError;
+use crate::canvas_pictures::image_failure_for;
+use crate::host::acts as hacts;
+use crate::host::typing::{self, NextJob, Notice, QueuedAct};
+use crate::key::{Key, KeyCode, KeyMods};
+use crate::manifest::ViewKind;
+use crate::pages;
+use crate::ratatui_draw;
+use crate::session::{ActCx, Outcome, Session, TermCaps, ViewCx};
+use crate::view::{PageLayout, View, ViewReq};
+use crate::Cancel;
+use crate::{Line, Settings};
+
+/// What the app tells the loop about its surroundings.
+#[derive(Clone, Debug)]
+pub struct AppCx {
+    pub lang: String,
+    pub term: TermCaps,
+    /// Shown in the footer.
+    pub title: String,
+    /// What the plugin declared it shows when it shows nothing: it picks the words of a `view`
+    /// that fails (the same ones konoma shows, see `canvas_pictures::unavailable_text`).
+    pub unavailable: crate::manifest::Unavailable,
+    /// The id of the plugin (the reason of a picture that failed can name its settings).
+    pub plugin_id: String,
+    /// The absolute path of the file (a failure's words end with it, as konoma's do).
+    pub path: std::path::PathBuf,
+    /// The note of the binding that picked the plugin ([`Opened::hint`]): a copied table row is
+    /// joined by the separator the plugin read the file with.
+    pub hint: Option<String>,
+    /// The display types the plugin declared it shows ([`crate::Manifest::shows`]). A page that
+    /// fails before anything was shown is told apart by this (a picture's or a table's); empty
+    /// says nothing, and the kind of the last view on screen is believed instead.
+    pub shows: Vec<crate::manifest::ViewKind>,
+    /// Where a [`View::Reopen`] is opened again (who takes the content type it names). `None`:
+    /// no plugin takes any, and a `Reopen` is "no plugin is available to show this document".
+    pub reopen: Option<super::ReopenSource>,
+    /// How the text and the documents look (`[ui] wrap`, `[ui.theme]`, ...).
+    pub display: super::Display,
+    /// The directory the program was opened in: the frame title is the path of the file shown
+    /// from there, the way konoma's is from its root. `None`: the title is the file name.
+    pub open_dir: Option<std::path::PathBuf>,
+    /// The actions the plugin declared ([`crate::Manifest::actions`]), with the user's keys: the
+    /// footer and the help name them, and their keys run them.
+    pub acts: super::AppActs,
+    /// What `e` and `o` need (`None`: the program has neither key). Both keys act, are named in
+    /// the footer, the help and the `Space` menu, and run only when this is set.
+    pub launch: Option<super::LaunchCx>,
+    /// The plugin shows a converted form of the file ([`crate::Manifest::converts`]): with a
+    /// `Document` among `shows`, this is konoma's "Word document or presentation".
+    pub converts: bool,
+}
+
+impl AppCx {
+    /// The file is a converted document (Word, a presentation): konoma's `is_document()`,
+    /// decided by what the plugin declares (it shows a document and converts), never by its id.
+    pub fn is_document(&self) -> bool {
+        self.converts && self.shows.contains(&ViewKind::Document)
+    }
+}
+
+impl Default for AppCx {
+    /// English, no terminal graphics, nothing declared, no file.
+    fn default() -> AppCx {
+        AppCx {
+            lang: "en".into(),
+            term: TermCaps::new(),
+            title: String::new(),
+            open_dir: None,
+            unavailable: crate::manifest::Unavailable::default(),
+            plugin_id: String::new(),
+            path: std::path::PathBuf::new(),
+            hint: None,
+            shows: Vec::new(),
+            reopen: None,
+            display: super::Display::default(),
+            acts: super::AppActs::default(),
+            launch: None,
+            converts: false,
+        }
+    }
+}
+
+/// The keys of the app: layers 0 to 3 of the key design, shared with the host
+/// (`konoma_host_core::keymap`), with the user's `[keys]` overrides applied.
+///
+/// The app shows one text at a time, so it answers only what a text needs: moving and paging
+/// (`j` `k` `g` `G`, `Ctrl-f` `Ctrl-b` `Ctrl-d` `Ctrl-u` or `f` `b` `d` `u` by `ui.keys`,
+/// `PageUp` `PageDown`) and leaving (`q`, `Q`). The arrows, `Home` and `End` are fixed keys.
+/// Every other command of the shared tables is ignored here until the app can do it.
+///
+/// A table is moved by the keys of the shared table context (`h j k l`, `g G`, `0 $`, paging,
+/// `J K` between sheets) and the fixed arrows, `Home`, `End`; `Enter` opens the full-cell popup.
+#[derive(Clone, Debug)]
+pub struct AppKeys {
+    keys: CoreKeys,
+    /// The keys with no overrides: the `Space` menu's candidates include what a rebinding took away.
+    defaults: CoreKeys,
+    lang: Lang,
+    /// `[ui] wrap`: while the text wraps, the sideways keys do nothing and are not named.
+    wrap: bool,
+    /// The text on screen has the caret (the file's text in the host's frame): the sideways keys
+    /// move it whether the text wraps or not.
+    caret: bool,
+    /// What `e` and `o` do on the screen now (the loop sets it for each frame).
+    launch: super::LaunchFacts,
+}
+
+impl AppKeys {
+    fn project_preview_values(
+        &self,
+        context: CoreContext,
+        state: konoma_host_core::preview_plan::PreviewState,
+        mut core: HelpFacts,
+        return_keys: &[KeyPress],
+        changes: bool,
+    ) -> crate::host::project::preview_presentation::PreviewValues {
+        use crate::host::project::preview_presentation::{PreviewBinding, PreviewValues};
+        use konoma_host_core::preview_plan::{footer_plan, help_order, PreviewOp, PvFoot};
+        core.label.retain(|(a, _)| *a != CoreAction::PreviewBack);
+        core.label
+            .push((CoreAction::PreviewBack, Some(CoreMsg::GitBack)));
+        core.help.retain(|(a, _)| *a != CoreAction::PreviewBack);
+        core.help
+            .push((CoreAction::PreviewBack, Some(CoreMsg::BackToTree)));
+        core.help.retain(|(a, _)| *a != CoreAction::Quit);
+        core.help.push((CoreAction::Quit, Some(CoreMsg::Quit)));
+        let mut ops = help_order(context, &state);
+        ops.extend(konoma_host_core::preview_plan::help_everywhere());
+        for entry in footer_plan(context, &state) {
+            match entry {
+                PvFoot::Op(op) | PvFoot::As(op, _) => ops.push(op),
+                PvFoot::Group(g, _) | PvFoot::GroupOp(g) | PvFoot::Union(g, _) => {
+                    ops.extend(g.ops())
+                }
+                _ => {}
+            }
+        }
+        let lookup = CoreLookup {
+            keys: &self.keys,
+            ctx: context,
+        };
+        let mut bindings: Vec<PreviewBinding> = Vec::new();
+        for op in ops {
+            if bindings.iter().any(|b| b.op == op) {
+                continue;
+            }
+            let (keys, enabled, label) = match op {
+                PreviewOp::Core(a) => (
+                    lookup.keys_of(HelpOp::Act(a)),
+                    !core.off.contains(&HelpOp::Act(a))
+                        && !matches!(
+                            a,
+                            CoreAction::ToggleFollow | CoreAction::TabPrev | CoreAction::TabNext
+                        ),
+                    if a == CoreAction::Quit {
+                        Some(
+                            if self.lang == Lang::Jp {
+                                "konoma を終了"
+                            } else {
+                                "quit konoma"
+                            }
+                            .into(),
+                        )
+                    } else if matches!(a, CoreAction::ImageZoomIn | CoreAction::ImageZoomOut) {
+                        Some(
+                            if a == CoreAction::ImageZoomIn {
+                                CoreMsg::MenuZoomIn
+                            } else {
+                                CoreMsg::MenuZoomOut
+                            }
+                            .tr(self.lang)
+                            .into(),
+                        )
+                    } else {
+                        konoma_host_core::help::default_label(context, a)
+                            .map(|m| m.tr(self.lang).into())
+                    },
+                ),
+                PreviewOp::Host(
+                    konoma_host_core::keymap::HostOp::CycleRepresentation
+                    | konoma_host_core::keymap::HostOp::ImageReturnToDiff,
+                ) => (return_keys.to_vec(), !return_keys.is_empty(), None),
+                PreviewOp::Host(
+                    op @ (konoma_host_core::keymap::HostOp::OpenGitView
+                    | konoma_host_core::keymap::HostOp::GitLaunchTool
+                    | konoma_host_core::keymap::HostOp::Refresh),
+                ) => {
+                    let mut keys: Vec<_> = self
+                        .keys
+                        .global
+                        .keys()
+                        .chain(self.keys.basic.keys())
+                        .chain(self.keys.contexts.values().flat_map(|t| t.keys()))
+                        .chain(self.keys.types.values().flat_map(|t| t.keys()))
+                        .copied()
+                        .filter(|k| self.keys.host_op(context, *k) == Some(op))
+                        .collect();
+                    keys.sort_by_key(|k| konoma_host_core::help::display_order(*k));
+                    keys.dedup();
+                    let jp = self.lang == Lang::Jp;
+                    let label = match op {
+                        konoma_host_core::keymap::HostOp::OpenGitView => Some(
+                            crate::host::project::preview_presentation::project_menu_label(
+                                self.lang,
+                            )
+                            .into(),
+                        ),
+                        konoma_host_core::keymap::HostOp::GitLaunchTool => {
+                            Some(if jp { "ツール" } else { "tool" }.into())
+                        }
+                        _ => Some(if jp { "再読込" } else { "refresh" }.into()),
+                    };
+                    (keys, true, label)
+                }
+                PreviewOp::Host(
+                    op @ (konoma_host_core::keymap::HostOp::SearchNext
+                    | konoma_host_core::keymap::HostOp::SearchPrev),
+                ) => {
+                    let mut keys: Vec<_> = self
+                        .keys
+                        .global
+                        .keys()
+                        .chain(self.keys.basic.keys())
+                        .chain(self.keys.contexts.values().flat_map(|t| t.keys()))
+                        .chain(self.keys.types.values().flat_map(|t| t.keys()))
+                        .copied()
+                        .filter(|k| self.keys.host_op(context, *k) == Some(op))
+                        .collect();
+                    keys.sort_by_key(|k| konoma_host_core::help::display_order(*k));
+                    keys.dedup();
+                    (
+                        keys,
+                        changes,
+                        Some(
+                            match (op, self.lang) {
+                                (konoma_host_core::keymap::HostOp::SearchNext, Lang::Jp) => {
+                                    "次の一致"
+                                }
+                                (konoma_host_core::keymap::HostOp::SearchPrev, Lang::Jp) => {
+                                    "前の一致"
+                                }
+                                (konoma_host_core::keymap::HostOp::SearchNext, _) => "next match",
+                                _ => "previous match",
+                            }
+                            .into(),
+                        ),
+                    )
+                }
+                PreviewOp::ToggleTableCell if context == CoreContext::Table => (
+                    vec![KeyPress::key(crossterm::event::KeyCode::Enter)],
+                    true,
+                    Some(CoreMsg::HintViewCell.tr(self.lang).into()),
+                ),
+                _ => (vec![], false, None),
+            };
+            let provided = match op {
+                PreviewOp::Core(
+                    CoreAction::ToggleOutline
+                    | CoreAction::ToggleFollow
+                    | CoreAction::TabPrev
+                    | CoreAction::TabNext,
+                ) => false,
+                PreviewOp::Core(
+                    CoreAction::ImageZoomIn | CoreAction::ImageZoomOut | CoreAction::ImageZoomReset,
+                ) => context == CoreContext::Image,
+                PreviewOp::Host(
+                    konoma_host_core::keymap::HostOp::CycleRepresentation
+                    | konoma_host_core::keymap::HostOp::ImageReturnToDiff,
+                ) => true,
+                PreviewOp::Host(
+                    konoma_host_core::keymap::HostOp::SearchNext
+                    | konoma_host_core::keymap::HostOp::SearchPrev
+                    | konoma_host_core::keymap::HostOp::OpenGitView
+                    | konoma_host_core::keymap::HostOp::GitLaunchTool
+                    | konoma_host_core::keymap::HostOp::Refresh,
+                ) => true,
+                PreviewOp::Core(_) | PreviewOp::ToggleTableCell | PreviewOp::Cancel => true,
+                _ => false,
+            };
+            let help = if let PreviewOp::Core(a) = op {
+                konoma_host_core::help::default_help(context, a).map(|m| m.tr(self.lang).into())
+            } else if op == PreviewOp::ToggleTableCell {
+                Some(CoreMsg::TableCellViewHelp.tr(self.lang).into())
+            } else if let PreviewOp::Host(op) = op {
+                use konoma_host_core::keymap::HostOp;
+                let jp = self.lang == Lang::Jp;
+                match op {
+                    HostOp::OpenGitView => Some(
+                        if jp {
+                            "Git 変更ハブ (ステージ/解除/破棄/コミット; b=ブランチ)"
+                        } else {
+                            "Git changes hub (stage/unstage/discard/commit; b=branch)"
+                        }
+                        .into(),
+                    ),
+                    HostOp::GitLaunchTool => Some(
+                        if jp {
+                            "外部 git ツール (lazygit)"
+                        } else {
+                            "external git tool (lazygit)"
+                        }
+                        .into(),
+                    ),
+                    HostOp::Refresh => Some(
+                        if jp {
+                            "一覧と git status を再読込"
+                        } else {
+                            "refresh listing & git status"
+                        }
+                        .into(),
+                    ),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let layers = keys
+                .iter()
+                .filter_map(|key| lookup.layer_of(*key).map(|layer| (*key, layer)))
+                .collect();
+            bindings.push(PreviewBinding {
+                op,
+                keys,
+                enabled,
+                provided,
+                label,
+                help,
+                launch: matches!(
+                    op,
+                    PreviewOp::Core(CoreAction::RequestEdit | CoreAction::OpenExternal)
+                ),
+                layers,
+            });
+        }
+        let change_keys = bindings
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b.op,
+                    PreviewOp::Host(
+                        konoma_host_core::keymap::HostOp::SearchNext
+                            | konoma_host_core::keymap::HostOp::SearchPrev
+                    )
+                )
+            })
+            .flat_map(|b| b.keys.iter())
+            .map(|k| konoma_host_core::help::footer_key(*k, false))
+            .collect::<Vec<_>>()
+            .join("/");
+        PreviewValues {
+            context,
+            state,
+            bindings,
+            core,
+            search_status: None,
+            change_status: (changes && !change_keys.is_empty()).then(|| {
+                format!(
+                    "{change_keys}:{}",
+                    if self.lang == Lang::Jp {
+                        "変更箇所"
+                    } else {
+                        "change"
+                    }
+                )
+            }),
+            copy_code: None,
+        }
+    }
+
+    /// The keys for the `[keys]` table `keys` and the `ui.keys` paging style (`"vim"` | `"less"`).
+    pub fn new(keys: &KeysConfig, ui_keys: &str) -> AppKeys {
+        AppKeys {
+            keys: CoreKeys::from_keys_config(scheme_from_str(ui_keys), keys),
+            defaults: CoreKeys::defaults(scheme_from_str(ui_keys)),
+            lang: Lang::En,
+            wrap: true,
+            caret: false,
+            launch: super::LaunchFacts::default(),
+        }
+    }
+
+    /// The same keys with `e` and `o` doing what `launch` says.
+    pub fn with_launch(mut self, launch: super::LaunchFacts) -> AppKeys {
+        self.launch = launch;
+        self
+    }
+
+    /// `facts` with `e` and `o` on when they act, and named as the host names them: `e` is
+    /// `edit` for the editor and `open` for an application, and its help says so
+    /// (`ctx` picks the editor's wording).
+    fn with_launch_facts(&self, ctx: CoreContext, mut facts: HelpFacts) -> HelpFacts {
+        let edit = HelpOp::Act(CoreAction::RequestEdit);
+        let open = HelpOp::Act(CoreAction::OpenExternal);
+        if self.launch.edit_acts() {
+            facts.off.retain(|o| *o != edit);
+            let app = self.launch.edit == Some(crate::host::launch::EditWord::App);
+            let (label, help) = if app {
+                (CoreMsg::HintOpen, CoreMsg::EditInOfficeApp)
+            } else if matches!(ctx, CoreContext::Text | CoreContext::Document) {
+                (CoreMsg::HintEdit, CoreMsg::EditExternalEnv)
+            } else {
+                (CoreMsg::HintEdit, CoreMsg::EditExternal)
+            };
+            facts.label.push((CoreAction::RequestEdit, Some(label)));
+            facts.help.push((CoreAction::RequestEdit, Some(help)));
+        }
+        if self.launch.open {
+            facts.off.retain(|o| *o != open);
+        }
+        facts
+    }
+
+    /// The footer tokens of `e` and `o` over `ctx`, those that act (the host's plan puts them
+    /// right after the help).
+    fn launch_tokens(
+        &self,
+        ctx: CoreContext,
+        facts: &HelpFacts,
+        look: &CoreLookup,
+    ) -> Vec<CoreToken> {
+        [CoreFoot::Edit, CoreFoot::Open]
+            .into_iter()
+            .filter_map(|f| render_foot(f, ctx, facts, look, self.lang))
+            .collect()
+    }
+
+    /// The same keys over a text that has the caret (`true`: the file's text in the host's
+    /// frame) or none (a message, a page that failed to draw, a document).
+    pub fn with_caret(mut self, caret: bool) -> AppKeys {
+        self.caret = caret;
+        self
+    }
+
+    /// The same keys for text that wraps (`true`, the default) or scrolls sideways (`[ui] wrap`).
+    pub fn with_wrap(mut self, wrap: bool) -> AppKeys {
+        self.wrap = wrap;
+        self
+    }
+
+    /// The same keys with the help and the footer in `lang`.
+    pub fn with_lang(mut self, lang: Lang) -> AppKeys {
+        self.lang = lang;
+        self
+    }
+
+    /// The language of the help and the footer.
+    pub fn lang(&self) -> Lang {
+        self.lang
+    }
+
+    /// What the help and the footer say about the keys of a text: every operation of the shared
+    /// layers the app does not act on is off (its row and token are left out), and the two
+    /// leaving keys are named as the app leaves (it has no tree to go back to).
+    pub fn facts(&self) -> HelpFacts {
+        self.facts_paged(false)
+    }
+
+    /// [`AppKeys::facts`] for a text whose document has pages to turn (`paged`): the page turn
+    /// is named too, as the host names it over any text of a paged document. That is the text
+    /// of a page that failed to draw.
+    pub fn facts_paged(&self, paged: bool) -> HelpFacts {
+        self.facts_scrolling(paged, true)
+    }
+
+    /// [`AppKeys::facts_paged`] for a text that `scrolls` or not: the picture's own frame that
+    /// holds a failure has no text, so the motions do nothing there and are not named (as the
+    /// host's gate leaves them out).
+    pub fn facts_scrolling(&self, paged: bool, scrolls: bool) -> HelpFacts {
+        self.facts_in(CoreContext::Text, paged, scrolls)
+    }
+
+    /// [`AppKeys::facts_scrolling`] over the text screen of key context `ctx` (see [`text_ctx`]).
+    pub fn facts_in(&self, ctx: CoreContext, paged: bool, scrolls: bool) -> HelpFacts {
+        let acted = |op: &HelpOp| match op {
+            HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => paged,
+            // The sideways motions only act on text that does not wrap.
+            HelpOp::Act(CoreAction::Navigate(
+                Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd,
+            )) => {
+                scrolls
+                    && crate::host::project::preview_presentation::horizontal_moves(
+                        self.wrap, self.caret,
+                    )
+            }
+            HelpOp::Act(CoreAction::Navigate(_)) => scrolls,
+            HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
+                true
+            }
+            HelpOp::Cancel => true,
+            _ => false,
+        };
+        let mut off: Vec<HelpOp> = Vec::new();
+        for row in konoma_host_core::help::rows_of(ctx) {
+            for op in row.ops() {
+                if !acted(op) && !off.contains(op) {
+                    off.push(*op);
+                }
+            }
+        }
+        let facts = HelpFacts {
+            off,
+            label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
+            help: vec![
+                (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
+                (CoreAction::Quit, Some(CoreMsg::QuitApp)),
+            ],
+        };
+        self.with_launch_facts(ctx, facts)
+    }
+
+    /// The footer's key hints: what leaves (`q` or else `Q` or else `Ctrl-C`, whichever really
+    /// quits), what scrolls (only when the frame on screen scrolls: `scrolls`), what opens the
+    /// help. A hint is there only when its key acts.
+    pub fn footer_hints(&self, scrolls: bool) -> Vec<CoreToken> {
+        self.footer_hints_paged(scrolls, false)
+    }
+
+    /// [`AppKeys::footer_hints`] over a text of a document with pages (`paged`).
+    pub fn footer_hints_paged(&self, scrolls: bool, paged: bool) -> Vec<CoreToken> {
+        self.footer_hints_in(CoreContext::Text, scrolls, paged)
+    }
+
+    /// [`AppKeys::footer_hints_paged`] over the text screen of key context `ctx`.
+    pub fn footer_hints_in(&self, ctx: CoreContext, scrolls: bool, paged: bool) -> Vec<CoreToken> {
+        if ctx == CoreContext::Diff {
+            return self
+                .source_diff(paged, scrolls)
+                .footer_tokens()
+                .iter()
+                .map(|token| CoreToken {
+                    text: token.text.clone(),
+                    keys: token.keys.clone(),
+                    ops: token.ops.iter().filter_map(|op| op.core()).collect(),
+                })
+                .collect();
+        }
+        let facts = self.facts_in(ctx, paged, true);
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx,
+        };
+        let tok = |f: CoreFoot| render_foot(f, ctx, &facts, &look, self.lang);
+        let leave = tok(CoreFoot::Back)
+            .or_else(|| tok(CoreFoot::Quit))
+            .unwrap_or_else(|| ctrl_c_token(self.lang));
+        // The host's order for a text: the scroll, what leaves, the help, then the ends, the
+        // sideways keys (text that does not wrap) and the page keys. `scrolls` is false for a
+        // frame no motion moves: only what leaves and the help.
+        let mut out = Vec::new();
+        if scrolls {
+            out.extend(tok(CoreFoot::Scroll));
+        }
+        out.push(leave);
+        out.extend(tok(CoreFoot::Help));
+        out.extend(self.launch_tokens(ctx, &facts, &look));
+        // The host names the `,` menu on any text screen, one that scrolls or not.
+        for f in [
+            CoreFoot::Ends,
+            CoreFoot::HScroll,
+            CoreFoot::LineEnds,
+            CoreFoot::Options,
+            CoreFoot::PageKeys,
+        ] {
+            if scrolls || f == CoreFoot::Options {
+                out.extend(tok(f));
+            }
+        }
+        out
+    }
+
+    /// The footer's key hints of a Markdown document: the same as a text (the host's footer of
+    /// a document has no sideways keys: the lines wrap).
+    pub fn document_footer_tokens(&self, scrolls: bool) -> Vec<String> {
+        self.footer_hints_in(CoreContext::Document, scrolls, false)
+            .into_iter()
+            .filter(|t| {
+                !t.ops.iter().any(|o| {
+                    matches!(
+                        o,
+                        HelpOp::Act(CoreAction::Navigate(Motion::Left | Motion::LineHome))
+                    )
+                })
+            })
+            .map(|t| t.text)
+            .collect()
+    }
+
+    /// [`AppKeys::footer_hints`] as the text the footer shows.
+    pub fn footer_tokens(&self, scrolls: bool) -> Vec<String> {
+        self.footer_tokens_paged(scrolls, false)
+    }
+
+    /// [`AppKeys::footer_hints_paged`] as the text the footer shows.
+    pub fn footer_tokens_paged(&self, scrolls: bool, paged: bool) -> Vec<String> {
+        self.footer_hints_paged(scrolls, paged)
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+
+    /// Whether `key` does something: in the `?` help (`in_help`) or on the screen of a text
+    /// (`scrolls`: the frame scrolls) or of anything else (a message, a canvas: the motions do
+    /// nothing there). What the hints and the help rows name must pass this.
+    pub fn acts_on(&self, key: &Key, in_help: bool, scrolls: bool) -> bool {
+        self.acts_on_in(CoreContext::Text, key, in_help, scrolls)
+    }
+
+    /// [`AppKeys::acts_on`] over the text screen of key context `ctx`.
+    pub fn acts_on_in(&self, ctx: CoreContext, key: &Key, in_help: bool, scrolls: bool) -> bool {
+        if in_help {
+            return self.help_acts_on(key);
+        }
+        match self.act_in(ctx, key) {
+            None => self.menu_key_acts(ctx, key),
+            // Sideways, the text moves only when it does not wrap (the open help does not).
+            Some(Act::Move(Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd)) => {
+                scrolls
+                    && crate::host::project::preview_presentation::horizontal_moves(
+                        self.wrap, self.caret,
+                    )
+            }
+            Some(Act::Move(_)) => scrolls,
+            Some(_) => true,
+        }
+    }
+
+    /// Whether `key` does something while the `?` help is open, over any screen: the answer of
+    /// [`AppKeys::help_act`], the one the loop runs. The help scrolls on the vertical motions;
+    /// the sideways ones leave it as it is.
+    fn help_acts_on(&self, key: &Key) -> bool {
+        match self.help_act(key) {
+            None => false,
+            Some(Act::Move(m)) => matches!(
+                m,
+                Motion::Down
+                    | Motion::Up
+                    | Motion::Top
+                    | Motion::Bottom
+                    | Motion::PageDown
+                    | Motion::PageUp
+                    | Motion::HalfDown
+                    | Motion::HalfUp
+            ),
+            Some(_) => true,
+        }
+    }
+
+    /// The sections of the `?` help.
+    pub fn help_sections(&self) -> Vec<CoreSection> {
+        self.help_sections_paged(false)
+    }
+
+    /// [`AppKeys::help_sections`] over a text of a document with pages (`paged`).
+    pub fn help_sections_paged(&self, paged: bool) -> Vec<CoreSection> {
+        self.help_sections_scrolling(paged, true)
+    }
+
+    /// [`AppKeys::help_sections_paged`] over a text that `scrolls` or not.
+    pub fn help_sections_scrolling(&self, paged: bool, scrolls: bool) -> Vec<CoreSection> {
+        self.help_sections_in(CoreContext::Text, paged, scrolls)
+    }
+
+    /// [`AppKeys::help_sections_scrolling`] over the text screen of key context `ctx`.
+    pub fn help_sections_in(
+        &self,
+        ctx: CoreContext,
+        paged: bool,
+        scrolls: bool,
+    ) -> Vec<CoreSection> {
+        if ctx == CoreContext::Diff {
+            let p = self.source_diff(paged, scrolls);
+            return p.help_sections(&[], &self.diff_help_menus(&p));
+        }
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx,
+        };
+        let secs = core_sections(ctx, &self.facts_in(ctx, paged, scrolls), &look, self.lang);
+        self.with_copy_section(ctx, CoreMenu::Copy, secs)
+    }
+
+    /// The menu `key` opens in `ctx` when it is the copy menu (`y`) or the options menu (`,`):
+    /// `None` for any other key.
+    fn copy_menu_of(&self, ctx: CoreContext, key: &Key) -> Option<CoreMenu> {
+        match self.keys.resolve(ctx, key_press(key)?) {
+            CoreResolution::Menu(
+                m @ (CoreMenu::Copy | CoreMenu::TableCopy | CoreMenu::Options),
+            ) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// Whether `key` opens a menu of `ctx` that has items (a key that acts on its own). The
+    /// `Space` menu always has the way back and the help.
+    fn menu_key_acts(&self, ctx: CoreContext, key: &Key) -> bool {
+        self.opens_actions(ctx, key)
+            || self
+                .copy_menu_of(ctx, key)
+                .is_some_and(|m| self.copy_menu_view(ctx, m).is_some())
+    }
+
+    /// Whether `key` is an item of an open copy menu (it acts only as the key after `y`; the help
+    /// names it in a row such as `y n`).
+    pub fn acts_in_copy_menu(&self, key: &Key) -> bool {
+        let Some(kp) = key_press(key) else {
+            return false;
+        };
+        [
+            (CoreContext::Text, CoreMenu::Copy),
+            (CoreContext::Document, CoreMenu::Copy),
+            (CoreContext::Image, CoreMenu::Copy),
+            (CoreContext::Table, CoreMenu::TableCopy),
+            (CoreContext::Text, CoreMenu::Options),
+            (CoreContext::Document, CoreMenu::Options),
+            (CoreContext::Image, CoreMenu::Options),
+            (CoreContext::Table, CoreMenu::Options),
+            (CoreContext::Canvas, CoreMenu::Options),
+        ]
+        .into_iter()
+        .any(|(c, m)| {
+            self.copy_menu_of(c, key) == Some(m)
+                || self
+                    .copy_menu_view(c, m)
+                    .is_some_and(|v| v.find(kp).is_some())
+        })
+    }
+
+    /// The copy menu as the which-key line and the help list it (no code block is focused here,
+    /// so `c` is not offered).
+    fn copy_menu_view(&self, ctx: CoreContext, menu: CoreMenu) -> Option<MenuView> {
+        if ctx == CoreContext::Diff && menu == CoreMenu::Options {
+            let p = self.source_diff(false, true);
+            let view = menu_view(&self.keys, ctx, menu, self.lang, false)?;
+            let declaration: Vec<_> = view
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| konoma_host_core::menu::Item {
+                    key: item.key,
+                    action: crate::host::project::diff_presentation::DiffUiOp::from_core(
+                        HelpOp::Act(item.action),
+                    )
+                    .unwrap_or(
+                        crate::host::project::diff_presentation::DiffUiOp::Host(index),
+                    ),
+                    label: crate::host::acts::FixedMenuLabel {
+                        declared: Some(item.label.clone()),
+                        fallback: None,
+                    },
+                })
+                .collect();
+            let items = p
+                .options_menu(&declaration)
+                .into_iter()
+                .filter_map(|item| view.items.iter().find(|i| i.key == item.key).cloned())
+                .collect();
+            return Some(MenuView {
+                title: view.title,
+                items,
+            })
+            .filter(|v| !v.items.is_empty());
+        }
+        menu_view(&self.keys, ctx, menu, self.lang, false).filter(|m| !m.items.is_empty())
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn options_op_for_test(
+        &self,
+        ctx: CoreContext,
+        key: KeyPress,
+    ) -> Option<CoreAction> {
+        self.copy_menu_view(ctx, CoreMenu::Options)?.find(key)
+    }
+
+    /// The which-key line of an open menu: the spans the host draws (a bold heading, dim items).
+    fn which_key_line(
+        &self,
+        ctx: CoreContext,
+        menu: CoreMenu,
+        width: u16,
+    ) -> Option<Vec<ratatui::text::Span<'static>>> {
+        let view = self.copy_menu_view(ctx, menu)?;
+        let items = konoma_host_core::help::which_key_items(&view.pairs());
+        Some(konoma_widgets::footer_line::which_key_spans(
+            &view.title,
+            &items,
+            width,
+        ))
+    }
+
+    /// `sections` with the sections of the menus the screen opens (`, p  ...` and the copy
+    /// menu's `y n  name`) between the launch verbs and what is true everywhere, in the order of
+    /// their opening keys, where the host lists them.
+    fn with_copy_section(
+        &self,
+        ctx: CoreContext,
+        menu: CoreMenu,
+        mut sections: Vec<CoreSection>,
+    ) -> Vec<CoreSection> {
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx,
+        };
+        let mut found: Vec<(KeyPress, CoreSection)> = Vec::new();
+        for m in [CoreMenu::Options, menu] {
+            let Some(open) = look.keys_of(HelpOp::Menu(m)).first().copied() else {
+                continue;
+            };
+            let Some(view) = self.copy_menu_view(ctx, m) else {
+                continue;
+            };
+            if let Some(sec) = konoma_host_core::help::menu_section(
+                &view.title,
+                &konoma_host_core::help::help_key(open),
+                &view.pairs(),
+            ) {
+                found.push((open, sec));
+            }
+        }
+        found.sort_by_key(|(k, _)| konoma_host_core::help::display_order(*k));
+        let global = CoreMsg::HelpGlobal.tr(self.lang);
+        let at = sections
+            .iter()
+            .position(|s| s.title == global)
+            .unwrap_or(sections.len());
+        for (i, (_, sec)) in found.into_iter().enumerate() {
+            sections.insert(at + i, sec);
+        }
+        sections
+    }
+
+    /// The title of the `?` help, shown in the footer while it is open.
+    ///
+    /// Named from the actual bindings: the keys that toggle the help (the fixed `Esc` is added),
+    /// and the keys that scroll it, left out when none does. The leaving key `q` closes it too
+    /// and is not named, as in the host.
+    pub fn help_title(&self) -> String {
+        self.help_title_in(CoreContext::Text)
+    }
+
+    /// [`AppKeys::help_title`] over the text screen of key context `ctx`.
+    pub fn help_title_in(&self, _ctx: CoreContext) -> String {
+        self.overlay_title()
+    }
+
+    /// The title of the `?` help. The help is konoma's `Help` context whatever is under it, so
+    /// its keys (and the title naming them) do not depend on the screen.
+    fn overlay_title(&self) -> String {
+        konoma_host_core::help::help_overlay_title(&self.keys, self.lang)
+    }
+
+    /// What the app does for `key` while the `?` help is open: the help's own keys, the basic
+    /// table and `global`, as konoma's `Help` context resolves them.
+    fn help_act(&self, key: &Key) -> Option<Act> {
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        if key.mods.is_empty() {
+            match key.code {
+                KeyCode::Down => return Some(Act::Move(Motion::Down)),
+                KeyCode::Up => return Some(Act::Move(Motion::Up)),
+                KeyCode::Home => return Some(Act::Move(Motion::Top)),
+                KeyCode::End => return Some(Act::Move(Motion::Bottom)),
+                KeyCode::Esc => return Some(Act::Back),
+                _ => {}
+            }
+        }
+        match self.keys.help_resolve(key_press(key)?) {
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
+            CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            _ => None,
+        }
+    }
+
+    /// The footer's key hints while the `?` help is open: scrolling, the ends, closing (the
+    /// host's footer of its help).
+    pub fn help_footer_tokens(&self) -> Vec<String> {
+        konoma_host_core::help::help_footer_tokens(&self.keys, self.lang)
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+
+    // ---- Tables ----
+
+    /// What the help and the footer say about a table: what the app does not act on is off.
+    fn table_facts(&self, mode: TableMode) -> HelpFacts {
+        let acted = |op: &HelpOp| match op {
+            HelpOp::Act(CoreAction::Navigate(_)) => true,
+            HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => mode.paged,
+            HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
+                true
+            }
+            HelpOp::Cancel => true,
+            _ => false,
+        };
+        let mut off: Vec<HelpOp> = Vec::new();
+        for row in konoma_host_core::help::rows_of(CoreContext::Table) {
+            for op in row.ops() {
+                if !acted(op) && !off.contains(op) {
+                    off.push(*op);
+                }
+            }
+        }
+        let facts = HelpFacts {
+            off,
+            label: {
+                let mut v = vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))];
+                if mode.sheets {
+                    v.push((CoreAction::PageNext, Some(CoreMsg::HintSheet)));
+                    v.push((CoreAction::PagePrev, Some(CoreMsg::HintSheet)));
+                }
+                v
+            },
+            help: {
+                let mut v = vec![
+                    (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
+                    (CoreAction::Quit, Some(CoreMsg::QuitApp)),
+                ];
+                if mode.sheets {
+                    v.push((CoreAction::PageNext, Some(CoreMsg::SheetSwitchHelp)));
+                    v.push((CoreAction::PagePrev, Some(CoreMsg::SheetSwitchHelp)));
+                }
+                v
+            },
+        };
+        self.with_launch_facts(CoreContext::Table, facts)
+    }
+
+    fn table_lookup(&self) -> CoreLookup<'_> {
+        CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Table,
+        }
+    }
+
+    /// The footer's key hints of a table: the cell cursor, the cell popup (`Enter`), the sheets,
+    /// the ends, what leaves and what opens the help. A hint is there only when its key acts
+    /// (`J` `K` only with several sheets, `Enter` only when there is a cell).
+    pub fn table_footer_hints(&self, mode: TableMode) -> Vec<CoreToken> {
+        let facts = self.table_facts(mode);
+        let look = self.table_lookup();
+        let tok = |f: CoreFoot| render_foot(f, CoreContext::Table, &facts, &look, self.lang);
+        let mut out: Vec<CoreToken> = Vec::new();
+        if mode.popup {
+            out.extend(self.popup_tokens());
+            return out;
+        }
+        out.extend(tok(CoreFoot::Cell));
+        if mode.cells {
+            out.push(self.enter_token());
+        }
+        out.extend(tok(CoreFoot::PageTurn));
+        out.extend(tok(CoreFoot::TableCopy));
+        out.extend(tok(CoreFoot::Ends));
+        out.push(
+            tok(CoreFoot::Back)
+                .or_else(|| tok(CoreFoot::Quit))
+                .unwrap_or_else(|| ctrl_c_token(self.lang)),
+        );
+        out.extend(tok(CoreFoot::Help));
+        out.extend(self.launch_tokens(CoreContext::Table, &facts, &look));
+        out.extend(tok(CoreFoot::Options));
+        out
+    }
+
+    /// [`AppKeys::table_footer_hints`] as the text the footer shows.
+    pub fn table_footer_tokens(&self, mode: TableMode) -> Vec<String> {
+        self.table_footer_hints(mode)
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+
+    /// `Enter:view cell`: the fixed key that opens the popup.
+    fn enter_token(&self) -> CoreToken {
+        let key = KeyPress::key(crossterm::event::KeyCode::Enter);
+        CoreToken {
+            text: format!(
+                "{}:{}",
+                konoma_host_core::help::write_keys(&[key], true),
+                CoreMsg::HintViewCell.tr(self.lang)
+            ),
+            keys: vec![key],
+            ops: Vec::new(),
+        }
+    }
+
+    /// The hints of the full-cell popup: scrolling, the ends, closing (the leave keys, `Enter` and `Esc`).
+    pub fn popup_tokens(&self) -> Vec<CoreToken> {
+        use konoma_host_core::help::write_keys;
+        let facts = self.table_facts(TableMode {
+            popup: true,
+            ..TableMode::default()
+        });
+        let look = self.table_lookup();
+        let mut out: Vec<CoreToken> = Vec::new();
+        out.extend(render_foot(
+            CoreFoot::Scroll,
+            CoreContext::Table,
+            &facts,
+            &look,
+            self.lang,
+        ));
+        if let Some(t) = render_foot(CoreFoot::Ends, CoreContext::Table, &facts, &look, self.lang) {
+            out.push(CoreToken {
+                text: format!(
+                    "{}:{}",
+                    write_keys(&t.keys, true),
+                    CoreMsg::FtTopBottom.tr(self.lang)
+                ),
+                keys: t.keys,
+                ops: t.ops,
+            });
+        }
+        // What closes the popup: the keys that leave (`q`), and the fixed `Enter` and `Esc`.
+        let mut close = look.keys_of(HelpOp::Act(CoreAction::PreviewBack));
+        for k in [
+            KeyPress::key(crossterm::event::KeyCode::Enter),
+            KeyPress::key(crossterm::event::KeyCode::Esc),
+        ] {
+            if !close.contains(&k) {
+                close.push(k);
+            }
+        }
+        out.push(CoreToken {
+            text: format!(
+                "{}:{}",
+                write_keys(&close, false),
+                CoreMsg::FtClose.tr(self.lang)
+            ),
+            keys: close,
+            ops: Vec::new(),
+        });
+        out
+    }
+
+    /// The sections of the `?` help of a table, with the fixed `Enter` row.
+    ///
+    /// The help describes the table under it: with the popup open it still lists the keys of the
+    /// table (the host's does), so the rows are the ones of the table with no popup.
+    pub fn table_help_sections(&self, mode: TableMode) -> Vec<CoreSection> {
+        let mode = TableMode {
+            popup: false,
+            ..mode
+        };
+        let look = self.table_lookup();
+        let secs = core_sections(
+            CoreContext::Table,
+            &self.table_facts(mode),
+            &look,
+            self.lang,
+        );
+        let mut secs = self.with_copy_section(CoreContext::Table, CoreMenu::TableCopy, secs);
+        if mode.cells {
+            let row = (
+                konoma_host_core::help::help_key(KeyPress::key(crossterm::event::KeyCode::Enter)),
+                CoreMsg::TableCellViewHelp.tr(self.lang).to_string(),
+            );
+            let view_title = konoma_host_core::help::view_title(CoreContext::Table).tr(self.lang);
+            match secs.iter_mut().find(|s| s.title == view_title) {
+                Some(s) => s.rows.push(row),
+                None => secs.insert(
+                    0,
+                    CoreSection {
+                        title: view_title.to_string(),
+                        rows: vec![row],
+                    },
+                ),
+            }
+        }
+        secs
+    }
+
+    /// The title of the `?` help over a table (see [`AppKeys::help_title`]).
+    pub fn table_help_title(&self, _mode: TableMode) -> String {
+        self.overlay_title()
+    }
+
+    /// What the app does for `key` over a table (`None` = nothing). `popup`: the full-cell popup
+    /// is open, where the keys are the popup's own: the vertical motions scroll it, `PageUp`
+    /// and `PageDown` page it, `Enter` / `Esc` / `q` close it; the others do nothing.
+    fn table_act(&self, key: &Key, popup: bool) -> Option<Act> {
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        let allowed = |m: Motion, literal_page: bool| match m {
+            Motion::Down | Motion::Up | Motion::Top | Motion::Bottom => true,
+            Motion::PageDown | Motion::PageUp => !popup || literal_page,
+            _ => !popup,
+        };
+        if key.mods.is_empty() {
+            let fixed = match key.code {
+                KeyCode::Down => Some(Motion::Down),
+                KeyCode::Up => Some(Motion::Up),
+                KeyCode::Left => Some(Motion::Left),
+                KeyCode::Right => Some(Motion::Right),
+                KeyCode::Home => Some(Motion::Top),
+                KeyCode::End => Some(Motion::Bottom),
+                _ => None,
+            };
+            if let Some(m) = fixed {
+                return allowed(m, false).then_some(Act::Move(m));
+            }
+            match key.code {
+                KeyCode::Esc => return Some(Act::Back),
+                KeyCode::Enter => return Some(Act::Cell),
+                _ => {}
+            }
+        }
+        let kp = key_press(key)?;
+        let literal_page =
+            key.mods.is_empty() && matches!(key.code, KeyCode::PageDown | KeyCode::PageUp);
+        match self.keys.resolve(CoreContext::Table, kp) {
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            // A key written for the cell popup opens it; the popup itself answers to its own keys.
+            CoreResolution::Action(CoreAction::ToggleTableCell) if !popup => Some(Act::Cell),
+            CoreResolution::Action(CoreAction::Navigate(m)) => {
+                allowed(m, literal_page).then_some(Act::Move(m))
+            }
+            CoreResolution::Action(CoreAction::PageNext) if !popup => Some(Act::Page(1)),
+            CoreResolution::Action(CoreAction::PagePrev) if !popup => Some(Act::Page(-1)),
+            CoreResolution::Action(CoreAction::RequestEdit) if !popup && self.launch.edit_key() => {
+                Some(Act::Edit)
+            }
+            CoreResolution::Action(CoreAction::OpenExternal) if !popup && self.launch.open_key => {
+                Some(Act::Open)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `key` does something over a table (in the `?` help when `in_help`). What the hints
+    /// and the help rows name must pass this.
+    pub fn table_acts_on(&self, key: &Key, in_help: bool, mode: TableMode) -> bool {
+        if in_help {
+            return self.help_acts_on(key);
+        }
+        match self.table_act(key, mode.popup && !in_help) {
+            None => !in_help && !mode.popup && self.menu_key_acts(CoreContext::Table, key),
+            // The help scrolls on the vertical motions; the others do nothing while it is open.
+            Some(Act::Move(m)) => {
+                !in_help
+                    || matches!(
+                        m,
+                        Motion::Down
+                            | Motion::Up
+                            | Motion::Top
+                            | Motion::Bottom
+                            | Motion::PageDown
+                            | Motion::PageUp
+                            | Motion::HalfDown
+                            | Motion::HalfUp
+                    )
+            }
+            Some(Act::Page(_)) => !in_help && mode.paged,
+            Some(Act::Cell) => !in_help && mode.cells,
+            Some(_) => true,
+        }
+    }
+
+    // ---- Pictures ----
+
+    /// What the help and the footer say about a still picture. The host names zoom, the reset and
+    /// the pan whatever the picture is doing, so the app does too; the page turn is named only
+    /// when the picture has pages to turn (`paged`, as the host does); the outline, the editor and
+    /// the opener are not done by the app, so they are off.
+    fn image_facts(&self, paged: bool) -> HelpFacts {
+        let acted = |op: &HelpOp| match op {
+            HelpOp::Act(CoreAction::PageNext | CoreAction::PagePrev) => paged,
+            HelpOp::Act(
+                CoreAction::ImageZoomIn | CoreAction::ImageZoomOut | CoreAction::ImageZoomReset,
+            ) => true,
+            HelpOp::Act(CoreAction::Navigate(m)) => {
+                matches!(m, Motion::Left | Motion::Right | Motion::Up | Motion::Down)
+            }
+            HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp) => {
+                true
+            }
+            HelpOp::Cancel => true,
+            _ => false,
+        };
+        let mut off: Vec<HelpOp> = Vec::new();
+        for row in konoma_host_core::help::rows_of(CoreContext::Image) {
+            for op in row.ops() {
+                if !acted(op) && !off.contains(op) {
+                    off.push(*op);
+                }
+            }
+        }
+        let facts = HelpFacts {
+            off,
+            label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
+            help: vec![
+                (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
+                (CoreAction::Quit, Some(CoreMsg::QuitApp)),
+            ],
+        };
+        self.with_launch_facts(CoreContext::Image, facts)
+    }
+
+    fn image_lookup(&self) -> CoreLookup<'_> {
+        CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Image,
+        }
+    }
+
+    /// The footer's key hints of a still picture: zoom, the reset and the pan, what leaves, what
+    /// opens the help (the host's list, less what the app does not do).
+    pub fn image_footer_hints(&self, paged: bool) -> Vec<CoreToken> {
+        let facts = self.image_facts(paged);
+        let look = self.image_lookup();
+        let tok = |f: CoreFoot| render_foot(f, CoreContext::Image, &facts, &look, self.lang);
+        let mut out: Vec<CoreToken> = Vec::new();
+        out.extend(tok(CoreFoot::Zoom));
+        out.extend(tok(CoreFoot::ZoomReset));
+        out.extend(tok(CoreFoot::Pan));
+        out.extend(tok(CoreFoot::PageTurn));
+        out.push(
+            tok(CoreFoot::Back)
+                .or_else(|| tok(CoreFoot::Quit))
+                .unwrap_or_else(|| ctrl_c_token(self.lang)),
+        );
+        out.extend(tok(CoreFoot::Help));
+        out.extend(self.launch_tokens(CoreContext::Image, &facts, &look));
+        out.extend(tok(CoreFoot::Options));
+        out
+    }
+
+    /// [`AppKeys::image_footer_hints`] as the text the footer shows.
+    pub fn image_footer_tokens(&self, paged: bool) -> Vec<String> {
+        self.image_footer_hints(paged)
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+
+    /// The sections of the `?` help of a still picture.
+    pub fn image_help_sections(&self, paged: bool) -> Vec<CoreSection> {
+        let secs = core_sections(
+            CoreContext::Image,
+            &self.image_facts(paged),
+            &self.image_lookup(),
+            self.lang,
+        );
+        self.with_copy_section(CoreContext::Image, CoreMenu::Copy, secs)
+    }
+
+    /// The title of the `?` help over a picture (see [`AppKeys::help_title`]). The help scrolls
+    /// on the vertical motions whatever the picture is doing, so they are named from the text's
+    /// facts.
+    pub fn image_help_title(&self) -> String {
+        self.overlay_title()
+    }
+
+    /// What the app does for `key` over a still picture (`None` = nothing). Over the picture the
+    /// four directions pan (the `?` help has its own keys: [`AppKeys::help_act`]).
+    fn image_act(&self, key: &Key) -> Option<Act> {
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        let allowed =
+            |m: Motion| matches!(m, Motion::Left | Motion::Right | Motion::Up | Motion::Down);
+        if key.mods.is_empty() {
+            let fixed = match key.code {
+                KeyCode::Down => Some(Motion::Down),
+                KeyCode::Up => Some(Motion::Up),
+                KeyCode::Left => Some(Motion::Left),
+                KeyCode::Right => Some(Motion::Right),
+                KeyCode::Home => Some(Motion::Top),
+                KeyCode::End => Some(Motion::Bottom),
+                _ => None,
+            };
+            if let Some(m) = fixed {
+                return allowed(m).then_some(Act::Move(m));
+            }
+            if matches!(key.code, KeyCode::Esc) {
+                return Some(Act::Back);
+            }
+        }
+        let kp = key_press(key)?;
+        match self.keys.resolve(CoreContext::Image, kp) {
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            CoreResolution::Action(CoreAction::Navigate(m)) => allowed(m).then_some(Act::Move(m)),
+            CoreResolution::Action(CoreAction::ImageZoomIn) => Some(Act::Zoom(1)),
+            CoreResolution::Action(CoreAction::ImageZoomOut) => Some(Act::Zoom(-1)),
+            CoreResolution::Action(CoreAction::ImageZoomReset) => Some(Act::ZoomReset),
+            CoreResolution::Action(CoreAction::PageNext) => Some(Act::Page(1)),
+            CoreResolution::Action(CoreAction::PagePrev) => Some(Act::Page(-1)),
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_key() => {
+                Some(Act::Edit)
+            }
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open_key => {
+                Some(Act::Open)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `key` does something over a still picture (in the `?` help when `in_help`).
+    /// The hints and rows follow the host and name the reset and the pan even at fit, where this
+    /// says no.
+    pub fn image_acts_on(&self, key: &Key, in_help: bool, mode: ImageMode) -> bool {
+        if in_help {
+            return self.help_acts_on(key);
+        }
+        let ready = mode.shape == StillShape::Ready;
+        match self.image_act(key) {
+            None => !in_help && self.menu_key_acts(CoreContext::Image, key),
+            Some(Act::Zoom(_)) => !in_help && ready,
+            Some(Act::ZoomReset) => !in_help && ready && mode.zoomed,
+            // As the host's gate: any picture with several pages, whatever it is doing.
+            Some(Act::Page(_)) => !in_help && mode.paged,
+            // The help scrolls on the vertical motions; over the picture the directions pan.
+            Some(Act::Move(m)) if in_help => matches!(
+                m,
+                Motion::Down
+                    | Motion::Up
+                    | Motion::Top
+                    | Motion::Bottom
+                    | Motion::PageDown
+                    | Motion::PageUp
+                    | Motion::HalfDown
+                    | Motion::HalfUp
+            ),
+            Some(Act::Move(_)) => ready && mode.zoomed,
+            Some(_) => true,
+        }
+    }
+
+    // ---- Canvases ----
+
+    /// What the help and the footer say about a plugin's canvas: the host's list for
+    /// `CoreContext::Canvas`, less what the app does not do. The canvas holds no text, so no
+    /// motion scrolls it; the page turn, the outline, the editor, the opener and the menus of
+    /// the view are not done by the app, so they are off.
+    fn canvas_facts(&self) -> HelpFacts {
+        let acted = |op: &HelpOp| {
+            matches!(
+                op,
+                HelpOp::Act(CoreAction::Quit | CoreAction::PreviewBack | CoreAction::ToggleHelp)
+                    | HelpOp::Cancel
+            )
+        };
+        let mut off: Vec<HelpOp> = Vec::new();
+        for row in konoma_host_core::help::rows_of(CoreContext::Canvas) {
+            for op in row.ops() {
+                if !acted(op) && !off.contains(op) {
+                    off.push(*op);
+                }
+            }
+        }
+        let facts = HelpFacts {
+            off,
+            label: vec![(CoreAction::PreviewBack, Some(CoreMsg::HintQuit))],
+            help: vec![
+                (CoreAction::PreviewBack, Some(CoreMsg::QuitApp)),
+                (CoreAction::Quit, Some(CoreMsg::QuitApp)),
+            ],
+        };
+        self.with_launch_facts(CoreContext::Canvas, facts)
+    }
+
+    fn canvas_lookup(&self) -> CoreLookup<'_> {
+        CoreLookup {
+            keys: &self.keys,
+            ctx: CoreContext::Canvas,
+        }
+    }
+
+    /// The footer's key hints of a canvas: what leaves, what opens the help.
+    pub fn canvas_footer_hints(&self) -> Vec<CoreToken> {
+        let facts = self.canvas_facts();
+        let look = self.canvas_lookup();
+        let tok = |f: CoreFoot| render_foot(f, CoreContext::Canvas, &facts, &look, self.lang);
+        let mut out: Vec<CoreToken> = Vec::new();
+        out.push(
+            tok(CoreFoot::Back)
+                .or_else(|| tok(CoreFoot::Quit))
+                .unwrap_or_else(|| ctrl_c_token(self.lang)),
+        );
+        out.extend(tok(CoreFoot::Help));
+        out.extend(self.launch_tokens(CoreContext::Canvas, &facts, &look));
+        out.extend(tok(CoreFoot::Options));
+        out
+    }
+
+    /// [`AppKeys::canvas_footer_hints`] as the text the footer shows.
+    pub fn canvas_footer_tokens(&self) -> Vec<String> {
+        self.canvas_footer_hints()
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+
+    /// The sections of the `?` help of a canvas.
+    pub fn canvas_help_sections(&self) -> Vec<CoreSection> {
+        let secs = core_sections(
+            CoreContext::Canvas,
+            &self.canvas_facts(),
+            &self.canvas_lookup(),
+            self.lang,
+        );
+        self.with_copy_section(CoreContext::Canvas, CoreMenu::Copy, secs)
+    }
+
+    /// The Global section (`?`, `Q`) of the canvas help, for the project screens that draw
+    /// their own rows: the standalone has no layer-0 keys except these two.
+    pub(crate) fn canvas_global_sections(&self) -> Vec<CoreSection> {
+        // The `Q` row carries the same core text as the host's and the preview help's.
+        let mut facts = self.canvas_facts();
+        facts.help.retain(|(a, _)| *a != CoreAction::Quit);
+        facts.help.push((CoreAction::Quit, Some(CoreMsg::Quit)));
+        global_only(
+            core_sections(
+                CoreContext::Canvas,
+                &facts,
+                &self.canvas_lookup(),
+                self.lang,
+            ),
+            self.lang,
+        )
+    }
+
+    /// Whether `key` opens the `Space` menu of `ctx`.
+    fn opens_actions(&self, ctx: CoreContext, key: &Key) -> bool {
+        key_press(key)
+            .is_some_and(|kp| self.keys.resolve(ctx, kp) == CoreResolution::Menu(CoreMenu::Actions))
+    }
+
+    /// The items of the `Space` menu of the screen (see [`super::space`]).
+    fn space_items(
+        &self,
+        ctx: CoreContext,
+        lang: &str,
+        acts: &super::AppActs,
+        act_ctx: &str,
+        screen: (
+            bool,
+            Option<&crate::host::project::preview_presentation::PreviewValues>,
+        ),
+        enabled: impl Fn(&str) -> bool,
+    ) -> Vec<konoma_host_core::menu::Item<super::space::SpaceOp, String>> {
+        let (windowed, preview) = screen;
+        if let Some(preview) = preview {
+            return super::space::items_with_preview(
+                &self.keys,
+                &self.defaults,
+                ctx,
+                self.lang,
+                lang,
+                acts,
+                act_ctx,
+                windowed,
+                &self.launch,
+                enabled,
+                Some(preview),
+            );
+        }
+        super::space::items(
+            &self.keys,
+            &self.defaults,
+            ctx,
+            self.lang,
+            lang,
+            acts,
+            act_ctx,
+            windowed,
+            &self.launch,
+            enabled,
+        )
+    }
+
+    /// The which-key line of the open `Space` menu.
+    fn space_line(
+        &self,
+        items: &[konoma_host_core::menu::Item<super::space::SpaceOp, String>],
+        width: u16,
+    ) -> Vec<ratatui::text::Span<'static>> {
+        let pairs: Vec<(KeyPress, String)> =
+            items.iter().map(|i| (i.key, i.label.clone())).collect();
+        konoma_widgets::footer_line::which_key_spans(
+            CoreMsg::WkActionsTitle.tr(self.lang),
+            &konoma_host_core::help::which_key_items(&pairs),
+            width,
+        )
+    }
+
+    /// Puts the `Space` menu's section into the help `secs` where the host lists the menus: before
+    /// the sections of the other menus (`,` and `y`), else before what is true everywhere.
+    fn insert_actions_section(
+        &self,
+        ctx: CoreContext,
+        items: &[konoma_host_core::menu::Item<super::space::SpaceOp, String>],
+        secs: &mut Vec<CoreSection>,
+    ) {
+        let look = CoreLookup {
+            keys: &self.keys,
+            ctx,
+        };
+        let Some(open) = look
+            .keys_of(HelpOp::Menu(CoreMenu::Actions))
+            .first()
+            .copied()
+        else {
+            return;
+        };
+        let pairs: Vec<(KeyPress, String)> =
+            items.iter().map(|i| (i.key, i.label.clone())).collect();
+        let Some(sec) = konoma_host_core::help::menu_section(
+            CoreMsg::WkActionsTitle.tr(self.lang),
+            &konoma_host_core::help::help_key(open),
+            &pairs,
+        ) else {
+            return;
+        };
+        let menus = [
+            CoreMsg::WkOptionsTitle,
+            CoreMsg::WkCopyPathTitle,
+            CoreMsg::WkTableCopyTitle,
+            CoreMsg::HelpGlobal,
+        ]
+        .map(|m| m.tr(self.lang));
+        let at = secs
+            .iter()
+            .position(|s| menus.contains(&s.title.as_str()))
+            .unwrap_or(secs.len());
+        secs.insert(at, sec);
+    }
+
+    /// Where the plugin's section goes in the help of the key context `ctx`: right after the
+    /// section of the screen's own operations, first when the screen has none.
+    fn plugin_section_at(&self, ctx: &str, secs: &[CoreSection]) -> usize {
+        let Some(c) = CoreContext::from_name(ctx) else {
+            return 0;
+        };
+        let title = konoma_host_core::help::view_title(c).tr(self.lang);
+        secs.iter()
+            .position(|s| s.title == title)
+            .map_or(0, |i| i + 1)
+    }
+
+    /// The title of the `?` help over a canvas (see [`AppKeys::help_title`]). The help scrolls
+    /// like any other `?` help.
+    pub fn canvas_help_title(&self) -> String {
+        self.overlay_title()
+    }
+
+    /// What the app does for `key` over a canvas (`None` = nothing). Over the canvas only the
+    /// keys that leave or open the help act (the host hands the others to the plugin); the `?`
+    /// help has its own keys ([`AppKeys::help_act`]).
+    fn canvas_act(&self, key: &Key) -> Option<Act> {
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        if key.mods.is_empty() && matches!(key.code, KeyCode::Esc) {
+            return Some(Act::Back);
+        }
+        let kp = key_press(key)?;
+        match self.keys.resolve(CoreContext::Canvas, kp) {
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_key() => {
+                Some(Act::Edit)
+            }
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open_key => {
+                Some(Act::Open)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `key` does something over a canvas (in the `?` help when `in_help`). What the
+    /// hints and the help rows name must pass this.
+    pub fn canvas_acts_on(&self, key: &Key, in_help: bool) -> bool {
+        if in_help {
+            return self.help_acts_on(key);
+        }
+        match self.canvas_act(key) {
+            None => !in_help && self.menu_key_acts(CoreContext::Canvas, key),
+            Some(Act::Move(m)) if in_help => matches!(
+                m,
+                Motion::Down
+                    | Motion::Up
+                    | Motion::Top
+                    | Motion::Bottom
+                    | Motion::PageDown
+                    | Motion::PageUp
+                    | Motion::HalfDown
+                    | Motion::HalfUp
+            ),
+            Some(Act::Move(_)) => false,
+            Some(_) => true,
+        }
+    }
+
+    /// The built-in keys (no overrides, vim paging).
+    pub fn defaults() -> AppKeys {
+        AppKeys::new(&KeysConfig::default(), "vim")
+    }
+
+    /// What the app does for `key` over the text screen of key context `ctx` (`None` = nothing).
+    fn act_in(&self, ctx: CoreContext, key: &Key) -> Option<Act> {
+        if key.mods == KeyMods::CTRL && matches!(key.code, KeyCode::Char('c')) {
+            return Some(Act::Quit);
+        }
+        // The fixed keys: not in the keymap, so not rebindable.
+        if key.mods.is_empty() {
+            match key.code {
+                KeyCode::Down => return Some(Act::Move(Motion::Down)),
+                KeyCode::Up => return Some(Act::Move(Motion::Up)),
+                KeyCode::Left => return Some(Act::Move(Motion::Left)),
+                KeyCode::Right => return Some(Act::Move(Motion::Right)),
+                KeyCode::Home => return Some(Act::Move(Motion::Top)),
+                KeyCode::End => return Some(Act::Move(Motion::Bottom)),
+                // `Esc` is fixed (not in the keymap) and the help says `q / Esc` leaves, so it
+                // does: it closes the help, and out of the help it ends the app.
+                KeyCode::Esc => return Some(Act::Back),
+                _ => {}
+            }
+        }
+        let kp = key_press(key)?;
+        match self.keys.resolve(ctx, kp) {
+            CoreResolution::Action(CoreAction::Quit) => Some(Act::Quit),
+            CoreResolution::Action(CoreAction::PreviewBack) => Some(Act::Back),
+            CoreResolution::Action(CoreAction::Navigate(m)) => Some(Act::Move(m)),
+            CoreResolution::Action(CoreAction::ToggleHelp) => Some(Act::Help),
+            CoreResolution::Action(CoreAction::RequestEdit) if self.launch.edit_key() => {
+                Some(Act::Edit)
+            }
+            CoreResolution::Action(CoreAction::OpenExternal) if self.launch.open_key => {
+                Some(Act::Open)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The shared keys' context of a text screen: the decorated document (`Frame::Document`) is
+/// `Document`, source and plain text (and a page that failed to draw) are `Text`. The one place
+/// that decides it, as konoma's `key_context` is for the host.
+/// Only the Global section of core help sections: the rows true on every screen. One filter
+/// for the project-owned diff help and the project-screen help.
+pub(crate) fn global_only(sections: Vec<CoreSection>, lang: Lang) -> Vec<CoreSection> {
+    let global = CoreMsg::HelpGlobal.tr(lang);
+    sections.into_iter().filter(|s| s.title == global).collect()
+}
+
+fn text_ctx(base: &Frame) -> CoreContext {
+    if matches!(base, Frame::Document(_)) {
+        CoreContext::Document
+    } else {
+        CoreContext::Text
+    }
+}
+
+/// Whether the screen is the file's text in the host's frame, which the host windows
+/// (`is_windowed`) and so plans the range-selection keys for. A message, a page that failed to
+/// draw and the bare text of one are not.
+fn windowed_text(base: &Frame) -> bool {
+    matches!(base, Frame::Text(t) if t.border.as_ref().is_some_and(|b| b.extent.is_some()))
+}
+
+/// The text of a page that failed to draw, in the host's frame (the path alone on the border).
+fn failed_text(base: &Frame) -> bool {
+    matches!(base, Frame::Text(t) if t.border.as_ref().is_some_and(|b| b.extent.is_none()))
+}
+
+/// A help as lines: a heading and the aligned rows of each section (the host's drawing, shared).
+fn lines_of(secs: &[CoreSection]) -> Vec<ratatui::text::Line<'static>> {
+    let parts: Vec<(&str, &[(String, String)])> = secs
+        .iter()
+        .map(|s| (s.title.as_str(), s.rows.as_slice()))
+        .collect();
+    konoma_widgets::help_panel::help_lines(&parts)
+}
+
+/// What a still picture on screen lets the keys do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageMode {
+    /// Loading, shown or failed.
+    pub shape: StillShape,
+    /// It is one of several pages: `J` `K` turn them.
+    pub paged: bool,
+    /// It is zoomed in (reset and pan act).
+    pub zoomed: bool,
+}
+
+/// What a table on screen lets the keys do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TableMode {
+    /// The full-cell popup is open.
+    pub popup: bool,
+    /// The file has several sheets (pages): `J` `K` turn them.
+    pub paged: bool,
+    /// The table has a cell to show: `Enter` opens the popup.
+    pub cells: bool,
+    /// The cells have spreadsheet addresses: the pages are sheets (the footer and the help say
+    /// `sheet`, as the host does for a workbook).
+    pub sheets: bool,
+}
+
+/// What a key does in the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Act {
+    /// `Enter` over a table: opens the full-cell popup, or closes it.
+    Cell,
+    /// A page turn over a table or a picture: 1 next, -1 previous.
+    Page(i32),
+    /// Ends the app, even from the help (`Q`, `Ctrl-C`): the host's `Q` quits with its help open
+    /// too.
+    Quit,
+    /// Leaves: closes the help when it is open, else ends the app (`q`, `Esc`); in the host `q`
+    /// and `Esc` close the help.
+    Back,
+    Move(Motion),
+    Help,
+    /// Zoom a still picture: 1 in, -1 out.
+    Zoom(i32),
+    /// A still picture back to fit.
+    ZoomReset,
+    /// `e`: the editor, or the application the plugin declares.
+    Edit,
+    /// `o`: open in another application.
+    Open,
+}
+
+/// The key as the shared tables name it. Alt and the keys that are not part of the shared
+/// tables (function keys, a paste) have none; Shift is already in the character.
+fn key_press(key: &Key) -> Option<KeyPress> {
+    use konoma_host_core::keymap::KeyPress as P;
+    if key.mods.contains(KeyMods::ALT) {
+        return None;
+    }
+    let ctrl = key.mods.contains(KeyMods::CTRL);
+    let code = match &key.code {
+        KeyCode::Char(c) => crossterm::event::KeyCode::Char(*c),
+        KeyCode::Enter => crossterm::event::KeyCode::Enter,
+        KeyCode::Backspace => crossterm::event::KeyCode::Backspace,
+        KeyCode::Delete => crossterm::event::KeyCode::Delete,
+        KeyCode::Tab => crossterm::event::KeyCode::Tab,
+        KeyCode::BackTab => crossterm::event::KeyCode::BackTab,
+        KeyCode::Left => crossterm::event::KeyCode::Left,
+        KeyCode::Right => crossterm::event::KeyCode::Right,
+        KeyCode::Up => crossterm::event::KeyCode::Up,
+        KeyCode::Down => crossterm::event::KeyCode::Down,
+        KeyCode::Home => crossterm::event::KeyCode::Home,
+        KeyCode::End => crossterm::event::KeyCode::End,
+        KeyCode::PageUp => crossterm::event::KeyCode::PageUp,
+        KeyCode::PageDown => crossterm::event::KeyCode::PageDown,
+        KeyCode::Esc => crossterm::event::KeyCode::Esc,
+        _ => return None,
+    };
+    Some(P { code, ctrl })
+}
+
+/// An event the loop reacts to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppEvent {
+    Key(Key),
+    /// The terminal was resized: draw again at the new size.
+    Resize,
+    /// Text pasted as one piece (bracketed paste). Only a canvas that takes the typing gets it
+    /// (as one `KeyCode::Paste`); anywhere else it does nothing, as in konoma.
+    Paste(String),
+}
+
+/// What an [`EventSource`] answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Next {
+    Event(AppEvent),
+    /// Nothing came within the wait.
+    Timeout,
+    /// No more events: the loop ends (the input is closed, or a test's keys are used up).
+    End,
+}
+
+/// Where the loop gets its events. Any iterator of [`AppEvent`] is one (it never times out), so
+/// a test passes a list of keys.
+pub trait EventSource {
+    /// The next event; `wait` is how long to wait for it (`None` = as long as it takes).
+    fn next(&mut self, wait: Option<Duration>) -> Next;
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    fn project_fenced(&self) -> bool {
+        false
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    fn project_idle(
+        &mut self,
+        _: super::project::ProjectIdleSnapshot,
+        _: ratatui::buffer::Buffer,
+    ) -> Next {
+        unreachable!("only a fenced project source observes idle frames")
+    }
+}
+
+impl<I: Iterator<Item = AppEvent>> EventSource for I {
+    fn next(&mut self, _wait: Option<Duration>) -> Next {
+        match Iterator::next(self) {
+            Some(e) => Next::Event(e),
+            None => Next::End,
+        }
+    }
+}
+
+use crate::host::typing::{MAX_REDRAW_AFTER as MAX_REDRAW, MIN_REDRAW_AFTER as MIN_REDRAW};
+
+/// How soon the loop looks again while a chain `e` or `o` started on a worker has not answered.
+const LAUNCH_WAKE: Duration = Duration::from_millis(50);
+
+/// The one content type the app shows a `Reopen` as (konoma's `markdown`, which the document
+/// widget draws).
+const REOPEN_ACCEPTS: &str = "markdown";
+
+/// The declarations of the plugin a `Reopen` was opened in (its manifest).
+struct ReopenedAs {
+    shows: Vec<ViewKind>,
+    unavailable: crate::manifest::Unavailable,
+    plugin_id: String,
+    /// The actions the destination declared, with the user's `[keys.<id>]` of it: from a
+    /// `Reopen` on, the keys, the footer and the help are its, as the session is.
+    acts: super::AppActs,
+}
+
+impl State {
+    /// The verbs (`edit`, `open`) that apply to the file: always the declarations of the plugin
+    /// that took the file over, also after a `Reopen` (a verb belongs to the file, so `e` on a
+    /// reopened docx still opens the docx).
+    fn verbs<'a>(&self, cx: &'a AppCx) -> &'a [crate::manifest::VerbDecl] {
+        cx.launch.as_ref().map_or(&[], |l| &l.verbs)
+    }
+
+    /// The display types of the plugin showing the file now.
+    fn shows<'a>(&'a self, cx: &'a AppCx) -> &'a [ViewKind] {
+        self.reopened_as.as_ref().map_or(&cx.shows, |r| &r.shows)
+    }
+
+    /// What the plugin showing the file now says when it shows nothing.
+    fn unavailable<'a>(&'a self, cx: &'a AppCx) -> &'a crate::manifest::Unavailable {
+        self.reopened_as
+            .as_ref()
+            .map_or(&cx.unavailable, |r| &r.unavailable)
+    }
+
+    /// The declared actions of the plugin showing the file now (the destination's after a
+    /// `Reopen`: the session that answers an action is the destination's).
+    fn acts<'a>(&'a self, cx: &'a AppCx) -> &'a super::AppActs {
+        self.reopened_as.as_ref().map_or(&cx.acts, |r| &r.acts)
+    }
+
+    /// The id of the plugin showing the file now.
+    fn plugin_id<'a>(&'a self, cx: &'a AppCx) -> &'a str {
+        self.reopened_as
+            .as_ref()
+            .map_or(&cx.plugin_id, |r| &r.plugin_id)
+    }
+}
+
+/// The state after a `Reopen`: everything of the old document is dropped (the scroll, the laid-out
+/// page) and the plugin showing the file is `to`. What waited for the session is kept by the rule
+/// the host follows ([`typing::retain_declared`]): the typed keys stay, and an action stays only if
+/// `to` declared it (`None`: the show's own plugin, whose declarations are `own`).
+fn state_after_reopen(old: State, to: Option<ReopenedAs>, own: &super::AppActs) -> State {
+    let mut act_queue = old.act_queue;
+    let declared = to.as_ref().map_or(own, |r| &r.acts);
+    typing::retain_declared(&mut act_queue, |action| {
+        declared.bindings.iter().any(|b| b.act == action)
+    });
+    State {
+        display: old.display,
+        reopened_as: to,
+        key_queue: old.key_queue,
+        act_queue,
+        ..State::default()
+    }
+}
+
+/// What the loop keeps between two frames.
+#[derive(Default)]
+struct State {
+    /// An action or a key answered `Outcome::Reload`: the file is opened again with its plugin
+    /// before the next view (konoma's `reload_plugin`).
+    reload: bool,
+    /// What the plugin a `Reopen` was opened in is: from then on it, not the plugin that
+    /// converted the file, says what a failed page was (`AppCx::shows` and the like).
+    reopened_as: Option<ReopenedAs>,
+    /// The first line shown of a text.
+    scroll: usize,
+    change_at: Option<usize>,
+    /// The text on screen has the caret (the file's text in the host's frame).
+    caret_on: bool,
+    /// The line and the column (a char index) of the caret.
+    caret_line: usize,
+    caret_col: usize,
+    /// The text on screen is the file's own lines (not generated text): `e` has a line in it.
+    file_text: bool,
+    /// The Markdown document on screen was read from this file, which has this many lines
+    /// (`None`: it was converted, or there is none).
+    doc_edit: Option<(usize, std::path::PathBuf)>,
+    /// The number of lines and the rows shown of the text on screen (what the caret moves in).
+    lines: usize,
+    text_rows: usize,
+    /// Cells scrolled off the left edge of a text that does not wrap.
+    hscroll: u16,
+    /// How the text and the documents look.
+    display: super::Display,
+    /// The number of lines of a text file, counted once.
+    counted: Option<(std::path::PathBuf, usize)>,
+    /// The reader of a text file that measures where the window is, in bytes.
+    win: Option<window::ByteWindow>,
+    /// The height of the body at the last draw (the page of `PageUp` / `PageDown`).
+    page: usize,
+    /// The last number of lines a text had (the bound of `End`).
+    total: usize,
+    /// The `?` help while it is open: the first line shown.
+    help: Option<usize>,
+    /// Whether the frame on screen scrolls (a text does; a message and a canvas do not).
+    scrolls: bool,
+    /// The page (sheet) of a table or a picture the session is asked for, from 0.
+    at_page: usize,
+    /// How many pages the session declares (`None` = it does not say, or has none).
+    pages: Option<usize>,
+    /// The last view on screen was a picture (so are the pages `pages` counts).
+    last_image: bool,
+    /// The last `view` of a paged picture failed: the message is on screen, and the page keys
+    /// still turn the pages (the host keeps them too: the page number is not rolled back).
+    image_failed: bool,
+    /// The next view is the page a page key asked for: the picture on screen stays until it lands.
+    turned: bool,
+    /// The last `view` of a paged table failed: the message is on screen, and the page keys
+    /// still turn the pages (the host keeps them too: the page number is not rolled back).
+    table_failed: bool,
+    /// Whether the last table on screen had spreadsheet addresses (its pages are sheets): the
+    /// footer and the help of a failed page keep saying `sheet`.
+    table_sheets: bool,
+    /// The text of the page that failed to draw as the file's text (an SVG that cannot be drawn),
+    /// read once: a key scrolls it without asking the session again or reading the file again.
+    failed_body: Option<FailedBody>,
+    /// The width of the terminal at the last view (a document is laid out at it).
+    width: u16,
+    /// A half page, when the view sets its own (a document: half the frame, as the host).
+    half: Option<usize>,
+    /// The document laid out last, kept while its text and width are the same.
+    doc: Option<super::document::DocCache>,
+    /// The menu waiting for its key (`y` was pressed), and the keys it was opened in.
+    menu: Option<(CoreContext, CoreMenu)>,
+    /// What the last key did, shown in the footer until the next key.
+    flash: Option<String>,
+    /// `Esc` left the plugin's text input: the typing is not taken again until the user does
+    /// something the plugin answers with a canvas that asks for it (`typing::retake`).
+    input_left: bool,
+    /// A declared action the user pressed is out: the answer to it (and the view it asks for) is
+    /// the user's (`typing::settle_user_act`).
+    user_act: bool,
+    /// The keys and the actions waiting for the session. The loop calls the session itself, so
+    /// they are sent at once; they go through the same line as konoma's so the order and the
+    /// bounds are the same rules.
+    key_queue: Vec<Key>,
+    act_queue: Vec<QueuedAct>,
+}
+
+/// Everything owned by one file loop, retained while its caller shows another screen.
+/// The original session and pictures remain owned by the caller.
+pub(in crate::app) struct FileLoopState {
+    st: State,
+    // Display options change the loop's keys without changing the caller's configuration.
+    own: AppKeys,
+    // A Reopen destination remains the active session for all subsequent entries.
+    swapped: Option<Box<dyn Session>>,
+    // A failed Reopen is remembered rather than retried at every key or resize.
+    reopen_failed: Option<crate::session::Failure>,
+    base: Frame<'static>,
+    view_due: Option<Instant>,
+    need_view: bool,
+    refresh_on_resume: bool,
+    launch_tx: std::sync::mpsc::Sender<Result<crate::launch::Opener, String>>,
+    launch_rx: std::sync::mpsc::Receiver<Result<crate::launch::Opener, String>>,
+    launching: usize,
+    /// Where the loop is put once its first view lands (`restore`).
+    back: Option<ViewPosition>,
+}
+
+/// Where the user is in a file screen, as plain data: the scroll, the caret, the search (the
+/// change block `n`/`N` stand on), the page, the table's cell cursor and scroll, and the display
+/// options. A file opened again (a Refresh, a tool's return, the return to a covered Preview) is
+/// put back there; nothing of the session, the laid-out page or the pictures is in it.
+#[derive(Clone)]
+pub(in crate::app) struct ViewPosition {
+    scroll: usize,
+    change_at: Option<usize>,
+    caret_on: bool,
+    caret_line: usize,
+    caret_col: usize,
+    hscroll: u16,
+    at_page: usize,
+    /// The table's cell cursor and scroll: put on the first table drawn, kept to its grid by the
+    /// table's own clamp (`TableFrame::clamp_cursor`), as a table read again keeps them.
+    table: Option<konoma_widgets::table::TableViewState>,
+    display: super::Display,
+    own: AppKeys,
+}
+
+impl FileLoopState {
+    /// The user's view position. Every field of the loop and of its state is named, so a new one
+    /// is decided here: kept for the file opened again, or dropped with this loop.
+    pub(in crate::app) fn position(&self) -> ViewPosition {
+        let Self {
+            st,
+            own,
+            // The session the file converted to, the remembered failure, the timers and the
+            // launches: this loop's own, they go with it (the file is opened again).
+            swapped: _,
+            reopen_failed: _,
+            // The page on screen: its table's cursor and scroll are the user's; the rest is laid
+            // out again.
+            base,
+            view_due: _,
+            need_view: _,
+            refresh_on_resume: _,
+            launch_tx: _,
+            launch_rx: _,
+            launching: _,
+            back,
+        } = self;
+        // Put back but not yet shown (no view landed since): that is still where the user is.
+        if let Some(back) = back {
+            return back.clone();
+        }
+        let State {
+            // The position itself.
+            scroll,
+            change_at,
+            caret_on,
+            caret_line,
+            caret_col,
+            hscroll,
+            at_page,
+            display,
+            // What the document turned out to be, its measures and its laid-out page: read again
+            // from the file opened again.
+            reload: _,
+            reopened_as: _,
+            file_text: _,
+            doc_edit: _,
+            lines: _,
+            text_rows: _,
+            counted: _,
+            win: _,
+            page: _,
+            total: _,
+            scrolls: _,
+            pages: _,
+            last_image: _,
+            image_failed: _,
+            turned: _,
+            table_failed: _,
+            table_sheets: _,
+            failed_body: _,
+            width: _,
+            half: _,
+            doc: _,
+            // What was open over the page or on its way (help, a menu, a note, typed keys): of
+            // this view, not of where the user is.
+            help: _,
+            menu: _,
+            flash: _,
+            input_left: _,
+            user_act: _,
+            key_queue: _,
+            act_queue: _,
+        } = st;
+        ViewPosition {
+            scroll: *scroll,
+            change_at: *change_at,
+            caret_on: *caret_on,
+            caret_line: *caret_line,
+            caret_col: *caret_col,
+            hscroll: *hscroll,
+            at_page: *at_page,
+            table: match base {
+                Frame::Table(table) => Some(table.state),
+                _ => None,
+            },
+            display: display.clone(),
+            own: own.clone(),
+        }
+    }
+    /// A new loop (its file just opened) is put at `p`. What its first view asks with (the page,
+    /// the display options, the keys) is set now; where it stands in the text and in the table
+    /// is put once the first view lands, after the file converted (`Reopen`, which starts its
+    /// document from the top), so the converted document is put there too.
+    pub(in crate::app) fn restore(&mut self, p: ViewPosition) {
+        self.st.at_page = p.at_page;
+        self.st.display = p.display.clone();
+        self.own = p.own.clone();
+        // The entry note is for a file first shown, not for one put back.
+        self.st.flash = None;
+        self.back = Some(p);
+    }
+    pub(in crate::app) fn display(&self) -> &super::Display {
+        &self.st.display
+    }
+    pub(in crate::app) fn new(cx: &AppCx, keys: &AppKeys) -> Self {
+        let (launch_tx, launch_rx) = std::sync::mpsc::channel();
+        Self {
+            st: State {
+                display: cx.display.clone(),
+                flash: crate::host::bind::key_notes_line(&cx.acts.notes, keys.lang()),
+                ..State::default()
+            },
+            own: keys.clone(),
+            swapped: None,
+            reopen_failed: None,
+            base: Frame::Lines(Vec::new()),
+            view_due: None,
+            need_view: true,
+            refresh_on_resume: true,
+            launch_tx,
+            launch_rx,
+            launching: 0,
+            back: None,
+        }
+    }
+}
+
+/// Why the file screen gave control back to its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum FileLoopExit {
+    Back,
+    Quit,
+    End,
+    Yield,
+    ReturnToSource,
+    Project,
+    Tool,
+    Refresh,
+}
+
+/// Availability on the screen underneath help. Options also offers the return key;
+/// the popup, a typing plugin and other menus consume it instead.
+fn preview_return_acts_on_screen(
+    preview: bool,
+    popup: bool,
+    capturing: bool,
+    menu: Option<CoreMenu>,
+) -> bool {
+    preview && !popup && !capturing && matches!(menu, None | Some(CoreMenu::Options))
+}
+
+/// The title of the frame: the path in the `style` the `,` menu chose, or the title the host gave
+/// when it launched no path.
+fn frame_name_of(cx: &AppCx, style: konoma_host_core::view_options::PathStyle) -> String {
+    use konoma_host_core::view_options::PathStyle;
+    if cx.path.as_os_str().is_empty() || (cx.open_dir.is_none() && style == PathStyle::Relative) {
+        return cx.title.clone();
+    }
+    style.format(
+        cx.open_dir.as_deref().unwrap_or(std::path::Path::new("")),
+        &cx.path,
+    )
+}
+
+/// Writes `name` into the title of the frame on screen (a frame without a path in its title keeps
+/// none).
+fn retitle(frame: &mut Frame, name: &str) {
+    match frame {
+        Frame::Text(t) => {
+            if let Some(b) = t.border.as_mut() {
+                b.name = name.to_string();
+            }
+        }
+        Frame::Table(t) => t.name = name.to_string(),
+        Frame::Image(i) => i.name = name.to_string(),
+        Frame::Document(d) => d.name = name.to_string(),
+        Frame::Lines(_) | Frame::Canvas(_) | Frame::ImageFailed(_) | Frame::Diff(_) => {}
+    }
+}
+
+/// The lines (the reason, then the file) a failed page shows, and the page they belong to.
+struct FailedBody {
+    page: usize,
+    lines: Vec<String>,
+}
+
+/// Run the app on `terminal` until the key of leaving (`q` by default, or `Ctrl-C`, or the end of
+/// `events`). `keys` says what each key does. A canvas shows its cells only: see
+/// [`run_with_pictures`] for the pictures a canvas places.
+pub fn run_with<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    keys: &AppKeys,
+) -> Result<(), AppError> {
+    run_with_pictures(terminal, session, events, cx, keys, None)
+}
+
+/// [`run_with`] with the pictures a canvas places (`pictures`: `None` is a terminal that cannot
+/// show any, where the canvas shows its cells and nothing is decoded).
+///
+/// Every wait is bounded: while a decode or an encode is out, or a GIF plays, the loop wakes
+/// every few milliseconds to draw what the workers finished. Such a wake does not ask the
+/// session for a view again (it would not have changed): only a key, a resize and the view's
+/// own redraw timer do. Leaving drops `pictures`, which cancels the decode in flight and
+/// deletes every kitty image placed.
+pub fn run_with_pictures<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    keys_in: &AppKeys,
+    mut pictures: Option<Pictures>,
+) -> Result<(), AppError> {
+    super::edit_line::clear();
+    let mut state = FileLoopState::new(cx, keys_in);
+    run_file_with(terminal, session, events, cx, &mut state, pictures.as_mut()).map(|_| ())
+}
+
+/// Run or resume the same file session, refreshing its view for the current terminal size.
+/// No terminal guard is entered and borrowed pictures and edit-line state are retained on exit.
+/// No placements are deleted on leave: the caller draws over their placeholder cells, and
+/// retaining the pictures keeps their caches, workers and image pose available on resume.
+pub(in crate::app) fn run_file_with<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    state: &mut FileLoopState,
+    pictures: Option<&mut Pictures>,
+) -> Result<FileLoopExit, AppError> {
+    run_file_with_preview(terminal, session, events, cx, state, pictures, None)
+}
+
+pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
+    terminal: &mut Terminal<B>,
+    session: &mut dyn Session,
+    events: &mut E,
+    cx: &AppCx,
+    state: &mut FileLoopState,
+    mut pictures: Option<&mut Pictures>,
+    mut preview: Option<&mut super::project::preview::PreviewGutter>,
+) -> Result<FileLoopExit, AppError> {
+    let FileLoopState {
+        st,
+        own,
+        swapped,
+        reopen_failed,
+        base,
+        view_due,
+        need_view,
+        refresh_on_resume,
+        launch_tx,
+        launch_rx,
+        launching,
+        back,
+    } = state;
+    // Refreshing on entry must not postpone a timer that was armed before leaving.
+    let mut resume_due = if *refresh_on_resume { *view_due } else { None };
+    // A resume refreshes the view as a resize does, without asking for a new session.
+    if std::mem::replace(refresh_on_resume, true) {
+        *need_view = true;
+    }
+    macro_rules! sess {
+        () => {
+            match swapped.as_mut() {
+                Some(s) => &mut **s as &mut dyn Session,
+                None => &mut *session,
+            }
+        };
+    }
+    let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
+    loop {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if events.project_fenced() {
+            if let Some(preview) = preview.as_deref_mut() {
+                *need_view |= preview.settle_for_test();
+            }
+            if let Some(pictures) = pictures.as_deref_mut() {
+                pictures.settle_for_test();
+            }
+        }
+        if preview.as_deref_mut().is_some_and(|p| p.poll()) {
+            *need_view = true;
+        }
+        let size = terminal.size().map_err(|e| terr(&e))?;
+        let project_owned = preview.as_ref().is_some_and(|p| p.project_owned);
+        let body_rows =
+            size.height
+                .saturating_sub(if project_owned && !st.display.combined_status {
+                    2
+                } else {
+                    1
+                });
+        st.page = usize::from(body_rows).max(1);
+        st.width = size.width;
+        st.half = None;
+        // The kept text of a failed page is scrolled by the keys without asking the session
+        // again: its window is the rows inside the host's border, paged as the host pages it.
+        if st
+            .failed_body
+            .as_ref()
+            .is_some_and(|b| b.page == st.at_page)
+        {
+            set_failed_paging(st, usize::from(body_rows));
+        }
+        if view_due.is_some_and(|d| Instant::now() >= d) {
+            *need_view = true;
+        }
+        let mut view_wait = None;
+        while let Ok(outcome) = launch_rx.try_recv() {
+            *launching = launching.saturating_sub(1);
+            st.flash = Some(crate::host::launch::chain_notice(own.lang(), &outcome));
+        }
+        // The file is opened again with its plugin (an `Outcome::Reload`): the new session is the
+        // one asked from here on, and a `Reopen` the file leads to is decided again. The frame
+        // on screen and the scroll stay until the new view lands. A source that does not know the
+        // file (`ReopenSource::with_file`) leaves a plain redraw.
+        while std::mem::take(&mut st.reload) {
+            if let Some(opened) = cx.reopen.as_ref().and_then(|r| r.reload(&cx.lang, cx.term)) {
+                resume_due = None;
+                *reopen_failed = None;
+                st.reopened_as = None;
+                match opened {
+                    Ok(fresh) => *swapped = Some(fresh),
+                    // The reason is what the view shows, as a file that fails to open does.
+                    Err(f) => *reopen_failed = Some(f),
+                }
+                *need_view = true;
+                // The keys and actions that waited for the new session go to it, in order.
+                if flush_jobs(sess!(), st, cx) {
+                    *need_view = true;
+                }
+            }
+        }
+        if *need_view {
+            let mut req = ViewReq::new(size.width, body_rows);
+            if st.at_page > 0 {
+                req = req.page(st.at_page);
+            }
+            let settings = preview.as_deref().map(|p| p.settings.clone());
+            let vcx = ViewCx::new(settings.as_ref().unwrap_or(Settings::empty()), &cx.lang)
+                .with_term(cx.term);
+            let mut viewed = match &*reopen_failed {
+                Some(f) => Err(f.clone()),
+                None => sess!().view(&req, &vcx),
+            };
+            // "Open this again as Markdown": the plugin that takes the content type is opened
+            // on the text (the rule konoma follows, `crate::reopen`), and its session replaces
+            // this one. Everything of the old document is dropped with it: the scroll, the
+            // laid-out page and the pictures (a result the old document asked for lands on
+            // nothing).
+            if let Ok(View::Reopen(r)) = viewed {
+                resume_due = None;
+                let target = cx.reopen.as_ref().and_then(|s| s.target(&r.content_type));
+                if let Some(preview) = preview.as_deref_mut() {
+                    preview.cancel();
+                    preview.settings = target
+                        .as_ref()
+                        .map(|t| t.settings.clone())
+                        .unwrap_or_default();
+                }
+                viewed = match crate::reopen::reopen_document(
+                    target.as_ref(),
+                    REOPEN_ACCEPTS,
+                    r,
+                    &cx.lang,
+                    &Cancel::never(),
+                    cx.term,
+                ) {
+                    Ok(opened) => {
+                        *swapped = Some(opened.session);
+                        *st = state_after_reopen(
+                            std::mem::take(st),
+                            target.as_ref().map(|t| {
+                                let m = t.plugin.manifest();
+                                ReopenedAs {
+                                    acts: cx
+                                        .reopen
+                                        .as_ref()
+                                        .map(|r| r.acts_for(&m))
+                                        .unwrap_or_default(),
+                                    shows: m.shows,
+                                    unavailable: m.unavailable,
+                                    plugin_id: m.id,
+                                }
+                            }),
+                            &cx.acts,
+                        );
+                        st.page = usize::from(body_rows).max(1);
+                        st.width = size.width;
+                        if let Some(p) = pictures.as_deref_mut() {
+                            p.forget();
+                            p.forget_still();
+                            p.reset_document();
+                        }
+                        Ok(View::Document(opened.document))
+                    }
+                    Err(f) => {
+                        *reopen_failed = Some(f.clone());
+                        Err(f)
+                    }
+                };
+            }
+            let frame_name = frame_name_of(cx, st.display.path_style);
+            // The table's part of a position put back: for the table this view draws.
+            let mut table_back = None;
+            let shown = match viewed {
+                Ok(v) => {
+                    // The first view of a loop put back (after any conversion): where the user
+                    // was, once. The frame below keeps it to the text (`clamp`) and the table to
+                    // its grid (`clamp_cursor`).
+                    if let Some(p) = back.take() {
+                        let ViewPosition {
+                            scroll,
+                            change_at,
+                            caret_on,
+                            caret_line,
+                            caret_col,
+                            hscroll,
+                            table,
+                            // Set by `restore`, before the first view asked.
+                            at_page: _,
+                            display: _,
+                            own: _,
+                        } = p;
+                        st.scroll = scroll;
+                        st.change_at = change_at;
+                        st.caret_on = caret_on;
+                        st.caret_line = caret_line;
+                        st.caret_col = caret_col;
+                        st.hscroll = hscroll;
+                        table_back = table;
+                    }
+                    st.table_failed = false;
+                    st.image_failed = false;
+                    st.failed_body = None;
+                    st.last_image = matches!(v, View::Image(_));
+                    Ok(v)
+                }
+                // A dropped stale answer says nothing and changes nothing (konoma does the same).
+                Err(f) if f.kind == crate::session::FailureKind::Cancelled => Err(None),
+                Err(f) => {
+                    // What kind of paged page failed: what the plugin declares it shows, else
+                    // what was on screen before (a first page that fails has nothing before it).
+                    let picture = failed_page_is_picture(cx, st);
+                    note_failed_page(sess!(), cx, st, picture);
+                    Err(Some(failure_frame(
+                        image_failure_for(st.unavailable(cx), &f),
+                        f.message.get(&cx.lang),
+                        Some(&f),
+                        cx,
+                        own.lang(),
+                        usize::from(body_rows),
+                        st,
+                    )))
+                }
+            };
+            let (mut frame, redraw_after) = match shown {
+                Ok(view) => {
+                    if let Some(preview) = preview.as_deref_mut() {
+                        preview.prepare(&view);
+                    }
+                    match preview.as_deref_mut() {
+                        Some(preview) => frame_of_preview(
+                            view,
+                            st,
+                            usize::from(body_rows),
+                            (&cx.lang, own.lang()),
+                            &frame_name,
+                            pictures.as_deref_mut(),
+                            Some(preview),
+                        ),
+                        None => frame_of(
+                            view,
+                            st,
+                            usize::from(body_rows),
+                            (&cx.lang, own.lang()),
+                            &frame_name,
+                            pictures.as_deref_mut(),
+                        ),
+                    }
+                }
+                Err(Some(frame)) => (frame, None),
+                // The frame on screen stays.
+                Err(None) => (
+                    std::mem::replace(&mut *base, Frame::Lines(Vec::new())),
+                    None,
+                ),
+            };
+            // The typing: a canvas that asks for it after something the user did takes it back
+            // after `Esc`; the show going (no canvas on screen) forgets the keys and the latch.
+            if let Frame::Canvas(c) = &frame {
+                typing::retake(&mut st.input_left, c.text_input, st.user_act);
+                st.user_act = false;
+            } else {
+                typing::forget(&mut st.key_queue, &mut st.input_left, &mut st.user_act);
+                st.act_queue.clear();
+            }
+            if let Frame::Table(new) = &mut frame {
+                // A table read again (a resize, a page turn) keeps the cursor and the popup; a
+                // page turn has reset them before asking.
+                if let Frame::Table(old) = &mut *base {
+                    new.state = old.state;
+                    new.popup = old.popup.take();
+                } else if let Some(state) = table_back.take() {
+                    new.state = state;
+                }
+                new.clamp_cursor();
+                st.table_sheets = new.addressed;
+                let layout = sess!().layout().clipped();
+                st.pages = match layout.pages {
+                    Some(PageLayout::Separate { count, titles }) => {
+                        count.or((!titles.is_empty()).then_some(titles.len()))
+                    }
+                    _ => None,
+                };
+            }
+            if matches!(frame, Frame::Image(_)) {
+                // A picture's pages are what the host counts: the count the layout reports.
+                let layout = sess!().layout().clipped();
+                st.pages = pages::count_of(&layout)
+                    .flatten()
+                    .map(|n| n as usize)
+                    .filter(|n| *n > 0);
+                if let Some(n) = st.pages {
+                    st.at_page = st.at_page.min(n - 1);
+                }
+            }
+            let turned = std::mem::take(&mut st.turned);
+            if let Some(p) = pictures.as_deref_mut() {
+                match &frame {
+                    Frame::Canvas(c) => {
+                        p.submit(c);
+                        p.forget_still();
+                    }
+                    Frame::Image(i) => {
+                        p.forget();
+                        p.submit_image(&i.view, turned);
+                    }
+                    _ => {
+                        p.forget();
+                        p.forget_still();
+                    }
+                }
+            }
+            view_wait = redraw_after.map(|d| d.clamp(MIN_REDRAW, MAX_REDRAW));
+            let pending = resume_due.take();
+            *view_due = view_wait.map(|d| pending.unwrap_or_else(|| Instant::now() + d));
+            if pending.is_some() {
+                view_wait = None;
+            }
+            *base = frame;
+        }
+        if let Some(p) = pictures.as_deref_mut() {
+            p.poll();
+            // A picture's result changed what the page reserves: lay it out again before drawing.
+            if matches!(base, Frame::Document(_)) && p.take_doc_relayout() {
+                *need_view = true;
+                continue;
+            }
+        }
+        // A picture whose decode failed is a page that failed to draw, as one whose `view`
+        // failed: the same screen, footer and help (konoma's one `unavailable_body` serves both).
+        if let (Frame::Image(_), Some(why)) = (
+            &*base,
+            pictures.as_deref().and_then(Pictures::still_failure),
+        ) {
+            note_failed_page(sess!(), cx, st, true);
+            *base = failure_frame(
+                why,
+                "[can not preview]",
+                None,
+                cx,
+                own.lang(),
+                usize::from(body_rows),
+                st,
+            );
+        }
+        // The sideways keys are named and act on the file's text (they move the caret) and on the
+        // text of a failed page (the host names them there whether it wraps or not).
+        own.caret = windowed_text(&*base) || failed_text(&*base);
+        match &*base {
+            Frame::Text(_) if windowed_text(&*base) && st.file_text => {
+                super::edit_line::publish_text(st.caret_line)
+            }
+            Frame::Document(d) => {
+                super::edit_line::publish_document(&d.laid, d.scroll, d.wrap, st.doc_edit.clone())
+            }
+            _ => super::edit_line::clear(),
+        }
+        // What `e` and `o` do now: one answer for the keys, the footer, the help and the menu.
+        own.launch = match cx.launch.as_ref() {
+            Some(lc) => lc.facts(st.verbs(cx), &cx.path),
+            None => super::LaunchFacts::default(),
+        };
+        let keys = &*own;
+        let mode = shown_mode(&*base, st);
+        let image_mode = image_mode(&*base, pictures.as_deref(), st);
+        let paged = image_mode.is_some_and(|m| m.paged);
+        // After a page that failed and shows the file as text, or in the picture's own frame
+        // (the host draws that as a text too), the screen is a text (the host's): its footer and
+        // help, with the page turn named.
+        let failed_text_screen = matches!(base, Frame::ImageFailed(_))
+            || (image_mode.is_some() && st.image_failed && st.scrolls);
+        // The picture's own frame holds no text: no motion scrolls it, and none is named.
+        let text_scrolls = !matches!(base, Frame::ImageFailed(_));
+        // A plugin's canvas has its own keys (the host's `CoreContext::Canvas`).
+        let canvas_keys = matches!(base, Frame::Canvas(_));
+        // The key context of the plugin's layer for the screen (konoma's `plugin_acts_in(ctx)`):
+        // one answer for the key, the footer and the help. After a `Reopen` the plugin is the
+        // destination, and its actions are the ones that act.
+        let act_ctx = if mode.is_some() {
+            "table"
+        } else if image_mode.is_some() && !failed_text_screen {
+            "image"
+        } else if canvas_keys {
+            "canvas"
+        } else if matches!(base, Frame::Document(_)) {
+            "document"
+        } else {
+            "text"
+        };
+        // The shared keys' context of the same screen (the `Space` menu's).
+        let core_ctx = if mode.is_some() {
+            CoreContext::Table
+        } else if image_mode.is_some() && !failed_text_screen {
+            CoreContext::Image
+        } else if canvas_keys {
+            CoreContext::Canvas
+        } else {
+            text_ctx(&*base)
+        };
+        // Whether the text is the file's, in the host's frame (the footer plan's selection keys).
+        let windowed = windowed_text(&*base);
+        let core_ctx = if project_owned && image_mode.is_some() && pictures.is_none() {
+            CoreContext::Text
+        } else {
+            core_ctx
+        };
+        let return_hint = preview
+            .as_ref()
+            .map(|_| {
+                super::project::preview::PreviewReturnHint::new(&keys.keys, core_ctx, keys.lang())
+            })
+            .filter(|h| !h.keys.is_empty());
+        // The actions of the plugin whose session this is (the destination's after a `Reopen`).
+        let acts = st.acts(cx).clone();
+        let en: Vec<String> = enabled_ids(&*sess!(), &acts);
+        let act_on = |a: &str| en.iter().any(|e| e == a);
+        let capture_on_screen = typing::is_capturing(
+            st.input_left,
+            true,
+            matches!(&*base, Frame::Canvas(c) if c.text_input),
+        );
+        let capturing = st.help.is_none() && capture_on_screen;
+        let return_on_screen = preview_return_acts_on_screen(
+            preview.is_some(),
+            mode.is_some_and(|m| m.popup),
+            capture_on_screen,
+            st.menu.map(|(_, menu)| menu),
+        );
+        let return_acts_now = st.help.is_none() && return_on_screen;
+        let project_preview = project_owned.then(|| {
+            use konoma_host_core::preview_plan::PreviewState;
+            let core = match core_ctx {
+                CoreContext::Table => keys.table_facts(mode.unwrap()),
+                CoreContext::Image => keys.image_facts(paged),
+                CoreContext::Canvas => keys.canvas_facts(),
+                _ => keys.facts_in(core_ctx, paged, text_scrolls),
+            };
+            keys.project_preview_values(
+                core_ctx,
+                PreviewState {
+                    decorated: matches!(&*base, Frame::Document(_)),
+                    windowed,
+                    edit_named: keys.launch.edit_acts(),
+                    repr_text: true,
+                    returns_to_diff: true,
+                    ..Default::default()
+                },
+                core,
+                return_hint.as_ref().map_or(&[], |h| h.keys.as_slice()),
+                st.doc
+                    .as_ref()
+                    .is_some_and(|d| !d.change_blocks(st.page + 1).rows.is_empty())
+                    || preview
+                        .as_deref()
+                        .and_then(|p| p.line_marks())
+                        .is_some_and(|m| !m.is_empty()),
+            )
+        });
+        let footer;
+        #[cfg(any(test, feature = "test-hooks"))]
+        let mut project_help = None;
+        let mut panel: Option<HelpPanel> = None;
+        let whole_width = terminal.size().map(|s| s.width).unwrap_or(0);
+        let project_chrome = project_owned.then_some(draw::ProjectPreviewChrome {
+            lang: keys.lang(),
+            style: st.display.path_style,
+            combined: st.display.combined_status,
+            context: core_ctx,
+            help: st.help.is_some(),
+            image_zoom: (core_ctx == CoreContext::Image)
+                .then(|| pictures.as_deref().map_or(1.0, Pictures::still_zoom)),
+            image_page: (core_ctx == CoreContext::Image)
+                .then(|| st.pages.map(|count| (st.at_page as u32 + 1, count as u32)))
+                .flatten(),
+        });
+        let width = project_chrome.map_or(whole_width, |chrome| {
+            draw::status_footer_width(whole_width, chrome.combined, &draw::preview_context(chrome))
+        });
+        let frame: &mut Frame = match st.help {
+            Some(top) => {
+                let (mut secs, title) = match (mode, image_mode) {
+                    (Some(m), _) => (keys.table_help_sections(m), keys.table_help_title(m)),
+                    (None, Some(_)) if !failed_text_screen => {
+                        (keys.image_help_sections(paged), keys.image_help_title())
+                    }
+                    (None, None) if canvas_keys => {
+                        (keys.canvas_help_sections(), keys.canvas_help_title())
+                    }
+                    (None, _) => (
+                        keys.help_sections_in(text_ctx(&*base), paged, text_scrolls),
+                        keys.help_title_in(text_ctx(&*base)),
+                    ),
+                };
+                if let Some(values) = &project_preview {
+                    use crate::host::project::preview_presentation::{
+                        PreviewHelpRow, PreviewHelpWords, PreviewSection,
+                    };
+                    let lookup = CoreLookup {
+                        keys: &keys.keys,
+                        ctx: core_ctx,
+                    };
+                    let extra = core_sections(core_ctx, &values.core, &lookup, keys.lang())
+                        .into_iter()
+                        .filter(|s| s.title == CoreMsg::HelpGlobal.tr(keys.lang()))
+                        .flat_map(|s| s.rows)
+                        .map(|(keys_text, description)| PreviewHelpRow {
+                            keys_text,
+                            description,
+                            section: PreviewSection::Global,
+                        })
+                        .collect();
+                    let menus = keys.with_copy_section(
+                        core_ctx,
+                        if mode.is_some() {
+                            CoreMenu::TableCopy
+                        } else {
+                            CoreMenu::Copy
+                        },
+                        vec![],
+                    );
+                    secs = values.help_sections(
+                        &PreviewHelpWords {
+                            search: if keys.lang() == Lang::Jp {
+                                "次 / 前の変更箇所"
+                            } else {
+                                "next / prev change"
+                            }
+                            .into(),
+                            tool: values
+                                .bindings
+                                .iter()
+                                .find(|b| {
+                                    b.op == konoma_host_core::preview_plan::PreviewOp::Host(
+                                        konoma_host_core::keymap::HostOp::GitLaunchTool,
+                                    )
+                                })
+                                .and_then(|b| b.help.clone())
+                                .unwrap_or_default(),
+                            ..Default::default()
+                        },
+                        &lookup,
+                        keys.lang(),
+                        extra,
+                        vec![],
+                        menus,
+                    );
+                }
+                if let Some(hint) = return_hint
+                    .as_ref()
+                    .filter(|_| !project_owned && return_on_screen)
+                {
+                    if let Some(section) = secs.first_mut() {
+                        section.rows.extend(hint.pairs());
+                    }
+                }
+                // The plugin's own keys: one section under its name, right after the screen's
+                // own (the host's order).
+                if let Some(own) = acts.help_section(act_ctx, &cx.lang, act_on) {
+                    secs.insert(keys.plugin_section_at(act_ctx, &secs), own);
+                }
+                let items = keys.space_items(
+                    core_ctx,
+                    &cx.lang,
+                    &acts,
+                    act_ctx,
+                    (windowed_text(&*base), project_preview.as_ref()),
+                    act_on,
+                );
+                keys.insert_actions_section(core_ctx, &items, &mut secs);
+                let lines = lines_of(&secs);
+                // The panel is laid out in the whole screen, as the host's is; the scroll is
+                // settled at draw time (the end of the help is as far as it goes).
+                let screen = terminal
+                    .size()
+                    .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
+                    .unwrap_or_default();
+                let top = top.min(usize::from(konoma_widgets::help_panel::max_scroll(
+                    lines.len(),
+                    screen,
+                )));
+                st.help = Some(top);
+                #[cfg(any(test, feature = "test-hooks"))]
+                if project_owned {
+                    project_help = Some(super::project::ProjectHelpSnapshot {
+                        sections: secs
+                            .iter()
+                            .map(|s| (s.title.clone(), s.rows.clone()))
+                            .collect(),
+                        scroll: top,
+                        title: title.clone(),
+                    });
+                }
+                footer = konoma_widgets::help_panel::fit_tokens(
+                    &keys.help_footer_tokens(),
+                    if project_owned { width } else { screen.width },
+                );
+                panel = Some(HelpPanel {
+                    lines,
+                    scroll: top as u16,
+                    title,
+                });
+                &mut *base
+            }
+            None => {
+                footer = match mode {
+                    Some(m) => {
+                        if let Frame::Table(t) = &mut *base {
+                            if let Some(p) = t.popup.as_mut() {
+                                p.footer = keys
+                                    .popup_tokens()
+                                    .into_iter()
+                                    .map(|t| t.text)
+                                    .collect::<Vec<_>>()
+                                    .join("  ");
+                            }
+                        }
+                        // The cell popup has its own keys: the plugin's are not there.
+                        let tokens = if m.popup {
+                            keys.table_footer_tokens(m)
+                        } else {
+                            acts.with_footer(act_ctx, &cx.lang, act_on, keys.table_footer_tokens(m))
+                        };
+                        draw::footer_row(&tokens, "", "", width)
+                    }
+                    None if image_mode.is_some() && !failed_text_screen => {
+                        let m = image_mode.unwrap_or(ImageMode {
+                            shape: StillShape::Failed,
+                            paged: false,
+                            zoomed: false,
+                        });
+                        let zoom = match (m.shape, pictures.as_deref()) {
+                            (StillShape::Ready, Some(p)) => {
+                                format!("  x{:.2}", p.still_zoom())
+                            }
+                            _ => String::new(),
+                        };
+                        // The host's status row says the page after the zoom (`2/5`), and a
+                        // spinner while the picture of a page is on its way.
+                        let page = if pictures.is_some() {
+                            pages::indicator(st.at_page as u32 + 1, st.pages.map(|n| n as u32))
+                                .map(|(cur, total)| {
+                                    format!("  {}", pages::indicator_text(cur, total))
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let busy = pictures
+                            .as_deref()
+                            .and_then(Pictures::still_busy)
+                            .map(|g| format!("{g} "))
+                            .unwrap_or_default();
+                        draw::footer_row(
+                            &acts.with_footer(
+                                act_ctx,
+                                &cx.lang,
+                                act_on,
+                                keys.image_footer_tokens(m.paged),
+                            ),
+                            format!("{zoom}{page}  {busy}").trim_end(),
+                            &cx.title,
+                            width,
+                        )
+                    }
+                    None => draw::footer(
+                        &acts.with_footer(
+                            act_ctx,
+                            &cx.lang,
+                            act_on,
+                            if canvas_keys {
+                                keys.canvas_footer_tokens()
+                            } else if matches!(base, draw::Frame::Document(_)) {
+                                keys.document_footer_tokens(st.scrolls)
+                            } else {
+                                keys.footer_hints_in(
+                                    text_ctx(&*base),
+                                    st.scrolls || (failed_text_screen && text_scrolls),
+                                    paged,
+                                )
+                                .into_iter()
+                                .map(|t| t.text)
+                                .collect()
+                            },
+                        ),
+                        &cx.title,
+                        &*base,
+                        st.scroll,
+                        st.scrolls,
+                        width,
+                    ),
+                };
+                &mut *base
+            }
+        };
+        let mut footer = footer;
+        if let Some(values) = project_preview
+            .as_ref()
+            .filter(|_| st.help.is_none() && !mode.is_some_and(|m| m.popup))
+        {
+            let tokens: Vec<_> = values
+                .footer(
+                    &CoreLookup {
+                        keys: &keys.keys,
+                        ctx: core_ctx,
+                    },
+                    keys.lang(),
+                )
+                .into_iter()
+                .map(|t| t.text)
+                .collect();
+            footer = konoma_widgets::help_panel::fit_tokens(&tokens, width);
+        }
+        if !project_owned && return_acts_now && !footer.ends_with('…') {
+            if let Some(hint) = &return_hint {
+                use unicode_width::UnicodeWidthStr;
+                let token = hint.footer();
+                if footer.width() + token.width() + 2 <= usize::from(width) {
+                    footer.push_str("  ");
+                    footer.push_str(&token);
+                }
+            }
+        }
+        // What the last key did, or the menu waiting for its key, takes the footer over.
+        // The hints are dim, the notice bold and the menu's line a bold heading with dim items:
+        // the host's footer, spans and all.
+        let footer = match (&st.flash, st.menu) {
+            (Some(note), _) => konoma_widgets::footer_line::flash_spans(note),
+            // The plugin takes the typing: the footer says how to leave (konoma's mode hint).
+            (None, _) if capturing => {
+                vec![ratatui::style::Stylize::bold(ratatui::text::Span::from(
+                    CoreMsg::StPluginInputHint.tr(keys.lang()),
+                ))]
+            }
+            (None, _) if project_owned && st.help.is_some() => {
+                vec![ratatui::style::Stylize::bold(ratatui::text::Span::from(
+                    footer,
+                ))]
+            }
+            (None, Some((c, CoreMenu::Actions))) => keys.space_line(
+                &keys.space_items(
+                    c,
+                    &cx.lang,
+                    &acts,
+                    act_ctx,
+                    (windowed, project_preview.as_ref()),
+                    act_on,
+                ),
+                width,
+            ),
+            (None, Some((c, CoreMenu::Options))) if project_preview.is_some() => {
+                let values = project_preview.as_ref().unwrap();
+                let view = keys.copy_menu_view(c, CoreMenu::Options).unwrap();
+                let declaration: Vec<_> = view
+                    .items
+                    .iter()
+                    .map(|item| konoma_host_core::menu::Item {
+                        key: item.key,
+                        action: item.action,
+                        label: crate::host::acts::FixedMenuLabel {
+                            declared: Some(item.label.clone()),
+                            fallback: None,
+                        },
+                    })
+                    .collect();
+                let items = values.options_menu(
+                    &declaration,
+                    |a| Some(konoma_host_core::preview_plan::PreviewOp::Core(a)),
+                    |a| matches!(a, CoreAction::CyclePathStyle | CoreAction::ToggleWrap),
+                );
+                konoma_widgets::footer_line::which_key_spans(
+                    &view.title,
+                    &items
+                        .iter()
+                        .map(|i| (konoma_host_core::help::help_key(i.key), i.label.clone()))
+                        .collect::<Vec<_>>(),
+                    width,
+                )
+            }
+            (None, Some((c, CoreMenu::Options))) if return_acts_now && return_hint.is_some() => {
+                let hint = return_hint.as_ref().unwrap();
+                let mut pairs = keys
+                    .copy_menu_view(c, CoreMenu::Options)
+                    .map(|v| v.pairs())
+                    .unwrap_or_default();
+                pairs.extend(hint.keys.iter().map(|k| (*k, hint.label.to_string())));
+                konoma_widgets::footer_line::which_key_spans(
+                    CoreMsg::HintOptions.tr(keys.lang()),
+                    &konoma_host_core::help::which_key_items(&pairs),
+                    width,
+                )
+            }
+            (None, Some((c, m))) => keys
+                .which_key_line(c, m, width)
+                .unwrap_or_else(|| hint_spans(footer)),
+            (None, None) => hint_spans(footer),
+        };
+        #[cfg(any(test, feature = "test-hooks"))]
+        if events.project_fenced() {
+            if let Some(snapshot) = preview.as_deref_mut().and_then(|p| p.idle.as_mut()) {
+                snapshot.state_generation += 1;
+            }
+        }
+        if project_owned {
+            draw_frame_with_header(
+                terminal,
+                frame,
+                &footer,
+                st.display.bg(),
+                pictures.as_deref_mut(),
+                panel,
+                project_chrome,
+            )?;
+        } else {
+            draw_frame(
+                terminal,
+                frame,
+                &footer,
+                st.display.bg(),
+                pictures.as_deref_mut(),
+                panel,
+            )?;
+        }
+
+        // How long to wait: the view's own timer, or sooner for the pictures. A timeout that
+        // came from the pictures' shorter wake leaves the view as it is.
+        let view_left = match view_wait {
+            Some(w) => Some(w),
+            None => view_due.map(|d| d.saturating_duration_since(Instant::now())),
+        };
+        // The canvas under the open help is still drawn (the host draws it too) but not animated:
+        // nothing wakes the loop for it.
+        let pic_wait = pictures
+            .as_deref()
+            .and_then(Pictures::wake_in)
+            .filter(|_| st.help.is_none());
+        // A chain on a worker is waited for in short steps: its notice is drawn when it lands.
+        let pic_wait = match (pic_wait, *launching > 0) {
+            (_, false) => pic_wait,
+            (Some(p), true) => Some(p.min(LAUNCH_WAKE)),
+            (None, true) => Some(LAUNCH_WAKE),
+        };
+        let preview_wait = preview.as_deref().and_then(|p| p.wake_in());
+        let wait = [view_left, pic_wait, preview_wait]
+            .into_iter()
+            .flatten()
+            .min();
+        let view_first = match (view_left, wait) {
+            (Some(view), Some(wait)) => view <= wait,
+            (None, Some(_)) => false,
+            _ => true,
+        };
+        // A key and a resize ask for a new view; a timeout does unless the pictures woke the loop.
+        *need_view = true;
+        #[cfg(any(test, feature = "test-hooks"))]
+        let fenced =
+            if events.project_fenced() || preview.as_deref().is_some_and(|p| p.probe.is_some()) {
+                let preview = preview.as_deref_mut().expect("project Preview fence");
+                // Runtime and launch publication belong to the project owner. A frame fence
+                // must yield to that owner before waiting for the file's own work.
+                if preview.owner_wake.is_some() {
+                    *refresh_on_resume = false;
+                    return Ok(FileLoopExit::Yield);
+                }
+                if let Some(detection) = &preview.detection {
+                    detection.fence_watch_for_test();
+                    if !detection.watch_settled_for_test() {
+                        *refresh_on_resume = false;
+                        return Ok(FileLoopExit::Yield);
+                    }
+                }
+                let mut snapshot = preview.idle.clone().expect("project owner snapshot");
+                snapshot.preview = preview.wake_in().is_none();
+                snapshot.pictures = pictures.as_deref().is_none_or(Pictures::settled_for_test);
+                if events.project_fenced() && (!snapshot.preview || !snapshot.pictures) {
+                    *need_view = false;
+                    continue;
+                }
+                snapshot.drawn_generation = snapshot.state_generation;
+                preview.idle = Some(snapshot.clone());
+                if let Some(slot) = &preview.observed {
+                    let mut slot = slot.lock().unwrap();
+                    if let Some(state) = slot.as_mut() {
+                        // The preview's own `Space` menu, item by item (the diff screen reports
+                        // its own list the same way).
+                        state.diff_actions = match st.menu {
+                            Some((c, CoreMenu::Actions)) => keys
+                                .space_items(
+                                    c,
+                                    &cx.lang,
+                                    &acts,
+                                    act_ctx,
+                                    (windowed, project_preview.as_ref()),
+                                    act_on,
+                                )
+                                .iter()
+                                .map(|i| (konoma_host_core::help::help_key(i.key), i.label.clone()))
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        state.menu = st.menu.map(|(_, menu)| {
+                            match menu {
+                                CoreMenu::Options => "options",
+                                CoreMenu::Copy => "copy",
+                                CoreMenu::Actions => "actions",
+                                _ => "other",
+                            }
+                            .into()
+                        });
+                        state.notice = st.flash.clone();
+                        if let Some(media) = state.media.as_mut() {
+                            media.cache = pictures
+                                .as_deref()
+                                .map_or_else(Vec::new, Pictures::media_cache_for_test);
+                            media.paints.clear();
+                        }
+                    }
+                    if let Some(diff) = slot.as_mut().and_then(|s| s.diff.as_mut()) {
+                        diff.help = project_help;
+                        diff.effective = konoma_host_core::project::DiffView::Preview;
+                        diff.next_representation = None;
+                        diff.split_drawn = None;
+                        diff.wrap = st.display.wrap;
+                        diff.scroll = match &*base {
+                            Frame::Document(d) => d.scroll,
+                            _ => st.scroll,
+                        };
+                        diff.hscroll = st.hscroll;
+                        diff.editor_line = super::edit_line::edit_line();
+                        diff.first_change = st
+                            .doc
+                            .as_ref()
+                            .and_then(super::document::DocCache::first_change)
+                            .or_else(|| {
+                                preview
+                                    .line_marks()?
+                                    .keys()
+                                    .min()
+                                    .map(|n| n.saturating_sub(1) as usize)
+                            });
+                        diff.source_lines.clear();
+                        diff.baseline_text = preview.baseline_text_for_test();
+                        diff.preview_context = Some(format!("{core_ctx:?}"));
+                    }
+                }
+                if let Some(probe) = &preview.probe {
+                    let observed = preview
+                        .observed
+                        .as_ref()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap();
+                    probe.capture(snapshot.clone(), draw::test_frame(), observed);
+                }
+                events
+                    .project_fenced()
+                    .then(|| events.project_idle(snapshot, draw::test_frame()))
+            } else {
+                None
+            };
+        #[cfg(any(test, feature = "test-hooks"))]
+        let next = fenced.unwrap_or_else(|| events.next(wait));
+        #[cfg(not(any(test, feature = "test-hooks")))]
+        let next = events.next(wait);
+        match next {
+            Next::End => return Ok(FileLoopExit::End),
+            Next::Timeout => {
+                *need_view = view_first;
+                if preview.as_deref().is_some_and(|p| p.yield_on_timeout) {
+                    *refresh_on_resume = false;
+                    return Ok(FileLoopExit::Yield);
+                }
+            }
+            Next::Event(AppEvent::Resize) => *need_view = true,
+            Next::Event(AppEvent::Paste(text)) => {
+                // Only a canvas that takes the typing gets a paste; elsewhere it does nothing.
+                *need_view = false;
+                if capturing {
+                    st.flash = None;
+                    let admitted = typing::admit_paste(&mut st.key_queue, text);
+                    if let Some(n) = admitted.notice {
+                        st.flash = Some(notice_text(n, keys.lang()));
+                    }
+                    if admitted.queued && flush_jobs(sess!(), st, cx) {
+                        *need_view = true;
+                    }
+                }
+            }
+            Next::Event(AppEvent::Key(key)) if capturing => {
+                // Every key is the plugin's; `Esc` leaves (and is told to the plugin).
+                st.flash = None;
+                st.menu = None;
+                let admitted = typing::admit_key(&mut st.key_queue, &mut st.input_left, key);
+                if let Some(n) = admitted.notice {
+                    st.flash = Some(notice_text(n, keys.lang()));
+                }
+                *need_view = false;
+                if admitted.queued && flush_jobs(sess!(), st, cx) {
+                    *need_view = true;
+                }
+                // The footer changes when the typing is left.
+                if st.input_left {
+                    *need_view = true;
+                }
+            }
+            Next::Event(AppEvent::Key(key)) => {
+                // The previous notice goes with the next key.
+                st.flash = None;
+                // A key waiting in the copy menu runs its item; any other closes the menu and
+                // does nothing else (`Esc` and `q` included), as the host's.
+                let mut picked: Option<space::SpaceOp> = None;
+                let mut in_menu = false;
+                let mut item: Option<CoreAction> = None;
+                match st.menu.take() {
+                    Some((ctx, CoreMenu::Actions)) => {
+                        // The `Space` menu: a key of an item picks it; the display options run
+                        // as the `,` menu's do, the others as the key of the operation would
+                        // (below); any other key only closes the menu.
+                        in_menu = true;
+                        *need_view = false;
+                        let items = keys.space_items(
+                            ctx,
+                            &cx.lang,
+                            &acts,
+                            act_ctx,
+                            (windowed_text(&*base), project_preview.as_ref()),
+                            act_on,
+                        );
+                        match key_press(&key)
+                            .and_then(|kp| items.iter().find(|i| i.key == kp))
+                            .map(|i| i.action)
+                        {
+                            Some(space::SpaceOp::Core(a)) => item = Some(a),
+                            Some(op) => {
+                                picked = Some(op);
+                                in_menu = false;
+                            }
+                            None => {}
+                        }
+                    }
+                    Some((ctx, menu)) => {
+                        if !project_owned
+                            && return_acts_now
+                            && menu == CoreMenu::Options
+                            && return_hint.as_ref().is_some_and(|h| {
+                                key_press(&key).is_some_and(|k| h.keys.contains(&k))
+                            })
+                        {
+                            return Ok(FileLoopExit::ReturnToSource);
+                        }
+                        in_menu = true;
+                        *need_view = false;
+                        item =
+                            key_press(&key).and_then(|kp| keys.copy_menu_view(ctx, menu)?.find(kp));
+                    }
+                    None => {}
+                }
+                if in_menu {
+                    if let Some(action @ (CoreAction::ToggleWrap | CoreAction::CyclePathStyle)) =
+                        item
+                    {
+                        // The options menu: the core both hosts share says what to redo.
+                        let mut o = konoma_host_core::view_options::ViewOptions {
+                            wrap: st.display.wrap,
+                            path_style: st.display.path_style,
+                        };
+                        let effect = o.apply(action);
+                        st.display.wrap = o.wrap;
+                        st.display.path_style = o.path_style;
+                        if effect.hscroll_home {
+                            st.hscroll = 0;
+                        }
+                        if effect.relayout {
+                            // The laid-out document and the kept text of a failed page are
+                            // for the old wrap; the view is asked for again.
+                            st.doc = None;
+                            st.failed_body = None;
+                            own.wrap = o.wrap;
+                            *need_view = true;
+                        }
+                        if effect.retitle {
+                            retitle(&mut *base, &frame_name_of(cx, o.path_style));
+                        }
+                    } else if let Some(action) = item {
+                        let table = match &*base {
+                            Frame::Table(t) => Some(&**t),
+                            _ => None,
+                        };
+                        st.flash = super::copy::run(
+                            action,
+                            keys.lang,
+                            &cx.path,
+                            cx.hint.as_deref(),
+                            cx.open_dir.as_deref(),
+                            table,
+                        );
+                    }
+                    continue;
+                }
+                let table_mode = table_mode(&*base, st.pages);
+                let popup_open = table_mode.is_some_and(|m| m.popup);
+                if project_owned && st.help.is_none() && !popup_open && st.menu.is_none() {
+                    let op = match picked {
+                        Some(space::SpaceOp::Preview(op)) => Some(op),
+                        _ => key_press(&key).and_then(|k| keys.keys.host_op(core_ctx, k)),
+                    };
+                    match op {
+                        Some(konoma_host_core::keymap::HostOp::OpenGitView) => {
+                            return Ok(FileLoopExit::Project)
+                        }
+                        Some(konoma_host_core::keymap::HostOp::GitLaunchTool) => {
+                            return Ok(FileLoopExit::Tool)
+                        }
+                        Some(konoma_host_core::keymap::HostOp::Refresh) => {
+                            return Ok(FileLoopExit::Refresh)
+                        }
+                        _ => {}
+                    }
+                    if matches!(
+                        op,
+                        Some(
+                            konoma_host_core::keymap::HostOp::CycleRepresentation
+                                | konoma_host_core::keymap::HostOp::ImageReturnToDiff
+                        )
+                    ) {
+                        return Ok(FileLoopExit::ReturnToSource);
+                    }
+                    if let Some(
+                        op @ (konoma_host_core::keymap::HostOp::SearchNext
+                        | konoma_host_core::keymap::HostOp::SearchPrev),
+                    ) = op
+                    {
+                        use crate::host::project::diff_blocks::{
+                            step_change_block, DiffBlockCursor,
+                        };
+                        let raw = st.caret_on && st.file_text;
+                        let blocks = if raw {
+                            crate::host::project::diff_blocks::DiffBlocks {
+                                rows: preview
+                                    .as_deref()
+                                    .and_then(|p| p.line_marks())
+                                    .map(
+                                        crate::host::project::diff_blocks::marked_line_block_starts,
+                                    )
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|n| n.saturating_sub(1) as usize)
+                                    .collect(),
+                                max_v: usize::MAX,
+                            }
+                        } else {
+                            st.doc
+                                .as_ref()
+                                .map(|d| d.change_blocks(st.page + 1))
+                                .unwrap_or_default()
+                        };
+                        if let Some(target) = step_change_block(
+                            &blocks,
+                            DiffBlockCursor {
+                                scroll: if raw { st.caret_line } else { st.scroll },
+                                block: if raw { None } else { st.change_at },
+                            },
+                            if op == konoma_host_core::keymap::HostOp::SearchNext {
+                                1
+                            } else {
+                                -1
+                            },
+                        ) {
+                            if raw {
+                                let position =
+                                    crate::host::project::preview_gutter::first_change_position(
+                                        target.scroll,
+                                    );
+                                st.scroll = position.top;
+                                st.caret_line = position.caret;
+                            } else {
+                                st.scroll = target.scroll;
+                                st.change_at = target.block;
+                            }
+                        } else {
+                            st.flash = Some(
+                                if keys.lang() == Lang::Jp {
+                                    "このファイルに変更はありません"
+                                } else {
+                                    "no changes in this file"
+                                }
+                                .into(),
+                            );
+                        }
+                        continue;
+                    }
+                }
+                if return_acts_now
+                    && return_hint
+                        .as_ref()
+                        .is_some_and(|h| key_press(&key).is_some_and(|k| h.keys.contains(&k)))
+                {
+                    return Ok(FileLoopExit::ReturnToSource);
+                }
+                // After a failed page the message is on screen, but the table keys stay (the page
+                // keys turn on, as the host's do).
+                let table_keys = table_mode.is_some() || st.table_failed;
+                // A failed page that shows the file as text scrolls like any text; the page keys
+                // stay (as the host's do).
+                let failed_text = failed_text_screen && st.help.is_none();
+                let image_keys = image_mode.is_some() && !failed_text;
+                // The page keys act over a picture (a failed page too) whatever scrolls, where the
+                // footer and the help name them (`ImageMode::paged`): with no pictures to draw
+                // them they do nothing, and are not named.
+                let on_image = image_mode.is_some_and(|m| m.paged);
+                // The plugin's layer (konoma asks it before the shared keys; on a canvas the fixed
+                // keys too, elsewhere the fixed keys are the host's): a key it declares for the
+                // screen on view. Not in the help, not in the cell popup.
+                let declared = if let Some(op) = picked {
+                    space::declared(&acts, act_ctx, op).cloned()
+                } else if st.help.is_none() && !popup_open && (canvas_keys || !is_fixed_key(&key)) {
+                    key_press(&key)
+                        .and_then(|kp| acts.for_key(act_ctx, kp))
+                        .cloned()
+                } else {
+                    None
+                };
+                let act = match (table_keys, image_mode) {
+                    _ if picked.is_some() => match picked {
+                        Some(space::SpaceOp::Back) => Some(Act::Back),
+                        Some(space::SpaceOp::Help) => Some(Act::Help),
+                        Some(space::SpaceOp::Cell) => Some(Act::Cell),
+                        Some(space::SpaceOp::Zoom(d)) => Some(Act::Zoom(d.into())),
+                        Some(space::SpaceOp::ZoomReset) => Some(Act::ZoomReset),
+                        Some(space::SpaceOp::Edit) => Some(Act::Edit),
+                        Some(space::SpaceOp::Open) => Some(Act::Open),
+                        _ => None,
+                    },
+                    _ if declared.is_some() => None,
+                    // The help is its own context: the same keys over any screen.
+                    _ if st.help.is_some() => keys.help_act(&key),
+                    (true, _) => keys.table_act(&key, popup_open && st.help.is_none()),
+                    (false, Some(_)) if failed_text => keys
+                        .act_in(text_ctx(&*base), &key)
+                        .or_else(|| keys.image_act(&key).filter(|a| matches!(a, Act::Page(_)))),
+                    (false, Some(_)) => keys.image_act(&key),
+                    (false, None) if canvas_keys => keys.canvas_act(&key),
+                    (false, None) => keys.act_in(text_ctx(&*base), &key),
+                };
+                // A key over a table never asks the session again, but a page turn: a
+                // spreadsheet is read again on every `view`. Nor does a key over a picture: the
+                // picture is held, and the pose is the app's.
+                // Nor does a key over the text of a page that failed to draw: it is kept, and
+                // scrolled from there (a page key asks again below).
+                let kept_failure = st
+                    .failed_body
+                    .as_ref()
+                    .is_some_and(|b| b.page == st.at_page)
+                    && matches!(base, Frame::Lines(_) | Frame::Text(_));
+                if table_keys || image_keys || kept_failure {
+                    *need_view = false;
+                }
+                // The copy menu opens on the key bound to it, where a key acts (not in the help
+                // or the cell popup).
+                if picked.is_none()
+                    && act.is_none()
+                    && declared.is_none()
+                    && st.help.is_none()
+                    && !popup_open
+                    && keys.opens_actions(core_ctx, &key)
+                {
+                    st.menu = Some((core_ctx, CoreMenu::Actions));
+                    *need_view = false;
+                } else if act.is_none() && declared.is_none() && st.help.is_none() && !popup_open {
+                    let ctx = if table_keys {
+                        CoreContext::Table
+                    } else if image_keys {
+                        CoreContext::Image
+                    } else if canvas_keys {
+                        CoreContext::Canvas
+                    } else {
+                        text_ctx(&*base)
+                    };
+                    if let Some(menu) = keys.copy_menu_of(ctx, &key) {
+                        if keys.copy_menu_view(ctx, menu).is_some() {
+                            st.menu = Some((ctx, menu));
+                            *need_view = false;
+                        }
+                    }
+                }
+                // The declared action runs when the session says it works now; a key of an action
+                // that does not work does nothing (and is not offered).
+                if let Some(b) = declared {
+                    let enabled = sess!().enabled(&b.act);
+                    match hacts::gate(Some(&b), enabled, acts.read_only) {
+                        hacts::ActGate::Off => {}
+                        hacts::ActGate::ReadOnly => {
+                            st.flash = Some(CoreMsg::PluginReadOnly.tr(keys.lang()).to_string());
+                            *need_view = false;
+                        }
+                        hacts::ActGate::On => {
+                            st.user_act = true;
+                            let admitted =
+                                typing::admit_act(&mut st.act_queue, st.key_queue.len(), &b.act);
+                            if let Some(n) = admitted.notice {
+                                st.flash = Some(notice_text(n, keys.lang()));
+                            }
+                            // A view is asked for again only when the answer says so.
+                            *need_view = admitted.queued && flush_jobs(sess!(), st, cx);
+                        }
+                    }
+                }
+                match (act, st.help) {
+                    // `Q` and Ctrl-C end the app even from the help (the host's `Q` does); `q`
+                    // and `Esc` close it.
+                    (Some(Act::Back), Some(_)) => st.help = None,
+                    // The popup is closed first; the app is left from the table.
+                    (Some(Act::Back), None) if popup_open => {
+                        if let Frame::Table(t) = &mut *base {
+                            t.popup = None;
+                        }
+                    }
+                    (Some(Act::Back), _) => return Ok(FileLoopExit::Back),
+                    (Some(Act::Quit), _) => return Ok(FileLoopExit::Quit),
+                    (Some(Act::Help), Some(_)) => st.help = None,
+                    (Some(Act::Help), None) => st.help = Some(0),
+                    (Some(Act::Move(m)), Some(top)) => {
+                        st.help = Some(match m {
+                            Motion::Down => top.saturating_add(1),
+                            Motion::Up => top.saturating_sub(1),
+                            Motion::Top => 0,
+                            Motion::Bottom => usize::MAX / 2,
+                            Motion::PageDown => top.saturating_add(st.page),
+                            Motion::PageUp => top.saturating_sub(st.page),
+                            Motion::HalfDown => top.saturating_add((st.page / 2).max(1)),
+                            Motion::HalfUp => top.saturating_sub((st.page / 2).max(1)),
+                            _ => top,
+                        })
+                    }
+                    (Some(Act::Move(m)), None) => match &mut *base {
+                        Frame::Table(t) => table_move(t, m),
+                        Frame::Image(_) => {
+                            if let Some(p) = pictures.as_deref_mut() {
+                                let (dx, dy) = match m {
+                                    Motion::Left => (-1.0, 0.0),
+                                    Motion::Right => (1.0, 0.0),
+                                    Motion::Up => (0.0, -1.0),
+                                    Motion::Down => (0.0, 1.0),
+                                    _ => (0.0, 0.0),
+                                };
+                                p.still_pan(dx, dy);
+                            }
+                        }
+                        _ if st.scrolls => scroll_by(m, st),
+                        _ => {}
+                    },
+                    (Some(Act::Cell), None) => {
+                        if let Frame::Table(t) = &mut *base {
+                            t.popup = match t.popup {
+                                Some(_) => None,
+                                None if t.grid.ncols() > 0 => Some(PopupState::default()),
+                                None => None,
+                            };
+                        }
+                    }
+                    (Some(Act::Page(d)), None) => {
+                        let count = st.pages.map(|n| n as u32);
+                        if let (true, Some(to)) = (
+                            table_keys || on_image,
+                            pages::turn(st.at_page as u32 + 1, count, d),
+                        ) {
+                            st.at_page = to as usize - 1;
+                            // The new sheet starts at its top left with no popup.
+                            if let Frame::Table(t) = &mut *base {
+                                t.state = Default::default();
+                                // Never reached while a popup is open (no `Page` comes then);
+                                // kept for when J/K are made to work inside the popup too.
+                                t.popup = None;
+                            }
+                            // A picture stays on screen until the new page's picture lands.
+                            st.turned = on_image;
+                            if let (true, Some(p)) = (on_image, pictures.as_deref_mut()) {
+                                p.still_turn_page();
+                            }
+                            *need_view = true;
+                        }
+                    }
+                    (Some(Act::Zoom(d)), None) => {
+                        if let Some(p) = pictures.as_deref_mut() {
+                            p.still_zoom_steps(d);
+                        }
+                    }
+                    (Some(Act::ZoomReset), None) => {
+                        if let Some(p) = pictures.as_deref_mut() {
+                            p.still_zoom_reset();
+                        }
+                    }
+                    (Some(act @ (Act::Edit | Act::Open)), None) => {
+                        if let Some(lc) = cx.launch.as_ref() {
+                            let verbs = st.verbs(cx).to_vec();
+                            let mut redraw = || {
+                                let _writing = konoma_host_core::term::terminal_write();
+                                terminal
+                                    .clear()
+                                    .map_err(|e| std::io::Error::other(e.to_string()))
+                            };
+                            let done = if act == Act::Edit {
+                                super::launch::edit(
+                                    lc,
+                                    &verbs,
+                                    &cx.path,
+                                    super::edit_line::edit_line(),
+                                    own.lang(),
+                                    launch_tx,
+                                    &mut redraw,
+                                )
+                            } else {
+                                super::launch::open(
+                                    lc,
+                                    &verbs,
+                                    &cx.path,
+                                    own.lang(),
+                                    launch_tx,
+                                    &mut redraw,
+                                )
+                            };
+                            if lc.worker && done.notice.is_none() && !done.handed && !done.reload {
+                                // A chain was handed to a worker (or nothing was started).
+                                *launching += 1;
+                            }
+                            if done.notice.is_some() {
+                                st.flash = done.notice;
+                            }
+                            if done.reload {
+                                st.reload = true;
+                            }
+                            if done.handed {
+                                // The terminal was another program's meanwhile: the pictures
+                                // placed on it are drawn again, the still one in its pose.
+                                if let Some(p) = pictures.as_deref_mut() {
+                                    p.after_hand_off();
+                                }
+                                *need_view = true;
+                            }
+                        }
+                    }
+                    (Some(Act::Cell | Act::Page(_) | Act::Zoom(_) | Act::ZoomReset), Some(_)) => {}
+                    (Some(Act::Edit | Act::Open), Some(_)) => {}
+                    (None, _) => {}
+                }
+                if kept_failure && !*need_view {
+                    let name = frame_name_of(cx, st.display.path_style);
+                    *base = failed_window(st, usize::from(body_rows), &name, own.lang());
+                }
+            }
+        }
+    }
+}
+
+/// Whether `key` is one of the host's fixed keys (arrows, `Home`, `End`, `Esc`, `Enter`, `Tab`,
+/// `Shift-Tab`): outside a canvas they never reach the plugin's layer (konoma's
+/// `ops::keys::is_fixed_code`).
+fn is_fixed_key(key: &Key) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::Esc
+            | KeyCode::Enter
+            | KeyCode::Tab
+            | KeyCode::BackTab
+    )
+}
+
+/// The declared actions the session says work now (the one answer the key, the footer and the
+/// help all use, as konoma's `Session::enabled` cache).
+fn enabled_ids(session: &dyn Session, acts: &super::AppActs) -> Vec<String> {
+    acts.bindings
+        .iter()
+        .filter(|b| session.enabled(&b.act))
+        .map(|b| b.act.clone())
+        .collect()
+}
+
+/// Hand what waits to the session, in the order it was pressed (the same line as konoma's
+/// `flush_plugin_keys`), and merge the answers the way konoma does: a reload beats a redraw, the
+/// last message wins, a failure is a message. Returns whether the view is to be asked again.
+/// `by_user` says the job began with a declared action the user pressed.
+fn flush_jobs(session: &mut dyn Session, st: &mut State, cx: &AppCx) -> bool {
+    let mut redraw = false;
+    while let Some(job) = typing::next_job(&mut st.key_queue, &mut st.act_queue) {
+        let acx = ActCx::new(Settings::empty(), &cx.lang).with_term(cx.term);
+        let mut results = Vec::new();
+        let is_act = matches!(job, NextJob::Act(_));
+        match job {
+            NextJob::Act(action) => results.push(session.act(&action, &acx)),
+            NextJob::Keys(keys) => {
+                for k in &keys {
+                    results.push(session.key(k, &acx));
+                }
+            }
+        }
+        let (mut again, mut flash, mut reload) = (false, None, false);
+        for r in results {
+            match r {
+                Ok(Outcome::Reload) => {
+                    again = true;
+                    reload = true;
+                }
+                Ok(Outcome::Redraw) => again = true,
+                Ok(Outcome::Flash(msg)) => flash = Some(msg.get(&cx.lang).to_string()),
+                Ok(
+                    Outcome::Copy { .. }
+                    | Outcome::PushScreen { .. }
+                    | Outcome::PopScreen
+                    | Outcome::OpenFile { .. }
+                    | Outcome::OpenDiff { .. }
+                    | Outcome::SwitchRoot { .. }
+                    | Outcome::OpenTab { .. },
+                ) => {
+                    flash = Some(
+                        crate::t!(
+                            en: "this action is not supported in the standalone app",
+                            ja: "この操作は単体アプリでは使えません",
+                        )
+                        .get(&cx.lang)
+                        .to_string(),
+                    );
+                }
+                Ok(Outcome::Unhandled) => {}
+                Err(f) => flash = Some(f.message.get(&cx.lang).to_string()),
+            }
+        }
+        // A reload beats everything (konoma's merge of the keys' answers): the message is dropped.
+        if reload {
+            st.reload = true;
+        } else if flash.is_some() {
+            st.flash = flash;
+        }
+        if is_act {
+            // An answer that asks for no redraw is not followed by a view: the mark ends here.
+            typing::settle_user_act(&mut st.user_act, false, again);
+        }
+        redraw |= again;
+        // What is still queued waits for the new session (the loop flushes it after the reload).
+        if reload {
+            break;
+        }
+    }
+    redraw
+}
+
+/// The words of a notice of the shared input queue.
+fn notice_text(n: Notice, lang: Lang) -> String {
+    match n {
+        Notice::InputFull => CoreMsg::PluginInputFull,
+        Notice::PasteCut => CoreMsg::PluginPasteCut,
+    }
+    .tr(lang)
+    .to_string()
+}
+
+/// The mode of the table on screen (`None` = the frame is not a table).
+fn table_mode(base: &Frame, pages: Option<usize>) -> Option<TableMode> {
+    match base {
+        Frame::Table(t) => Some(TableMode {
+            popup: t.popup.is_some(),
+            paged: pages.is_some_and(|n| n > 1),
+            cells: t.grid.ncols() > 0,
+            sheets: t.addressed,
+        }),
+        _ => None,
+    }
+}
+
+/// The mode of the picture on screen (`None` = the frame is not a picture). With no pictures
+/// (no terminal graphics) a picture cannot be shown: only leaving and the help act.
+fn image_mode(base: &Frame, pictures: Option<&Pictures>, st: &State) -> Option<ImageMode> {
+    // Pages are turned only where a picture can be shown (the host does not even open the file
+    // with no graphics backend).
+    let paged = pictures.is_some() && pages::can_turn(st.pages.map(|n| n as u32));
+    let Frame::Image(_) = base else {
+        // After a page that failed the message is on screen, but the page keys stay (the page
+        // number is not rolled back, as the host's).
+        return st.image_failed.then_some(ImageMode {
+            shape: StillShape::Failed,
+            paged,
+            zoomed: false,
+        });
+    };
+    let shape = pictures
+        .and_then(Pictures::still_shape)
+        .unwrap_or(StillShape::Failed);
+    Some(ImageMode {
+        shape,
+        paged,
+        zoomed: pictures.is_some_and(|p| p.still_zoom() > 1.0),
+    })
+}
+
+/// What the footer and the help say about the screen: a table's mode, or, after a page that
+/// failed, the mode of a paged table with no cell (the page keys act, as the host's do, and
+/// `Enter` has nothing to open).
+fn shown_mode(base: &Frame, st: &State) -> Option<TableMode> {
+    table_mode(base, st.pages).or_else(|| {
+        st.table_failed.then(|| TableMode {
+            popup: false,
+            paged: st.pages.is_some_and(|n| n > 1),
+            cells: false,
+            sheets: st.table_sheets,
+        })
+    })
+}
+
+/// Move the cell cursor, or scroll the popup while it is open.
+fn table_move(t: &mut TableFrame, m: Motion) {
+    if let Some(p) = t.popup.as_mut() {
+        match m {
+            Motion::Down => p.scroll = popup_scroll_by(p.scroll, 1),
+            Motion::Up => p.scroll = popup_scroll_by(p.scroll, -1),
+            Motion::Top => p.scroll = popup_scroll_to(false),
+            Motion::Bottom => p.scroll = popup_scroll_to(true),
+            Motion::PageDown => p.scroll = popup_scroll_by(p.scroll, popup_page_step(p.viewport)),
+            Motion::PageUp => p.scroll = popup_scroll_by(p.scroll, -popup_page_step(p.viewport)),
+            _ => {}
+        }
+        return;
+    }
+    let step = match m {
+        Motion::Up => TableStep::Up,
+        Motion::Down => TableStep::Down,
+        Motion::Left => TableStep::Left,
+        Motion::Right => TableStep::Right,
+        Motion::Top => TableStep::FirstRow,
+        Motion::Bottom => TableStep::LastRow,
+        Motion::LineHome => TableStep::FirstCol,
+        Motion::LineEnd => TableStep::LastCol,
+        Motion::PageDown => TableStep::PageDown,
+        Motion::PageUp => TableStep::PageUp,
+        Motion::HalfDown => TableStep::HalfDown,
+        Motion::HalfUp => TableStep::HalfUp,
+    };
+    t.state.step(step, t.grid.nrows(), t.grid.ncols());
+}
+
+/// The `?` help to draw over the screen: its lines, the first line shown and the title.
+struct HelpPanel {
+    lines: Vec<ratatui::text::Line<'static>>,
+    scroll: u16,
+    title: String,
+}
+
+/// The key hints as the host draws them: one dim span.
+fn hint_spans(row: String) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::style::Stylize;
+    vec![ratatui::text::Span::from(row).dim()]
+}
+
+/// Draw `frame` and `footer`, then the pictures over it. A frame on which a picture moved or went
+/// is cleared and drawn again (the cells of its old place would stay on screen otherwise), and the
+/// deletes of the kitty images that went are written after it. The right to write to the terminal
+/// is held for all of it, so an exit's cleanup never lands between the chunks of a transmit.
+fn draw_frame<B: Backend>(
+    terminal: &mut Terminal<B>,
+    frame: &mut Frame,
+    footer: &[ratatui::text::Span<'static>],
+    bg: Option<ratatui::style::Color>,
+    pictures: Option<&mut Pictures>,
+    panel: Option<HelpPanel>,
+) -> Result<(), AppError> {
+    draw_frame_with_header(terminal, frame, footer, bg, pictures, panel, None)
+}
+
+fn draw_frame_with_header<B: Backend>(
+    terminal: &mut Terminal<B>,
+    frame: &mut Frame,
+    footer: &[ratatui::text::Span<'static>],
+    bg: Option<ratatui::style::Color>,
+    mut pictures: Option<&mut Pictures>,
+    panel: Option<HelpPanel>,
+    project_header: Option<draw::ProjectPreviewChrome>,
+) -> Result<(), AppError> {
+    let terr = |e: &dyn std::fmt::Display| AppError::Terminal(e.to_string());
+    let on_canvas = matches!(frame, Frame::Canvas(_));
+    let image = match frame {
+        Frame::Image(i) => Some(i.lang),
+        _ => None,
+    };
+    let _writing = konoma_host_core::term::terminal_write();
+    for pass in 0..2 {
+        terminal
+            .draw(|f| {
+                let body = if let Some(chrome) = project_header {
+                    draw::project_preview_body(f.area(), chrome.combined)
+                } else {
+                    draw::body_of(f.area())
+                };
+                if project_header.is_some() {
+                    draw::draw_in(f, frame, &[], bg, body);
+                } else {
+                    draw::draw(f, frame, footer, bg);
+                }
+                if let Some(chrome) = project_header {
+                    let whole = f.area();
+                    draw::draw_project_status(
+                        f.buffer_mut(),
+                        whole,
+                        chrome.combined,
+                        draw::preview_context(chrome),
+                        footer,
+                    );
+                }
+                if let Some(p) = pictures.as_deref_mut() {
+                    p.draw(f.buffer_mut(), body, on_canvas);
+                    let doc = match &*frame {
+                        Frame::Document(d) => Some((&*d.laid, d.scroll)),
+                        _ => None,
+                    };
+                    p.draw_document(
+                        f.buffer_mut(),
+                        super::document::DocFrame::inner(body),
+                        doc,
+                        0,
+                        None,
+                    );
+                }
+                if let Some(lang) = image {
+                    let inner = draw::image_inner(body);
+                    match pictures.as_deref_mut() {
+                        Some(p) => p.draw_still(f.buffer_mut(), inner, lang),
+                        None => ratatui::widgets::Widget::render(
+                            ratatui::widgets::Paragraph::new(super::still::failure_line(
+                                None, lang, "",
+                            )),
+                            inner,
+                            f.buffer_mut(),
+                        ),
+                    }
+                }
+                // The `?` help sits above everything else, as the host draws it.
+                if let Some(h) = &panel {
+                    let area = f.area();
+                    konoma_widgets::help_panel::render_panel(
+                        f.buffer_mut(),
+                        area,
+                        h.lines.clone(),
+                        h.scroll,
+                        h.title.clone(),
+                    );
+                }
+                draw::finish_frame(f.buffer_mut());
+            })
+            .map_err(|e| terr(&e))?;
+        let moved = pictures.as_deref_mut().is_some_and(Pictures::take_moved);
+        if pass == 0 && moved {
+            terminal.clear().map_err(|e| terr(&e))?;
+        } else {
+            break;
+        }
+    }
+    if let Some(p) = pictures {
+        p.flush_deletes();
+    }
+    Ok(())
+}
+
+/// The caret's moves over the text on screen: the host's, shared (`konoma_widgets::caret`).
+fn caret_by(m: Motion, st: &mut State) {
+    let rows = st.text_rows;
+    let page = i32::try_from(rows.saturating_sub(1).max(1)).unwrap_or(i32::MAX);
+    let half = i32::try_from((rows / 2).max(1)).unwrap_or(i32::MAX);
+    let mut c = konoma_widgets::caret::Caret {
+        top: st.scroll,
+        line: st.caret_line,
+        col: st.caret_col,
+    };
+    let total = st.lines;
+    match m {
+        Motion::Down => c.step(1, total, rows),
+        Motion::Up => c.step(-1, total, rows),
+        Motion::PageDown => c.page(page, total, rows),
+        Motion::PageUp => c.page(-page, total, rows),
+        Motion::HalfDown => c.page(half, total, rows),
+        Motion::HalfUp => c.page(-half, total, rows),
+        Motion::Top => c.to_top(),
+        Motion::Bottom => c.to_bottom(total, rows),
+        Motion::Left => c.col_move(-1),
+        Motion::Right => c.col_move(1),
+        Motion::LineHome => c.col_home(),
+        Motion::LineEnd => c.col_end(),
+    }
+    st.scroll = c.top;
+    st.caret_line = c.line;
+    st.caret_col = c.col;
+}
+
+fn scroll_by(m: Motion, st: &mut State) {
+    if st.caret_on {
+        return caret_by(m, st);
+    }
+    let page = st.page;
+    let half = st.half.unwrap_or((page / 2).max(1));
+    // The host's text window (the caret's) steps 4 cells; its failed page, with no caret, 2.
+    let step = if st
+        .failed_body
+        .as_ref()
+        .is_some_and(|b| b.page == st.at_page)
+    {
+        2
+    } else {
+        4
+    };
+    match m {
+        Motion::Down => st.scroll = st.scroll.saturating_add(1),
+        Motion::Up => st.scroll = st.scroll.saturating_sub(1),
+        Motion::PageDown => st.scroll = st.scroll.saturating_add(page),
+        Motion::PageUp => st.scroll = st.scroll.saturating_sub(page),
+        Motion::HalfDown => st.scroll = st.scroll.saturating_add(half),
+        Motion::HalfUp => st.scroll = st.scroll.saturating_sub(half),
+        Motion::Top => st.scroll = 0,
+        Motion::Bottom => st.scroll = st.total,
+        // Sideways, the host's steps (see `step`, and the ends settled at draw time). Wrapping,
+        // there is nothing to scroll.
+        Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd if st.display.wrap => {
+            st.hscroll = 0
+        }
+        Motion::Left => st.hscroll = st.hscroll.saturating_sub(step),
+        Motion::Right => st.hscroll = st.hscroll.saturating_add(step),
+        Motion::LineHome => st.hscroll = 0,
+        Motion::LineEnd => st.hscroll = u16::MAX,
+    }
+}
+
+/// Turn a view into what is drawn, clamping the scroll to the text's length.
+fn frame_of(
+    view: View,
+    st: &mut State,
+    rows: usize,
+    (lang_code, lang): (&str, Lang),
+    name: &str,
+    pictures: Option<&mut Pictures>,
+) -> (Frame<'static>, Option<Duration>) {
+    frame_of_preview(view, st, rows, (lang_code, lang), name, pictures, None)
+}
+
+fn frame_of_preview(
+    view: View,
+    st: &mut State,
+    rows: usize,
+    (lang_code, lang): (&str, Lang),
+    name: &str,
+    pictures: Option<&mut Pictures>,
+    mut preview: Option<&mut super::project::preview::PreviewGutter>,
+) -> (Frame<'static>, Option<Duration>) {
+    use crate::view::TextSource;
+    st.scrolls = false;
+    st.caret_on = false;
+    st.file_text = false;
+    match view {
+        View::Table(t) => (
+            Frame::Table(Box::new(TableFrame {
+                grid: t.grid,
+                name: name.to_string(),
+                note: t.title,
+                rainbow: t.rainbow,
+                addressed: t.addressed,
+                lang,
+                lang_code: lang_code.to_string(),
+                state: Default::default(),
+                popup: None,
+            })),
+            None,
+        ),
+        View::Message(m) => (Frame::Lines(m.lines), None),
+        View::Image(view) => (
+            Frame::Image(ImageFrame {
+                view,
+                name: name.to_string(),
+                lang,
+            }),
+            None,
+        ),
+        View::Canvas(c) => {
+            let after = c.redraw_after;
+            (Frame::Canvas(c), after)
+        }
+        View::Text(t) => {
+            // The text sits in the host's frame: the window is the rows inside its border.
+            let rows = rows.saturating_sub(2);
+            st.text_rows = rows;
+            st.page = rows.saturating_sub(1).max(1);
+            st.half = Some((rows / 2).max(1));
+            // Text a plugin made has a line in the file only if the plugin says so (the host's
+            // `text_plugin_lines_are_file_lines`): that decides whether `e` opens at the caret.
+            st.file_text = t.file_lines;
+            if t.file_lines {
+                if let Some(position) = preview
+                    .as_deref_mut()
+                    .and_then(|p| p.take_position(None, false))
+                {
+                    st.scroll = position.top;
+                    st.caret_line = position.caret;
+                }
+            }
+            let marks = preview.as_deref().and_then(|p| p.line_marks());
+            let framed = |st: &mut State, lines: Vec<Line>, extent| {
+                text_frame_with_gutter(st, lines, Some((name, lang, Some(extent))), true, marks)
+            };
+            let frame = match t.source {
+                TextSource::Owned(s) => {
+                    let lens: Vec<u64> = s.split_inclusive('\n').map(|l| l.len() as u64).collect();
+                    clamp(st, lens.len(), rows);
+                    let extent = window::extent_of_lines(&lens, st.scroll, rows);
+                    let lines: Vec<&str> = s.lines().collect();
+                    framed(
+                        st,
+                        lines
+                            .iter()
+                            .skip(st.scroll)
+                            .take(rows)
+                            .map(|l| Line::raw(window::clean_line(l.as_bytes())))
+                            .collect(),
+                        extent,
+                    )
+                }
+                TextSource::Lines(all) => {
+                    // The host writes the lines joined by a newline and windows that file.
+                    let last = all.len().saturating_sub(1);
+                    let lens: Vec<u64> = all
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| {
+                            l.spans.iter().map(|s| s.text.len() as u64).sum::<u64>()
+                                + u64::from(i < last)
+                        })
+                        .collect();
+                    clamp(st, all.len(), rows);
+                    let extent = window::extent_of_lines(&lens, st.scroll, rows);
+                    let shown = all.into_iter().skip(st.scroll).take(rows).collect();
+                    framed(st, shown, extent)
+                }
+                TextSource::File(path) => {
+                    st.file_text = true;
+                    let total = match &st.counted {
+                        Some((p, n)) if *p == path => *n,
+                        _ => match window::count_lines(&path) {
+                            Ok(n) => {
+                                st.counted = Some((path.clone(), n));
+                                n
+                            }
+                            Err(e) => {
+                                return (
+                                    Frame::Lines(vec![Line::raw(format!(
+                                        "[can not read {}: {e}]",
+                                        path.display()
+                                    ))]),
+                                    None,
+                                )
+                            }
+                        },
+                    };
+                    clamp(st, total, rows);
+                    let extent = window::file_extent(&mut st.win, &path, st.scroll, rows);
+                    match window::read_window(&path, st.scroll, rows) {
+                        Ok(w) => framed(st, w.into_iter().map(Line::raw).collect(), extent),
+                        Err(e) => Frame::Lines(vec![Line::raw(format!(
+                            "[can not read {}: {e}]",
+                            path.display()
+                        ))]),
+                    }
+                }
+            };
+            st.scrolls = true;
+            st.caret_on = windowed_text(&frame);
+            (frame, None)
+        }
+        View::Document(dv) => {
+            // The frame has a border: the page is laid out inside it.
+            let inner_w = st.width.saturating_sub(2);
+            let inner_h = rows.saturating_sub(2);
+            let mut doc_pics = pictures.map(Pictures::doc_pics);
+            let laid = if let Some(preview) = preview.as_deref() {
+                super::document::DocCache::get_with_gutter(
+                    &mut st.doc,
+                    &dv,
+                    inner_w,
+                    u16::try_from(rows).unwrap_or(u16::MAX),
+                    lang,
+                    doc_pics.as_deref_mut(),
+                    &st.display,
+                    preview.document_gutter(),
+                )
+            } else {
+                super::document::DocCache::get(
+                    &mut st.doc,
+                    &dv,
+                    inner_w,
+                    u16::try_from(rows).unwrap_or(u16::MAX),
+                    lang,
+                    doc_pics.as_deref_mut(),
+                    &st.display,
+                )
+            };
+            // A converted document cut at a budget, or a slide that had to leave something out,
+            // says so in the title; a Markdown file cut at the display limit says so in its
+            // text (see `document::lay_out`).
+            st.doc_edit = match &dv.origin {
+                crate::input::Origin::File(p) => Some((dv.markdown.lines().count(), p.clone())),
+                crate::input::Origin::Converted { .. } => None,
+            };
+            let cut = matches!(dv.origin, crate::input::Origin::Converted { .. })
+                && (dv.truncated || doc_pics.as_deref().is_some_and(|d| d.render_truncated()));
+            let first_change = st
+                .doc
+                .as_ref()
+                .and_then(super::document::DocCache::first_change);
+            if let Some(position) = preview.and_then(|p| p.take_position(first_change, true)) {
+                st.scroll = position.top;
+            }
+            clamp(st, laid.rows(), inner_h);
+            // The host's vertical scroll is a `u16`: a document taller than that scrolls no further.
+            st.scroll = st.scroll.min(super::document::MAX_DOC_SCROLL);
+            let hscroll = settle_hscroll(st, laid.max_line_cols, inner_w);
+            // The host pages by one row less than the frame and halves the frame itself.
+            st.page = inner_h.saturating_sub(1).max(1);
+            st.half = Some((inner_h / 2).max(1));
+            st.scrolls = true;
+            (
+                Frame::Document(super::document::DocFrame {
+                    name: name.to_string(),
+                    laid,
+                    scroll: st.scroll,
+                    wrap: st.display.wrap,
+                    hscroll,
+                    lang,
+                    truncated: cut,
+                }),
+                None,
+            )
+        }
+        other => (
+            Frame::Lines(vec![Line::raw(format!(
+                "[not displayable yet: {}]",
+                kind_name(&other)
+            ))]),
+            None,
+        ),
+    }
+}
+
+/// Whether the page that failed is a picture: what the plugin declares it shows, else what was
+/// on screen before (a first page that fails has nothing before it).
+fn failed_page_is_picture(cx: &AppCx, st: &State) -> bool {
+    let declared = match (
+        st.shows(cx).contains(&ViewKind::Image),
+        st.shows(cx).contains(&ViewKind::Table),
+    ) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    };
+    declared.unwrap_or(st.last_image)
+}
+
+/// What a page that failed to draw leaves in the state, whichever step failed (the `view`, or the
+/// picture's decode): the kind of paged page it was, the pages the session declares (known before
+/// any page was read), and that the page keys still turn them.
+fn note_failed_page(session: &dyn Session, cx: &AppCx, st: &mut State, picture: bool) {
+    let declared = matches!(
+        (
+            st.shows(cx).contains(&ViewKind::Image),
+            st.shows(cx).contains(&ViewKind::Table),
+        ),
+        (true, false) | (false, true)
+    );
+    if st.pages.is_none() && declared {
+        st.pages = declared_pages(session, picture);
+        // Pages that carry names are a workbook's sheets.
+        st.table_sheets = !picture
+            && matches!(
+                session.layout().pages,
+                Some(PageLayout::Separate { ref titles, .. }) if !titles.is_empty()
+            );
+    }
+    st.table_failed = st.pages.is_some() && !picture;
+    st.image_failed = st.pages.is_some() && picture;
+    st.scrolls = false;
+}
+
+/// What a page that failed to draw shows, in the words konoma shows for the same failure: a
+/// picture's frame with the reason inside (a plugin that names the picture frame), the file as
+/// text with the reason above it (an SVG), the plugin's sentence, or the failure's message; the
+/// last three end with the path. The same function serves a `view` that failed and a picture
+/// whose decode failed (`why` is the reason, `message` the failure's own words), as konoma's one
+/// `unavailable_body` serves both. The mapping and the words are shared with konoma
+/// (`canvas_pictures::image_failure_for`, `unavailable_text`).
+fn failure_frame(
+    why: Option<ImageFailure>,
+    message: &str,
+    failure: Option<&crate::session::Failure>,
+    cx: &AppCx,
+    lang: Lang,
+    rows: usize,
+    st: &mut State,
+) -> Frame<'static> {
+    use crate::canvas_pictures::{raw_file_body, unavailable_text};
+    st.failed_body = None;
+    // A converted document (Word, a presentation) that did not load is told as konoma tells it, with
+    // the line that says `e` opens it in an Office app only while `e` does that.
+    if cx.is_document() && matches!(cx.unavailable, crate::manifest::Unavailable::Message) {
+        let text = crate::canvas_pictures::document_failure_text(
+            failure,
+            (&cx.lang, lang),
+            cx.launch.as_ref().is_some_and(|l| {
+                l.facts(st.verbs(cx), &cx.path).edit == Some(crate::host::launch::EditWord::App)
+            }),
+            &cx.path,
+        );
+        return Frame::Lines(text.lines().map(Line::raw).collect());
+    }
+    let text = unavailable_text(
+        st.unavailable(cx),
+        message,
+        why,
+        (&cx.lang, lang),
+        st.plugin_id(cx),
+        &cx.path,
+        &|| raw_file_body(&cx.path, lang),
+    );
+    match text {
+        // The file as text (an SVG that cannot be drawn) scrolls like any text, as in konoma. It
+        // is kept: a key scrolls it, the file is not read again.
+        Some(t)
+            if matches!(
+                st.unavailable(cx),
+                crate::manifest::Unavailable::RawText { .. }
+            ) =>
+        {
+            st.failed_body = Some(FailedBody {
+                page: st.at_page,
+                // Not cleaned: konoma hands the text to ratatui as it is, which drops the control
+                // characters (a tab too) when it draws.
+                lines: t.lines().map(str::to_string).collect(),
+            });
+            failed_window(st, rows, &frame_name_of(cx, st.display.path_style), lang)
+        }
+        Some(t) => Frame::Lines(t.lines().map(Line::raw).collect()),
+        None => Frame::ImageFailed(FailedImage {
+            name: cx.title.clone(),
+            lang,
+            why,
+            plugin_id: st.plugin_id(cx).to_string(),
+        }),
+    }
+}
+
+/// The window of a failed page's text for a body of `rows` rows: the rows inside the host's
+/// border, with the page and half-page steps the host takes. Returns the window's rows.
+fn set_failed_paging(st: &mut State, rows: usize) -> usize {
+    let rows = rows.saturating_sub(2);
+    st.text_rows = rows;
+    st.page = rows.saturating_sub(1).max(1);
+    st.half = Some((rows / 2).max(1));
+    rows
+}
+
+/// The kept text of a failed page, scrolled as the host scrolls it: the whole text is drawn
+/// and moved up by the scroll, which counts drawn rows (the wrapped rows while wrapping, so a
+/// long line takes several), clamped against the same count the host uses.
+fn failed_window(st: &mut State, rows: usize, name: &str, lang: Lang) -> Frame<'static> {
+    let rows = set_failed_paging(st, rows);
+    let body = st.failed_body.take();
+    let all: Vec<Line> = body
+        .as_ref()
+        .map_or(&[][..], |b| &b.lines[..])
+        .iter()
+        .map(Line::raw)
+        .collect();
+    st.scrolls = true;
+    st.caret_on = false;
+    // In the host's frame (the path alone on its border), as the host draws it: no caret, no
+    // position label. The window is the rows inside the border.
+    let mut frame = text_frame(st, all, Some((name, lang, None)), false);
+    if let Frame::Text(t) = &mut frame {
+        let total = if t.wrap {
+            konoma_widgets::text::wrapped_row_count(t.lines.clone(), st.width.saturating_sub(2))
+        } else {
+            t.lines.len()
+        };
+        clamp(st, total, rows);
+        t.vscroll = u16::try_from(st.scroll).unwrap_or(u16::MAX);
+    }
+    st.failed_body = body;
+    frame
+}
+
+/// The page count the session declares for a picture's pages or a table's sheets (what a page
+/// that read fine reports, asked of the layout when none did).
+fn declared_pages(session: &dyn Session, picture: bool) -> Option<usize> {
+    let layout = session.layout().clipped();
+    if picture {
+        return pages::count_of(&layout)
+            .flatten()
+            .map(|n| n as usize)
+            .filter(|n| *n > 0);
+    }
+    match layout.pages {
+        Some(PageLayout::Separate { count, titles }) => {
+            count.or((!titles.is_empty()).then_some(titles.len()))
+        }
+        _ => None,
+    }
+}
+
+/// The sideways scroll, settled against the widest line (`max_cols`) and the `width` shown: as
+/// the host, none while wrapping, and at most the overhang of the widest line.
+fn settle_hscroll(st: &mut State, max_cols: usize, width: u16) -> u16 {
+    if st.display.wrap {
+        st.hscroll = 0;
+        return 0;
+    }
+    let max_h = u16::try_from(max_cols.saturating_sub(usize::from(width))).unwrap_or(u16::MAX);
+    st.hscroll = st.hscroll.min(max_h);
+    st.hscroll
+}
+
+/// The lines of a file's text as drawn: wrapped, or cut `hscroll` cells from the left. `framed`
+/// is the host's frame around it (the path, the language, where the window is in the file); the
+/// lines are then drawn inside its border, and `None` draws them bare.
+fn text_frame(
+    st: &mut State,
+    lines: Vec<Line>,
+    framed: Option<(&str, Lang, Option<konoma_widgets::scroll::ScrollExtent>)>,
+    caret: bool,
+) -> Frame<'static> {
+    text_frame_with_gutter(st, lines, framed, caret, None)
+}
+
+fn text_frame_with_gutter(
+    st: &mut State,
+    lines: Vec<Line>,
+    framed: Option<(&str, Lang, Option<konoma_widgets::scroll::ScrollExtent>)>,
+    caret: bool,
+    marks: Option<
+        &std::collections::HashMap<u32, crate::host::project::preview_gutter::GutterMark>,
+    >,
+) -> Frame<'static> {
+    // The tabs become the host's mark and tab stops (the one function it uses, with the same
+    // `[ui] tab_width`), before the width of the widest line is measured.
+    let lines = konoma_widgets::text::expand_tabs(
+        lines.into_iter().map(ratatui_draw::into_line).collect(),
+        st.display.tab_width,
+    );
+    // The file's text in the host's frame has the caret: its line is kept inside the text and
+    // the column on a real character, and the line and the character are drawn as the host's.
+    let lines = if framed.is_some() && caret {
+        st.caret_line = st.caret_line.min(st.lines.saturating_sub(1));
+        st.caret_col = konoma_widgets::caret::settled_col(
+            &lines,
+            st.scroll,
+            st.text_rows,
+            st.caret_line,
+            st.caret_col,
+        );
+        konoma_widgets::caret::apply_caret(
+            lines,
+            st.scroll,
+            st.caret_line,
+            st.caret_col,
+            konoma_widgets::caret::Selection::None,
+        )
+    } else {
+        lines
+    };
+    let lines = super::document::lay_out_lines(lines, st.scroll, marks);
+    let max_cols = lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    let width = if framed.is_some() {
+        st.width.saturating_sub(2)
+    } else {
+        st.width
+    };
+    if framed.is_some() && caret && !st.display.wrap {
+        st.hscroll = konoma_widgets::caret::follow_hscroll(&lines, usize::from(width), st.hscroll);
+    }
+    let hscroll = settle_hscroll(st, max_cols, width);
+    Frame::Text(super::draw::TextFrame {
+        lines,
+        wrap: st.display.wrap,
+        hscroll,
+        vscroll: 0,
+        border: framed.map(|(name, lang, extent)| super::draw::TextBorder {
+            name: name.to_string(),
+            lang,
+            extent,
+        }),
+    })
+}
+
+/// Keep the last page full: the scroll is at most `total - rows`.
+fn clamp(st: &mut State, total: usize, rows: usize) {
+    st.lines = total;
+    st.total = total.saturating_sub(rows);
+    st.scroll = st.scroll.min(st.total);
+}
+
+fn kind_name(v: &View) -> &'static str {
+    match v {
+        View::Text(_) => "text",
+        View::Document(_) => "document",
+        View::Table(_) => "table",
+        View::Image(_) => "image",
+        View::List(_) => "list",
+        View::Diff(_) => "diff",
+        View::Canvas(_) => "canvas",
+        View::Reopen(_) => "document",
+        View::Message(_) => "message",
+    }
+}
+
+#[cfg(test)]
+mod reopen_state_tests {
+    use super::*;
+    use crate::host::acts::ActBinding;
+    use crate::host::typing::QueuedAct;
+    use crate::Failure;
+
+    struct Answers(Outcome);
+    impl Session for Answers {
+        fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+            Err(Failure::unsupported("unused"))
+        }
+        fn act(&mut self, _: &str, _: &ActCx) -> Result<Outcome, Failure> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn project_navigation_outcomes_report_a_notice() {
+        for outcome in [
+            Outcome::PopScreen,
+            Outcome::PushScreen {
+                screen: "log".into(),
+                selection: None,
+            },
+            Outcome::OpenFile {
+                path: "/file".into(),
+                line: None,
+            },
+            Outcome::OpenDiff {
+                path: "/file".into(),
+            },
+            Outcome::SwitchRoot {
+                root: "/root".into(),
+                message: None,
+            },
+            Outcome::OpenTab {
+                path: "/file".into(),
+            },
+        ] {
+            for (lang, expected) in [
+                ("en", "this action is not supported in the standalone app"),
+                ("ja", "この操作は単体アプリでは使えません"),
+            ] {
+                let mut cx = dummy_cx();
+                cx.lang = lang.into();
+                let mut st = State {
+                    act_queue: vec![QueuedAct::now("go")],
+                    ..State::default()
+                };
+                assert!(!flush_jobs(&mut Answers(outcome.clone()), &mut st, &cx));
+                assert_eq!(st.flash.as_deref(), Some(expected), "{outcome:?} {lang}");
+                assert!(!st.reload);
+            }
+        }
+    }
+
+    #[test]
+    fn unhandled_keeps_the_previous_notice() {
+        let mut st = State {
+            flash: Some("previous".into()),
+            act_queue: vec![QueuedAct::now("go")],
+            ..State::default()
+        };
+        assert!(!flush_jobs(
+            &mut Answers(Outcome::Unhandled),
+            &mut st,
+            &dummy_cx()
+        ));
+        assert_eq!(st.flash.as_deref(), Some("previous"));
+        assert!(!st.reload);
+    }
+
+    fn acts_of(ids: &[&str]) -> super::super::AppActs {
+        super::super::AppActs {
+            bindings: ids
+                .iter()
+                .map(|id| ActBinding {
+                    copy_key: None,
+                    hint_group: None,
+                    act: id.to_string(),
+                    key: None,
+                    context: None,
+                    label: crate::text::Tr::new(id.to_string()),
+                    help: crate::text::Tr::new(id.to_string()),
+                    footer: None,
+                    writes: false,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn dest(ids: &[&str]) -> ReopenedAs {
+        ReopenedAs {
+            acts: acts_of(ids),
+            shows: Vec::new(),
+            unavailable: Default::default(),
+            plugin_id: "dest".into(),
+        }
+    }
+
+    fn waiting() -> State {
+        State {
+            scroll: 9,
+            key_queue: vec![Key::char('a'), Key::char('b')],
+            act_queue: vec![
+                QueuedAct::now("bump"),
+                QueuedAct {
+                    action: "tbump".into(),
+                    after_keys: 2,
+                },
+                QueuedAct::now("nope"),
+            ],
+            ..State::default()
+        }
+    }
+
+    fn kept(st: &State) -> Vec<(&str, usize)> {
+        st.act_queue
+            .iter()
+            .map(|q| (q.action.as_str(), q.after_keys))
+            .collect()
+    }
+
+    #[test]
+    fn a_reopen_keeps_the_typing_and_only_the_actions_the_destination_declared() {
+        let own = acts_of(&["bump", "save"]);
+        let st = state_after_reopen(waiting(), Some(dest(&["tbump", "tsave"])), &own);
+        assert_eq!(kept(&st), [("tbump", 2)]);
+        assert_eq!(st.key_queue.len(), 2, "the typed keys stay");
+        assert_eq!(st.scroll, 0, "the old document's scroll is dropped");
+        assert_eq!(st.plugin_id(&dummy_cx()), "dest");
+    }
+
+    #[test]
+    fn without_a_destination_the_shows_own_declarations_decide() {
+        let own = acts_of(&["bump", "save"]);
+        let st = state_after_reopen(waiting(), None, &own);
+        assert_eq!(kept(&st), [("bump", 0)]);
+    }
+
+    fn dummy_cx() -> AppCx {
+        AppCx {
+            lang: "en".into(),
+            term: crate::TermCaps::new(),
+            title: String::new(),
+            unavailable: Default::default(),
+            plugin_id: "own".into(),
+            path: Default::default(),
+            hint: None,
+            shows: Vec::new(),
+            reopen: None,
+            open_dir: None,
+            display: Default::default(),
+            acts: Default::default(),
+            launch: None,
+            converts: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod windowed_text_tests {
+    use super::*;
+    use crate::app::draw::{TextBorder, TextFrame};
+
+    fn text(border: bool) -> Frame<'static> {
+        Frame::Text(TextFrame {
+            lines: Vec::new(),
+            wrap: false,
+            hscroll: 0,
+            vscroll: 0,
+            border: border.then(|| TextBorder {
+                name: "a.txt".into(),
+                lang: Lang::En,
+                extent: Some(konoma_widgets::scroll::ScrollExtent {
+                    pos: 0,
+                    max: 0,
+                    viewport: 1,
+                }),
+            }),
+        })
+    }
+
+    #[test]
+    fn only_the_files_text_in_the_hosts_frame_is_windowed() {
+        assert!(windowed_text(&text(true)));
+        // The bare text of a page that failed, a message and an empty body are not.
+        assert!(!windowed_text(&text(false)));
+        assert!(!windowed_text(&Frame::Lines(vec![Line::raw("message")])));
+        assert!(!windowed_text(&Frame::Lines(Vec::new())));
+    }
+}

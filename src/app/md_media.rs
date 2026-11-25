@@ -1,97 +1,33 @@
-use super::office_doc::PictureSource;
 use super::*;
 
-/// Cap on how many mermaid-fence/math renders may be in flight (spawned, result not yet applied) at
-/// once — see `App::ensure_mermaid_fence_render` / `App::ensure_math_render`. Unlike a real inline
-/// image, which is only requested for a placement the renderer actually draws (`ensure_md_image`,
-/// called per *visible* placement), a fence/math render is requested for the *whole* document right
-/// in `ensure_md_cache` (its rendered size has to be known just to lay the document out, even for
-/// content that is off-screen). Without a cap, a document with hundreds of distinct expressions calls
-/// `std::thread::spawn` hundreds of times synchronously in a single pass — on the UI thread, before
-/// the first frame can even draw (measured: 600 expressions → 911ms, ~15x the 60ms draw budget) — and
-/// past some count `std::thread::spawn` can itself fail (EAGAIN) and panic, which would take the
-/// whole app down (nothing wraps this loop in `catch_unwind`).
-const MAX_SYNTHETIC_RENDERS_IN_FLIGHT: usize = 16;
+use konoma_plugin::document_pictures::{
+    DecodeJob, DocPictures, Requested, ResourceJob, MAX_SYNTHETIC_RENDERS_IN_FLIGHT,
+};
 
-/// Whether we're running inside tmux, for deciding whether konoma's own full-screen kitty transfer
-/// (`preview/kitty.rs`) must wrap its escapes in tmux's DCS passthrough (`kitty_is_tmux`).
-///
-/// OR's `$TMUX`'s mere *presence* together with `ratatui-image`'s own (private) detection rule —
-/// `TERM` starting with `"tmux"`, or `TERM_PROGRAM == "tmux"` (`picker.rs`'s
-/// `detect_tmux_and_outer_protocol_from_env`) — because the Markdown *inline*-image path asks the
-/// picker to build its own protocol (which uses that private `is_tmux`), while the full-screen path
-/// reads this crate's own `kitty_is_tmux`: two independent flags fed by two different rules, each
-/// only consulted by one of the two image paths. Checking `$TMUX` alone left them disagreeing behind
-/// an ssh hop out of a tmux pane, or under `sudo` inside one — both forward `TERM` but drop `$TMUX`
-/// (`sudo`'s `env_reset` keeps `TERM` via `env_keep` while clearing everything not on that list) — so
-/// the picker correctly detected tmux and wrapped its escapes while this flag stayed `false` and sent
-/// *unwrapped* kitty escapes for the full-screen path only: an unwrapped-vs-wrapped mismatch between
-/// the two paths, not present in either path taken alone. The other direction (this returns `true`
-/// when the picker's own rule would say `false`, e.g. a pre-3.2 tmux session where `$TMUX` is set but
-/// `TERM` is still `screen-*` and no known `TERM_PROGRAM` is set) is harmless: the picker then never
-/// detects `Kitty` as the `protocol_type` in the first place, so `use_kitty` is `false` and this flag
-/// is never read.
-///
-/// Takes the three env values as parameters instead of reading `std::env::var`/`var_os` directly, so
-/// it is a pure function safe to unit-test — `std::env::set_var` mutates process-wide state shared by
-/// every test thread (this crate's established convention, see `bookmarks::xdg_base_dir`).
-fn is_tmux_from_env(tmux_var_set: bool, term: Option<&str>, term_program: Option<&str>) -> bool {
-    tmux_var_set || term.is_some_and(|t| t.starts_with("tmux")) || term_program == Some("tmux")
-}
+// The tmux detection lives with the cache that reads it (`InlineImageCache::attach_picker`).
+#[cfg(test)]
+use konoma_widgets::inline_images::is_tmux_from_env;
 
-/// The fixed kitty image id of slot `slot` in the family `key` belongs to, for the picture filed
-/// under `path`, allocating it on first use. `None` when this terminal is not a kitty one — then
-/// the encode goes back through ratatui-image, which writes the picture as cell content and leaves
-/// the terminal holding nothing between frames, so there is no id to pin and none is burned.
-///
-/// `slot` is the index `reserve_proto_slot` just handed out, so an id is pinned to a slot and not
-/// to the size that slot currently holds: recycling the slot re-points its id at the new size, and
-/// the terminal replaces that one picture instead of gaining another. Ids are only ever appended,
-/// never dropped — see `App::md_kitty_ids`.
-///
-/// Takes the map rather than `&mut App` so a caller can hold a `&mut` borrow of an `md_image_cache`
-/// entry at the same time (two disjoint fields of `App`, which the borrow checker splits happily).
-fn kitty_id_for(
+/// Test seam for [`kitty_id_for`] (the allocation itself lives with the cache, in
+/// `konoma_widgets::inline_images`).
+#[cfg(test)]
+pub(super) fn kitty_id_for_test(
     ids: &mut std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
     path: &Path,
     key: &MdEncodeKey,
     slot: usize,
     use_kitty: bool,
 ) -> Option<u32> {
-    if !use_kitty {
-        return None;
-    }
-    let family = &mut ids.entry(path.to_path_buf()).or_default()[key.slot()];
-    while family.len() <= slot {
-        family.push(crate::preview::kitty::next_id());
-    }
-    family.get(slot).copied()
+    kitty_id_for(ids, path, key, slot, use_kitty)
 }
 
-/// Whether a cache key names a picture whose pixels can be made again once dropped: a regular
-/// inline image (read from its file again) or a picture of the open Word/OpenDocument document
-/// (decoded again from the bytes the converted document keeps), as opposed to a media-diff picture
-/// whose bytes came from git and are held nowhere else.
-fn is_rebuildable_md_key(k: &Path) -> bool {
-    let s = k.to_string_lossy();
-    !crate::preview::markdown::is_synthetic_md_url(&s)
-        || crate::preview::markdown::is_office_image_url(&s)
-}
+#[cfg(test)]
+pub(super) use konoma_widgets::inline_images::is_rebuildable_key as is_rebuildable_md_key;
 
 impl App {
     /// Attach the image backend (terminal Picker and the offload tx) at startup.
     pub fn attach_image_backend(&mut self, picker: Picker, tx: UnboundedSender<ResizeRequest>) {
-        // Use konoma's own compressed transmit only on a kitty-graphics terminal; other protocols
-        // (sixel/iterm2/halfblocks) keep the ratatui-image path.
-        self.use_kitty = matches!(
-            picker.protocol_type(),
-            ratatui_image::picker::ProtocolType::Kitty
-        );
-        self.kitty_is_tmux = is_tmux_from_env(
-            std::env::var_os("TMUX").is_some(),
-            std::env::var("TERM").ok().as_deref(),
-            std::env::var("TERM_PROGRAM").ok().as_deref(),
-        );
+        self.md_images.attach_picker(&picker);
         self.picker = Some(picker);
         self.img_tx = Some(tx);
     }
@@ -114,7 +50,7 @@ impl App {
 
     /// Attach the sender that offloads inline-image encoding (resize + protocol) to the encode worker.
     pub fn attach_md_encoder(&mut self, tx: std::sync::mpsc::Sender<MdEncodeRequest>) {
-        self.md_enc_tx = Some(tx);
+        self.md_images.enc_tx = Some(tx);
     }
 
     /// Begin a frame of any kind (`ui::render`): wishes recorded by an earlier frame
@@ -127,7 +63,7 @@ impl App {
     /// walks the placements, so that every encode request the pass makes is stamped with the same
     /// number and the slots it is drawing from are protected from being recycled underneath it.
     pub fn begin_md_image_frame(&mut self) {
-        self.md_frame = self.md_frame.saturating_add(1);
+        self.md_images.begin_pass();
     }
 
     /// Start a new request (decode, rebuild of evicted pixels or re-raster) for the existing entry
@@ -135,147 +71,45 @@ impl App {
     /// the entry's `born`). The entry then answers to this id alone: whatever an earlier request of
     /// the same path is still running is stale from here on (`MdImgEntry::request`).
     pub(super) fn begin_md_request(&mut self, path: &Path) -> u64 {
-        self.md_request_seq += 1;
-        let id = self.md_request_seq;
-        if let Some(e) = self.md_image_cache.get_mut(path) {
-            e.request = id;
-            if e.born == 0 {
-                e.born = id;
-            }
-        }
-        id
+        self.md_images.next_request(path)
     }
 
     /// Test-only: the request id an entry currently answers to (0 = none / no entry).
     #[cfg(test)]
     pub fn md_request_for_test(&self, path: &Path) -> u64 {
-        self.md_image_cache.get(path).map_or(0, |e| e.request)
+        self.md_images.cache.get(path).map_or(0, |e| e.request)
+    }
+
+    /// The document's picture state as the shared rules see it: the host's cache and download
+    /// sets, the channels results come back on, and the remote-images setting. Build it after
+    /// everything else the call needs from `self` has been read (it borrows three fields).
+    pub(super) fn doc_pictures(&mut self) -> DocPictures<'_> {
+        #[cfg(test)]
+        let fetcher =
+            konoma_plugin::document_pictures::get_test_fetcher().unwrap_or(fetch_remote_image);
+        #[cfg(not(test))]
+        let fetcher = fetch_remote_image;
+        DocPictures {
+            cache: &mut self.md_images,
+            remote_inflight: &mut self.md_remote_inflight,
+            remote_failed: &mut self.md_remote_failed,
+            results: self.md_img_tx.clone(),
+            fetches: self.md_remote_tx.clone(),
+            remote_images: self.cfg.external.remote_images,
+            fetcher,
+        }
     }
 
     /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
     pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
-        // The entry is always pre-placed at kick time (ensure_mermaid_fence_render /
-        // ensure_md_image). Missing = a stale result (already evicted from the cache on a file
-        // switch / by `drop_changed_md_images` / already pruned), so drop it instead of reviving
-        // it (with or_default, the old diagram's raster would be re-inserted and linger until the
-        // next enter_preview, and on top of that the md_cache invalidation below would needlessly
-        // do a full rebuild once for **an unrelated current document**).
-        let Some(entry) = self.md_image_cache.get(&res.path) else {
-            return false;
-        };
-        // A result of an earlier request: the entry it was made for was dropped and the path asked
-        // for again (or a newer request superseded it). Nothing in it may touch the current
-        // entry, whatever it says: a stale "cancelled" would forget the new entry, a stale picture
-        // would fill it and a stale re-raster would clear the in-flight flag of the newer one.
-        if entry.request != res.request {
-            return false;
-        }
-        // The drawing process was stopped because the preview moved on: forget the entry, so the
-        // picture is asked for again (and drawn) if its document comes back, instead of staying
-        // "failed".
-        if !res.reraster
-            && matches!(&res.image, Err(e) if e == crate::preview::image::ImageFailure::Cancelled.code())
-        {
-            self.md_image_cache.remove(&res.path);
-            return false;
-        }
-        // For a fence diagram / math expression (synthetic key), the dimensions are decided here
-        // for the first time = the loading row needs to be rebuilt into the real placement, so
-        // invalidate the decoration cache (same convention as remote images' apply_remote_fetch).
-        // **Excludes a sharpening re-raster**: that's just swapping pixel density, and since the
-        // layout (reserved cell count) is pinned by layout_px, decoration is not rebuilt (= the
-        // display size on the page stays fixed — a user requirement).
-        let url_str = res.path.to_string_lossy().to_string();
-        let is_math = crate::preview::markdown::is_math_url(&url_str);
-        let is_mermaid = crate::preview::markdown::is_mermaid_fence_url(&url_str);
-        if !res.reraster && (is_mermaid || is_math) {
+        let applied = self.doc_pictures().apply_result(res);
+        if applied.relayout {
             self.md_cache = None;
         }
-        let entry = self.md_image_cache.entry(res.path).or_default();
-        // Whatever was running for this entry (an initial decode, a sharpening re-raster or a
-        // rebuild of evicted pixels) has landed.
-        entry.rebuilding = false;
-        entry.rebuild_wanted = None;
-        if res.reraster {
-            entry.reraster_inflight = false;
+        if applied.pixels {
+            self.evict_md_images_over_budget();
         }
-        // A picture that cannot be shown changes what the page should reserve for it (one line of
-        // text instead of rows of cells), so the decoration is rebuilt below.
-        let mut redecorate = false;
-        match res.image {
-            Ok(img) => {
-                use image::GenericImageView;
-                if entry.layout_px.is_none() {
-                    // For math and mermaid fences, load the SVG's **intrinsic size (in px user
-                    // units, "1 unit = 1px")** into layout_px, rather than the raster's pixel
-                    // dimensions. The raster is scaled by an unrelated setting (`svg_max_px`), so
-                    // sizing off of it would drag that setting into the text-size math; the
-                    // intrinsic size is the same px domain the renderer laid glyphs out in
-                    // (`text_metrics::FONT_SIZE` for mermaid, RaTeX's 40-units/em for math), which
-                    // `mermaid_cells`/`math_cells` need to size the diagram/equation against the
-                    // terminal's own body text. Fall back to the raster dimensions only when the
-                    // intrinsic size can't be obtained. Regular images work as before (raster px).
-                    entry.layout_px = if is_math || is_mermaid {
-                        res.svg
-                            .as_deref()
-                            .and_then(|d| crate::preview::svg::intrinsic_size_bytes(d))
-                            .or_else(|| Some(img.dimensions()))
-                    } else {
-                        Some(img.dimensions())
-                    };
-                }
-                // Animated GIF: keep all frames (as cheap-to-clone Arcs from here on) and start the
-                // cycle at frame 0; `advance_md_gifs_if_due` swaps `decoded` to the current frame as
-                // playback advances. `res.frames` only arrives on the initial decode — GIFs never go
-                // through the sharpening re-raster path (that's for vector sources), so this can't
-                // race a later reraster result and clobber mid-playback state.
-                if let Some(frames) = res.frames {
-                    entry.frames = frames
-                        .into_iter()
-                        .map(|(im, d)| (Arc::new(im), d))
-                        .collect();
-                    entry.idx = 0;
-                    entry.shown_at = None;
-                    entry.decoded = entry.frames.first().map(|(im, _)| im.clone());
-                } else {
-                    entry.decoded = Some(Arc::new(img));
-                }
-                entry.failed = false;
-                entry.fail = None;
-                if let Some(svg) = res.svg {
-                    entry.svg = Some(svg);
-                    entry.svg_trust = res.svg_trust;
-                }
-                entry.evicted = false;
-                if res.reraster {
-                    // Trigger a re-encode with the high-density raster, keeping the old protocol
-                    // displayed until the new encode arrives (clearing it would leave a momentary
-                    // blank).
-                    entry.mark_stale();
-                }
-                self.evict_md_images_over_budget();
-            }
-            // A re-raster failure leaves the current raster in place (the display stays alive) —
-            // unless there is none: a rebuild of evicted pixels that fails must end the wait
-            // (`failed`), or the entry would stay "loading" forever.
-            Err(_) if res.reraster && entry.decoded.is_some() => {}
-            Err(why) => {
-                entry.failed = true;
-                entry.fail = crate::preview::image::ImageFailure::from_code(&why);
-                // Cancelled = nobody wants it (the entry is about to go, or already stale): not a
-                // failure to show.
-                if entry.fail == Some(crate::preview::image::ImageFailure::Cancelled) {
-                    entry.failed = false;
-                    entry.fail = None;
-                } else {
-                    redecorate = !is_math && !is_mermaid && !res.reraster;
-                }
-            }
-        }
-        if redecorate {
-            self.md_cache = None;
-        }
-        true
+        applied.redraw
     }
 
     /// Drive the **in-place zoom** of the focused inline mermaid diagram: clamp the pan center,
@@ -291,10 +125,7 @@ impl App {
         }
         let zoom = self.tab.fence_zoom;
         let font = self.picker.as_ref().map(|p| p.font_size());
-        let enc_tx = self.md_enc_tx.clone();
-        // Read before borrowing an entry out of the cache (the borrow checker will not let both live).
-        let (use_kitty, is_tmux) = (self.use_kitty, self.kitty_is_tmux);
-        let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
+        let Some(entry) = self.md_images.cache.get_mut(&key_path) else {
             return;
         };
         let Some(img) = entry.decoded.clone() else {
@@ -318,38 +149,27 @@ impl App {
         let f = (1.0 / zoom.max(1.0)).clamp(0.0, 1.0);
         let (crop, center) = fence_crop((sw, sh), f, self.tab.fence_center);
         self.tab.fence_center = center;
-        let frame = self.md_frame;
-        let ids = &mut self.md_kitty_ids;
-        let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
-            return;
-        };
-        let enc_key = MdEncodeKey::Zoom { cols, rows, crop };
-        let settled = entry.touch(&enc_key, frame);
-        if settled || entry.enc_inflight {
-            return;
-        }
-        let Some(tx) = enc_tx else { return };
-        let slot = reserve_proto_slot(&mut entry.zoom, enc_key, frame, MD_ZOOM_SLOTS);
-        let kitty = kitty_id_for(ids, &key_path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
-        entry.enc_inflight = true;
-        let born = entry.born;
-        let _ = tx.send(MdEncodeRequest {
-            path: key_path,
-            key: enc_key,
-            image: img,
-            crop: Some(crop),
-            cols,
-            rows,
-            kitty,
-            born,
-        });
+        self.md_images
+            .ensure_zoom_encode(&key_path, img, cols, rows, crop);
     }
 
     /// The image for the focused inline diagram's current zoom, if encoded for this (cols, rows).
     /// While a fresh crop is still encoding, the previous zoom crop (or the unzoomed full image)
     /// stays visible instead of blinking out.
+    #[cfg(test)]
     pub fn md_fence_zoom_proto(&self, url: &str, cols: u16, rows: u16) -> Option<&InlineImage> {
-        let entry = self.md_image_cache.get(&PathBuf::from(url))?;
+        self.md_fence_zoom_only_proto(url, cols, rows)
+            .or_else(|| self.md_fence_unzoomed_proto(url))
+    }
+
+    /// Only the zoom protocol; the shared overlay selects the unzoomed fallback separately.
+    pub(crate) fn md_fence_zoom_only_proto(
+        &self,
+        url: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Option<&InlineImage> {
+        let entry = self.md_images.cache.get(&PathBuf::from(url))?;
         entry
             .zoom
             .iter()
@@ -362,7 +182,11 @@ impl App {
             })
             .max_by_key(|s| s.used)
             .and_then(|s| s.image.as_ref())
-            .or_else(|| entry.newest_full())
+    }
+
+    /// Full-image fallback for the shared overlay's zoom request.
+    pub(crate) fn md_fence_unzoomed_proto(&self, url: &str) -> Option<&InlineImage> {
+        self.md_images.cache.get(&PathBuf::from(url))?.newest_full()
     }
 
     /// Kick a sharpening re-raster of a fence diagram when `needed_px` exceeds the current raster
@@ -371,7 +195,7 @@ impl App {
     fn fence_sharpen_if_needed(&mut self, key_path: &PathBuf, needed_px: u32) -> FenceSharpen {
         use image::GenericImageView;
         let img_tx = self.md_img_tx.clone();
-        let Some(entry) = self.md_image_cache.get_mut(key_path) else {
+        let Some(entry) = self.md_images.cache.get_mut(key_path) else {
             return FenceSharpen::NotNeeded;
         };
         let (Some(img), Some(svg)) = (entry.decoded.as_ref(), entry.svg.clone()) else {
@@ -391,13 +215,11 @@ impl App {
         // of `kp` into the `MdImageResult` it builds on success, so the failure path needs its own.
         let kp_on_panic = kp.clone();
         let job = move || {
-            let image = crate::preview::svg::rasterize_kept(&svg, &trust, target)
-                .ok_or_else(|| "rasterize failed".to_string());
+            let image = redraw_svg(&svg, &trust, target);
             MdImageResult {
                 path: kp,
                 image,
                 svg: None,
-                svg_trust: Default::default(),
                 reraster: true,
                 frames: None,
                 request,
@@ -419,7 +241,6 @@ impl App {
                     path: kp_on_panic,
                     image: Err("re-raster panicked".to_string()),
                     svg: None,
-                    svg_trust: Default::default(),
                     reraster: true,
                     frames: None,
                     request,
@@ -462,189 +283,70 @@ impl App {
     /// start, recorded by the overlay, compared at frame end. A change after a drawn state marks
     /// the frame "moved" so the run loop clears the terminal once (placeholder-orphan sweep).
     pub fn begin_md_overlay_frame(&mut self) {
-        self.md_overlay_seen = None;
+        self.md_overlay.begin();
     }
 
     /// Record the overlay signature for this frame (urls + screen rects of drawn inline images).
     pub fn note_md_overlay(&mut self, sig: u64) {
-        self.md_overlay_seen = Some(sig);
+        self.md_overlay.note(sig);
     }
 
     /// Compare this frame's overlay against the previous frame; latch "moved" on any change away
     /// from a previously drawn state (position shift, or the images left the screen entirely).
     pub fn finish_md_overlay_frame(&mut self) {
-        if self.md_overlay_last != self.md_overlay_seen {
-            if self.md_overlay_last.is_some() {
-                self.md_overlay_moved = true;
-            }
-            self.md_overlay_last = self.md_overlay_seen;
-        }
+        self.md_overlay.finish();
     }
 
     /// Whether the run loop should full-clear once to sweep orphaned placeholder rows (resets).
     pub fn take_md_overlay_moved(&mut self) -> bool {
-        std::mem::take(&mut self.md_overlay_moved)
+        self.md_overlay.take_moved()
     }
 
-    /// How many mermaid-fence/math renders currently have a placeholder in `md_image_cache` but no
-    /// result yet (i.e. a background thread is running for them right now). Both kinds share the
-    /// same one-shot-thread-per-request shape and compete for the same `MAX_SYNTHETIC_RENDERS_IN_FLIGHT`
-    /// cap.
+    /// How many mermaid-fence/math renders have a placeholder but no result yet.
+    #[cfg(test)]
     pub(super) fn synthetic_renders_in_flight(&self) -> usize {
-        self.md_image_cache
-            .iter()
-            .filter(|(k, e)| {
-                if e.decoded.is_some() || e.failed || e.evicted {
-                    return false; // done (either way) — no longer occupying a slot
-                }
-                let s = k.to_string_lossy();
-                crate::preview::markdown::is_mermaid_fence_url(&s)
-                    || crate::preview::markdown::is_math_url(&s)
-            })
-            .count()
+        konoma_plugin::document_pictures::synthetic_in_flight(&self.md_images)
     }
 
     /// Ensure a background mermaid render is in flight (or cached) for one ```mermaid fence.
-    /// Keyed by content hash, so an edited fence renders fresh while unchanged fences reuse their
-    /// raster. With no loader tx (tests), renders synchronously so behavior stays observable.
-    /// Returns true when the render completed **synchronously** (no loader tx = tests): the caller
-    /// must rebuild its just-built decoration, which still shows the loading line.
+    /// With no loader tx (tests), renders synchronously so behavior stays observable. Returns
+    /// true when the render completed **synchronously**: the caller must rebuild its just-built
+    /// decoration, which still shows the loading line.
     pub(super) fn ensure_mermaid_fence_render(&mut self, code: String) -> bool {
+        // Cached already (rendered or in flight): nothing to do, and the plugin lookup below
+        // (registry and settings) must not run on the UI thread at every re-layout.
         let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code));
-        if self.md_image_cache.contains_key(&key) {
+        if self.doc_pictures().is_cached(&key) {
             return false;
         }
         let max_px = self.mermaid_px();
-        let theme = self.cfg.ui.mermaid_theme.clone();
-        let curve = self.cfg.ui.mermaid_curve.clone();
-        let routing = self.cfg.ui.mermaid_routing.clone();
-        let render = move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
-            let Some(svg) =
-                crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)
-            else {
-                return (Err("mermaid render failed".to_string()), None);
-            };
-            let data = std::sync::Arc::new(svg.into_bytes());
-            let img =
-                crate::preview::svg::rasterize_trusted(&data, Path::new("mermaid.svg"), max_px)
-                    .ok_or_else(|| "rasterize failed".to_string());
-            (img, Some(data))
-        };
-        if let Some(tx) = self.md_img_tx.clone() {
-            // Bounded concurrency (MAX_SYNTHETIC_RENDERS_IN_FLIGHT): at capacity, skip this pass
-            // *without* inserting a placeholder. Nothing is lost — `apply_md_image` invalidates
-            // `md_cache` whenever any synthetic entry's first result lands, so the very next
-            // `ensure_md_cache` rebuild re-scans the document's mermaid_fences and retries whatever
-            // is still absent from `md_image_cache`, now that a slot has freed up (the classifier
-            // that turns an absent key into a "loading" placement doesn't care whether a thread is
-            // actually running for it yet). This self-driving wave always converges without a
-            // dedicated persistent worker thread + channel, which is not an option here: that would
-            // need its sender stored as a new field on `App` (`src/app.rs` is off limits).
-            if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
-                return false;
-            }
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
-            let request = self.begin_md_request(&key);
-            std::thread::spawn(move || {
-                // Even if render() (rasterize_trusted = resvg) panics, don't kill the thread — always
-                // return a result: otherwise the entry stays stuck at decoded=None && !failed and
-                // busy latches true forever.
-                let (image, svg) = crate::preview::markdown::catch_silent(render)
-                    .unwrap_or_else(|| (Err("mermaid render panicked".to_string()), None));
-                let _ = tx.send(MdImageResult {
-                    path: key,
-                    image,
-                    svg,
-                    svg_trust: crate::preview::svg::SvgTrust::Trusted(PathBuf::from("mermaid.svg")),
-                    reraster: false,
-                    frames: None,
-                    request,
-                });
-            });
-            false
-        } else {
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
-            let request = self.begin_md_request(&key);
-            let (image, svg) = render();
-            self.apply_md_image(MdImageResult {
-                path: key,
-                image,
-                svg,
-                svg_trust: crate::preview::svg::SvgTrust::Trusted(PathBuf::from("mermaid.svg")),
-                reraster: false,
-                frames: None,
-                request,
-            });
-            true
-        }
+        // The plugin that takes the `fence:mermaid` kind draws the SVG (`embed_plugin.rs`).
+        let embed = self.embed_render(crate::app::embed_plugin::FENCE_MERMAID);
+        self.doc_pictures().request_fence(
+            code,
+            embed,
+            crate::app::embed_plugin::FENCE_MERMAID,
+            max_px,
+        ) == Requested::Done
     }
 
     /// Ensure a background render is in flight (or cached) for one math expression, keyed by latex +
-    /// display so an edited equation renders fresh while unchanged ones reuse their raster. Mirrors
-    /// `ensure_mermaid_fence_render` (including the `MAX_SYNTHETIC_RENDERS_IN_FLIGHT` cap and its
-    /// self-driving retry); the SVG is kept so `apply_md_image` can record its intrinsic (em) size for
-    /// layout. Returns true on a synchronous completion (no loader tx = tests).
+    /// display. Returns true on a synchronous completion (no loader tx = tests).
     pub(super) fn ensure_math_render(&mut self, latex: String, display: bool) -> bool {
         let key = PathBuf::from(crate::preview::markdown::math_url(&latex, display));
-        if self.md_image_cache.contains_key(&key) {
+        if self.doc_pictures().is_cached(&key) {
             return false;
         }
         let max_px = self.math_px();
-        // Move the glyph color (already sanitized) into the worker. RaTeX's default is pure black,
-        // which is invisible on a dark terminal, so paint it a color that stands out against the
-        // terminal background (config `[ui] math_color`, default a light gray).
-        let color = self.cfg.ui.math_color().to_string();
-        let render =
-            move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
-                let Some(svg) = crate::preview::math::latex_to_svg(&latex, display, &color) else {
-                    return (Err("math render failed".to_string()), None);
-                };
-                let data = std::sync::Arc::new(svg.into_bytes());
-                let img = crate::preview::svg::rasterize_trusted(&data, Path::new("math.svg"), max_px)
-                    .ok_or_else(|| "rasterize failed".to_string());
-                (img, Some(data))
-            };
-        if let Some(tx) = self.md_img_tx.clone() {
-            // See the identical guard in ensure_mermaid_fence_render for why skipping here (without
-            // inserting a placeholder) is safe and self-corrects on the next rebuild.
-            if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
-                return false;
-            }
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
-            let request = self.begin_md_request(&key);
-            std::thread::spawn(move || {
-                let (image, svg) = crate::preview::markdown::catch_silent(render)
-                    .unwrap_or_else(|| (Err("math render panicked".to_string()), None));
-                let _ = tx.send(MdImageResult {
-                    path: key,
-                    image,
-                    svg,
-                    svg_trust: crate::preview::svg::SvgTrust::Trusted(PathBuf::from("math.svg")),
-                    reraster: false,
-                    frames: None,
-                    request,
-                });
-            });
-            false
-        } else {
-            self.md_image_cache
-                .insert(key.clone(), MdImgEntry::default());
-            let request = self.begin_md_request(&key);
-            let (image, svg) = render();
-            self.apply_md_image(MdImageResult {
-                path: key,
-                image,
-                svg,
-                svg_trust: crate::preview::svg::SvgTrust::Trusted(PathBuf::from("math.svg")),
-                reraster: false,
-                frames: None,
-                request,
-            });
-            true
-        }
+        // The plugin that takes the `math` kind draws the SVG; its `color` setting is the glyph color.
+        let embed = self.embed_render(crate::app::embed_plugin::MATH);
+        self.doc_pictures().request_math(
+            latex,
+            display,
+            embed,
+            crate::app::embed_plugin::MATH,
+            max_px,
+        ) == Requested::Done
     }
 
     /// Apply a completed background encode into the slot that was reserved for it. Returns redraw.
@@ -657,36 +359,16 @@ impl App {
     /// the position it answered is not on screen any more, and writing it back would evict a slot
     /// the current frame *is* drawing from.
     pub fn apply_md_encode(&mut self, res: MdEncodeResult) -> bool {
-        let Some(entry) = self.md_image_cache.get_mut(&res.path) else {
-            return false;
-        };
-        // Encoded for an entry that has since been dropped and re-created under the same path:
-        // it must neither clear the new entry's in-flight flag nor fill (or degrade) its slots.
-        if entry.born != res.born {
-            return false;
-        }
-        entry.enc_inflight = false;
-        let key = res.key;
-        let mut stored = false;
-        if let Some(slot) = entry.slots_mut(&key).iter_mut().find(|s| s.key == key) {
-            slot.stale = false;
-            if let Some(p) = res.image {
-                slot.image = Some(p);
-                stored = true;
+        match self.md_images.apply_encode(res) {
+            EncodeApplied::Dropped => false,
+            EncodeApplied::Applied => true,
+            EncodeApplied::Degraded => {
+                // An image that has newly degraded to failed gets re-laid-out as a text row (never
+                // left as an invisible blank).
+                self.md_cache = None;
+                true
             }
         }
-        // Nothing drawable has ever come back for this picture at any size → text fallback.
-        let degrade = !stored
-            && matches!(key, MdEncodeKey::Full { .. })
-            && !entry.failed
-            && entry.full.iter().all(|s| s.image.is_none());
-        if degrade {
-            entry.failed = true;
-            // An image that has newly degraded to failed gets re-laid-out as a text row (never
-            // left as an invisible blank).
-            self.md_cache = None;
-        }
-        true
     }
 
     /// Attach the sender that reports background remote-image download completions to the run loop.
@@ -698,147 +380,62 @@ impl App {
     /// decoration cache to re-lay the image out inline; on failure remember the URL so it is not
     /// retried and shows a text placeholder instead. Returns whether to redraw.
     pub fn apply_remote_fetch(&mut self, res: RemoteFetch) -> bool {
-        self.md_remote_inflight.remove(&res.url);
-        if !res.ok {
-            self.md_remote_failed.insert(res.url);
-        }
+        self.doc_pictures().apply_fetch(res);
         // Re-decorate so a now-cached image is laid out (or a failed one degrades to text).
         self.md_cache = None;
         true
     }
 
-    /// Ensure a background download is in flight for the remote image `url` (deduplicated). Skips URLs
-    /// that are already cached, already downloading, or known to have failed. The download runs off the
-    /// UI thread (principle #4) via `curl`; on completion it reports through `md_remote_tx`. Returns
-    /// true on a *synchronous* failure (mirrors `ensure_mermaid_fence_render`/`ensure_math_render`'s
-    /// "no loader tx = tests" convention) so the caller (`ensure_md_cache`) can resync its
-    /// already-built `decorated` before storing it — see the `remote_images = false` branch below.
+    /// Ensure a background download is in flight for the remote image `url` (deduplicated).
+    /// Returns true on a *synchronous* failure (remote images off) so the caller
+    /// (`ensure_md_cache`) can resync its already-built `decorated` before storing it.
     pub(super) fn ensure_remote_md_fetch(&mut self, url: &str) -> bool {
-        if !crate::preview::markdown::is_remote_image_url(url) {
-            return false;
-        }
-        if !self.cfg.external.remote_images {
-            // `[external] remote_images = false`: never call out to `curl`. Mark it failed right away
-            // (instead of leaving it unrecorded) so the renderer degrades to the text placeholder
-            // instead of showing `ImageSlot::Loading` forever. Marking it failed alone only affects a
-            // *future* decoration build though — `ensure_md_cache` already built `decorated` (with a
-            // Loading slot, since `md_remote_failed` didn't contain `url` yet) before calling this, and
-            // unconditionally stores that `decorated` into `md_cache` afterwards regardless of what we
-            // do to `self.md_cache` here. Since remote fetches never run, nothing else would ever
-            // invalidate the cache to trigger a later rebuild (unlike a real download completing via
-            // `apply_remote_fetch`), so the Loading placeholder would otherwise stick around forever.
-            // Returning true (only the first time — `insert()` reports whether it was new) tells the
-            // caller to rebuild `decorated` right now, in this same pass, using the now-failed URL.
-            return self.md_remote_failed.insert(url.to_string());
-        }
-        // Already downloaded (cache file exists), already failed, or already downloading → nothing to do.
-        if resolve_md_image_path(url, None).is_some()
-            || self.md_remote_failed.contains(url)
-            || self.md_remote_inflight.contains(url)
-        {
-            return false;
-        }
-        let (Some(tx), Some(dest)) = (self.md_remote_tx.clone(), md_remote_cache_path(url)) else {
-            return false;
-        };
-        // About to spawn a background thread that writes `dest` to disk. In a test build that must
-        // never be the real `~/.cache/konoma/remote-images/` — a test that reaches this point (a
-        // Markdown doc with an unresolved remote image, previewed with the remote loader attached)
-        // used to create real directories there on every `cargo test` run (confirmed by mtime).
-        // Require the caller to have opted a sandboxed root in first (`test_support::
-        // set_test_cache_root`, read by `cache_root()`'s `#[cfg(test)]` body) rather than silently
-        // falling through to the real path — see `refresh_retries_a_previously_failed_remote_image`
-        // / `e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder` for the two
-        // tests that actually reach here.
+        // A test build must never spawn a download that writes under the real cache: the test
+        // has to opt a sandboxed root in first (`test_support::set_test_cache_root`). This is
+        // checked here, on the calling thread (the override is thread-local), under the same
+        // conditions in which the shared rule starts a download.
         #[cfg(test)]
-        assert!(
-            crate::test_support::get_test_cache_root().is_some(),
-            "about to spawn a real background download for {url:?} that would write under the \
-             real ~/.cache/konoma/remote-images — call test_support::set_test_cache_root() before \
-             triggering a remote fetch in a test"
-        );
-        self.md_remote_inflight.insert(url.to_string());
-        let u = url.to_string();
-        std::thread::spawn(move || {
-            // Don't leave the entry stuck in md_remote_inflight even if the download panics
-            // (leaving it in would latch busy): always report a panic as a fetch failure (ok=false).
-            let ok = crate::preview::markdown::catch_silent(|| fetch_remote_image(&u, &dest))
-                .unwrap_or(false);
-            let _ = tx.send(RemoteFetch { url: u, ok });
-        });
-        false
+        if self.cfg.external.remote_images
+            && crate::preview::markdown::is_remote_image_url(url)
+            && resolve_md_image_path(url, None).is_none()
+            && !self.md_remote_failed.contains(url)
+            && !self.md_remote_inflight.contains(url)
+            && self.md_remote_tx.is_some()
+        {
+            assert!(
+                crate::test_support::get_test_cache_root().is_some(),
+                "about to spawn a real background download for {url:?} that would write under \
+                 the real cache directory: call test_support::set_test_cache_root() before \
+                 triggering a remote fetch in a test"
+            );
+        }
+        self.doc_pictures().request_remote(url)
     }
 
     /// Start the background decode of the inline image file at `path` (its cache entry already
-    /// exists). Sniffs the format from content (remote-cache files have no extension) and
-    /// rasterizes SVG. With no loader channel attached (tests) nothing is started. Returns false
-    /// when the thread could not be started (the caller must not leave the entry waiting).
-    ///
-    /// The decode queues in the shared decode gate under the entry's own ticket: what is on screen
-    /// now goes first, and a decode whose entry was dropped meanwhile never runs.
+    /// exists). With no loader channel attached (tests) nothing is started. Returns false when
+    /// the thread could not be started (the caller must not leave the entry waiting).
     pub(super) fn spawn_md_decode(&mut self, path: PathBuf) -> bool {
-        let Some(tx) = self.md_img_tx.clone() else {
-            return true;
-        };
-        let svg_max_px = self.cfg.ui.svg_max_px;
-        let ticket = self
-            .md_image_cache
-            .get(&path)
-            .map(|e| e.wish.ticket())
-            .unwrap_or_default();
-        let request = self.begin_md_request(&path);
-        let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
-        let stale = ticket.clone();
-        std::thread::Builder::new()
-            .name("konoma-md-decode".into())
-            .spawn(move || {
-                use crate::preview::image::ImageFailure;
-                // An SVG is drawn by a supervised child process that is stopped as soon as the
-                // preview has moved on (the media generation changes on every file/tab change).
-                let moved_on =
-                    || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
-                // Animated GIF: decode all frames so the inline image cycles the same way the
-                // full-screen preview does (App::advance_gif_if_due) — a smaller budget than the
-                // full-screen path bounds memory when a document embeds several GIFs at once.
-                // Anything that doesn't yield ≥2 frames (single-frame GIF, corrupt file, non-GIF)
-                // falls through unchanged to the normal still-image decode.
-                // Catch a panic (pathological image/SVG) too and always return a result
-                // (not returning would latch busy).
-                let p = path;
-                let (still, frames) = crate::preview::markdown::catch_silent(|| {
-                    crate::preview::image::with_decode_ticket(ticket, || {
-                        if App::looks_like_gif(&p) {
-                            if let Some(frames) = crate::preview::image::decode_gif_inline(&p) {
-                                let first = frames[0].0.clone();
-                                return (Ok(first), Some(frames));
-                            }
-                        }
-                        (md_decode_image_why(&p, svg_max_px, &moved_on), None)
-                    })
-                })
-                .unwrap_or((Err(ImageFailure::Corrupt), None));
-                // The preview moved on while the picture was being drawn (or its drawing was
-                // stopped): always report it, cancelled included. The entry may be gone (the result
-                // is then ignored) or still in the cache (a ticket also goes stale when another
-                // file or tab starts a media load, which does not clear the cache): only the
-                // receiving side knows, and it forgets the entry (see `apply_md_image`) so the
-                // picture is asked for again. Staying silent would leave the entry "loading" for good.
-                let still = match still {
-                    Err(_) if moved_on() => Err(ImageFailure::Cancelled),
-                    other => other,
-                };
-                let image = still.map_err(|f| f.code().to_string());
-                let _ = tx.send(MdImageResult {
-                    path: p,
-                    image,
-                    svg: None,
-                    svg_trust: Default::default(),
-                    reraster: false,
-                    frames,
-                    request,
-                });
-            })
-            .is_ok()
+        let job = self.md_decode_job(&path);
+        self.doc_pictures().spawn_decode(path, job)
+    }
+
+    /// What a decode of the picture file `path` needs from the host.
+    fn md_decode_job(&self, path: &Path) -> DecodeJob {
+        // A document of a plugin the user added: an SVG picture reads only files in its scope.
+        let roots: Option<Vec<PathBuf>> = self
+            .md_image_scope()
+            .and_then(|(_, s)| s.dirs().map(<[PathBuf]>::to_vec));
+        // The file read is the real path the scope judged, not the spelling that was asked for.
+        let read_path = self.md_decode_read_path(path);
+        DecodeJob {
+            svg_max_px: self.cfg.ui.svg_max_px,
+            roots,
+            read_path,
+            svg: Arc::new(media_plugin::SvgChild),
+            // The media generation changes on every file/tab change.
+            generation: (self.media_gen, self.media_gen_shared.clone()),
+        }
     }
 
     /// The one place that makes an inline picture ready to be drawn: stamp it as wanted by the
@@ -855,10 +452,10 @@ impl App {
     /// (`rebuild_wanted`), which keeps the loading indicator, and with it the redraw loop, alive
     /// until a later frame starts it.
     pub(super) fn ensure_md_pixels(&mut self, path: &Path) -> bool {
-        let frame = self.md_frame;
+        let frame = self.md_images.frame;
         let seq = self.draw_seq;
         let has_loader = self.md_img_tx.is_some();
-        let Some(entry) = self.md_image_cache.get_mut(path) else {
+        let Some(entry) = self.md_images.cache.get_mut(path) else {
             return false;
         };
         entry.last_used = frame;
@@ -870,11 +467,12 @@ impl App {
             return false;
         }
         let running = self
-            .md_image_cache
+            .md_images
+            .cache
             .values()
             .filter(|e| e.rebuilding)
             .count();
-        let Some(entry) = self.md_image_cache.get_mut(path) else {
+        let Some(entry) = self.md_images.cache.get_mut(path) else {
             return false;
         };
         if running >= MD_MAX_REBUILDS {
@@ -884,7 +482,7 @@ impl App {
         entry.rebuild_wanted = None;
         entry.rebuilding = true;
         if !self.rebuild_evicted_md_image(path.to_path_buf()) {
-            if let Some(e) = self.md_image_cache.get_mut(path) {
+            if let Some(e) = self.md_images.cache.get_mut(path) {
                 // The thread could not even start: end the wait instead of latching "loading".
                 e.rebuilding = false;
                 e.failed = true;
@@ -899,7 +497,7 @@ impl App {
     /// the thread could not be started. Only `ensure_md_pixels` calls this (it owns the
     /// bookkeeping and the limit on how many run at once).
     fn rebuild_evicted_md_image(&mut self, path: PathBuf) -> bool {
-        let Some(entry) = self.md_image_cache.get_mut(&path) else {
+        let Some(entry) = self.md_images.cache.get_mut(&path) else {
             return true;
         };
         let trust = entry.svg_trust.clone();
@@ -921,7 +519,7 @@ impl App {
         let Some(tx) = self.md_img_tx.clone() else {
             return true;
         };
-        if let Some(e) = self.md_image_cache.get_mut(&path) {
+        if let Some(e) = self.md_images.cache.get_mut(&path) {
             e.reraster_inflight = true;
         }
         let request = self.begin_md_request(&path);
@@ -933,10 +531,8 @@ impl App {
                     let kp = kp.clone();
                     move || MdImageResult {
                         path: kp,
-                        image: crate::preview::svg::rasterize_kept(&svg, &trust, max_px)
-                            .ok_or_else(|| "rasterize failed".to_string()),
+                        image: redraw_svg(&svg, &trust, max_px),
                         svg: None,
-                        svg_trust: Default::default(),
                         reraster: true,
                         frames: None,
                         request,
@@ -946,7 +542,6 @@ impl App {
                     path: kp,
                     image: Err("re-raster panicked".to_string()),
                     svg: None,
-                    svg_trust: Default::default(),
                     reraster: true,
                     frames: None,
                     request,
@@ -955,7 +550,7 @@ impl App {
             })
             .is_ok();
         if !started {
-            if let Some(e) = self.md_image_cache.get_mut(&path) {
+            if let Some(e) = self.md_images.cache.get_mut(&path) {
                 e.reraster_inflight = false;
             }
         }
@@ -968,57 +563,33 @@ impl App {
     /// entries stay, so layout does not move; a picture needed again is rebuilt on demand
     /// (`rebuild_evicted_md_image`).
     pub(super) fn evict_md_images_over_budget(&mut self) {
+        self.md_images.evict_to(self.md_cache_budget());
+    }
+
+    /// The bytes of decoded pixels the inline-image cache may keep right now.
+    pub(super) fn md_cache_budget(&self) -> u64 {
         #[cfg(test)]
         if let Some(b) = self.md_cache_budget_for_test {
-            return self.evict_md_images_to(b);
+            return b;
         }
-        let budget = if self.deck_picture_view() {
+        if self.deck_picture_view() {
             MD_SLIDE_CACHE_BYTES
         } else {
             MD_IMAGE_CACHE_BYTES
-        };
-        self.evict_md_images_to(budget);
+        }
     }
 
     /// `evict_md_images_over_budget` with the budget as a parameter (tests use a small one).
+    #[cfg(test)]
     pub(super) fn evict_md_images_to(&mut self, budget: u64) {
-        let mut total: u64 = self
-            .md_image_cache
-            .values()
-            .map(MdImgEntry::pixel_bytes)
-            .sum();
-        if total <= budget {
-            return;
-        }
-        let frame = self.md_frame;
-        let mut candidates: Vec<(u64, PathBuf)> = self
-            .md_image_cache
-            .iter()
-            .filter(|(k, e)| {
-                e.decoded.is_some()
-                    && e.last_used < frame.max(1)
-                    && !e.enc_inflight
-                    && !e.reraster_inflight
-                    && (e.svg.is_some() || is_rebuildable_md_key(k))
-            })
-            .map(|(k, e)| (e.last_used, k.clone()))
-            .collect();
-        candidates.sort();
-        for (_, k) in candidates {
-            if total <= budget {
-                break;
-            }
-            if let Some(e) = self.md_image_cache.get_mut(&k) {
-                total = total.saturating_sub(e.pixel_bytes());
-                e.evict_pixels();
-            }
-        }
+        self.md_images.evict_to(budget);
     }
 
     /// Test-only: how many rebuilds of evicted pixels are running right now.
     #[cfg(test)]
     pub(crate) fn md_rebuilds_running(&self) -> usize {
-        self.md_image_cache
+        self.md_images
+            .cache
             .values()
             .filter(|e| e.rebuilding)
             .count()
@@ -1027,10 +598,100 @@ impl App {
     /// Test-only: total bytes of decoded pixels the inline-image cache holds.
     #[cfg(test)]
     pub(crate) fn md_image_cache_pixel_bytes(&self) -> u64 {
-        self.md_image_cache
+        self.md_images
+            .cache
             .values()
             .map(MdImgEntry::pixel_bytes)
             .sum()
+    }
+
+    /// Run `f` on the read-scope memo of the plugin whose document is on screen: `None` for
+    /// konoma's own Markdown preview and the standard plugins (unrestricted, nothing to build).
+    /// The scope is built once and kept until what it is made from changes (the plugin, the tab
+    /// root, the shown file), so a redraw never walks the disk for it again.
+    fn with_scope_memo<R>(&self, f: impl FnOnce(&mut ScopeMemo) -> R) -> Option<R> {
+        let show = self.plugin.as_ref()?;
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        if crate::plugins::read_scope::is_host_owned(&registry, &show.id) {
+            return None;
+        }
+        Some(self.scope_memo_for(&show.id, &show.path, f))
+    }
+
+    /// Run `f` on the memo of the (non-standard) plugin `id` for the file `shown`, building the
+    /// scope only when the plugin, the tab root or the file differs from what is memoised. Shared
+    /// by the Markdown pictures and by every job sent to a plugin (a key press, a timed redraw).
+    pub(super) fn scope_memo_for<R>(
+        &self,
+        id: &str,
+        shown: &Path,
+        f: impl FnOnce(&mut ScopeMemo) -> R,
+    ) -> R {
+        use crate::plugins::read_scope::{home_dir, scope_for};
+        let mut slot = self.read_scope_memo.borrow_mut();
+        let fresh = slot
+            .as_ref()
+            .is_some_and(|m| m.id == id && m.root == self.tab.root && m.shown == shown);
+        if !fresh {
+            *slot = Some(ScopeMemo {
+                id: id.to_string(),
+                root: self.tab.root.clone(),
+                shown: shown.to_path_buf(),
+                scope: scope_for(
+                    false,
+                    self.cfg.plugins.get(id),
+                    &self.tab.root,
+                    shown,
+                    home_dir().as_deref(),
+                ),
+                verdicts: std::collections::HashMap::new(),
+            });
+        }
+        f(slot.as_mut().expect("memo was just filled"))
+    }
+
+    /// The path a decode of the local picture `p` must read: the real path the scope judged
+    /// (so the file judged is the file read), or `p` itself when no scope applies or `p` cannot
+    /// be resolved (reading it fails the same way; the ordinary missing-picture treatment shows
+    /// that). `None` when the scope says the file is outside: **nothing may be read** for it, so
+    /// the caller has no path to read.
+    pub(super) fn md_decode_read_path(&self, p: &Path) -> Option<PathBuf> {
+        self.with_scope_memo(|m| match m.judge(p) {
+            Ok(real) => Some(real),
+            Err(konoma_plugin::ScopeError::Outside) => None,
+            Err(konoma_plugin::ScopeError::Unresolved) => Some(p.to_path_buf()),
+        })
+        .unwrap_or_else(|| Some(p.to_path_buf()))
+    }
+
+    /// The read scope for the local pictures a document names, when the document is a plugin's:
+    /// the plugin's id and its scope. `None` for konoma's own Markdown preview and the standard
+    /// plugins (unrestricted).
+    pub(super) fn md_image_scope(&self) -> Option<(String, konoma_plugin::ReadScope)> {
+        self.with_scope_memo(|m| (m.id.clone(), m.scope.clone()))
+    }
+
+    /// Forget the verdicts on single pictures (the page is built again, so a file that was
+    /// replaced by a link meanwhile is judged anew). The scope itself stays.
+    pub(super) fn forget_scope_verdicts(&self) {
+        if let Some(m) = self.read_scope_memo.borrow_mut().as_mut() {
+            m.verdicts.clear();
+        }
+    }
+
+    /// Whether the read scope refuses the local picture `p` that `url` of the open document named:
+    /// the id of the plugin whose scope refuses it. Only a file that is really **outside** the
+    /// scope is refused here: one that does not exist or cannot be resolved is not a scope matter
+    /// (the ordinary missing-picture treatment shows it). A remote picture (konoma's own download
+    /// cache) is never refused. The verdict is kept per path until the page is built again.
+    pub(super) fn md_image_refused(&self, url: &str, p: &Path) -> Option<String> {
+        if crate::preview::markdown::is_remote_image_url(url.trim()) {
+            return None;
+        }
+        self.with_scope_memo(|m| {
+            (m.judge(p) == Err(konoma_plugin::ScopeError::Outside)).then(|| m.id.clone())
+        })
+        .flatten()
     }
 
     /// Ensure the inline image for `url` is decoding in the background and that the protocol for the
@@ -1069,13 +730,20 @@ impl App {
             let Some(p) = resolve_md_image_path(url, base.as_deref()) else {
                 return;
             };
+            // A plugin's document: a picture outside its read scope is not read. (The path is
+            // resolved once, here, and `md_image_refused` does nothing at all when no scope
+            // applies, so konoma's own Markdown pays no extra file access per frame.)
+            if let Some(id) = self.md_image_refused(url, &p) {
+                self.flash_scope_refusal(&id);
+                return;
+            }
             p
         };
         // A slide is drawn at the size of the frame it is placed in (`cols` x `full_rows` cells).
         let slide_px = self.slide_raster_px(url, cols, full_rows);
         // A picture of a Word document: decode it from the bytes held in memory (never a file).
         if crate::preview::markdown::is_office_image_url(url)
-            && !self.md_image_cache.contains_key(&path)
+            && !self.md_images.cache.contains_key(&path)
         {
             // At most MAX_SYNTHETIC_RENDERS_IN_FLIGHT decodes at once, like the fence/math renders:
             // a tall terminal over a picture-heavy document would otherwise start one thread per
@@ -1091,7 +759,7 @@ impl App {
             self.note_slide_raster_wish(url, &path, px);
         }
         // Kick off a one-time background decode.
-        if !self.md_image_cache.contains_key(&path) {
+        if !self.md_images.cache.contains_key(&path) {
             // A synthetic key (fence diagram / math expression) cannot be built here (the original
             // code/latex is needed). If a placement exists it should already be cached, so this is
             // a defensive guard for the case it never arrives (the next re-decoration has
@@ -1100,99 +768,24 @@ impl App {
             if crate::preview::markdown::is_synthetic_md_url(url) {
                 return;
             }
-            let entry = self.md_image_cache.entry(path.clone()).or_default();
-            entry.last_used = self.md_frame;
-            entry.wish.set_priority(self.md_frame);
-            if !self.spawn_md_decode(path.clone()) {
-                // The thread could not start: end the wait (`failed`) instead of latching "loading".
-                if let Some(e) = self.md_image_cache.get_mut(&path) {
-                    e.failed = true;
-                }
-            }
+            let job = self.md_decode_job(&path);
+            self.doc_pictures().begin_decode(path, job);
             return;
         }
         // Stamp the picture as drawn this pass and get its pixels back if the cache dropped them —
         // before anything else, **settled or not**: an encode that is already settled still needs
         // the pixels once the picture is animated, zoomed or sharpened.
         self.ensure_md_pixels(&path);
-        let Some(enc_tx) = self.md_enc_tx.clone() else {
-            return;
-        };
-        // Read before borrowing an entry out of the cache (the borrow checker will not let both live).
-        let (use_kitty, is_tmux) = (self.use_kitty, self.kitty_is_tmux);
-        let frame = self.md_frame;
-        let ids = &mut self.md_kitty_ids;
-        let Some(entry) = self.md_image_cache.get_mut(&path) else {
-            return;
-        };
-        // Fully visible → the whole image at (cols, full_rows). Partially scrolled → just the
-        // visible pixel band at (cols, vis_rows), so the image renders clipped to the viewport
-        // rather than being hidden.
-        let full_vis = row_off == 0 && vis_rows >= full_rows;
-        let enc_key = if full_vis {
-            MdEncodeKey::Full {
-                cols,
-                rows: full_rows,
-            }
-        } else {
-            MdEncodeKey::Clip {
-                cols,
-                full_rows,
-                row_off,
-                vis_rows,
-            }
-        };
-        // Claim this position for the frame being drawn **before** any early return: a placement
-        // that has to wait for the single in-flight ticket still needs its slot kept out of the
-        // recycling pool, otherwise two placements of one picture at two sizes take turns evicting
-        // each other and the draw→request→apply→draw loop never stops.
-        let settled = entry.touch(&enc_key, frame);
-        // Wait if it failed, is still decoding, or already has an encode in flight (one at a time).
-        if settled || entry.failed || entry.enc_inflight {
-            return;
-        }
-        let Some(img) = entry.decoded.clone() else {
-            return;
-        };
-        let (crop, rows) = if full_vis {
-            (None, full_rows)
-        } else {
-            let (dw, dh) = (img.width(), img.height());
-            let (y0, h) = md_band_pixels(full_rows, row_off, vis_rows, dh);
-            (Some((0, y0, dw, h)), vis_rows)
-        };
-        let slot = reserve_proto_slot(entry.slots_mut(&enc_key), enc_key, frame, MD_PROTO_SLOTS);
-        let kitty = kitty_id_for(ids, &path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
-        entry.enc_inflight = true;
-        let born = entry.born;
-        let _ = enc_tx.send(MdEncodeRequest {
-            path,
-            key: enc_key,
-            image: img,
-            crop,
-            cols,
-            rows,
-            kitty,
-            born,
-        });
+        // (A canvas picture is not asked for here: `canvas_pictures::draw_images` does, with the
+        // cap of its encode slots.)
+        self.md_images
+            .ensure_encode(&path, cols, full_rows, row_off, vis_rows, None);
     }
 
     /// How many pictures of the open document are being decoded for the first time right now
     /// (cached, not yet decoded, not failed, pixels never dropped).
     pub(super) fn office_pictures_in_flight(&self) -> usize {
-        self.md_image_cache
-            .iter()
-            .filter(|(k, e)| {
-                // An entry whose pixels the cache dropped (`evicted`) has no decode running for
-                // it: it waits for a rebuild (limited by `MD_MAX_REBUILDS`). Counting it as
-                // "in flight" filled the cap with idle entries after enough pictures had been
-                // seen, and no new picture was ever started.
-                e.decoded.is_none()
-                    && !e.failed
-                    && !e.evicted
-                    && crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
-            })
-            .count()
+        konoma_plugin::document_pictures::office_pictures_in_flight(&self.md_images)
     }
 
     /// The longest edge, in pixels, slide picture `url` should be drawn at to fill a frame of
@@ -1229,7 +822,7 @@ impl App {
     fn note_slide_raster_wish(&mut self, url: &str, path: &Path, px: u32) {
         use image::GenericImageView;
         let cap = self.slide_raster_cap(url);
-        let Some(entry) = self.md_image_cache.get_mut(path) else {
+        let Some(entry) = self.md_images.cache.get_mut(path) else {
             return;
         };
         entry.want_px = px;
@@ -1250,7 +843,7 @@ impl App {
         }
         entry.reraster_inflight = true;
         if !self.start_office_picture_thread(url, path.to_path_buf(), true) {
-            if let Some(e) = self.md_image_cache.get_mut(path) {
+            if let Some(e) = self.md_images.cache.get_mut(path) {
                 e.reraster_inflight = false;
             }
         }
@@ -1263,7 +856,7 @@ impl App {
         if self.document_picture_source(url).is_none() {
             return;
         }
-        self.md_image_cache.insert(
+        self.md_images.cache.insert(
             key.clone(),
             MdImgEntry {
                 want_px: slide_px.unwrap_or(0),
@@ -1272,7 +865,7 @@ impl App {
         );
         if !self.start_office_picture_thread(url, key.clone(), false) {
             // The thread could not start: end the wait instead of latching "loading".
-            if let Some(e) = self.md_image_cache.get_mut(&key) {
+            if let Some(e) = self.md_images.cache.get_mut(&key) {
                 e.failed = true;
             }
         }
@@ -1286,18 +879,16 @@ impl App {
         let Some(source) = self.document_picture_source(url) else {
             return false;
         };
-        let Some(tx) = self.md_img_tx.clone() else {
-            return true;
-        };
         // A slide is drawn at the pixel size its frame needs (never below `svg_max_px`); any other
         // picture of a document at `svg_max_px`.
-        let want_px = self.md_image_cache.get(&key).map_or(0, |e| e.want_px);
+        let want_px = self.md_images.cache.get(&key).map_or(0, |e| e.want_px);
         // The smallest size a failed slide is retried at: the raster already on screen when this
         // is a sharpening redraw (a retry must never replace it by something smaller), else the
         // configured base size.
         let retry_floor = if reraster {
             use image::GenericImageView;
-            self.md_image_cache
+            self.md_images
+                .cache
                 .get(&key)
                 .and_then(|e| e.decoded.as_ref())
                 .map(|d| {
@@ -1314,107 +905,15 @@ impl App {
         } else {
             self.cfg.ui.svg_max_px
         };
-        let ticket = self
-            .md_image_cache
-            .get(&key)
-            .map(|e| e.wish.ticket())
-            .unwrap_or_default();
-        let request = self.begin_md_request(&key);
-        let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
-        let stale = ticket.clone();
-        std::thread::Builder::new()
-            .name("konoma-office-pic".into())
-            .spawn(move || {
-                use crate::preview::image::ImageFailure;
-                // The same contract as the file decode: queued in the shared decode gate under the
-                // entry's ticket, an SVG drawn by the supervised child process (stopped when the
-                // document is left), a panic on a pathological picture is a failed decode, and a
-                // result is always sent (not sending would latch the busy indicator).
-                let moved_on =
-                    || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
-                let (still, frames) = crate::preview::markdown::catch_silent(|| {
-                    crate::preview::image::with_decode_ticket(ticket, || {
-                        let mut svg_px = svg_max_px;
-                        let mut slide_cap = None;
-                        // A slide has no bytes yet: draw its scene to an SVG here (off the UI
-                        // thread, under the decode gate) and let the supervised drawing process
-                        // rasterize it like any other untrusted SVG of a document.
-                        let bytes = match source {
-                            PictureSource::Bytes(b) => b,
-                            PictureSource::Slide {
-                                scene,
-                                media,
-                                render_truncated,
-                                raster_cap,
-                            } => {
-                                let drawn =
-                                    crate::preview::office::slide_draw::render_svg_cancellable(
-                                        &scene,
-                                        &|k| media.get(k).cloned(),
-                                        &moved_on,
-                                    );
-                                // The preview moved on: nothing to show, nothing to remember.
-                                if drawn.cancelled {
-                                    return (Err(ImageFailure::Cancelled), None);
-                                }
-                                if drawn.truncated {
-                                    render_truncated
-                                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                // The raster size is cut to what the drawing process's work
-                                // budget allows for this slide's effects (they are counted at the
-                                // square of the scale): effects stay, the slide is just drawn
-                                // smaller. A size an earlier attempt found too heavy stays out
-                                // (see below), and one that only timed out stays out for a while.
-                                raster_cap.lower_permanent(drawn.max_raster_px());
-                                if let Some(cap) = raster_cap.get(std::time::Instant::now()) {
-                                    svg_px = svg_px.min(cap);
-                                }
-                                slide_cap = Some(raster_cap);
-                                Arc::new(drawn.svg.into_bytes())
-                            }
-                        };
-                        if bytes.starts_with(b"GIF8") {
-                            if let Some((frames, _)) =
-                                crate::preview::image::decode_gif_bytes_inline(&bytes)
-                            {
-                                let first = frames[0].0.clone();
-                                return (Ok(first), Some(frames));
-                            }
-                        }
-                        // A slide whose picture the drawing process refuses as too heavy or
-                        // too slow at this size is drawn again smaller before it is given up on;
-                        // the size that worked becomes the slide's raster cap.
-                        let res = super::decode_with_cap(
-                            slide_cap.as_deref(),
-                            svg_px,
-                            retry_floor,
-                            &moved_on,
-                            &std::time::Instant::now,
-                            |px| md_decode_bytes_why(&bytes, px, &moved_on),
-                        );
-                        (res, None)
-                    })
-                })
-                .unwrap_or((Err(ImageFailure::Corrupt), None));
-                // A cancelled decode reports like any other result, first decode and re-raster
-                // alike: the entry may still be in the cache (a stale ticket does not remove it),
-                // and the receiving side (`apply_md_image`) forgets it or ignores a gone one.
-                let still = match still {
-                    Err(_) if moved_on() => Err(ImageFailure::Cancelled),
-                    other => other,
-                };
-                let _ = tx.send(MdImageResult {
-                    path: key,
-                    image: still.map_err(|f| f.code().to_string()),
-                    svg: None,
-                    svg_trust: Default::default(),
-                    reraster,
-                    frames,
-                    request,
-                });
-            })
-            .is_ok()
+        let job = ResourceJob {
+            source,
+            svg_max_px,
+            retry_floor,
+            reraster,
+            svg: Arc::new(media_plugin::SvgChild),
+            generation: (self.media_gen, self.media_gen_shared.clone()),
+        };
+        self.doc_pictures().spawn_resource_decode(key, job)
     }
 
     /// The image to draw for the visible portion of inline image `url`, **at this placement's own
@@ -1440,26 +939,11 @@ impl App {
                 .as_ref()
                 .and_then(|p| p.parent())
                 .map(|p| p.to_path_buf());
-            resolve_md_image_path(url, base.as_deref())?
+            let p = resolve_md_image_path(url, base.as_deref())?;
+            self.md_image_refused(url, &p).is_none().then_some(p)?
         };
-        let entry = self.md_image_cache.get(&path)?;
-        // Exact match for the current position, at this placement's own cell size.
-        let key = if row_off == 0 && vis_rows >= full_rows {
-            MdEncodeKey::Full {
-                cols,
-                rows: full_rows,
-            }
-        } else {
-            MdEncodeKey::Clip {
-                cols,
-                full_rows,
-                row_off,
-                vis_rows,
-            }
-        };
-        // Not yet encoded for this exact position (or that encode failed): keep the freshest band —
-        // or full image — visible rather than leaving the reserved rows blank.
-        entry.proto(&key).or_else(|| entry.newest_proto())
+        self.md_images
+            .proto(&path, cols, full_rows, row_off, vis_rows)
     }
 
     /// Test-only: how many **band** (clip) encodes are currently retained for `url`, i.e. how many
@@ -1480,7 +964,8 @@ impl App {
                 None => return 0,
             }
         };
-        self.md_image_cache
+        self.md_images
+            .cache
             .get(&path)
             .map(|e| e.clip.len())
             .unwrap_or(0)
@@ -1507,33 +992,16 @@ impl App {
         if !matches!(self.tab.mode, Mode::Preview) {
             return false;
         }
-        let now = std::time::Instant::now();
-        let mut advanced = false;
-        for entry in self.md_image_cache.values_mut() {
-            if entry.frames.len() < 2 {
-                continue;
-            }
-            let Some(shown_at) = entry.shown_at else {
-                // First tick: just start the timer (the first frame is already shown in decoded).
-                entry.shown_at = Some(now);
-                continue;
-            };
-            let delay = entry.frames[entry.idx].1;
-            if now.duration_since(shown_at) < delay {
-                continue;
-            }
-            entry.idx = (entry.idx + 1) % entry.frames.len();
-            entry.shown_at = Some(now);
-            entry.decoded = Some(entry.frames[entry.idx].0.clone());
-            // The next frame needs a re-encode: mark every slot stale rather than dropping it. The
-            // old protocol stays displayed until the new encode arrives (clearing it would leave a
-            // momentary blank — the same convention as the fence re-raster), and, because the slot
-            // survives, the re-encode lands on the **same** kitty id and replaces the terminal's
-            // picture instead of adding one per animation frame.
-            entry.mark_stale();
-            advanced = true;
-        }
-        advanced
+        self.md_images.advance_gifs_if_due()
+    }
+
+    /// Drop every entry of the inline-picture cache that animates or may yet animate: the screen
+    /// that drew them is left (`leave_tab_view`), and an entry that holds frames keeps the run
+    /// loop's animation timer running (`advance_md_gifs_if_due`, `md_gif_poll_timeout`). The rule
+    /// (which entries go) is `InlineImageCache::stop_animations`, shared with the standalone
+    /// program's diff screen, which leaves its view by the same rule.
+    pub(super) fn stop_md_animations(&mut self) {
+        self.md_images.stop_animations();
     }
 
     /// Every filesystem path the Markdown preview currently draws an inline image from.
@@ -1561,7 +1029,8 @@ impl App {
     ///   freshness.
     pub(super) fn md_image_source_paths(&self) -> std::collections::HashSet<PathBuf> {
         let mut out: std::collections::HashSet<PathBuf> = self
-            .md_image_cache
+            .md_images
+            .cache
             .keys()
             .filter(|k| !crate::preview::markdown::is_synthetic_md_url(&k.to_string_lossy()))
             .cloned()
@@ -1607,7 +1076,7 @@ impl App {
             if crate::preview::markdown::is_synthetic_md_url(&p.to_string_lossy()) {
                 continue;
             }
-            self.md_image_cache.remove(p);
+            self.md_images.cache.remove(p);
         }
     }
 
@@ -1617,7 +1086,7 @@ impl App {
     /// them all land in the cache (= all spawned) in a single pass.
     #[cfg(test)]
     pub fn md_image_cache_len(&self) -> usize {
-        self.md_image_cache.len()
+        self.md_images.cache.len()
     }
 
     /// Wait time until the soonest inline-GIF frame change, across every animating cache entry (for
@@ -1632,23 +1101,21 @@ impl App {
         if !matches!(self.tab.mode, Mode::Preview) {
             return None;
         }
-        use std::time::Duration;
-        let mut min: Option<Duration> = None;
-        for entry in self.md_image_cache.values() {
-            if entry.frames.len() < 2 {
-                continue;
-            }
-            let remaining = match entry.shown_at {
-                None => Duration::ZERO, // not timed yet: run the next tick right away to start timing
-                Some(t) => entry.frames[entry.idx]
-                    .1
-                    .checked_sub(t.elapsed())
-                    .unwrap_or(Duration::ZERO),
-            };
-            min = Some(min.map_or(remaining, |m| m.min(remaining)));
-        }
-        min.map(|d| d.clamp(Duration::from_millis(10), Duration::from_millis(100)))
+        self.md_images.gif_poll_timeout()
     }
+}
+
+/// Draw a retained SVG again at `max_px`, the way its origin drew it the first time
+/// (`MdImgEntry::svg_trust`): konoma's own in this process, a file's by the supervised child
+/// process relative to the file, anything else by the child process reading no file.
+pub(crate) fn redraw_svg(
+    svg: &[u8],
+    trust: &SvgTrust,
+    max_px: u32,
+) -> Result<image::DynamicImage, String> {
+    trust
+        .draw(svg, max_px, &|| false)
+        .ok_or_else(|| "rasterize failed".to_string())
 }
 
 #[cfg(test)]
@@ -1658,6 +1125,28 @@ mod mutation_tests;
 #[cfg(test)]
 #[path = "md_media_slide_cap_tests.rs"]
 mod slide_cap_tests;
+
+/// The read scope of the plugin whose document is on screen, kept between frames (see
+/// `App::with_scope_memo`), with the verdicts on single pictures judged under it.
+pub(super) struct ScopeMemo {
+    id: String,
+    root: PathBuf,
+    shown: PathBuf,
+    pub(super) scope: konoma_plugin::ReadScope,
+    verdicts: std::collections::HashMap<PathBuf, Result<PathBuf, konoma_plugin::ScopeError>>,
+}
+
+impl ScopeMemo {
+    /// The scope's verdict on `p` (the real path, or why not), judged once per path.
+    fn judge(&mut self, p: &Path) -> Result<PathBuf, konoma_plugin::ScopeError> {
+        if let Some(v) = self.verdicts.get(p) {
+            return v.clone();
+        }
+        let v = self.scope.resolve(p);
+        self.verdicts.insert(p.to_path_buf(), v.clone());
+        v
+    }
+}
 
 #[cfg(test)]
 mod tmux_detection_tests {

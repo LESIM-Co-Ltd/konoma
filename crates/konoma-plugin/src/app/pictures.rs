@@ -1,0 +1,816 @@
+//! The pictures of a canvas in the standalone app: the host side of
+//! [`crate::canvas_pictures`], the part konoma keeps in `src/app/canvas_images.rs`,
+//! `src/app/plugin_host.rs` and `src/ui/canvas.rs`.
+//!
+//! What is decoded, how a picture is keyed and what bounds the work is the shared code
+//! ([`decode_canvas`], [`CanvasPictureHost`], [`draw_images`]); this module only wires it to the
+//! app's loop, with the same machinery as konoma:
+//!
+//! - **The UI never decodes.** A canvas the session returns is handed to [`Pictures::submit`],
+//!   which starts a worker thread that runs [`decode_canvas`]. A newer canvas that differs
+//!   cancels the job in flight (its result is dropped); one that names the same pictures keeps
+//!   it. The result is filed with [`CanvasPictureHost::landed`] in [`Pictures::poll`].
+//! - **The encode worker** is konoma's ([`md_encode_worker`]) on its own thread; the draw only
+//!   asks for an encode and the result is applied in [`Pictures::poll`].
+//! - **No blink**: the shared drawing keeps the previous picture of an id until the new content
+//!   has a protocol.
+//! - **No picker, no pictures**: without a [`Picker`] there is no `Pictures` at all; nothing is
+//!   decoded and the plugin's cells stay. A picker that only has halfblocks draws halfblocks.
+//! - **SVG** is drawn in this process ([`InProcessSvg`]): the app has no supervised child to
+//!   hand it to, and the work limits of the shared code and of the drawing apply.
+//! - **Leaving** deletes every kitty image the app placed, on every way out: `Drop` of
+//!   [`Pictures`] (normal exit, `q`, an error, an unwinding panic) and
+//!   [`delete_placed_pictures`] (the panic hook, which runs before the stack unwinds, while the
+//!   alternate screen the images were placed on is still the screen).
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use image::DynamicImage;
+use konoma_svg::image::ImageFailure;
+use konoma_svg::svg::RasterError;
+use konoma_widgets::inline_images::{
+    md_encode_worker, InlineImageCache, MdEncodeResult, OverlayMoved, LIVE_CANVAS_KITTY,
+    MD_IMAGE_CACHE_BYTES,
+};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui_image::picker::Picker;
+
+use super::doc_pictures::{DocEnv, DocPics, DocPictureFocus};
+use super::document::Laid;
+use super::still::{Still, StillShape};
+use crate::canvas_pictures::{
+    decode_canvas, draw_images, CanvasPictureHost, CanvasPictures, CanvasPolicy, SvgDraw,
+};
+use crate::view::{CanvasImage, CanvasView, ImageData, ImageView};
+use crate::ReadScope;
+
+/// How long the loop waits while a decode or an encode is out (so its result is drawn as soon as
+/// it lands; the same short poll konoma keeps while pictures are loading).
+const BUSY_POLL: Duration = Duration::from_millis(16);
+/// The least time between two follow-up jobs for pictures the work limits left for a later answer
+/// (the floor konoma applies to a canvas redraw timer).
+const AGAIN_AFTER: Duration = Duration::from_millis(33);
+
+/// Draws an SVG in this process. The app is a single program with no supervised child to draw an
+/// untrusted document in, so it applies the same guard rails (size and depth refusals, the
+/// drawing budget, the read roots) to a drawing made on the decode worker. A drawing cannot be
+/// interrupted once it runs: `cancelled` is looked at before it starts.
+pub struct InProcessSvg;
+
+impl SvgDraw for InProcessSvg {
+    fn untrusted(
+        &self,
+        data: &[u8],
+        base: &Path,
+        roots: Option<&[PathBuf]>,
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<DynamicImage, RasterError> {
+        konoma_svg::svg_guard::precheck(data)?;
+        if cancelled() {
+            return Err(RasterError::Cancelled);
+        }
+        Ok(konoma_svg::svg::rasterize_guarded_within(
+            data,
+            base.parent(),
+            roots,
+            max_px,
+        )?)
+    }
+
+    fn embedded(
+        &self,
+        data: &[u8],
+        max_px: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<DynamicImage, RasterError> {
+        konoma_svg::svg_guard::precheck(data)?;
+        if cancelled() {
+            return Err(RasterError::Cancelled);
+        }
+        Ok(konoma_svg::svg::rasterize_guarded_within(
+            data, None, None, max_px,
+        )?)
+    }
+}
+
+/// Write to `out` the deletes of every canvas picture still on the terminal, and flush (every
+/// failure is dropped: the terminal may be gone). What the panic hook calls before it leaves the
+/// alternate screen; a table already emptied by [`Pictures`] writes nothing.
+pub fn delete_placed_pictures(out: &mut dyn Write) {
+    LIVE_CANVAS_KITTY.delete_to(out);
+}
+
+/// The result of one decode job.
+struct Done {
+    gen: u64,
+    /// `None`: the worker panicked (caught); the pictures stay as they were.
+    pics: Option<CanvasPictures>,
+}
+
+/// The decode job in flight.
+struct Job {
+    gen: u64,
+    cancel: Arc<AtomicBool>,
+    /// The pictures it was given, with the data of every `unchanged` one the app still held.
+    images: Vec<CanvasImage>,
+}
+
+/// The pictures of the canvas on screen, and everything that gets them there.
+pub struct Pictures {
+    cache: InlineImageCache,
+    host: CanvasPictureHost,
+    enc_rx: Receiver<MdEncodeResult>,
+    done_tx: Sender<Done>,
+    done_rx: Receiver<Done>,
+    overlay: OverlayMoved,
+    plugin_id: String,
+    path: PathBuf,
+    raster_px: u32,
+    svg: Arc<dyn SvgDraw + Send + Sync>,
+    /// Where the kitty deletes are written (standard output; a buffer in a test).
+    out: Box<dyn Write>,
+    gen: u64,
+    job: Option<Job>,
+    /// The pictures of the last job that landed (or was given up on).
+    last: Option<Vec<CanvasImage>>,
+    /// The latest canvas, as the session sent it (what a follow-up job is made from).
+    latest: Option<(u16, u16, Vec<CanvasImage>)>,
+    /// The data of pictures the session named once and has since called `unchanged`, kept until a
+    /// job that carried it lands: a job superseded before it landed took the data with it, and the
+    /// session will not send it again.
+    unlanded: HashMap<u64, ImageData>,
+    /// When to ask for the pictures the work limits left for a later answer.
+    again_at: Option<Instant>,
+    /// Whether the last frame drawn was the canvas (not the help or a message). Nothing of the
+    /// pictures is on screen otherwise, so an animation then needs no wake (konoma polls GIFs
+    /// only in the preview).
+    on_canvas: bool,
+    /// What the encoder was given, kept for the still picture of a `View::Image`.
+    picker: Picker,
+    /// The still picture of a `View::Image`, made when the first one is shown.
+    still: Option<Still>,
+    /// The pictures of a document (made on first use, with `doc_env`).
+    doc: Option<DocPics>,
+    doc_env: Option<DocEnv>,
+}
+
+impl Pictures {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn media_cache_for_test(
+        &self,
+    ) -> Vec<super::project::media_test_hooks::MediaCacheSnapshot> {
+        self.doc
+            .as_ref()
+            .map_or_else(Vec::new, DocPics::media_cache_for_test)
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn cell_px_for_test(&self) -> (u32, u32) {
+        let font = self.picker.font_size();
+        (font.width.into(), font.height.into())
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn settled_for_test(&self) -> bool {
+        self.job.is_none()
+            && self.again_at.is_none()
+            && !self.cache.encodes_in_flight()
+            && self.still.as_ref().is_none_or(Still::settled_for_test)
+            && self.doc.as_ref().is_none_or(|d| !d.loading())
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(in crate::app) fn settle_for_test(&mut self) {
+        while self.job.is_some() || self.again_at.is_some() {
+            // A deferred decode is owed work; animation deadlines do not fence publication.
+            if self.job.is_none() && self.again_at.take().is_some() {
+                if let Some((cols, rows, images)) = self.latest.clone() {
+                    self.start_for(cols, rows, &images, true);
+                }
+            }
+            if self.job.is_none() {
+                break;
+            }
+            let done = self
+                .done_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: canvas picture decode");
+            self.done_tx.send(done).expect("picture receiver");
+            self.poll();
+        }
+        while self.cache.encodes_in_flight() {
+            let result = self
+                .enc_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("project idle fence: canvas picture encode");
+            self.cache.apply_encode(result);
+        }
+        if let Some(still) = self.still.as_mut() {
+            still.settle_for_test();
+        }
+        if let Some(doc) = self.doc.as_mut() {
+            doc.settle_for_test();
+        }
+    }
+    /// The pictures for `plugin_id` showing `path`, drawn through `picker`. Starts the encode
+    /// worker; the SVGs are drawn in this process at `raster_px` (`ui.svg_max_px`) and the
+    /// kitty deletes go to standard output.
+    pub fn new(picker: Picker, plugin_id: &str, path: &Path, raster_px: u32) -> Pictures {
+        let (enc_tx, req_rx) = channel();
+        let (res_tx, enc_rx) = channel();
+        let mut cache = InlineImageCache::default();
+        cache.attach_picker(&picker);
+        cache.enc_tx = Some(enc_tx);
+        let kept = picker.clone();
+        std::thread::spawn(move || md_encode_worker(picker, req_rx, res_tx));
+        let (done_tx, done_rx) = channel();
+        Pictures {
+            cache,
+            host: CanvasPictureHost::default(),
+            enc_rx,
+            done_tx,
+            done_rx,
+            overlay: OverlayMoved::new(),
+            plugin_id: plugin_id.to_string(),
+            path: path.to_path_buf(),
+            raster_px,
+            svg: Arc::new(InProcessSvg),
+            out: Box::new(std::io::stdout()),
+            gen: 0,
+            job: None,
+            last: None,
+            latest: None,
+            unlanded: HashMap::new(),
+            again_at: None,
+            on_canvas: false,
+            picker: kept,
+            still: None,
+            doc: None,
+            doc_env: None,
+        }
+    }
+
+    /// The same drawing SVGs with `svg` (a test seam).
+    pub fn with_svg(mut self, svg: Arc<dyn SvgDraw + Send + Sync>) -> Pictures {
+        self.svg = svg;
+        self
+    }
+
+    /// The same writing the kitty deletes to `out` (a test seam).
+    /// What the document's pictures need besides the terminal (who draws mermaid and math,
+    /// whether remote images are fetched, the download itself).
+    pub fn with_documents(mut self, env: DocEnv) -> Pictures {
+        match self.doc.as_mut() {
+            Some(d) => d.set_env(env),
+            None => self.doc_env = Some(env),
+        }
+        self
+    }
+
+    /// The pictures of the document on screen (made the first time a document asks).
+    pub fn doc_pics(&mut self) -> &mut DocPics {
+        if self.doc.is_none() {
+            let mut d = DocPics::new(
+                &self.picker,
+                &self.plugin_id,
+                &self.path,
+                self.raster_px,
+                Arc::clone(&self.svg),
+            );
+            if let Some(env) = self.doc_env.take() {
+                d.set_env(env);
+            }
+            self.doc = Some(d);
+        }
+        self.doc.as_mut().expect("just made")
+    }
+
+    /// A document was replaced by another (a `Reopen`): forget every picture of the old one and
+    /// drop what its workers still owe (their results land on nothing).
+    pub fn reset_document(&mut self) {
+        if let Some(d) = self.doc.as_mut() {
+            d.reset();
+        }
+    }
+
+    /// The view that drew these pictures (the diff screen or its Preview) is left: a project
+    /// screen covers it, or it went back to its project screen. Covering is leaving, as in a
+    /// konoma tab that is left (`leave_tab_view`): the canvas and the still picture go with their
+    /// decodes, and what animates or may yet animate in the document goes
+    /// (`DocPics::stop_animations`). The return opens the file again (a new session) and places
+    /// them again. Every field is named, so a new one is decided here.
+    pub(crate) fn leave_view(&mut self) {
+        let Self {
+            // The terminal, the encoder and the file: the return draws the same file there.
+            overlay: _,
+            plugin_id: _,
+            path: _,
+            raster_px: _,
+            svg: _,
+            out: _,
+            picker: _,
+            doc_env: _,
+            // The workers' channels: a canvas answer is refused once its job went (`forget`).
+            enc_rx: _,
+            done_tx: _,
+            done_rx: _,
+            // Left by `forget`: the canvas job, its pictures and their cache entries.
+            cache: _,
+            host: _,
+            gen: _,
+            job: _,
+            last: _,
+            latest: _,
+            unlanded: _,
+            again_at: _,
+            on_canvas,
+            still,
+            doc,
+        } = self;
+        // Nothing of the canvas is on screen: its animations ask for no wake-up.
+        *on_canvas = false;
+        if let Some(still) = still {
+            still.leave();
+        }
+        if let Some(doc) = doc {
+            doc.stop_animations();
+        }
+        self.forget();
+    }
+
+    /// Whether the page must be laid out again (a picture's result changed what it reserves).
+    pub fn take_doc_relayout(&mut self) -> bool {
+        self.doc.as_mut().is_some_and(DocPics::take_relayout)
+    }
+
+    pub(crate) fn take_doc_redraw(&mut self) -> bool {
+        self.doc.as_mut().is_some_and(DocPics::take_redraw)
+    }
+
+    /// Draw the pictures of a document over the cells in `inner` (`None`: the frame is not a
+    /// document).
+    pub fn draw_document(
+        &mut self,
+        buf: &mut Buffer,
+        inner: Rect,
+        doc: Option<(&Laid, usize)>,
+        gutter: u16,
+        focus: Option<DocPictureFocus<'_>>,
+    ) {
+        if let Some(d) = self.doc.as_mut() {
+            d.draw_with(buf, inner, doc, gutter, focus);
+        }
+    }
+
+    pub fn with_out(mut self, out: Box<dyn Write>) -> Pictures {
+        self.out = out;
+        self
+    }
+
+    /// A fresh project Preview resets its file pose while retaining the pictures owner.
+    pub(in crate::app) fn begin_file(&mut self, plugin_id: &str, path: &Path) {
+        self.plugin_id = plugin_id.into();
+        self.path = path.into();
+        if let Some(still) = &mut self.still {
+            still.begin_file(plugin_id, path);
+        }
+        self.doc_pics().set_path(path);
+    }
+
+    /// The session returned `canvas`: decode what it places that the app does not hold yet.
+    pub fn submit(&mut self, canvas: &CanvasView) {
+        self.latest = Some((canvas.cols, canvas.rows, canvas.images.clone()));
+        self.start_for(canvas.cols, canvas.rows, &canvas.images, false);
+    }
+
+    /// The session returned the picture `iv` (a `View::Image`): decode it unless it is the one
+    /// already held.
+    ///
+    /// `page_turn` keeps the picture on screen until `iv` lands (the loop asked the session for
+    /// another page).
+    pub fn submit_image(&mut self, iv: &ImageView, page_turn: bool) {
+        if self.still.is_none() {
+            self.still = Some(Still::new(
+                &self.picker,
+                self.cache.use_kitty,
+                self.cache.kitty_is_tmux,
+                &self.plugin_id,
+                &self.path,
+                self.raster_px,
+                Arc::clone(&self.svg),
+            ));
+        }
+        if let Some(s) = self.still.as_mut() {
+            s.submit(iv, page_turn);
+        }
+    }
+
+    /// The pose of the still picture held, or the one the next picture waits to be shown in: the
+    /// user's view a Preview keeps over its leave, a reload or a hand-off (a konoma tab keeps its
+    /// `image_view`).
+    pub(in crate::app) fn still_pose(&self) -> Option<konoma_widgets::image_view::ImageViewState> {
+        self.still.as_ref().and_then(Still::pose_held)
+    }
+
+    /// The terminal was another program's meanwhile (an editor, a terminal opener, a tool): what
+    /// was drawn on it goes and is drawn again, and the user's view of the still picture waits for
+    /// it (the picture shown next, by the same loop or by the Preview opened again, is put in it,
+    /// as a konoma tab keeps its `image_view`). Every hand-off of the terminal ends here.
+    pub(in crate::app) fn after_hand_off(&mut self) {
+        let pose = self.still_pose();
+        self.forget();
+        self.forget_still();
+        self.reset_document();
+        if let Some(pose) = pose {
+            self.restore_still_pose(pose);
+        }
+    }
+
+    /// The still picture the session shows next is put in `pose` (a left Preview opened again).
+    pub(in crate::app) fn restore_still_pose(
+        &mut self,
+        pose: konoma_widgets::image_view::ImageViewState,
+    ) {
+        if let Some(s) = self.still.as_mut() {
+            s.pose_back(pose);
+        }
+    }
+
+    /// The session's view is not a picture (any more): drop the still and cancel its decode.
+    pub fn forget_still(&mut self) {
+        if let Some(s) = self.still.as_mut() {
+            s.forget();
+        }
+    }
+
+    /// Why the still picture could not be drawn: see [`Still::failure`].
+    pub fn still_failure(&self) -> Option<Option<ImageFailure>> {
+        self.still.as_ref().and_then(Still::failure)
+    }
+
+    /// What the still picture is (`None`: no picture is held).
+    pub fn still_shape(&self) -> Option<StillShape> {
+        self.still.as_ref().filter(|s| s.holds()).map(Still::shape)
+    }
+
+    /// The spinner's glyph while the still picture is being decoded (a page turn waiting for its
+    /// picture), else `None`.
+    pub fn still_busy(&self) -> Option<&'static str> {
+        self.still
+            .as_ref()
+            .filter(|s| s.loading())
+            .map(Still::spinner_now)
+    }
+
+    /// The zoom of the still picture (1.0 when there is none).
+    pub fn still_zoom(&self) -> f64 {
+        self.still.as_ref().map_or(1.0, Still::zoom)
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_still_decode_for_test(&mut self) {
+        self.still
+            .as_mut()
+            .expect("submitted image")
+            .wait_decode_for_test();
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_still_resizes_for_test(&mut self) -> (Sender<()>, Receiver<()>) {
+        self.still
+            .as_mut()
+            .expect("submitted still picture")
+            .hold_resizes_for_test()
+    }
+
+    /// The centre of the visible window of the still picture.
+    pub fn still_center(&self) -> (f64, f64) {
+        self.still.as_ref().map_or((0.5, 0.5), Still::center)
+    }
+
+    /// Zoom the still picture one step in (`1`) or out (`-1`).
+    pub fn still_zoom_steps(&mut self, dir: i32) {
+        if let Some(s) = self.still.as_mut() {
+            s.zoom_steps(dir);
+        }
+    }
+
+    /// A page key was pressed over the still picture: it goes back to fit at once.
+    pub fn still_turn_page(&mut self) {
+        if let Some(s) = self.still.as_mut() {
+            s.turn_page();
+        }
+    }
+
+    /// Back to fit.
+    pub fn still_zoom_reset(&mut self) {
+        if let Some(s) = self.still.as_mut() {
+            s.zoom_reset();
+        }
+    }
+
+    /// Pan the still picture one step.
+    pub fn still_pan(&mut self, dx: f64, dy: f64) {
+        if let Some(s) = self.still.as_mut() {
+            s.pan(dx, dy);
+        }
+    }
+
+    /// Draw the still picture (or its loading line, or why it failed) into `inner`, the inside
+    /// of the frame's border.
+    pub fn draw_still(
+        &mut self,
+        buf: &mut Buffer,
+        inner: Rect,
+        lang: konoma_host_core::lang::Lang,
+    ) {
+        if let Some(s) = self.still.as_mut() {
+            s.draw(buf, inner, lang);
+        }
+    }
+
+    /// The session's view is not a canvas (any more): drop every picture, and queue the delete of
+    /// every kitty image they pinned.
+    pub fn forget(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        self.last = None;
+        self.latest = None;
+        self.unlanded.clear();
+        self.again_at = None;
+        self.host.forget(&mut self.cache);
+    }
+
+    /// Apply what the workers finished: encodes, decodes (filed with
+    /// [`CanvasPictureHost::landed`]), the GIF frames that are due, and the follow-up job for
+    /// pictures that waited.
+    pub fn poll(&mut self) {
+        self.poll_at(Instant::now());
+    }
+
+    /// What [`poll`](Self::poll) does at the time `now` (the animation's clock).
+    pub fn poll_at(&mut self, now: Instant) {
+        while let Ok(res) = self.enc_rx.try_recv() {
+            self.cache.apply_encode(res);
+        }
+        while let Ok(done) = self.done_rx.try_recv() {
+            // The result of a job that was superseded: dropped.
+            if self.job.as_ref().map(|j| j.gen) != Some(done.gen) {
+                continue;
+            }
+            let Some(job) = self.job.take() else { continue };
+            if let Some(pics) = done.pics {
+                let landed = self
+                    .host
+                    .landed(&mut self.cache, pics, MD_IMAGE_CACHE_BYTES);
+                if landed.ask_again {
+                    self.again_at = Some(Instant::now() + AGAIN_AFTER);
+                }
+            }
+            for img in &job.images {
+                if img.image.is_some() {
+                    self.unlanded.remove(&img.id);
+                }
+            }
+            // Even a job that panicked is not asked for again with the same canvas.
+            self.last = Some(job.images);
+        }
+        if let Some(s) = self.still.as_mut() {
+            s.poll_at(now);
+        }
+        self.cache.advance_gifs_at(now);
+        if let Some(d) = self.doc.as_mut() {
+            d.poll_at(now);
+        }
+        if let Some(at) = self.again_at {
+            if Instant::now() >= at && self.job.is_none() {
+                self.again_at = None;
+                if let Some((cols, rows, images)) = self.latest.clone() {
+                    self.start_for(cols, rows, &images, true);
+                }
+            }
+        }
+    }
+
+    /// How long the loop may wait before it has to look at the pictures again: a short poll while
+    /// a decode or an encode is out, until a follow-up job is due (only when no job is out: the
+    /// job in flight wakes the loop at the short poll, and [`Pictures::poll`] starts the follow-up
+    /// once it landed), and until the next GIF frame (only while the canvas is the frame shown).
+    /// `None` when nothing is going on.
+    pub fn wake_in(&self) -> Option<Duration> {
+        self.wake_in_at(Instant::now())
+    }
+
+    /// What [`wake_in`](Self::wake_in) says at the time `now`.
+    pub fn wake_in_at(&self, now: Instant) -> Option<Duration> {
+        let mut wake: Option<Duration> = None;
+        let mut want = |d: Duration| wake = Some(wake.map_or(d, |w| w.min(d)));
+        if self.job.is_some() || self.cache.encodes_in_flight() {
+            want(BUSY_POLL);
+        }
+        if self.job.is_none() {
+            if let Some(at) = self.again_at {
+                want(at.saturating_duration_since(now));
+            }
+        }
+        if let Some(w) = self.still.as_ref().and_then(|s| s.wake_in_at(now)) {
+            want(w);
+        }
+        if self.on_canvas {
+            if let Some(g) = self.cache.gif_poll_timeout_at(now) {
+                want(g);
+            }
+        }
+        if let Some(w) = self.doc.as_ref().and_then(|d| d.wake_in_at(BUSY_POLL, now)) {
+            want(w);
+        }
+        wake
+    }
+
+    /// Draw the pictures over the cells already painted in `body`. `on_canvas` is false when the
+    /// frame is not the canvas (the help, a message): nothing is drawn, and the overlay then
+    /// reports that the pictures left.
+    pub fn draw(&mut self, buf: &mut Buffer, body: Rect, on_canvas: bool) {
+        self.on_canvas = on_canvas;
+        self.overlay.begin();
+        if on_canvas && body.width > 0 && body.height > 0 {
+            if let Some(sig) = draw_images(buf, body, &mut self.host, &mut self.cache) {
+                self.overlay.note(sig);
+            }
+        }
+        self.overlay.finish();
+    }
+
+    /// Whether the pictures moved or went since the last time this was asked (the frame then has
+    /// to be cleared and drawn again, or the old placement stays on screen).
+    pub fn take_moved(&mut self) -> bool {
+        let doc = self.doc.as_mut().is_some_and(DocPics::take_moved);
+        self.overlay.take_moved() || doc
+    }
+
+    /// Write the deletes of the kitty images of the pictures that went, and flush. Nothing is
+    /// written when there are none.
+    pub fn flush_deletes(&mut self) {
+        let mut deletes = self.cache.take_kitty_deletes();
+        if let Some(d) = self.doc.as_mut() {
+            deletes.extend(d.take_kitty_deletes());
+        }
+        if deletes.is_empty() {
+            return;
+        }
+        for escape in deletes {
+            if self.out.write_all(escape.as_bytes()).is_err() {
+                return;
+            }
+        }
+        let _ = self.out.flush();
+    }
+
+    /// How many placements the canvas on screen has (a test reads it).
+    pub fn place_count(&self) -> usize {
+        self.host.place_count()
+    }
+
+    /// Whether a decode job is out (a test reads it).
+    pub fn decoding(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Start the job for `images` unless the pictures are the ones already out or on screen
+    /// (`force` is the follow-up of pictures that waited, which is the same canvas again).
+    fn start_for(&mut self, cols: u16, rows: u16, images: &[CanvasImage], force: bool) {
+        let resolved = self.resolve(images);
+        if !force {
+            let held = match &self.job {
+                Some(job) => Some(&job.images),
+                None => self.last.as_ref(),
+            };
+            if held.is_some_and(|h| same_pictures(h, images)) {
+                return;
+            }
+        }
+        if let Some(job) = self.job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        self.gen += 1;
+        let gen = self.gen;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let held = self.host.known_keys(&self.cache);
+        let (plugin_id, path, raster_px) =
+            (self.plugin_id.clone(), self.path.clone(), self.raster_px);
+        let svg = Arc::clone(&self.svg);
+        let tx = self.done_tx.clone();
+        let (flag, job_images) = (Arc::clone(&cancel), resolved.clone());
+        std::thread::spawn(move || {
+            let cancelled = || flag.load(Ordering::Relaxed);
+            let pics = konoma_base::panic::catch_silent(move || {
+                let scope = ReadScope::unrestricted();
+                let policy = CanvasPolicy::new(&scope, &*svg, raster_px)
+                    .cancelled(&cancelled)
+                    .trust_own_svg(true);
+                let mut canvas = CanvasView::new(cols, rows);
+                canvas.images = job_images;
+                decode_canvas(&plugin_id, &canvas, &held, &path, &policy)
+            });
+            // Always answered, even after a panic: the loop waits on the job.
+            let _ = tx.send(Done { gen, pics });
+        });
+        self.job = Some(Job {
+            gen,
+            cancel,
+            images: resolved,
+        });
+    }
+
+    /// `images` as they will be decoded: an `unchanged` picture whose data never landed gets its
+    /// data back, and the data of the others is remembered until it lands.
+    fn resolve(&mut self, images: &[CanvasImage]) -> Vec<CanvasImage> {
+        let out: Vec<CanvasImage> = images
+            .iter()
+            .map(|img| {
+                let mut img = img.clone();
+                match &img.image {
+                    Some(data) => {
+                        self.unlanded.insert(img.id, data.clone());
+                    }
+                    None => img.image = self.unlanded.get(&img.id).cloned(),
+                }
+                img
+            })
+            .collect();
+        self.unlanded
+            .retain(|id, _| images.iter().any(|i| i.id == *id));
+        out
+    }
+}
+
+impl Drop for Pictures {
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        // The right to write for the whole delete, as a frame has it: a signal's cleanup waits
+        // for it. Not waited for long, a stuck frame must not hold the exit.
+        let _writing = konoma_host_core::term::terminal_write_within(Duration::from_millis(200));
+        self.flush_deletes();
+        delete_placed_pictures(&mut *self.out);
+    }
+}
+
+/// Whether the pictures `held` (what is out or on screen, `unchanged` ones resolved) are what
+/// `new` (as the session sent it) asks for: the same ids in the same places, and for each one
+/// either `unchanged` or the very data (the same shared buffer) already held. A file or an
+/// animation sent again is read again: it is never the same.
+fn same_pictures(held: &[CanvasImage], new: &[CanvasImage]) -> bool {
+    held.len() == new.len()
+        && held.iter().zip(new).all(|(h, n)| {
+            h.id == n.id
+                && (h.x, h.y, h.cols, h.rows) == (n.x, n.y, n.cols, n.rows)
+                && match (&h.image, &n.image) {
+                    (_, None) => true,
+                    (Some(h), Some(n)) => same_data(h, n),
+                    (None, Some(_)) => false,
+                }
+        })
+}
+
+fn same_data(a: &ImageData, b: &ImageData) -> bool {
+    match (a, b) {
+        (ImageData::Encoded(a), ImageData::Encoded(b)) => Arc::ptr_eq(a, b),
+        (
+            ImageData::Svg {
+                data: da,
+                base_dir: ba,
+                trusted: ta,
+            },
+            ImageData::Svg {
+                data: db,
+                base_dir: bb,
+                trusted: tb,
+            },
+        ) => Arc::ptr_eq(da, db) && ba == bb && ta == tb,
+        (
+            ImageData::Rgba {
+                width: wa,
+                height: ha,
+                pixels: pa,
+            },
+            ImageData::Rgba {
+                width: wb,
+                height: hb,
+                pixels: pb,
+            },
+        ) => wa == wb && ha == hb && Arc::ptr_eq(pa, pb),
+        (ImageData::Lazy(a), ImageData::Lazy(b)) => {
+            std::ptr::eq(Arc::as_ptr(a) as *const (), Arc::as_ptr(b) as *const ())
+        }
+        _ => false,
+    }
+}

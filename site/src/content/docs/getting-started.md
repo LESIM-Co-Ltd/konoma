@@ -51,7 +51,7 @@ The gate for konoma's full experience is the **terminal**, not the OS:
 `ffmpegthumbnailer` / `ffmpeg` (thumbnails for the video formats konoma can't
 decode itself — VP9, AV1, the older codecs, `.avi`), `jj` if you work in jj
 (preview — without it konoma simply falls back to git), and `lazygit` /
-`lazyjj` only if you want `!` to open a TUI inside the hub. An Office app (Microsoft Office or LibreOffice) only
+`lazyjj` only if you want `!` to open a TUI from the changes screen. An Office app (Microsoft Office or LibreOffice) only
 if you want `e` to open Word / Excel / PowerPoint files (the spreadsheet, Word and presentation previews themselves need none). The free
 Carlito / Caladea fonts if you want a PowerPoint deck's text to break lines where PowerPoint does (they have the widths of Calibri and Cambria,
 which may not be redistributed; without them konoma draws the text in a font about 10% wider). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, presentations, code,
@@ -119,6 +119,7 @@ konoma with image previews.
    ```sh
    konoma            # the current directory
    konoma ~/work     # or any directory · press ? for help
+   konoma notes.md   # or a file: its folder is the tree and the file is previewed
    ```
 
 ### Linux (x86_64 · beta)
@@ -169,7 +170,14 @@ Commands below use `apt` (Ubuntu/Debian); adapt for your package manager.
 ```sh
 konoma            # browse the current directory
 konoma ~/work     # or any directory
+konoma notes.md   # a file: its folder is the tree, the file is already previewed
 ```
+
+Given a file, konoma starts on the **Preview** screen: the file's folder is the tree
+behind it with the file selected, and `q` goes back to that tree like for any preview.
+With [saved tabs](/reference/configuration/) (`restore_tabs`), the tabs come back first and
+the file opens in the tab that is on screen. A path that is neither a directory nor a regular file
+(a pipe, a device) is refused, as before.
 
 konoma has exactly two main screens and no split panes:
 
@@ -192,8 +200,8 @@ Two habits carry you everywhere:
    links. Press `Tab` to focus a link, `Enter` to follow it, `q` to come back.
 4. Select an image or PDF — full-screen pixels; `+`/`-` zooms, `J`/`K` turns
    PDF pages.
-5. In a git repository, press `o` — the changes hub. `Enter` on a file shows its
-   full-screen diff; `l` is the log; `g` is the commit graph. `q` backs out.
+5. In a git repository, press `p` — the project screens, opening on the changes. `Enter` on a file shows its
+   full-screen diff; `Tab` walks on to the log and the commit graph. `q` backs out.
 6. Press `m` then `a` to bookmark where you are; press `'` to see the bookmark
    list and jump.
 
@@ -212,6 +220,6 @@ konoma konoma/samples        # then open tutorial.md
 - [Tutorial](../tutorial/) — the same tour as above, in seven guided steps.
 - [Working with an AI agent](../guides/agent-watch/) — konoma's flagship workflow.
 - [Previews in depth](../guides/preview/) — Markdown, tables, media, copying.
-- [The git suite](../guides/git/) — hub, diffs, log, graph, branches.
+- [The git suite](../guides/git/) — project screens, diffs, log, graph, branches.
 - [Files, bookmarks & tabs](../guides/files/) — the file-manager side.
 - [Configuration](../reference/configuration/) — every option, one page.

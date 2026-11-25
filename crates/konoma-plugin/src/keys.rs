@@ -1,0 +1,663 @@
+//! Key notation, the layered reserved keys, and the validation of a manifest's keys.
+//!
+//! Layers (design 10-3): 0 global, 1 basics that are the same on every display, 2 per display type,
+//! 3 verbs. A plugin may not use keys of layers 0 to 3. A plugin whose key collides keeps the action
+//! (it stays in the `Space` menu) but loses the key.
+
+use std::fmt;
+
+use crate::manifest::{Act, Manifest};
+
+/// A key without its modifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KeyName {
+    /// A character; an upper-case letter means Shift is included.
+    Char(char),
+    Enter,
+    Tab,
+    /// Shift-Tab.
+    BackTab,
+    Esc,
+    Backspace,
+    Delete,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    /// A function key, `F(1)` to `F(12)`.
+    F(u8),
+}
+
+/// A parsed key: a code and whether Ctrl is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct KeySpec {
+    pub code: KeyName,
+    pub ctrl: bool,
+}
+
+impl KeySpec {
+    pub fn ch(c: char) -> KeySpec {
+        KeySpec {
+            code: KeyName::Char(c),
+            ctrl: false,
+        }
+    }
+
+    pub fn ctrl(c: char) -> KeySpec {
+        KeySpec {
+            code: KeyName::Char(c),
+            ctrl: true,
+        }
+    }
+
+    pub fn key(code: KeyName) -> KeySpec {
+        KeySpec { code, ctrl: false }
+    }
+}
+
+impl fmt::Display for KeySpec {
+    /// The notation used in help: `w`, `W`, `Ctrl-t`, `Enter`, `Shift-Tab`, `Space`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.ctrl {
+            write!(f, "Ctrl-")?;
+        }
+        match self.code {
+            KeyName::Char(' ') => write!(f, "Space"),
+            KeyName::Char(c) => write!(f, "{c}"),
+            KeyName::Enter => write!(f, "Enter"),
+            KeyName::Tab => write!(f, "Tab"),
+            KeyName::BackTab => write!(f, "Shift-Tab"),
+            KeyName::Esc => write!(f, "Esc"),
+            KeyName::Backspace => write!(f, "Backspace"),
+            KeyName::Delete => write!(f, "Delete"),
+            KeyName::Up => write!(f, "Up"),
+            KeyName::Down => write!(f, "Down"),
+            KeyName::Left => write!(f, "Left"),
+            KeyName::Right => write!(f, "Right"),
+            KeyName::Home => write!(f, "Home"),
+            KeyName::End => write!(f, "End"),
+            KeyName::PageUp => write!(f, "PageUp"),
+            KeyName::PageDown => write!(f, "PageDown"),
+            KeyName::F(n) => write!(f, "F{n}"),
+        }
+    }
+}
+
+/// Why a key string did not parse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyError {
+    Empty,
+    /// A modifier with no key after it.
+    MissingKey(String),
+    /// More than one key (chords are not allowed in plugin defaults) or an unknown name.
+    Unknown(String),
+}
+
+impl fmt::Display for KeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyError::Empty => write!(f, "empty key"),
+            KeyError::MissingKey(s) => write!(f, "missing key after the modifier: {s}"),
+            KeyError::Unknown(s) => write!(f, "unknown key: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for KeyError {}
+
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &s[prefix.len()..])
+}
+
+/// Parse a key. Same rules as konoma's `[keys]`: names are case-insensitive (`enter`, `Space`),
+/// `ctrl-`/`c-` (any case) is Ctrl, a single character keeps its case (upper case includes Shift).
+/// `Shift-Tab` (or `backtab`) is Shift-Tab; `Shift-<letter>` is the upper-case letter.
+pub fn parse_key(s: &str) -> Result<KeySpec, KeyError> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(KeyError::Empty);
+    }
+    let (ctrl, rest) = if let Some(r) = strip_prefix_ci(s, "ctrl-") {
+        (true, r)
+    } else if let Some(r) = strip_prefix_ci(s, "c-") {
+        (true, r)
+    } else {
+        (false, s)
+    };
+    if rest.is_empty() {
+        return Err(KeyError::MissingKey(s.to_string()));
+    }
+    if let Some(r) = strip_prefix_ci(rest, "shift-") {
+        if r.eq_ignore_ascii_case("tab") {
+            return Ok(KeySpec {
+                code: KeyName::BackTab,
+                ctrl,
+            });
+        }
+        let mut it = r.chars();
+        return match (it.next(), it.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Ok(KeySpec {
+                code: KeyName::Char(c.to_ascii_uppercase()),
+                ctrl,
+            }),
+            (None, _) => Err(KeyError::MissingKey(s.to_string())),
+            _ => Err(KeyError::Unknown(s.to_string())),
+        };
+    }
+    let code = match rest.to_ascii_lowercase().as_str() {
+        "space" => KeyName::Char(' '),
+        "tab" => KeyName::Tab,
+        "backtab" => KeyName::BackTab,
+        "enter" | "return" => KeyName::Enter,
+        "esc" | "escape" => KeyName::Esc,
+        "backspace" => KeyName::Backspace,
+        "delete" | "del" => KeyName::Delete,
+        "up" => KeyName::Up,
+        "down" => KeyName::Down,
+        "left" => KeyName::Left,
+        "right" => KeyName::Right,
+        "home" => KeyName::Home,
+        "end" => KeyName::End,
+        "pageup" | "pgup" => KeyName::PageUp,
+        "pagedown" | "pgdn" | "pagedn" => KeyName::PageDown,
+        name => {
+            // `F1` to `F12`.
+            if let Some(n) = name
+                .strip_prefix('f')
+                .filter(|d| d.len() <= 2 && d.chars().all(|c| c.is_ascii_digit()))
+                .and_then(|d| d.parse::<u8>().ok())
+                .filter(|n| (1..=12).contains(n))
+            {
+                return Ok(KeySpec {
+                    code: KeyName::F(n),
+                    ctrl,
+                });
+            }
+            let mut it = rest.chars();
+            match (it.next(), it.next()) {
+                (Some(c), None) => KeyName::Char(c),
+                _ => return Err(KeyError::Unknown(s.to_string())),
+            }
+        }
+    };
+    Ok(KeySpec { code, ctrl })
+}
+
+/// The layer a reserved key belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Layer {
+    /// Layer 0: the same everywhere.
+    Global,
+    /// Layer 1: the basics of every display.
+    Base,
+    /// Layer 2: the display type (and the host-only keys of the tree).
+    Type,
+    /// Layer 3: verbs.
+    Verb,
+    /// Layer 4: taken by a plugin in this context.
+    Plugin,
+}
+
+fn chars(layer: Layer, cs: &str) -> Vec<(KeySpec, Layer)> {
+    cs.chars().map(|c| (KeySpec::ch(c), layer)).collect()
+}
+
+fn ctrls(layer: Layer, cs: &str) -> Vec<(KeySpec, Layer)> {
+    cs.chars().map(|c| (KeySpec::ctrl(c), layer)).collect()
+}
+
+fn named(layer: Layer, codes: &[KeyName]) -> Vec<(KeySpec, Layer)> {
+    codes.iter().map(|c| (KeySpec::key(*c), layer)).collect()
+}
+
+/// The host contexts that show a pane the plugin could add keys to.
+const VIEW_CONTEXTS: [&str; 6] = ["text", "document", "table", "image", "diff", "canvas"];
+
+/// The keys a plugin cannot use in `context` (layers 0 to 3 and the context's layer 2).
+///
+/// Contexts: `global`, `tree`, `text`, `document`, `table`, `image`, `diff`, `list`, `canvas`.
+/// Any other name (`git.changes`, a plugin's own screen) is treated as a list.
+///
+/// A key means the same thing everywhere, so a `canvas` keeps layer 0, the base keys that are not
+/// motion (`y` `Y` `r` `m` `'`, `Ctrl-t` `Ctrl-n` `Ctrl-p`; `Ctrl-t` is only reserved, it does nothing in a canvas), the verbs, `q`, `Esc`, `Space` and `,`
+/// (the menus), and `R` / `J` / `K` / `O` (representation and page keys, so a canvas that is one
+/// representation or page can be left). It gives up only what the host does not provide for a
+/// canvas: the type layer (scrolling, searching, selecting: `j` `k` `h` `l` `g` `G` `0` `$` `/` `n`
+/// `N` `v` `V`, `Ctrl-d` `Ctrl-u` `Ctrl-f` `Ctrl-b`) and the navigation fixed keys (arrows, `Home`,
+/// `End`, `PageUp`, `PageDown`, `Enter`, `Tab`, `Shift-Tab`), which run the plugin's action when it
+/// declares one on them and do nothing otherwise.
+pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
+    let mut v = Vec::new();
+    // Layer 0.
+    v.extend(chars(Layer::Global, "?QFPtT[]123456789"));
+    if context == "canvas" {
+        v.extend(chars(Layer::Base, "q, yYrm'"));
+        v.extend(ctrls(Layer::Base, "tnp"));
+        v.extend(named(Layer::Base, &[KeyName::Esc]));
+        v.extend(chars(Layer::Verb, "eop!"));
+        // Layer 2 keys that move out of a canvas that is one representation or one page.
+        v.extend(chars(Layer::Type, "RJKO"));
+        return v;
+    }
+    // Layer 1.
+    v.extend(chars(Layer::Base, "jkhlgG0$q/nNvVyYrm', "));
+    v.extend(ctrls(Layer::Base, "dufbnpt"));
+    v.extend(named(
+        Layer::Base,
+        &[
+            KeyName::Up,
+            KeyName::Down,
+            KeyName::Left,
+            KeyName::Right,
+            KeyName::Esc,
+            KeyName::Enter,
+            // Aliases of the page keys and of `g`/`G`.
+            KeyName::PageUp,
+            KeyName::PageDown,
+            KeyName::Home,
+            KeyName::End,
+        ],
+    ));
+    // Layer 3.
+    v.extend(chars(Layer::Verb, "eop!"));
+    // Layer 2: page keys are reserved on every display type.
+    v.extend(chars(Layer::Type, "JKO"));
+    match context {
+        "global" => {}
+        "tree" => v.extend(chars(Layer::Type, "dCaA.i")),
+        "text" | "document" => {
+            v.extend(named(Layer::Type, &[KeyName::Tab, KeyName::BackTab]));
+            v.extend(chars(Layer::Type, "R+-=f"));
+        }
+        "image" => v.extend(chars(Layer::Type, "R+-=")),
+        "table" => v.extend(chars(Layer::Type, "R")),
+        "diff" => v.extend(chars(Layer::Type, "sR")),
+        // "list" and every plugin screen.
+        _ => {
+            // `Tab`/`Shift-Tab` walk the version-control screens (the host's).
+            v.extend(named(Layer::Type, &[KeyName::Tab, KeyName::BackTab]));
+            v.extend(chars(Layer::Type, "R"));
+        }
+    }
+    let mut seen = Vec::new();
+    v.retain(|(k, _)| {
+        if seen.contains(k) {
+            false
+        } else {
+            seen.push(*k);
+            true
+        }
+    });
+    v
+}
+
+/// Keys that must not be a default: they cannot be told apart from other keys on many terminals
+/// (`Ctrl-j` is Enter, `Ctrl-m` is Enter, `Ctrl-i` is Tab, `Ctrl-h` is Backspace, `Ctrl-[` is Esc)
+/// or are taken by the terminal (`Ctrl-s`, `Ctrl-q`).
+pub fn forbidden_defaults() -> Vec<KeySpec> {
+    "jmih[sq".chars().map(KeySpec::ctrl).collect()
+}
+
+/// Modal confirmations retain the existing global layer and cancellation keys. The base
+/// motion and verb layers do not run in a confirmation, leaving `y` and `!` for its choices.
+pub fn confirmation_reserved() -> Vec<(KeySpec, Layer)> {
+    reserved("global")
+        .into_iter()
+        .filter(|(key, layer)| {
+            *layer == Layer::Global
+                || *key == KeySpec::ch('q')
+                || *key == KeySpec::key(KeyName::Esc)
+        })
+        .collect()
+}
+
+/// What happened to an action because of an issue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    /// The action is registered without its key (it stays in the `Space` menu).
+    KeyDropped,
+    /// The action cannot be registered.
+    Rejected,
+}
+
+/// What is wrong.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyIssueKind {
+    /// A copy menu key must be one plain character.
+    InvalidCopyKey,
+    /// The key string does not parse (or is a chord).
+    Unparseable(KeyError),
+    /// The key is reserved by a layer in a context.
+    Reserved { layer: Layer, context: String },
+    /// Another action of the same plugin has the same key in the same context.
+    Duplicate { other: String, context: String },
+    /// The key is on the forbidden list.
+    Forbidden,
+    /// A destructive action has no nonempty confirmation declaration. Public `validate` and
+    /// `sanitize` can check an unregistered manifest; registration refuses the whole manifest.
+    DestructiveWithoutConfirm,
+    /// Another action has the same id.
+    DuplicateActId,
+    /// A plugin cannot add single keys to the tree.
+    TreeKey,
+}
+
+/// One problem found in a manifest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyIssue {
+    /// The action that is affected (the one that loses its key or is rejected).
+    pub act: String,
+    pub key: Option<String>,
+    pub kind: KeyIssueKind,
+    pub effect: Effect,
+}
+
+impl fmt::Display for KeyIssue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let key = self.key.as_deref().unwrap_or("-");
+        match &self.kind {
+            KeyIssueKind::InvalidCopyKey => write!(
+                f,
+                "copy action `{}` must have one plain character as its key",
+                self.act
+            )?,
+            KeyIssueKind::Unparseable(e) => write!(f, "action `{}`: key `{key}`: {e}", self.act)?,
+            KeyIssueKind::Reserved { layer, context } => write!(
+                f,
+                "action `{}`: key `{key}` is reserved ({layer:?}) in `{context}`",
+                self.act
+            )?,
+            KeyIssueKind::Duplicate { other, context } => write!(
+                f,
+                "action `{}`: key `{key}` is already used by `{other}` in `{context}`",
+                self.act
+            )?,
+            KeyIssueKind::Forbidden => {
+                write!(f, "action `{}`: key `{key}` cannot be a default", self.act)?
+            }
+            KeyIssueKind::DestructiveWithoutConfirm => write!(
+                f,
+                "action `{}` is destructive but has no confirmation choices",
+                self.act
+            )?,
+            KeyIssueKind::DuplicateActId => {
+                write!(f, "action id `{}` is declared twice", self.act)?
+            }
+            KeyIssueKind::TreeKey => write!(
+                f,
+                "action `{}`: key `{key}`: a plugin cannot bind single keys in the tree",
+                self.act
+            )?,
+        }
+        match self.effect {
+            Effect::KeyDropped => write!(f, " (registered without the key)"),
+            Effect::Rejected => write!(f, " (rejected)"),
+        }
+    }
+}
+
+/// The reserved keys of the contexts an action without a context of its own lives in: the display
+/// types the manifest says it shows ([`Manifest::shows`]), or every display type when it says
+/// nothing.
+fn reserved_for_main_view(manifest: &Manifest) -> Vec<(KeySpec, Layer)> {
+    let contexts: Vec<&str> = if manifest.shows.is_empty() {
+        VIEW_CONTEXTS.iter().copied().chain(["list"]).collect()
+    } else {
+        manifest.shows.iter().map(|k| k.context()).collect()
+    };
+    let mut all = Vec::new();
+    for c in contexts {
+        for (k, l) in reserved(c) {
+            if !all.iter().any(|(x, _)| *x == k) {
+                all.push((k, l));
+            }
+        }
+    }
+    all
+}
+
+/// Keys reserved for closing a menu, shared by declaration checks and host menu resolution.
+pub fn closes_menu(key: KeySpec) -> bool {
+    !key.ctrl && matches!(key.code, KeyName::Char('q') | KeyName::Esc)
+}
+
+pub(crate) fn copy_key_valid(key: Option<&str>) -> bool {
+    key.is_some_and(|key| {
+        let mut chars = key.chars();
+        chars
+            .next()
+            .is_some_and(|c| !c.is_control() && !c.is_whitespace() && !closes_menu(KeySpec::ch(c)))
+            && chars.next().is_none()
+    })
+}
+
+pub(crate) fn copy_contexts_overlap(manifest: &Manifest, a: &Act, b: &Act) -> bool {
+    use crate::project::ActContext;
+    match (&a.project_context, &b.project_context) {
+        (
+            Some(ActContext::Screen { screen: a, .. }),
+            Some(ActContext::Screen { screen: b, .. }),
+        ) => a == b,
+        (Some(a), Some(b)) => a == b,
+        (None, None) => match (&a.screen, &b.screen) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => true,
+            (Some(context), None) | (None, Some(context)) => {
+                manifest.shows.is_empty()
+                    || manifest.shows.iter().any(|kind| kind.context() == context)
+            }
+        },
+        _ => false,
+    }
+}
+
+/// Check direct keys against the declared view contexts and copy keys as menu characters.
+/// An action without a context uses the kinds the manifest shows (every kind if undeclared).
+pub fn validate(manifest: &Manifest) -> Vec<KeyIssue> {
+    let mut issues = Vec::new();
+    let forbidden = forbidden_defaults();
+    let mut seen_ids: Vec<&str> = Vec::new();
+    // (context, key, act id) of keys already taken.
+    let mut taken: Vec<(String, KeySpec, &Act)> = Vec::new();
+    for act in &manifest.actions {
+        if seen_ids.contains(&act.id.as_str()) {
+            issues.push(KeyIssue {
+                act: act.id.clone(),
+                key: act.key.clone(),
+                kind: KeyIssueKind::DuplicateActId,
+                effect: Effect::Rejected,
+            });
+            continue;
+        }
+        seen_ids.push(&act.id);
+        if act.destructive
+            && act
+                .confirmation
+                .as_ref()
+                .is_none_or(|c| c.choices.is_empty())
+        {
+            issues.push(KeyIssue {
+                act: act.id.clone(),
+                key: act.key.clone(),
+                kind: KeyIssueKind::DestructiveWithoutConfirm,
+                effect: Effect::Rejected,
+            });
+            continue;
+        }
+        if act.copy {
+            if !copy_key_valid(act.key.as_deref()) {
+                issues.push(KeyIssue {
+                    act: act.id.clone(),
+                    key: act.key.clone(),
+                    kind: KeyIssueKind::InvalidCopyKey,
+                    effect: Effect::KeyDropped,
+                });
+            }
+            continue;
+        }
+        if let Some(issue) = check_key(manifest, act, &forbidden, &taken) {
+            issues.push(issue);
+        } else if let Some(key) = &act.key {
+            if let Ok(spec) = parse_key(key) {
+                taken.push((context_of(act).to_string(), spec, act));
+            }
+        }
+    }
+    issues
+}
+
+/// The manifest as the host registers it: an action that lost its key keeps the action and loses
+/// the key (it stays in the `Space` menu), an action that is rejected is dropped. Returns the
+/// issues [`validate`] found.
+pub fn sanitize(manifest: &Manifest) -> (Manifest, Vec<KeyIssue>) {
+    let issues = validate(manifest);
+    let mut out = manifest.clone();
+    for group in &mut out.hint_groups {
+        group.label = group.label.clipped();
+        group.help = group.help.clipped();
+    }
+    // `validate` rejects a later declaration with the same id, and a destructive action
+    // without confirmation: replay its order.
+    let mut seen: Vec<&str> = Vec::new();
+    let mut kept = Vec::new();
+    for act in &manifest.actions {
+        if seen.contains(&act.id.as_str()) {
+            continue;
+        }
+        seen.push(&act.id);
+        let mut act = act.clone();
+        if act.destructive
+            && act
+                .confirmation
+                .as_ref()
+                .is_none_or(|c| c.choices.is_empty())
+        {
+            continue;
+        }
+        if issues
+            .iter()
+            .any(|i| i.act == act.id && i.effect == Effect::KeyDropped)
+        {
+            act.key = None;
+        }
+        act.label = act.label.clipped();
+        act.help = act.help.clipped();
+        if let Some(c) = &mut act.confirmation {
+            c.text = c.text.clipped();
+            for c in &mut c.choices {
+                c.choice.label = c.choice.label.clipped();
+            }
+        }
+        if let Some(i) = &mut act.text_input {
+            i.label = i.label.clipped();
+        }
+        if let Some(i) = &mut act.choice_input {
+            i.label = i.label.clipped();
+            for c in &mut i.choices {
+                c.label = c.label.clipped();
+            }
+        }
+        kept.push(act);
+    }
+    out.actions = kept;
+    // The texts of the rest of the manifest reach the interface as well.
+    out.name = out.name.clipped();
+    if let Some(p) = &mut out.project {
+        p.chip = p.chip.as_ref().map(|c| c.clipped());
+        for s in &mut p.screens {
+            s.title = s.title.clipped();
+        }
+    }
+    for v in &mut out.verbs {
+        v.label = v.label.as_ref().map(|l| l.clipped());
+    }
+    for st in &mut out.settings {
+        st.help = st.help.clipped();
+    }
+    if let crate::manifest::Unavailable::Notice(t) = &out.unavailable {
+        out.unavailable = crate::manifest::Unavailable::Notice(t.clipped());
+    }
+    (out, issues)
+}
+
+fn context_of(act: &Act) -> String {
+    if let Some(c) = &act.project_context {
+        return match c {
+            crate::project::ActContext::Screen { screen, .. } => format!("project:{screen}"),
+            crate::project::ActContext::TreeSelection => "tree".into(),
+            crate::project::ActContext::Diff => "diff".into(),
+        };
+    }
+    act.screen.clone().unwrap_or_default()
+}
+
+fn check_key(
+    manifest: &Manifest,
+    act: &Act,
+    forbidden: &[KeySpec],
+    taken: &[(String, KeySpec, &Act)],
+) -> Option<KeyIssue> {
+    let key = act.key.as_ref()?;
+    let issue = |kind| {
+        Some(KeyIssue {
+            act: act.id.clone(),
+            key: Some(key.clone()),
+            kind,
+            effect: Effect::KeyDropped,
+        })
+    };
+    let spec = match parse_key(key) {
+        Ok(s) => s,
+        Err(e) => return issue(KeyIssueKind::Unparseable(e)),
+    };
+    if forbidden.contains(&spec) {
+        return issue(KeyIssueKind::Forbidden);
+    }
+    let ctx = context_of(act);
+    if ctx == "tree" {
+        return issue(KeyIssueKind::TreeKey);
+    }
+    let table = if ctx.is_empty() {
+        reserved_for_main_view(manifest)
+    } else {
+        reserved(&ctx)
+    };
+    // Project screens have no representation/page cycle. They own Enter and J/K,
+    // including screen-wide Enter actions that also work on an empty list.
+    let project_screen = matches!(
+        &act.project_context,
+        Some(crate::project::ActContext::Screen { .. })
+    );
+    let screen_key_code = matches!(spec.code, KeyName::Enter | KeyName::Char('J' | 'K'));
+    let screen_key = screen_key_code && !spec.ctrl && project_screen;
+    if let Some((_, layer)) = table.iter().find(|(k, _)| *k == spec && !screen_key) {
+        let context = if ctx.is_empty() { "any" } else { &ctx };
+        return issue(KeyIssueKind::Reserved {
+            layer: *layer,
+            context: context.to_string(),
+        });
+    }
+    if let Some((_, _, other)) = taken.iter().find(|(c, k, other)| {
+        let overlaps = match (&act.project_context, &other.project_context) {
+            (
+                Some(crate::project::ActContext::Screen { row_kinds: a, .. }),
+                Some(crate::project::ActContext::Screen { row_kinds: b, .. }),
+            ) => a.is_empty() || b.is_empty() || a.iter().any(|r| b.contains(r)),
+            _ => true,
+        };
+        c == &ctx && *k == spec && overlaps
+    }) {
+        let context = if ctx.is_empty() { "main" } else { &ctx };
+        return issue(KeyIssueKind::Duplicate {
+            other: other.id.clone(),
+            context: context.to_string(),
+        });
+    }
+    None
+}

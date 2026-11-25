@@ -1,0 +1,740 @@
+// The footer: which operations a context shows, in what order, with the key notation generated from
+// the keymap. The order is the priority order: when the line is too narrow, `status::fit_tokens`
+// cuts from the end, so the important operations come first.
+//
+// A token is `<keys>:<label>`. The keys are every key that runs the operation in that context
+// (config applied, layers followed), joined with `/`. A token is shown only while its operation
+// acts (`ops::gate`), so the footer never offers a key that would refuse.
+
+use crate::app::App;
+use crate::i18n::{tr, Msg};
+use crate::keymap::{Action, Context, KeyPress, LeaderId, Motion};
+#[cfg(feature = "git")]
+use crate::keymap::{Backend, Screen};
+use crate::ops::decl::text;
+use crate::ops::gate::action_enabled;
+use crate::ops::keys::{columns, footer_key, short_enter};
+use crate::plugins::PluginAct;
+use konoma_host_core::help::CoreFoot;
+
+/// One entry of a footer plan.
+#[derive(Clone)]
+pub enum Foot {
+    /// The keys of one operation, labelled as `decl::text` says (skipped when it names none).
+    Op(Action),
+    /// The keys of one operation under a label of this plan's own.
+    As(Action, Msg),
+    /// The keys of several operations under one label (`j/k:scroll`, `s/S:stage(all)`). Two
+    /// operations are zipped (`j/k`, `J/K/PgDn/PgUp`).
+    Group(&'static [Action], Msg),
+    /// Like `Group`, labelled as `decl::text` says for the first operation (`J/K:slide|sheet|page`).
+    GroupOp(&'static [Action]),
+    /// The keys of several operations merged (`Space/↵:toggle`).
+    Union(&'static [Action], Msg),
+    /// The key that opens a leader menu (`y:copy`, `Space:file ops`).
+    Leader(LeaderId, Msg),
+    /// A token worked out from the state (the search status).
+    Dyn(fn(&App, Context) -> Option<String>),
+    /// The plugin hint represented by its first footer-declaring member.
+    Plugin(PluginAct),
+    /// A project-only entry with keys already reconciled across host and plugin sources.
+    Project(Token),
+    /// An entry of the shared layers 1 to 3: the shared builder (`konoma_host_core::help`) writes
+    /// it, so the standalone app prints the same token. Only the contexts of `core_ctx` use it.
+    Core(CoreFoot),
+    /// The whole footer of the `?` help, written by the shared builder
+    /// (`konoma_host_core::help::help_footer_with`) that the standalone app also calls.
+    HelpOverlay,
+}
+
+const SCROLL: &[Action] = &[Action::Navigate(Motion::Down), Action::Navigate(Motion::Up)];
+const ENDS: &[Action] = &[
+    Action::Navigate(Motion::Top),
+    Action::Navigate(Motion::Bottom),
+];
+const PAGE_KEYS: &[Action] = &[
+    Action::Navigate(Motion::PageDown),
+    Action::Navigate(Motion::PageUp),
+];
+#[cfg(feature = "git")]
+const HSCROLL: &[Action] = &[
+    Action::Navigate(Motion::Left),
+    Action::Navigate(Motion::Right),
+];
+const HJKL: &[Action] = &[
+    Action::Navigate(Motion::Left),
+    Action::Navigate(Motion::Down),
+    Action::Navigate(Motion::Up),
+    Action::Navigate(Motion::Right),
+];
+const TABS: &[Action] = &[Action::TabPrev, Action::TabNext];
+const SEARCH_MATCH: &[Action] = &[Action::SearchNext, Action::SearchPrev];
+const CLOSE_INFO: &[Action] = &[Action::InfoClose, Action::Cancel];
+const CLOSE_CELL: &[Action] = &[Action::ToggleTableCell, Action::Cancel];
+const VISUAL_EXIT: &[Action] = &[Action::PreviewExitVisual, Action::Cancel];
+const ALL_FILES: &[Action] = &[Action::ToggleChangedFilter, Action::TreeLeave];
+#[cfg(feature = "git")]
+const SCREENS: &[Action] = &[Action::GitScreenNext, Action::GitScreenPrev];
+const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
+
+/// The footer plan for `ctx` while nothing more specific is going on. State that changes what a
+/// screen offers (the decorated document vs the raw text, the media diff, git vs jj) is looked at
+/// here, in one function per screen.
+pub fn plan(app: &App, ctx: Context) -> Vec<Foot> {
+    if app.project_active() && ctx == Context::Canvas {
+        return project_plan(app, ctx);
+    }
+    if ctx == Context::Diff {
+        return diff(app);
+    }
+    let mut v = base_plan(app, ctx);
+    // The open plugin's own operations come right after the screen's movement keys, in the
+    // order of the priority the plugin declared (a stable sort: declaration order within one
+    // priority). Only actions that asked for a footer entry are planned here; the others are in
+    // the `?` help and the `Space` menu.
+    let acts = konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(ctx));
+    let at = konoma_host_core::preview_plan::PLUGIN_AT.min(v.len());
+    v.splice(
+        at..at,
+        acts.into_iter().map(|h| Foot::Plugin(h.members[0].act)),
+    );
+    v
+}
+
+fn project_plan(app: &App, ctx: Context) -> Vec<Foot> {
+    debug_assert_eq!(ctx, Context::Canvas);
+    let Some((presentation, actions)) = app.project_presentation() else {
+        return vec![];
+    };
+    presentation.footer_tokens().iter().map(|token| Foot::Project(Token {
+        text: token.text.clone(), keys: token.keys.clone(),
+        actions: token.ops.iter().map(|op| match op {
+            konoma_plugin::host::project::presentation::PresentationOp::ProjectAction(index) => Action::Plugin(actions[*index]),
+        }).collect(),
+    })).collect()
+}
+
+fn base_plan(app: &App, ctx: Context) -> Vec<Foot> {
+    match ctx {
+        Context::Tree => tree(app),
+        Context::TreeVisual => vec![
+            Foot::Group(SCROLL, Msg::FtExtend),
+            Foot::Op(Action::VisualSelectSiblings),
+            Foot::Op(Action::VisualSelectAll),
+            Foot::Op(Action::VisualCommit),
+            Foot::Leader(LeaderId::File, Msg::FtOps),
+            Foot::As(Action::Cancel, Msg::FtCancel),
+        ],
+        Context::Text | Context::Document => preview(app, ctx),
+        Context::TextVisual => vec![
+            Foot::Group(
+                if app.preview_visual_linewise() {
+                    LINEWISE_EXTEND
+                } else {
+                    HJKL
+                },
+                Msg::FtExtend,
+            ),
+            Foot::Op(Action::PreviewCopySelection),
+            Foot::As(Action::PreviewCopySelectionRef, Msg::WkAtRef),
+            Foot::Union(VISUAL_EXIT, Msg::FtCancel),
+        ],
+        Context::Image => preview(app, ctx),
+        Context::Table => preview(app, ctx),
+        Context::Canvas => preview(app, ctx),
+        Context::TableCell => vec![
+            Foot::Group(SCROLL, Msg::Scroll),
+            Foot::Group(ENDS, Msg::FtTopBottom),
+            Foot::Union(CLOSE_CELL, Msg::FtClose),
+        ],
+        Context::Help => vec![Foot::HelpOverlay],
+        Context::Info => vec![Foot::Union(CLOSE_INFO, Msg::FtClose)],
+        // The bookmark list, the tab list and the outline have no footer of their own: they show
+        // the screen underneath (see `status::footer_spans`).
+        Context::Bookmarks | Context::Tabs | Context::Outline => Vec::new(),
+        Context::Diff => diff(app),
+        #[cfg(feature = "git")]
+        Context::Screen(b, s) => screen(app, b, s),
+    }
+}
+
+const LINEWISE_EXTEND: &[Action] = &[
+    Action::Navigate(Motion::Down),
+    Action::Navigate(Motion::Up),
+    Action::Navigate(Motion::Top),
+    Action::Navigate(Motion::Bottom),
+];
+
+fn tree(app: &App) -> Vec<Foot> {
+    // With multiple tabs, q = close the tab (+ Q = quit); with the last one, q = quit.
+    let multi = app.tab_count() > 1;
+    let mut v = vec![
+        Foot::Group(SCROLL, Msg::GitMove),
+        Foot::Op(Action::TreeDescend),
+        Foot::Op(Action::TreeLeave),
+        Foot::Op(Action::CloseTabOrQuit),
+    ];
+    if multi {
+        v.push(Foot::Op(Action::Quit));
+    }
+    v.extend([
+        Foot::Op(Action::ToggleHelp),
+        Foot::Op(Action::FilterStart),
+        Foot::Leader(LeaderId::File, Msg::HintFileOps),
+        Foot::Op(Action::RequestEdit),
+        Foot::Op(Action::OpenGitView),
+        Foot::Op(Action::OpenGitDiffCursor),
+        Foot::Op(Action::ToggleChangedFilter),
+        Foot::Op(Action::ToggleFollow),
+        Foot::Op(Action::OpenExternal),
+        #[cfg(feature = "git")]
+        Foot::Op(Action::GitLaunchTool),
+        Foot::Leader(LeaderId::Copy, Msg::CopyHint),
+        Foot::Op(Action::TabNew),
+        Foot::Op(Action::OpenInNewTab),
+        Foot::Group(TABS, Msg::HintTab),
+        Foot::Leader(LeaderId::Options, Msg::HintOptions),
+        Foot::Op(Action::ToggleHidden),
+        Foot::Op(Action::ToggleInfo),
+        Foot::Op(Action::OpenSortMenu),
+        Foot::Op(Action::MarkSet),
+        Foot::Op(Action::MarkJump),
+        Foot::Op(Action::PasteJump),
+        Foot::Op(Action::EnterVisual),
+        Foot::Op(Action::ToggleSelect),
+        Foot::Op(Action::SetAnchor),
+        Foot::Group(PAGE_KEYS, Msg::HintPage),
+    ]);
+    v
+}
+
+/// The tree while only the changed files are listed (`C`).
+pub fn changed_filter_plan() -> Vec<Foot> {
+    vec![
+        Foot::As(Action::TreeActivate, Msg::FtPreview),
+        Foot::Group(CHANGED_KEYS, Msg::FtNextPrev),
+        Foot::Union(ALL_FILES, Msg::FtAllFiles),
+    ]
+}
+
+/// The footer plan of a preview screen (text, document, image, table, canvas): the description in
+/// `konoma_host_core::preview_plan` (shared with the standalone app) lowered to this host's
+/// operations and words. What it leaves out is what this build does not have.
+fn preview(app: &App, ctx: Context) -> Vec<Foot> {
+    use crate::ops::preview_plan as pp;
+    use konoma_host_core::preview_plan::{footer_plan, PvFoot};
+    let Some(cctx) = pp::core_of(ctx) else {
+        return Vec::new();
+    };
+    footer_plan(cctx, &pp::state(app, ctx))
+        .into_iter()
+        .filter_map(|f| {
+            Some(match f {
+                PvFoot::Op(o) => Foot::Op(pp::action_of(o)?),
+                PvFoot::As(o, m) => Foot::As(pp::action_of(o)?, Msg::from_core(m)),
+                PvFoot::Group(g, m) => Foot::Group(pp::group(g), Msg::from_core(m)),
+                PvFoot::GroupOp(g) => Foot::GroupOp(pp::group(g)),
+                PvFoot::Union(g, m) => Foot::Union(pp::group(g), Msg::from_core(m)),
+                PvFoot::Dyn(d) => Foot::Dyn(pp::dyn_token(d)),
+                PvFoot::Core(c) => Foot::Core(c),
+            })
+        })
+        .collect()
+}
+
+/// `n/N:match[3/12]` while a search has hits (`+` once collecting stopped at the cap), `n/N:match`
+/// while a search is active but nothing matched.
+pub(crate) fn search_status(app: &App, ctx: Context) -> Option<String> {
+    let keys = join_keys(app, ctx, SEARCH_MATCH);
+    if keys.is_empty() {
+        return None;
+    }
+    let label = tr(app.lang, Msg::Match);
+    if let Some((cur, total)) = app.search_status() {
+        let plus = if app.search_capped() { "+" } else { "" };
+        return Some(format!("{keys}:{label}[{cur}/{total}{plus}]"));
+    }
+    app.preview_search_query()
+        .is_some()
+        .then(|| format!("{keys}:{label}"))
+}
+
+/// `n/N:change` while no search is active and the file on screen has a change to step to.
+pub(crate) fn change_status(app: &App, ctx: Context) -> Option<String> {
+    if app.preview_search_query().is_some() || !app.preview_has_changes() {
+        return None;
+    }
+    let keys = join_keys(app, ctx, SEARCH_MATCH);
+    (!keys.is_empty()).then(|| format!("{keys}:{}", tr(app.lang, Msg::HintChange)))
+}
+
+/// `y c:copy code`: the copy menu's key followed by the code-block item's key.
+pub(crate) fn copy_code_token(app: &App, ctx: Context) -> Option<String> {
+    let lead = app
+        .keymaps
+        .leader_keys_of(ctx)
+        .into_iter()
+        .find(|(_, id)| *id == LeaderId::Copy)?
+        .0;
+    let item = app
+        .keymaps
+        .leaders
+        .get(&LeaderId::Copy)?
+        .items
+        .iter()
+        .find(|it| it.action == Action::CopyCodeBlock)?;
+    Some(format!(
+        "{} {}:{}",
+        footer_key(lead, false),
+        footer_key(item.key, false),
+        tr(app.lang, Msg::HintCopyCode)
+    ))
+}
+
+fn diff(app: &App) -> Vec<Foot> {
+    let p = app.diff_presentation();
+    let at = p
+        .footer_tokens()
+        .iter()
+        .position(|token| token.plan_index >= konoma_host_core::preview_plan::PLUGIN_AT)
+        .unwrap_or(p.footer_tokens().len());
+    let mut tokens: Vec<_> = p
+        .footer_tokens()
+        .iter()
+        .map(|token| {
+            Foot::Project(Token {
+                text: token.text.clone(),
+                keys: token.keys.clone(),
+                actions: token
+                    .ops
+                    .iter()
+                    .filter_map(|op| crate::ops::decl::diff_action(*op))
+                    .collect(),
+            })
+        })
+        .collect();
+    let hints = konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(Context::Diff));
+    tokens.splice(
+        at..at,
+        hints
+            .into_iter()
+            .map(|hint| Foot::Plugin(hint.members[0].act)),
+    );
+    tokens
+}
+
+pub(crate) fn diff_priority(
+    app: &App,
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> Vec<(Action, Option<Msg>)> {
+    let at = p
+        .action_priority()
+        .iter()
+        .position(|item| item.plan_index >= konoma_host_core::preview_plan::PLUGIN_AT)
+        .unwrap_or(p.action_priority().len());
+    let mut priority: Vec<_> = p
+        .action_priority()
+        .iter()
+        .filter_map(|item| {
+            let action = crate::ops::decl::diff_action(item.op)?;
+            Some((
+                action,
+                item.word
+                    .map(crate::ops::decl::diff_word_msg)
+                    .or_else(|| text(app, Context::Diff, action).label),
+            ))
+        })
+        .collect();
+    let hints = konoma_plugin::host::acts::footer_hints(&app.plugin_acts_in(Context::Diff));
+    priority.splice(
+        at..at,
+        hints
+            .into_iter()
+            .map(|hint| (Action::Plugin(hint.members[0].act), None)),
+    );
+    priority
+}
+
+#[cfg(feature = "git")]
+fn screen(_app: &App, b: Backend, s: Screen) -> Vec<Foot> {
+    const BACK: &[Action] = &[Action::GitClose, Action::Cancel];
+    const WT_BACK: &[Action] = &[Action::WorktreeClose, Action::Cancel];
+    let jj = b == Backend::Jj;
+    let nav = Foot::Group(SCROLL, Msg::FtNav);
+    match s {
+        Screen::Changes => vec![
+            Foot::Group(&[Action::GitStage, Action::GitStageAll], Msg::FtStage),
+            Foot::Group(&[Action::GitUnstage, Action::GitUnstageAll], Msg::FtUnstage),
+            Foot::Op(Action::GitDiscard),
+            Foot::Op(Action::GitCommit),
+            Foot::Op(Action::GitOpenSelectedDiff),
+            Foot::Op(Action::GitWorktreeDiff),
+            Foot::Op(Action::GitOpenLog),
+            Foot::Op(Action::GitOpenGraph),
+            Foot::As(
+                Action::GitOpenBranches,
+                if jj {
+                    Msg::HintBookmarks
+                } else {
+                    Msg::FtBranch
+                },
+            ),
+            Foot::Op(Action::GitOpenWorktrees),
+            Foot::Op(Action::JjSync),
+            Foot::Op(Action::GitLaunchTool),
+            Foot::Op(Action::ListFilterStart),
+            Foot::Group(SCREENS, Msg::FtScreens),
+            Foot::As(Action::GitClose, Msg::FtClose),
+        ],
+        Screen::Log => vec![
+            nav,
+            Foot::Op(Action::GitOpenDetail),
+            Foot::Op(Action::ListFilterStart),
+            Foot::Group(SCREENS, Msg::FtScreens),
+            Foot::Union(BACK, Msg::GitBack),
+        ],
+        Screen::Graph => {
+            let mut v = vec![nav, Foot::Op(Action::GitOpenDetail)];
+            if jj {
+                v.push(Foot::Op(Action::GitGraphToggleAll));
+                v.push(Foot::As(Action::GitGraphOpenPicker, Msg::HintBookmarks));
+            } else {
+                v.push(Foot::Op(Action::GitGraphSetBase));
+                v.push(Foot::Op(Action::GitGraphClearBase));
+                v.push(Foot::As(Action::GitGraphOpenPicker, Msg::GitBranches));
+            }
+            v.push(Foot::Op(Action::ListFilterStart));
+            v.push(Foot::Group(SCREENS, Msg::FtScreens));
+            v.push(Foot::Union(BACK, Msg::GitBack));
+            v
+        }
+        Screen::GraphPicker => vec![
+            Foot::Op(Action::GitGraphPickerToggle),
+            Foot::Group(
+                &[Action::GitGraphPickerMoveDown, Action::GitGraphPickerMoveUp],
+                Msg::FtReorder,
+            ),
+            Foot::Op(Action::GitGraphPickerAll),
+            Foot::Op(Action::GitGraphPickerCurrentOnly),
+            Foot::Op(Action::GitGraphPickerApply),
+            Foot::As(Action::GitClose, Msg::FtCancel),
+        ],
+        Screen::Branches => vec![
+            nav,
+            Foot::Op(Action::BranchCheckout),
+            Foot::Op(Action::BranchCreate),
+            Foot::Op(Action::BranchDelete),
+            Foot::Op(Action::BranchFilterStart),
+            Foot::Group(SCREENS, Msg::FtScreens),
+            Foot::Union(BACK, Msg::GitBack),
+        ],
+        Screen::Worktrees => vec![
+            nav,
+            Foot::Op(Action::WorktreeGoto),
+            Foot::Op(Action::WorktreeCreate),
+            Foot::Op(Action::WorktreeGotoNewTab),
+            Foot::Op(Action::WorktreeShowChanges),
+            Foot::Op(Action::WorktreeFilterStart),
+            Foot::Group(SCREENS, Msg::FtScreens),
+            Foot::Union(WT_BACK, Msg::GitBack),
+        ],
+        Screen::Detail => vec![
+            Foot::Group(SCROLL, Msg::Scroll),
+            Foot::Group(HSCROLL, Msg::HintHscroll),
+            Foot::Op(Action::CycleDiffLayout),
+            Foot::Group(ENDS, Msg::HintEnds),
+            Foot::Union(BACK, Msg::GitBack),
+        ],
+    }
+}
+
+/// The operations of `ctx`'s footer plan in plan order (the order of importance: the footer cuts
+/// from the end), each with the label the plan gives it. The `Space` menu lists its operations in
+/// this order and calls them by these labels, so the menu and the footer say the same thing. An
+/// operation can appear more than once (`J` and `K` are one group); `Leader` and `Dyn` entries
+/// name no single operation and are left out.
+pub fn priority(app: &App, ctx: Context) -> Vec<(Action, Option<Msg>)> {
+    if ctx == Context::Diff {
+        return diff_priority(app, &app.diff_presentation());
+    }
+    if ctx == Context::Canvas {
+        if let Some((presentation, actions)) = app.project_presentation() {
+            return presentation
+                .footer_priority()
+                .iter()
+                .map(|op| match op {
+                    konoma_plugin::host::project::presentation::PresentationOp::ProjectAction(
+                        index,
+                    ) => (Action::Plugin(actions[*index]), None),
+                })
+                .collect();
+        }
+    }
+    // The overlay lists have no footer (they show the screen underneath); their order of
+    // importance is the line of keys at the bottom of their own popup.
+    match ctx {
+        Context::Bookmarks => {
+            return vec![
+                (Action::BookmarkJump, None),
+                (Action::ListFilterStart, None),
+                (Action::BookmarkEdit, None),
+                (Action::BookmarkDelete, None),
+                (Action::BookmarkClose, Some(Msg::FtClose)),
+            ]
+        }
+        Context::Tabs => {
+            return vec![
+                (Action::TabListActivate, None),
+                (Action::ListFilterStart, None),
+                (Action::TabListClose, None),
+                (Action::ToggleTabList, Some(Msg::FtClose)),
+            ]
+        }
+        Context::Outline => {
+            return vec![
+                (Action::OutlineJump, None),
+                (Action::ListFilterStart, None),
+                (Action::ToggleOutline, Some(Msg::FtClose)),
+            ]
+        }
+        _ => {}
+    }
+    let mut v: Vec<(Action, Option<Msg>)> = Vec::new();
+    for f in plan(app, ctx) {
+        match f {
+            Foot::Op(a) => v.push((a, text(app, ctx, a).label)),
+            Foot::As(a, label) => v.push((a, Some(label))),
+            Foot::Group(acts, label) | Foot::Union(acts, label) => {
+                v.extend(acts.iter().map(|a| (*a, Some(label))))
+            }
+            Foot::GroupOp(acts) => {
+                let label = acts.first().and_then(|a| text(app, ctx, *a).label);
+                v.extend(acts.iter().map(|a| (*a, label)));
+            }
+            Foot::Plugin(p) => v.push((Action::Plugin(p), None)),
+            Foot::Project(token) => {
+                v.extend(token.actions.into_iter().map(|action| (action, None)))
+            }
+            Foot::Core(c) => {
+                if let Some(cctx) = crate::ops::core_help::core_ctx(ctx) {
+                    let facts = crate::ops::core_help::facts_for(app, ctx);
+                    for (op, label) in konoma_host_core::help::foot_priority(c, cctx, &facts) {
+                        if let Some(a) = crate::ops::core_help::action_of(op) {
+                            v.push((a, label.map(Msg::from_core)));
+                        }
+                    }
+                }
+            }
+            Foot::Leader(..) | Foot::Dyn(_) | Foot::HelpOverlay => {}
+        }
+    }
+    v
+}
+
+/// One footer token: `<keys>:<label>`, with the keys and operations it was made from (for the
+/// tests that check the notation against the keymap; `Dyn` tokens have none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    pub text: String,
+    pub keys: Vec<KeyPress>,
+    pub actions: Vec<Action>,
+}
+
+/// The keys of an operation group, de-duplicated. Two operations are zipped (`j/k`, `J/K/PgDn/PgUp`).
+fn group_keys(app: &App, ctx: Context, acts: &[Action]) -> Vec<KeyPress> {
+    let enabled: Vec<Action> = acts
+        .iter()
+        .copied()
+        .filter(|a| action_enabled(app, ctx, *a))
+        .collect();
+    let (cols, _) = columns(app, ctx, &enabled);
+    let mut keys: Vec<KeyPress> = Vec::new();
+    for kp in cols.into_iter().flatten() {
+        if !keys.contains(&kp) {
+            keys.push(kp);
+        }
+    }
+    keys
+}
+
+/// The keys of several operations merged in the order given (for `Union`).
+fn union_keys(app: &App, ctx: Context, acts: &[Action]) -> Vec<KeyPress> {
+    let mut keys: Vec<KeyPress> = Vec::new();
+    for a in acts.iter().filter(|a| action_enabled(app, ctx, **a)) {
+        for kp in crate::ops::keys::keys_of(app, ctx, *a) {
+            if !keys.contains(&kp) {
+                keys.push(kp);
+            }
+        }
+    }
+    keys
+}
+
+fn leader_keys(app: &App, ctx: Context, id: LeaderId) -> Vec<KeyPress> {
+    app.keymaps
+        .leader_keys_of(ctx)
+        .into_iter()
+        .filter(|(_, l)| *l == id)
+        .map(|(k, _)| k)
+        .collect()
+}
+
+fn write_keys(keys: &[KeyPress], ctx: Context) -> String {
+    let short = short_enter(ctx);
+    let mut parts: Vec<String> = Vec::new();
+    for k in keys {
+        let s = footer_key(*k, short);
+        if !parts.contains(&s) {
+            parts.push(s);
+        }
+    }
+    parts.join("/")
+}
+
+/// The keys of an operation group written for the footer: every key, joined with `/`.
+fn join_keys(app: &App, ctx: Context, acts: &[Action]) -> String {
+    write_keys(&group_keys(app, ctx, acts), ctx)
+}
+
+/// Render a plan into tokens, dropping what does not act or is unbound.
+pub fn render_tokens(app: &App, ctx: Context, plan: &[Foot]) -> Vec<Token> {
+    let lang = app.lang;
+    let bindings = app.plugin_context_bindings(ctx);
+    let hints = konoma_plugin::host::acts::footer_hints(&bindings.iter().collect::<Vec<_>>());
+    let tok = |keys: Vec<KeyPress>, label: Msg, actions: &[Action]| -> Option<Token> {
+        (!keys.is_empty()).then(|| Token {
+            text: format!("{}:{}", write_keys(&keys, ctx), tr(lang, label)),
+            keys,
+            actions: actions.to_vec(),
+        })
+    };
+    let mut out = Vec::new();
+    let mut core_facts: Option<konoma_host_core::help::HelpFacts> = None;
+    for item in plan {
+        let t = match item {
+            Foot::Project(token) => Some(token.clone()),
+            Foot::Op(a) => {
+                if !action_enabled(app, ctx, *a) {
+                    continue;
+                }
+                if let Some(label) = crate::ops::decl::repr_label(app, *a) {
+                    let keys = group_keys(app, ctx, &[*a]);
+                    (!keys.is_empty()).then(|| Token {
+                        text: format!("{}:{label}", write_keys(&keys, ctx)),
+                        keys,
+                        actions: vec![*a],
+                    })
+                } else {
+                    match text(app, ctx, *a).label {
+                        Some(label) => tok(group_keys(app, ctx, &[*a]), label, &[*a]),
+                        None => None,
+                    }
+                }
+            }
+            Foot::As(a, label) => {
+                if !action_enabled(app, ctx, *a) {
+                    continue;
+                }
+                tok(group_keys(app, ctx, &[*a]), *label, &[*a])
+            }
+            Foot::Group(acts, label) => {
+                if !acts.iter().any(|a| action_enabled(app, ctx, *a)) {
+                    continue;
+                }
+                tok(group_keys(app, ctx, acts), *label, acts)
+            }
+            Foot::GroupOp(acts) => {
+                if !acts.iter().any(|a| action_enabled(app, ctx, *a)) {
+                    continue;
+                }
+                match text(app, ctx, acts[0]).label {
+                    Some(label) => tok(group_keys(app, ctx, acts), label, acts),
+                    None => None,
+                }
+            }
+            Foot::Union(acts, label) => {
+                if !acts.iter().any(|a| action_enabled(app, ctx, *a)) {
+                    continue;
+                }
+                tok(union_keys(app, ctx, acts), *label, acts)
+            }
+            Foot::Leader(id, label) => tok(leader_keys(app, ctx, *id), *label, &[]),
+            Foot::Dyn(f) => f(app, ctx).map(|text| Token {
+                text,
+                keys: Vec::new(),
+                actions: Vec::new(),
+            }),
+            Foot::Core(c) => {
+                let Some(cctx) = crate::ops::core_help::core_ctx(ctx) else {
+                    continue;
+                };
+                let facts =
+                    core_facts.get_or_insert_with(|| crate::ops::core_help::facts_for(app, ctx));
+                let lookup = crate::ops::core_help::HostLookup { app, ctx };
+                konoma_host_core::help::render_foot(*c, cctx, facts, &lookup, lang).map(|t| Token {
+                    text: t.text,
+                    keys: t.keys,
+                    actions: t
+                        .ops
+                        .iter()
+                        .filter_map(|o| crate::ops::core_help::action_of(*o))
+                        .collect(),
+                })
+            }
+            Foot::HelpOverlay => {
+                let lookup = crate::ops::core_help::HostLookup { app, ctx };
+                out.extend(
+                    konoma_host_core::help::help_footer_with(&lookup, lang)
+                        .into_iter()
+                        .map(|t| Token {
+                            text: t.text,
+                            keys: t.keys,
+                            actions: t
+                                .ops
+                                .iter()
+                                .filter_map(|o| crate::ops::core_help::action_of(*o))
+                                .collect(),
+                        }),
+                );
+                continue;
+            }
+            Foot::Plugin(p) => hints
+                .iter()
+                .find(|h| h.members[0].act == *p)
+                .and_then(|hint| {
+                    let keys = hint.keys(|b| action_enabled(app, ctx, Action::Plugin(b.act)));
+                    (!keys.is_empty()).then(|| Token {
+                        text: format!(
+                            "{}:{}",
+                            write_keys(&keys, ctx),
+                            hint.label(app.plugin_lang())
+                        ),
+                        keys,
+                        actions: hint.members.iter().map(|b| Action::Plugin(b.act)).collect(),
+                    })
+                }),
+        };
+        out.extend(t);
+    }
+    out
+}
+
+/// Render a plan into `<keys>:<label>` strings.
+pub fn render(app: &App, ctx: Context, plan: &[Foot]) -> Vec<String> {
+    render_tokens(app, ctx, plan)
+        .into_iter()
+        .map(|t| t.text)
+        .collect()
+}
+
+/// The footer tokens of `ctx`.
+pub fn tokens(app: &App, ctx: Context) -> Vec<String> {
+    if let Some(values) = crate::ops::preview_plan::front_values(app, ctx) {
+        return values
+            .footer(&crate::ops::core_help::HostLookup { app, ctx }, app.lang)
+            .into_iter()
+            .map(|t| t.text)
+            .collect();
+    }
+    render(app, ctx, &plan(app, ctx))
+}

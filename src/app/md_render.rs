@@ -1,5 +1,24 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "diff_frame_tests.rs"]
+mod diff_frame_tests;
+#[cfg(test)]
+#[path = "inline_overlay_tests.rs"]
+mod inline_overlay_tests;
+#[cfg(test)]
+#[path = "rendered_diff_body_tests.rs"]
+mod rendered_diff_body_tests;
+#[cfg(test)]
+#[path = "rendered_diff_fallback_tests.rs"]
+mod rendered_diff_fallback_tests;
+#[cfg(all(test, feature = "git"))]
+#[path = "rendered_diff_screen_bridge.rs"]
+mod rendered_diff_screen_bridge;
+use crate::preview::image::ImageFailureMessage;
+use konoma_plugin::host::project::preview_gutter::FilePreviewGutter;
+use konoma_plugin::host::project::rendered_diff::{render_diff_document, RenderedDiffInput};
+
 /// Which document(s) `App::build_decorated` renders from — the seam that lets the diff's
 /// `Rendered` presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) share the **entire** decorated-
 /// Markdown pipeline (image/mermaid/math resolution included) with an ordinary preview, instead of
@@ -29,11 +48,7 @@ enum GutterAlign<'a> {
     },
     /// `Diff` source: the parsed `Doc`s are kept alive too — the later use is the actual render
     /// (`preview::markdown::render_markdown_diff_from_parts`), which needs them, not just `ops`.
-    Diff {
-        old: crate::preview::markdown::model::Doc<'a>,
-        new: crate::preview::markdown::model::Doc<'a>,
-        ops: Vec<crate::preview::markdown::BlockOp>,
-    },
+    Diff(RenderedDiffInput<'a>),
 }
 
 impl GutterAlign<'_> {
@@ -42,9 +57,8 @@ impl GutterAlign<'_> {
     fn is_active(&self) -> bool {
         match self {
             GutterAlign::None => false,
-            GutterAlign::File { ops } | GutterAlign::Diff { ops, .. } => {
-                crate::preview::markdown::ops_has_any_change(ops)
-            }
+            GutterAlign::File { ops } => FilePreviewGutter::new(ops).has_changes(),
+            GutterAlign::Diff(input) => input.has_changes(),
         }
     }
 }
@@ -62,13 +76,10 @@ impl GutterAlign<'_> {
 /// match what was decided, and a change on the file's last line loses the `width - 1` the gutter
 /// needs (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own "ガター 1 セルを後付けすると...wrap して図が
 /// 下線に重なる" class of bug — the same failure mode this closes off a second entry point for).
-pub(super) fn decorated_file_text(content: &crate::preview::text::TextContent) -> String {
-    let mut s = content.lines.join("\n");
-    if content.truncated {
-        s.push_str("\n\n— (省略: 表示上限に達しました) —");
-    }
-    s
-}
+pub(super) use konoma_plugin::host::project::md_diff::decorated_file_text;
+
+/// The notice appended to a Markdown file cut at the display cap (its own paragraph).
+pub(super) use konoma_plugin::document_render::TRUNCATED_NOTE;
 
 impl App {
     /// Build (or reuse) the decorated cache for a Markdown/Mermaid/code preview, **or** the diff's
@@ -81,6 +92,12 @@ impl App {
     /// layout (row prefix sums via ratatui's own per-line reflow) — all the per-document work, done
     /// once. Frames then only slice the visible range (`md_slice`).
     pub(super) fn ensure_md_cache(&mut self, width: u16) {
+        self.ensure_md_cache_built(width);
+        // A search the tab came back with is found again on the lines now built.
+        self.rescan_stale_search();
+    }
+
+    fn ensure_md_cache_built(&mut self, width: u16) {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
@@ -111,7 +128,11 @@ impl App {
         // `None` = not ready for this frame — degrade rather than block (see the two branches
         // below), matching the render path's long-standing "never block the UI" contract.
         let want_gutter = self.cfg.ui.git_gutter
-            && matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)));
+            && self
+                .tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(PreviewKind::is_markdown);
         let outcome: Option<MdDiffOutcome> = if want_diff_rendered {
             self.poll_md_diff(&path, MdDiffKind::Rendered)
         } else if want_gutter {
@@ -179,7 +200,9 @@ impl App {
             width
         };
 
+        self.forget_scope_verdicts();
         let decorated = self.build_decorated(&path, render_width, &source, &align);
+        self.flash_md_scope_refusals();
         // Kick off background downloads for any remote images shown as "loading". Each completes
         // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
         // A *synchronous* failure (remote images disabled: `ensure_remote_md_fetch` returns true
@@ -217,37 +240,36 @@ impl App {
         // every time the content changes, and the old key's decoded raster/protocol/SVG grow
         // monotonically until the file is switched, unreferenced by anything.
         {
-            let mut live: std::collections::HashSet<PathBuf> = decorated
-                .mermaid_fences
-                .iter()
-                .map(|c| PathBuf::from(crate::preview::markdown::mermaid_fence_url(c)))
-                .collect();
-            live.extend(
-                decorated
-                    .math_exprs
-                    .iter()
-                    .map(|(l, d)| PathBuf::from(crate::preview::markdown::math_url(l, *d))),
+            let live = konoma_plugin::document_pictures::live_synthetic_keys(
+                &decorated.mermaid_fences,
+                &decorated.math_exprs,
             );
-            self.md_image_cache.retain(|k, _| {
-                let s = k.to_string_lossy();
-                !(crate::preview::markdown::is_mermaid_fence_url(&s)
-                    || crate::preview::markdown::is_math_url(&s))
-                    || live.contains(k)
-            });
+            self.doc_pictures().sweep(&live);
         }
         let mut decorated = if resync {
-            self.build_decorated(&path, render_width, &source, &align)
+            self.forget_scope_verdicts();
+            let d = self.build_decorated(&path, render_width, &source, &align);
+            self.flash_md_scope_refusals();
+            d
         } else {
             decorated
         };
-        let (lines, targets) = self.postprocess_md(decorated.lines);
+        let (lines, targets) = match cache_source {
+            // The shared diff adapter already ran the post-pass, including math columns.
+            MdCacheSource::Diff => (decorated.lines, Vec::new()),
+            MdCacheSource::File => konoma_plugin::document_render::postprocess(
+                decorated.lines,
+                &mut decorated.images,
+                &self.doc_options(),
+                self.cfg.ui.icons,
+            ),
+        };
         // Re-resolve every inline math placement's own `col` against these **decorated** lines — see
         // `render_inline_math`'s own doc comment ("`col` recorded here is *provisional*") for the full
         // reasoning and the real, confirmed bug this closes (a link/checkbox/emoji/autolink earlier on
         // the same line changing width during `postprocess_md` left the math visibly offset from its
         // own reserved cells). Must run after `postprocess_md`, before `lines`/`decorated.images` are
         // stored into the cache below.
-        Self::resolve_inline_math_cols(&lines, &mut decorated.images);
         // The `Rendered` presentation has no Tab-focus interactivity at all (`docs/
         // FEATURE-MD-RENDERED-DIFF.md` §3: "items は Diff では空") — reading/toggling a checkbox or
         // opening a link would have to pick one of the two versions to write back to, which this
@@ -262,9 +284,10 @@ impl App {
                     &decorated.images,
                     &decorated.extras,
                 );
-                // A Word document is never written: a checkbox glyph in its text is only text, so
-                // it is not a focusable, toggleable item (the toggle would write to the .docx).
-                if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+                // A document that cannot be written back (a Word document: the toggle would write
+                // to the .docx) shows a checkbox glyph as only text, so it is not a focusable,
+                // toggleable item.
+                if !self.doc_tasks_writable() {
                     items.retain(|it| !matches!(it.kind, MdItemKind::Task { .. }));
                 }
                 items
@@ -284,19 +307,7 @@ impl App {
         // 1-cell glyph shifts every wrap point by exactly 1 column either way), which is what
         // `md_slice`'s per-frame `Paragraph` (given the *real*, gutter-prepended line) wraps at.
         let row_prefix = if self.cfg.ui.wrap && render_width > 0 {
-            use ratatui::text::Text;
-            use ratatui::widgets::{Paragraph, Wrap};
-            let mut pre = Vec::with_capacity(lines.len() + 1);
-            let mut acc = 0usize;
-            pre.push(0);
-            for line in &lines {
-                acc += Paragraph::new(Text::from(vec![line.clone()]))
-                    .wrap(Wrap { trim: false })
-                    .line_count(render_width)
-                    .max(1);
-                pre.push(acc);
-            }
-            pre
+            konoma_plugin::document_render::wrap_row_prefix(&lines, render_width)
         } else {
             Vec::new()
         };
@@ -335,7 +346,7 @@ impl App {
             MdCacheSource::File => {
                 let pgm = match &align {
                     GutterAlign::File { ops } => {
-                        crate::preview::markdown::preview_marks(ops, &decorated.extras.block_rows)
+                        FilePreviewGutter::new(ops).project(&decorated.extras.block_rows)
                     }
                     // `GutterAlign::None`: no baseline to compare (gutter off / non-Markdown / no
                     // committed version) — matches `preview_diff_marks`'s old "no baseline = no
@@ -377,27 +388,22 @@ impl App {
     /// `File` sources reach this match arm with anything other than `Ready`.
     fn compute_gutter_align<'a>(
         source: &DecoratedSource<'a>,
-        outcome: Option<&MdDiffOutcome>,
+        outcome: Option<&'a MdDiffOutcome>,
     ) -> GutterAlign<'a> {
         match source {
             DecoratedSource::Diff { old_pre, new_pre } => match outcome {
                 Some(MdDiffOutcome::Ready { ops, .. }) => {
-                    let old = crate::preview::markdown::model::Doc::parse(old_pre);
-                    let new = crate::preview::markdown::model::Doc::parse(new_pre);
-                    GutterAlign::Diff {
-                        old,
-                        new,
-                        ops: ops.clone(),
-                    }
+                    GutterAlign::Diff(RenderedDiffInput::new(old_pre, new_pre, ops))
                 }
                 _ => GutterAlign::None,
             },
-            DecoratedSource::File => match outcome {
-                Some(MdDiffOutcome::Ready { ops, .. }) => GutterAlign::File { ops: ops.clone() },
-                // `Unavailable`/`NoBaseline`/not-ready-yet: no baseline to compare — matches the
-                // pre-worker "an untracked file simply has no gutter" contract.
-                _ => GutterAlign::None,
-            },
+            DecoratedSource::File => {
+                FilePreviewGutter::from_outcome(outcome).map_or(GutterAlign::None, |input| {
+                    GutterAlign::File {
+                        ops: input.ops().to_vec(),
+                    }
+                })
+            }
         }
     }
 
@@ -496,12 +502,6 @@ impl App {
             .is_some_and(|c| !c.diff_marks.is_empty() || !c.preview_gutter_marks.is_empty())
     }
 
-    /// The default open state of a `<details>` block from `ui.md_details` and its `open` attribute
-    /// — [`details_default_open`], read off this `App`'s own config.
-    fn details_default_open(&self, open_attr: bool) -> bool {
-        details_default_open(&self.cfg.ui.md_details, open_attr)
-    }
-
     /// `Space`/`Enter` on a focused `<details>` summary: flip its open state and rebuild the cache.
     pub fn toggle_details(&mut self, ordinal: usize) {
         let cur = self
@@ -557,23 +557,19 @@ impl App {
         let Some(c) = &self.md_cache else {
             return (Vec::new(), 0);
         };
-        let s = scroll as usize;
-        let h = height.max(1) as usize;
-        let (lo, hi, local) = if self.cfg.ui.wrap && c.row_prefix.len() == c.lines.len() + 1 {
-            // The logical-line range spanning the visible display rows [s, s+h). `prefix` is each
-            // line's starting display row (monotonically increasing).
-            let lo = c.row_prefix.partition_point(|&p| p <= s).saturating_sub(1);
-            let hi = c
-                .row_prefix
-                .partition_point(|&p| p < s + h)
-                .min(c.lines.len());
-            (lo, hi.max(lo), (s - c.row_prefix[lo]) as u16)
+        let prefix = if self.cfg.ui.wrap {
+            c.row_prefix.as_slice()
         } else {
-            let lo = s.min(c.lines.len());
-            let hi = (s + h).min(c.lines.len());
-            (lo, hi, 0)
+            &[]
         };
-        let mut out: Vec<Line<'static>> = c.lines[lo..hi].to_vec();
+        let (range, local) = konoma_plugin::document_render::visible_line_range(
+            c.lines.len(),
+            prefix,
+            scroll.into(),
+            height,
+        );
+        let (lo, hi) = (range.start, range.end);
+        let mut out: Vec<Line<'static>> = c.lines[range].to_vec();
         // While searching, emphasize matches on visible lines (the current match = orange / others
         // = yellow), using the same look and the same function as windowed reads. Since it only
         // touches the visible range, this is O(viewport) regardless of document size.
@@ -620,7 +616,7 @@ impl App {
         // the other is a no-op via each helper's own "no marks = no column" early return.
         let out = with_diff_gutter(out, lo, &c.diff_marks);
         let out = with_preview_diff_gutter(out, lo, &c.preview_gutter_marks);
-        (out, local)
+        (out, local as u16)
     }
 
     /// Test-only view of the cached decorated lines (link-collapsed form, the same lines the
@@ -655,7 +651,7 @@ impl App {
     /// image/mermaid/math resolution setup below — `font`/`base_dir`/`avail` and the `slot_of`/
     /// `mermaid_slot`/`math_slot` closures — is built exactly **once**, shared verbatim by both
     /// branches: resolving a picture, a ```mermaid fence, or a LaTeX expression depends only on
-    /// `path`'s own directory and content-hash-keyed caches (`self.md_image_cache`), never on which
+    /// `path`'s own directory and content-hash-keyed caches (`self.md_images.cache`), never on which
     /// of the diff's two versions a particular block happens to come from — so the `Rendered`
     /// presentation draws real images/diagrams/equations exactly the way an ordinary preview does,
     /// not a text-only fallback of its own.
@@ -675,13 +671,15 @@ impl App {
         align: &GutterAlign<'_>,
     ) -> DecoratedMarkdown {
         let theme = &self.cfg.ui.theme;
-        let code = crate::preview::markdown::CodeStyle {
-            bg: theme.code_bg(),
-            label_bg: theme.code_label_bg(),
-            label_right: theme.code_label_right(),
-            tab_width: self.cfg.ui.tab_width,
-            wrap: self.cfg.ui.wrap,
-        };
+        let code = konoma_widgets::colors::code_style(
+            (
+                &theme.code_bg,
+                &theme.code_label_align,
+                &theme.code_label_bg,
+            ),
+            self.cfg.ui.tab_width,
+            self.cfg.ui.wrap,
+        );
         // Decide how to render each image URL. A local file or a cached remote fetch resolves to
         // a path → Inline (with its display size in cells). An uncached remote URL is Loading
         // (a fetch is kicked off separately, in `ensure_md_cache`) unless it has already failed.
@@ -697,193 +695,53 @@ impl App {
         // (`render_table_cells`), whose column is far narrower than the page: the very same
         // `md_image_cells` fit runs, just against `w` instead of `avail`, so a cell image is
         // sized by the one sizing rule in this file rather than by a second, cell-only one.
-        let slot_of = |url: &str, max_cols: Option<u16>| -> crate::preview::markdown::ImageSlot {
-            use crate::preview::markdown::ImageSlot;
-            let Some(font) = font else {
-                return ImageSlot::Unavailable;
-            };
-            // A picture of the open Word document: its bytes are in memory and its size was read
-            // when the document was converted, so there is no file to resolve or stat.
-            if crate::preview::markdown::is_office_image_url(url) {
-                let lang = self.lang;
-                // Said once, like a file picture: a decode that failed keeps its reason, and a
-                // picture whose header is already over the limits is refused before any decode.
-                if let Some(e) = self
-                    .md_image_cache
-                    .get(&PathBuf::from(url))
-                    .filter(|e| e.failed)
-                {
-                    return match e.fail.and_then(|f| f.message(lang)) {
-                        Some(why) => ImageSlot::Failed(why),
-                        None => ImageSlot::Unavailable,
-                    };
-                }
-                return match self.document_picture_dims(url) {
-                    // A slide: the full text width (it is a vector drawing, so it may be enlarged),
-                    // as tall as the viewport leaves room for after its heading.
-                    Some((pw, ph)) if self.document_picture_is_slide(url) => {
-                        let (cols, rows) = slide_cells(
-                            pw,
-                            ph,
-                            font.width,
-                            font.height,
-                            max_cols.unwrap_or(avail),
-                            slide_rows,
-                        );
-                        ImageSlot::Inline { cols, rows }
-                    }
-                    // Only a raster is refused from its header: an SVG's intrinsic size is not a
-                    // pixel count (it is drawn at `svg_max_px`, by the supervised process), the
-                    // same as a file SVG.
-                    Some(d)
-                        if self.document_picture_is_raster(url)
-                            && !crate::preview::image::dimensions_within_limits(d) =>
-                    {
-                        match crate::preview::image::ImageFailure::TooLarge.message(lang) {
-                            Some(why) => ImageSlot::Failed(why),
-                            None => ImageSlot::Unavailable,
-                        }
-                    }
-                    Some((pw, ph)) => {
-                        let (cols, rows) = md_image_cells(
-                            pw,
-                            ph,
-                            font.width,
-                            font.height,
-                            max_cols.unwrap_or(avail),
-                            MD_IMAGE_MAX_ROWS,
-                        );
-                        ImageSlot::Inline { cols, rows }
-                    }
-                    None => ImageSlot::Unavailable,
-                };
-            }
-            if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
-                let lang = self.lang;
-                // A picture that already failed to decode says why (the entry keeps the reason).
-                if let Some(e) = self.md_image_cache.get(&p).filter(|e| e.failed) {
-                    return match e.fail.and_then(|f| f.message(lang)) {
-                        Some(why) => ImageSlot::Failed(why),
-                        None => ImageSlot::Unavailable,
-                    };
-                }
-                // One whose header already says it is over the limits is refused here, before a
-                // decode is queued for it (the decoder would refuse it from the same header).
-                if let Some(d) = crate::preview::image::dimensions(&p) {
-                    if !crate::preview::image::dimensions_within_limits(d) {
-                        return match crate::preview::image::ImageFailure::TooLarge.message(lang) {
-                            Some(why) => ImageSlot::Failed(why),
-                            None => ImageSlot::Unavailable,
-                        };
-                    }
-                }
-                match md_image_dims_why(&p) {
-                    Ok((pw, ph)) => {
-                        let (cols, rows) = md_image_cells(
-                            pw,
-                            ph,
-                            font.width,
-                            font.height,
-                            max_cols.unwrap_or(avail),
-                            MD_IMAGE_MAX_ROWS,
-                        );
-                        ImageSlot::Inline { cols, rows }
-                    }
-                    // An SVG refused from its size or its file (too large, a pipe): say why.
-                    Err(Some(why)) => {
-                        match crate::preview::image::ImageFailure::Svg(why).message(lang) {
-                            Some(m) => ImageSlot::Failed(m),
-                            None => ImageSlot::Unavailable,
-                        }
-                    }
-                    Err(None) => ImageSlot::Unavailable,
-                }
-            } else if crate::preview::markdown::is_remote_image_url(url)
-                && !self.md_remote_failed.contains(url)
-            {
-                ImageSlot::Loading
-            } else {
-                ImageSlot::Unavailable
-            }
-        };
-        // ```mermaid fence: in image mode, look up the rendered cache (content-hash key).
-        // Not-yet-arrived becomes a loading line; failed/mode-off becomes the text diagram
-        // (principle #3). The probe (empty string) is the representative "should this be
-        // extracted?" check, so it's answered by the mode alone.
+        use crate::preview::markdown::ImageSlot;
+        let lang = self.lang;
+        let plugin_id = self.shown_plugin_id().unwrap_or("").to_string();
         let mermaid_on = self.mermaid_image_mode();
         let fence_target_rows = self.mermaid_fit_rows();
-        let mermaid_slot = |code: &str| -> crate::preview::markdown::MermaidSlot {
-            use crate::preview::markdown::MermaidSlot;
-            if !mermaid_on {
-                return MermaidSlot::Text;
-            }
-            if code.is_empty() {
-                return MermaidSlot::Loading; // probe: extraction is ON
-            }
-            let Some(font) = font else {
-                return MermaidSlot::Text;
-            };
-            let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
-            match self.md_image_cache.get(&key) {
-                Some(e) if e.failed => MermaidSlot::Text,
-                // `layout_px` is set when the first result lands and survives eviction of the
-                // pixels, so a picture whose pixels were dropped keeps its reserved size.
-                Some(e) => match e
-                    .decoded
-                    .as_ref()
-                    .map(|i| image::GenericImageView::dimensions(i.as_ref()))
-                    .or(e.layout_px)
-                {
-                    Some(raster_px) => {
-                        // The layout is fixed at the **first** result's `layout_px` — the
-                        // SVG's intrinsic size (px user units, the domain `mermaid_cells`
-                        // sizes text against), not the raster's own pixel dimensions — so a
-                        // sharp re-raster on zoom (higher density, same layout_px) never
-                        // changes the reserved cell count. Falls back to the raster's
-                        // dimensions only if intrinsic-size extraction ever failed.
-                        let (pw, ph) = e.layout_px.unwrap_or(raster_px);
-                        let (cols, rows) = mermaid_cells(
-                            pw,
-                            ph,
-                            font.width,
-                            font.height,
-                            avail,
-                            fence_target_rows,
-                        );
-                        MermaidSlot::Image { cols, rows }
-                    }
-                    None => MermaidSlot::Loading,
-                },
-                None => MermaidSlot::Loading,
-            }
-        };
-        // Math ($…$ / $$…$$): in image mode, look up the rendered cache (a latex+display
-        // hash key). Not-yet-arrived becomes loading; failed/unsupported/no font degrades
-        // to raw LaTeX text (principle #3). An inline expression is lifted onto its own
-        // line (a synthetic-key image, the same shape as a mermaid fence).
         let math_on = font.is_some() && self.math_image_mode();
-        let math_slot = |latex: &str, display: bool| -> crate::preview::markdown::MathSlot {
-            use crate::preview::markdown::MathSlot;
-            let Some(font) = font else {
-                return MathSlot::Raw;
-            };
-            let key = PathBuf::from(crate::preview::markdown::math_url(latex, display));
-            match self.md_image_cache.get(&key) {
-                Some(e) if e.failed => MathSlot::Raw,
-                Some(e) => match (Some(()), e.layout_px) {
-                    // For math, layout_px holds the SVG's **intrinsic size (in em
-                    // units)**, not raster px. Derive rows from the em height and columns
-                    // from the intrinsic aspect ratio, for a size balanced against the text.
-                    (Some(_), Some((uw, uh))) => {
-                        let (cols, rows) =
-                            math_cells(uw, uh, font.width, font.height, avail, display);
-                        MathSlot::Image { cols, rows }
-                    }
-                    _ => MathSlot::Loading,
-                },
-                None => MathSlot::Loading,
+        // A picture of the open Word document: its bytes are in memory and its size was read
+        // when the document was converted, so there is no file to resolve or stat. Asked before
+        // the shared rules (`PictureLookup::other`); `None` is "not a document picture".
+        let office_message = |f: crate::preview::image::ImageFailure| f.message(lang, &plugin_id);
+        let no_pictures = std::collections::HashMap::new();
+        let office_slot = |url: &str, max_cols: Option<u16>| -> Option<ImageSlot> {
+            let font = font?;
+            konoma_plugin::document_pictures::ResourceSlots {
+                pictures: self.document.as_ref().map_or(&no_pictures, |d| &d.pictures),
+                cache: &self.md_images,
+                font: (font.width, font.height),
+                avail,
+                slide_rows,
+                message: &office_message,
             }
+            .slot(url, max_cols)
         };
+        let refused = |url: &str, p: &Path| self.md_image_refused(url, p);
+        let message = |f: crate::preview::image::ImageFailure, pid: &str| f.message(lang, pid);
+        // Decide how much room each picture takes (`konoma_plugin::document_pictures`, the rules
+        // the standalone app shares): a local file or a cached remote fetch is Inline, an uncached
+        // remote URL is Loading (its fetch is kicked off in `ensure_md_cache`) unless it failed,
+        // and anything else degrades to text (principle #3).
+        let lookup = konoma_plugin::document_pictures::PictureLookup {
+            cache: &self.md_images,
+            remote_failed: &self.md_remote_failed,
+            font: font.map(|f| (f.width, f.height)),
+            avail,
+            base_dir: base_dir.clone(),
+            fence_target_rows,
+            mermaid_on,
+            math_on,
+            plugin_id: &plugin_id,
+            refused: &refused,
+            refusals: &self.md_scope_refusals,
+            message: &message,
+            other: &office_slot,
+        };
+        let slot_of = |url: &str, max_cols: Option<u16>| lookup.image(url, max_cols);
+        let mermaid_slot = |code: &str| lookup.mermaid(code);
+        let math_slot = |latex: &str, display: bool| lookup.math(latex, display);
 
         match source {
             DecoratedSource::File => self.build_decorated_file(
@@ -897,96 +755,56 @@ impl App {
                 &math_slot,
             ),
             DecoratedSource::Diff { old_pre, new_pre } => {
-                // No per-ordinal `<details>` overrides make sense across two documents whose own
-                // block alignment isn't known until `render_markdown_diff_aligned` runs — every
-                // `<details>` block in either version simply falls back to its own `open`
-                // attribute (`next_details_open`'s own "missing entries default to expanded, via
-                // the attribute" contract), matching this presentation's read-only nature (there is
-                // no `Space`/`Enter` toggle to persist an override for in the first place — `items`
-                // is empty, so a `<details>` summary is never even focusable here).
-                crate::preview::markdown::set_details_open(Vec::new());
-                // `align` is always `GutterAlign::Diff` here (`ensure_md_cache`'s own
-                // `compute_gutter_align` mirrors `source` exactly — a `Diff` source always
-                // produces a `Diff` alignment) — render straight from its already-parsed `Doc`s +
-                // `block_ops` (`render_markdown_diff_from_parts`) instead of re-parsing/re-aligning
-                // `old_pre`/`new_pre` a second time. The `render_markdown_diff_aligned` fallback
-                // (a fresh parse+align) only matters if that invariant is ever broken; it degrades
-                // rather than panics.
-                let (lines, images, _extras, marks) = match align {
-                    GutterAlign::Diff { old, new, ops } => {
-                        crate::preview::markdown::render_markdown_diff_from_parts(
-                            old,
+                let fallback_ops;
+                let fallback_input;
+                let input = match align {
+                    GutterAlign::Diff(input) => input,
+                    // Preserve the old fallback if the caller has no landed alignment.
+                    _ => {
+                        let (old, new, ops) =
+                            crate::preview::markdown::diff_align(old_pre, new_pre);
+                        fallback_ops = ops;
+                        fallback_input = RenderedDiffInput {
                             old_pre,
-                            new,
                             new_pre,
-                            ops,
-                            width,
-                            code,
-                            &theme.code_theme,
-                            self.cfg.ui.icons,
-                            &self.cfg.ui.md_task_state_chars(),
-                            &slot_of,
-                            &mermaid_slot,
-                            tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                            self.cfg.ui.md_alerts,
-                            &math_slot,
-                            math_on,
-                            self.cfg.ui.md_block_aligns(),
-                        )
+                            old,
+                            new,
+                            ops: &fallback_ops,
+                        };
+                        &fallback_input
                     }
-                    _ => crate::preview::markdown::render_markdown_diff_aligned(
-                        old_pre,
-                        new_pre,
+                };
+                let body = render_diff_document(
+                    input,
+                    &self.doc_options(),
+                    &konoma_plugin::document_render::RenderSettings {
                         width,
                         code,
-                        &theme.code_theme,
-                        self.cfg.ui.icons,
-                        &self.cfg.ui.md_task_state_chars(),
-                        &slot_of,
-                        &mermaid_slot,
-                        tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                        self.cfg.ui.md_alerts,
-                        &math_slot,
+                        code_theme: &theme.code_theme,
+                        icons: self.cfg.ui.icons,
+                        mermaid_caption: tr(self.lang, crate::i18n::Msg::MermaidCaption),
+                        details_open: &self.details_open,
+                    },
+                    &konoma_plugin::document_render::PictureSlots {
+                        image: &slot_of,
+                        mermaid: &mermaid_slot,
+                        math: &math_slot,
+                        mermaid_on,
                         math_on,
-                        self.cfg.ui.md_block_aligns(),
-                    ),
-                };
-                // Collected from **both** versions' text — a diagram/image/equation that only
-                // exists in the old (removed) or new (added) side still needs its own encode
-                // request; `ensure_md_cache`'s resync loop dedups nothing, but re-requesting an
-                // already-cached/in-flight key is a cheap no-op on every one of those call sites.
-                let remote = if font.is_some() {
-                    let mut v = crate::preview::markdown::collect_remote_image_urls(old_pre);
-                    v.extend(crate::preview::markdown::collect_remote_image_urls(new_pre));
-                    v
-                } else {
-                    Vec::new()
-                };
-                let fences = if mermaid_on {
-                    let mut v = crate::preview::markdown::collect_mermaid_fences(old_pre);
-                    v.extend(crate::preview::markdown::collect_mermaid_fences(new_pre));
-                    v
-                } else {
-                    Vec::new()
-                };
-                let math = if math_on {
-                    let mut v = crate::preview::markdown::collect_math_exprs(old_pre);
-                    v.extend(crate::preview::markdown::collect_math_exprs(new_pre));
-                    v
-                } else {
-                    Vec::new()
-                };
+                        remote_on: font.is_some(),
+                    },
+                );
                 DecoratedMarkdown {
-                    lines,
-                    images,
-                    remote_urls: remote,
-                    mermaid_fences: fences,
-                    math_exprs: math,
-                    src_lines: new_pre.lines().count(),
-                    pre_src: new_pre.to_string(),
+                    lines: body.lines,
+                    images: body.images,
+                    remote_urls: body.remote_urls,
+                    mermaid_fences: body.mermaid_fences,
+                    math_exprs: body.math_exprs,
+                    src_lines: body.src_lines,
+                    pre_src: body.pre_src,
                     pre_origin: Vec::new(),
                     extras: crate::preview::markdown::MdRenderExtras::default(),
-                    diff_marks: marks,
+                    diff_marks: body.diff_marks,
                 }
             }
         }
@@ -1009,10 +827,11 @@ impl App {
         math_on: bool,
         math_slot: &dyn Fn(&str, bool) -> crate::preview::markdown::MathSlot,
     ) -> DecoratedMarkdown {
-        // A Word document draws the Markdown it was converted to, never the .docx on disk.
-        let is_doc = matches!(self.tab.preview_kind, Some(PreviewKind::Document(_)));
+        // A Markdown file, a Word document and a presentation draw the text their plugin handed
+        // over (a Word document: the Markdown it was converted to, never the .docx on disk).
+        let is_doc = self.holds_document();
         let loaded = if is_doc {
-            Ok(self.document_markdown().unwrap_or("").to_string())
+            Ok(self.document_source_text())
         } else {
             crate::preview::text::load(path).map(|content| decorated_file_text(&content))
         };
@@ -1020,7 +839,10 @@ impl App {
             Ok(src) => src,
             Err(e) => {
                 return DecoratedMarkdown {
-                    lines: vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
+                    lines: vec![Line::from(format!(
+                        "{} {e}",
+                        tr(self.lang, crate::i18n::Msg::DecoratedReadFailed)
+                    ))],
                     images: Vec::new(),
                     remote_urls: Vec::new(),
                     mermaid_fences: Vec::new(),
@@ -1036,119 +858,48 @@ impl App {
         // Source line count, used to map the scroll position back to an approximate source line.
         let src_lines = src.lines().count();
         match &self.tab.preview_kind {
-            Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Document(_)) => {
+            Some(_) if is_doc => {
                 let theme = &self.cfg.ui.theme;
-                // Front matter: split the leading `---`…`---` off so the body renders normally; a dim
-                // metadata block is prepended to the result below (and image line indices offset).
-                let (fm_lines, src) = if self.cfg.ui.md_frontmatter && !is_doc {
-                    match crate::preview::markdown::strip_front_matter(&src) {
-                        (Some(fm), body) => (
-                            crate::preview::markdown::render_front_matter(&fm, width),
-                            body,
-                        ),
-                        (None, body) => (Vec::new(), body),
-                    }
-                } else {
-                    (Vec::new(), src)
-                };
-                // Footnotes: rewrite `[^1]` refs to superscripts and pull `[^1]: …` defs into a
-                // section at the end (fence-aware; no-op without definitions).
-                // Each pre-pass also reports, per output line, which body line it came from, so the
-                // checkbox toggle can prove the checkbox it is about to edit really is the one on
-                // screen instead of trusting that the two counts tally (see `markdown::LineOrigin`).
-                let origin = crate::preview::markdown::identity_origin(&src);
-                let (src, origin) = if self.cfg.ui.md_footnotes {
-                    crate::preview::markdown::process_footnotes_traced(&src, &origin)
-                } else {
-                    (src, origin)
-                };
-                // Inline HTML (<kbd>/<del>/<sup>/<sub>/<br>) → Markdown/Unicode konoma's own renderer draws.
-                let (src, origin) = if self.cfg.ui.md_inline_html {
-                    crate::preview::markdown::process_inline_html_traced(&src, &origin)
-                } else {
-                    (src, origin)
-                };
-                // Preprocessing is done: from here on `src` is exactly what the renderer parses.
-                // Keep it so the source scanners (`y c`, the checkbox toggle) can read the very same
-                // string instead of re-deriving this chain from the file — see `MdCache::pre_src`.
-                let pre_src = src.clone();
-                // Compute each `<details>` block's effective open/closed state and pass it to the
-                // renderer (thread-local) + stash it so ensure_md_cache can load it onto MdCache
-                // (the toggle's baseline value).
-                let details_states: Vec<bool> =
-                    crate::preview::markdown::collect_details_open(&src)
-                        .iter()
-                        .enumerate()
-                        .map(|(ord, &attr)| {
-                            self.details_open
-                                .get(&ord)
-                                .copied()
-                                .unwrap_or_else(|| self.details_default_open(attr))
-                        })
-                        .collect();
-                crate::preview::markdown::set_details_open(details_states.clone());
-                let (mut lines, mut images, extras) =
-                    crate::preview::markdown::render_markdown_with_images_aligned(
-                        &src,
+                // How the document is drawn: the options its plugin returned with it. The one
+                // shared renderer (also the standalone app's) does the preprocessing and drawing.
+                let opts = self.doc_options();
+                let r = konoma_plugin::document_render::render_document(
+                    &src,
+                    &opts,
+                    &konoma_plugin::document_render::RenderSettings {
                         width,
                         code,
-                        &theme.code_theme,
-                        self.cfg.ui.icons,
-                        &self.cfg.ui.md_task_state_chars(),
-                        slot_of,
-                        mermaid_slot,
-                        tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                        self.cfg.ui.md_alerts,
-                        math_slot,
+                        code_theme: &theme.code_theme,
+                        icons: self.cfg.ui.icons,
+                        mermaid_caption: tr(self.lang, crate::i18n::Msg::MermaidCaption),
+                        details_open: &self.details_open,
+                    },
+                    &konoma_plugin::document_render::PictureSlots {
+                        image: slot_of,
+                        mermaid: mermaid_slot,
+                        math: math_slot,
+                        mermaid_on,
                         math_on,
-                        // `[ui] md_table_align` / `[ui] md_image_align`. The default pair is the
-                        // historical layout (tables left, images and diagrams centered), so an
-                        // unconfigured konoma draws exactly what it always did.
-                        self.cfg.ui.md_block_aligns(),
-                    );
-                let remote = if self.picker.is_some() {
-                    crate::preview::markdown::collect_remote_image_urls(&src)
-                } else {
-                    Vec::new()
-                };
-                let fences = if mermaid_on {
-                    crate::preview::markdown::collect_mermaid_fences(&src)
-                } else {
-                    Vec::new()
-                };
-                let math = if math_on {
-                    crate::preview::markdown::collect_math_exprs(&src)
-                } else {
-                    Vec::new()
-                };
-                // Prepend the front-matter metadata block, shifting image placements down past it.
-                if !fm_lines.is_empty() {
-                    for p in &mut images {
-                        p.line += fm_lines.len();
-                    }
-                    let mut all = fm_lines;
-                    all.extend(lines);
-                    lines = all;
-                }
+                        remote_on: self.picker.is_some(),
+                    },
+                );
                 DecoratedMarkdown {
-                    lines,
-                    images,
-                    remote_urls: remote,
-                    mermaid_fences: fences,
-                    math_exprs: math,
+                    lines: r.lines,
+                    images: r.images,
+                    remote_urls: r.remote_urls,
+                    mermaid_fences: r.mermaid_fences,
+                    math_exprs: r.math_exprs,
                     src_lines,
-                    pre_src,
-                    pre_origin: origin,
-                    // `render_markdown_with_images`'s own record, straight from the same parse it
-                    // rendered from — see `MdRenderExtras`'s own doc comment. `y c`/the checkbox
-                    // toggle read a focused item's source straight off this list, by ordinal, with
-                    // no re-scan and no count-guard reconciliation of any kind.
-                    extras,
+                    pre_src: r.pre_src,
+                    pre_origin: r.pre_origin,
+                    // `y c`/the checkbox toggle read a focused item's source straight off this
+                    // list, by ordinal, with no re-scan — see `MdRenderExtras`'s own doc comment.
+                    extras: r.extras,
                     diff_marks: Vec::new(),
                 }
             }
-            Some(PreviewKind::Mermaid(_)) => DecoratedMarkdown {
-                lines: crate::preview::markdown::render_mermaid_file(&src, width),
+            Some(k) if k.is_mermaid_file() => DecoratedMarkdown {
+                lines: self.mermaid_text_lines(&src, width),
                 images: Vec::new(),
                 remote_urls: Vec::new(),
                 mermaid_fences: Vec::new(),
@@ -1160,7 +911,7 @@ impl App {
                 diff_marks: Vec::new(),
             },
             // A standalone code file is syntax-highlighted via syntect.
-            Some(PreviewKind::Code(_)) => DecoratedMarkdown {
+            Some(k) if k.is_file_text() => DecoratedMarkdown {
                 lines: crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme),
                 images: Vec::new(),
                 remote_urls: Vec::new(),
@@ -1188,19 +939,8 @@ impl App {
     }
 }
 
-/// The default open state of a `<details>` block from `[ui] md_details` and the tag's own `open`
-/// attribute: `"open"`/`"closed"` force it, `"auto"` (or anything else) honors the attribute the way
-/// GitHub does.
-///
-/// A free function taking the config string rather than only an `&App` method, so the
-/// golden-snapshot harness (`app::md_snapshot_tests::render_case_with_width`) applies **this** rule instead
-/// of a hand-copied mirror of it. Until 2026-08-25 that harness computed the states straight from
-/// `collect_details_open` — i.e. from the tags' own attributes, which is only what `"auto"` happens
-/// to mean — so `[ui] md_details` was structurally unobservable from every golden.
-pub(super) fn details_default_open(md_details: &str, open_attr: bool) -> bool {
-    match md_details {
-        "open" => true,
-        "closed" => false,
-        _ => open_attr,
-    }
-}
+/// The default open state of a `<details>` block now lives in the shared renderer
+/// (`konoma_plugin::document_render`); the golden-snapshot harness reaches it by this path so it
+/// applies the rule the app applies rather than a hand-copied mirror.
+#[cfg(test)]
+pub(super) use konoma_plugin::document_render::details_default_open;

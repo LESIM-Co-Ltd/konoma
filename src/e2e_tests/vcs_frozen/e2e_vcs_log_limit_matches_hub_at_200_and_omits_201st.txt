@@ -1,0 +1,17 @@
+# frozen vcs frames: e2e_vcs_log_limit_matches_hub_at_200_and_omits_201st
+case last row of 200
+region x=0..98 y=2..6
+style a	Reset	Reset	DIM
+style b	Reset	Reset	NONE
+style c	DarkGray	Reset	NONE
+style d	Reset	Reset	DIM | REVERSED
+style e	Reset	Reset	REVERSED
+style f	DarkGray	Reset	REVERSED
+row 2 T|fdfba92 8 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 …  作 者  Author · 2020-01-01 00:08|
+row 2 S|a8b60c1b1c1b1c26|
+row 3 T|25d10a7 7 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:07|
+row 3 S|a8b60c1b1c1b1c26|
+row 4 T|47c9b1c 6 日 本 語 の 長 い 件 名  長 文  abc 長 文  abc 長 文  abc 長 文  abc 長 …  作 者  Author · 2020-01-01 00:06|
+row 4 S|a8b60c1b1c1b1c26|
+row 5 T|98e4dc1 5 日 本 語  Summary                                            作 者  Author · 2020-01-01 00:05|
+row 5 S|d8e3b1e1b1e1b1e52f1b1f1b1f26|

@@ -576,7 +576,7 @@ fn e2e_deck_the_outline_lists_the_slides_in_the_picture_view_and_jumps() {
     let Some((mut s, _d)) = open_kitty("dv_outline", 4, (100, 30)) else {
         return;
     };
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     for k in 1..=4 {
         s.see(&format!("Slide {k}: T{k}"));
@@ -711,35 +711,10 @@ fn visit_slides(s: &mut Sim, n: usize) {
     }
 }
 
-/// How long the pipeline may go without delivering anything before `settle` gives up: the wait
-/// is for lack of progress, not for a fixed total, so a loaded machine that is slowly working
-/// through many pictures is not failed for being slow.
-const SETTLE_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
-
 /// Applies pending decodes / encodes until the pipeline is quiet.
 #[track_caller]
 fn settle(s: &mut Sim) {
-    let mut deadline = std::time::Instant::now() + SETTLE_IDLE_LIMIT;
-    loop {
-        let imgs: Vec<_> = s.md_img_rx.as_ref().unwrap().try_iter().collect();
-        let encs: Vec<_> = s.md_enc_rx.as_ref().unwrap().try_iter().collect();
-        let any = !imgs.is_empty() || !encs.is_empty();
-        for r in imgs {
-            s.app.apply_md_image(r);
-        }
-        for r in encs {
-            s.app.apply_md_encode(r);
-        }
-        s.draw();
-        if !any && !s.app.md_pixels_pending() {
-            return;
-        }
-        if any {
-            deadline = std::time::Instant::now() + SETTLE_IDLE_LIMIT;
-        }
-        assert!(std::time::Instant::now() < deadline, "never settled");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    s.settle_inline_images("deck inline pictures", std::time::Duration::from_secs(120));
 }
 
 #[test]
@@ -1443,13 +1418,13 @@ fn e2e_deck_a_terminal_too_small_for_the_body_draws_a_tiny_frame() {
 /// terminal the drawing process would refuse them, at the size `Rendered::max_raster_px` says it
 /// draws them.
 fn heavy_deck(n: usize) -> Document {
-    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
     deck_doc_with(n, (0..n).map(|_| shadowed_slide(2)).collect())
 }
 
 /// The cap the writer reports for [`heavy_deck`]'s slides.
 fn heavy_cap() -> u32 {
-    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
     crate::preview::office::slide_draw::render_svg_cancellable(
         &shadowed_slide(2),
         &|_| None,
@@ -1536,7 +1511,7 @@ fn e2e_deck_a_heavy_slide_on_a_growing_terminal_is_not_redrawn_for_a_size_it_can
 
 #[test]
 fn e2e_deck_a_light_slide_keeps_the_full_frame_beside_a_heavy_one() {
-    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
     let scenes = vec![shadowed_slide(2), scene(RED)];
     let Some((mut s, _d)) = open_with(
         "dv_heavy_and_light",

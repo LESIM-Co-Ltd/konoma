@@ -186,24 +186,14 @@ fn canonical_existing(p: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Read the system clipboard as text. Err on environments where arboard is unavailable.
+/// Read the system clipboard as text. Err where the clipboard is unavailable.
 ///
-/// Test builds never touch arboard: see `test_support::get_test_clipboard`. A test that wants
-/// `paste_jump()` (rather than the clipboard-independent `paste_jump_from`) to succeed must first
-/// call `test_support::set_test_clipboard`; one that wants the "no clipboard" flash must first call
-/// `test_support::clear_test_clipboard` (the sink can otherwise hold a previous test's value — see
-/// that module's doc comment on thread reuse). The arboard-calling body is entirely absent from a
-/// `#[cfg(test)]` build.
-#[cfg(not(test))]
+/// Test builds read the in-memory sink (`konoma_host_core::clipboard`, reached through
+/// `test_support`): a test that wants `paste_jump()` to succeed must first call
+/// `test_support::set_test_clipboard`; one that wants the "no clipboard" flash must first call
+/// `test_support::clear_test_clipboard` (the sink can hold a previous test's value).
 fn read_clipboard() -> anyhow::Result<String> {
-    let mut cb = arboard::Clipboard::new()?;
-    Ok(cb.get_text()?)
-}
-
-#[cfg(test)]
-fn read_clipboard() -> anyhow::Result<String> {
-    crate::test_support::get_test_clipboard()
-        .ok_or_else(|| anyhow::anyhow!("test clipboard is empty"))
+    konoma_host_core::clipboard::get_text()
 }
 
 impl App {
@@ -292,6 +282,9 @@ impl App {
     /// `line` when given). Sets a `→ path[:line]` flash. Also reused by "open link in a new tab"
     /// (`md_open_focused_link_new_tab`) after it creates the fresh tab.
     pub(crate) fn paste_jump_to(&mut self, path: &Path, line: Option<usize>) {
+        // A project screen in front is left first (as its back key does), so the jump lands on
+        // the base screen and is shown instead of running under the screen.
+        self.leave_project_screens_for_jump();
         if !path.starts_with(&self.tab.root) {
             let anchor = if path.is_dir() {
                 path.to_path_buf()
@@ -307,10 +300,12 @@ impl App {
         let revealed = self.reveal_path_deep(path).unwrap_or(false);
         let mut disp = super::home_relative(path);
         if path.is_file() {
-            self.enter_preview(path);
-            if let Some(l) = line {
-                self.preview_goto_line(l);
-                disp.push_str(&format!(":{l}"));
+            match line {
+                Some(l) => {
+                    self.enter_preview_landing(path, super::Landing::GotoLine(l));
+                    disp.push_str(&format!(":{l}"));
+                }
+                None => self.enter_preview(path),
             }
         } else if !revealed && path != self.tab.root {
             // A directory we could not surface in the tree (hidden by the dotfile filter), and it is
@@ -329,7 +324,7 @@ impl App {
     /// few lines of context above and the caret on it. A decorated Markdown/Mermaid preview is first
     /// switched to raw source (which is windowed) so the line is addressable. No-op for image / table
     /// / pdf previews (there is no line coordinate to land on).
-    fn preview_goto_line(&mut self, line: usize) {
+    pub(super) fn preview_goto_line(&mut self, line: usize) {
         // A Word/OpenDocument file has no lines of its own (it is a zip): a line number from a
         // pasted reference means nothing in its converted Markdown, so the jump stays at the top.
         if self.is_document() {

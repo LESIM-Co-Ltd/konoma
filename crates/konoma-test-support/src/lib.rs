@@ -1,0 +1,745 @@
+//! Test-only helpers shared by the root package's tests and the tests of the crates under
+//! `crates/` (a dev-dependency by path only; never published).
+//!
+//! Moved unchanged from `src/test_support.rs` (the root keeps that module and re-exports these).
+
+use std::path::PathBuf;
+
+pub mod frozen_frame;
+pub mod top_edge;
+
+/// Owning guard for a path returned by [`unique_tmp`]: removes it (recursively, if it turned out to
+/// be a directory; as a single file otherwise) when dropped, so a fixture can never outlive the test
+/// that created it. Derefs to `Path`, so the overwhelming majority of call sites (`.join(...)`,
+/// `&dir`, `dir.exists()`, handing `&dir` to a function expecting `impl AsRef<Path>`, ...) need no
+/// change at all: the fixture simply lives exactly as long as the guard stays in scope, which for a
+/// `#[test]` fn that binds it with `let dir = unique_tmp(...)` and uses `dir` for the rest of the
+/// function is already "until the test returns" — correct with zero extra code.
+///
+/// **The one thing this type deliberately does not provide is a way to detach the path from the
+/// guard by value** — no `Into<PathBuf>`, no `From<TmpDir> for PathBuf`. A helper that builds a
+/// fixture with `unique_tmp` and hands the path back to its caller for further use must return the
+/// `TmpDir` itself (or a struct/tuple that holds it), never just the inner path — returning a bare
+/// `PathBuf` extracted from a local `TmpDir` would drop the guard (and `rm -rf` the fixture) at the
+/// end of the helper, before the caller ever touches it. This is enforced by the type system: any
+/// call site that needs an owned, detached `PathBuf` must call `.to_path_buf()` (available via
+/// `Deref`) *while the guard is still alive*, which makes the lifetime dependency visible at the
+/// call site instead of silently wrong.
+pub struct TmpDir {
+    path: PathBuf,
+}
+
+impl TmpDir {
+    /// Mirrors `PathBuf::as_path` (`Path` itself has no `as_path` method — without this, method
+    /// resolution falls off the end of the `Deref` chain and rustc's "did you mean" fallback lands on
+    /// an unrelated, nightly-gated `as_str`, producing a confusing `E0658` instead of a straightforward
+    /// "no method" error).
+    pub fn as_path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// A new guard for `self`'s path with a different extension (mirrors `Path::with_extension`, but
+    /// returns an owned, cleanup-guarded path rather than a bare `PathBuf`). Exists for fixtures that
+    /// reserve a unique base name via `unique_tmp` and then need a specific extension (for
+    /// extension-based preview-rule matching) before creating anything on disk — the un-extended path
+    /// `self` held is never created in those call sites, so `self`'s own `Drop` is a harmless no-op.
+    pub fn with_extension(&self, ext: impl AsRef<std::ffi::OsStr>) -> TmpDir {
+        TmpDir {
+            path: self.path.with_extension(ext),
+        }
+    }
+
+    /// Resolves this guard's path through `Path::canonicalize` (e.g. macOS's `/var` ->
+    /// `/private/var` symlink) and returns a *new* guard for the resolved path — consuming `self`
+    /// **without** running its `Drop` (`std::mem::forget`). The canonical path names the exact same
+    /// directory on disk as `self` did, so responsibility for removing it transfers to the returned
+    /// guard: running both `Drop` impls would either remove the same directory twice (racy against
+    /// anything else touching it in between) or delete it out from under the caller if `self` were a
+    /// temporary that dropped first. Used by fixtures that need the canonical form of their root (to
+    /// compare against `App::new`'s own canonicalized `tab.root`, or to pass to `git`/`jj`).
+    ///
+    /// Deliberately **not** named `canonicalize`: `Path` already has that method (reachable
+    /// through `Deref`, borrowing `&self` and returning a bare `PathBuf`), and giving this one the
+    /// same name would make inherent-method lookup pick this by-value, `TmpDir`-returning version
+    /// at *every* `some_tmp_dir.canonicalize()` call site in the whole crate — including the ~280
+    /// that rely on the borrowing `Path` version and never meant to consume the guard.
+    // Its call sites (`app::tests::git_repo_with_one_change` and the VCS e2e fixtures) are
+    // `#[cfg(feature = "git")]`, so this is unused — not unreachable — on a no-`git` test build.
+    pub fn into_canonical(self) -> std::io::Result<TmpDir> {
+        let canon = self.path.canonicalize()?;
+        std::mem::forget(self);
+        Ok(TmpDir { path: canon })
+    }
+}
+
+impl std::ops::Deref for TmpDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::path::Path> for TmpDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TmpDir {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.path.as_os_str()
+    }
+}
+
+impl std::fmt::Debug for TmpDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.path, f)
+    }
+}
+
+impl PartialEq<std::path::Path> for TmpDir {
+    fn eq(&self, other: &std::path::Path) -> bool {
+        self.path == *other
+    }
+}
+
+impl PartialEq<PathBuf> for TmpDir {
+    fn eq(&self, other: &PathBuf) -> bool {
+        self.path == *other
+    }
+}
+
+// The reverse direction too (`assert_eq!(some_pathbuf, tmp_dir_guard)`) — `PartialEq` is not
+// symmetric at the trait level, so both directions need their own impl.
+impl PartialEq<TmpDir> for PathBuf {
+    fn eq(&self, other: &TmpDir) -> bool {
+        *self == other.path
+    }
+}
+
+impl PartialEq<TmpDir> for std::path::Path {
+    fn eq(&self, other: &TmpDir) -> bool {
+        *self == other.path
+    }
+}
+
+impl Drop for TmpDir {
+    fn drop(&mut self) {
+        // Best effort: a fixture that was never created (a test that only ever probes "missing
+        // path" behaviour), already removed itself, or lost a filesystem race with a sibling
+        // cleanup is not an error here — ignore it exactly like the ad-hoc `let _ =
+        // std::fs::remove_dir_all(...)` calls this type replaces used to. A handful of fixtures
+        // are a single file (not a directory) rather than a tree, so try both.
+        if self.path.is_dir() {
+            let _ = std::fs::remove_dir_all(&self.path);
+        } else {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// A unique temp directory *path* per call (pid + a process-global counter), wrapped in a guard
+/// that removes it when dropped (see [`TmpDir`]). Tests that build a fixture under
+/// `std::env::temp_dir()` must never use a fixed name: two `cargo test` binaries (git-feature and
+/// no-git-feature builds, or two concurrent CI/dev runs) sharing one machine's temp directory would
+/// otherwise race on `create_dir_all` / `remove_dir_all` / file writes on the identical path — one
+/// process's fixture reset could delete or overwrite another process's still-running test. The pid
+/// disambiguates across processes; the counter disambiguates multiple calls with the same prefix
+/// within one process (parallel test threads, or a helper called more than once in the same test).
+///
+/// Callers are responsible for `create_dir_all` / `File::create` / etc. as appropriate for their
+/// fixture — this only reserves a unique path and guarantees its eventual cleanup.
+pub fn unique_tmp(prefix: &str) -> TmpDir {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    TmpDir {
+        path: std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id())),
+    }
+}
+
+/// Restores the unix mode 0o755 on `path` when dropped, a panic included, so a temp directory
+/// that a test made unreadable can still be deleted. It does not set a mode: the test does that
+/// itself, after creating the guard.
+#[cfg(unix)]
+pub struct RestoreMode(PathBuf);
+
+#[cfg(unix)]
+impl RestoreMode {
+    pub fn new(path: &std::path::Path) -> Self {
+        Self(path.to_path_buf())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RestoreMode {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// The repository root (`crates/konoma-test-support/../..`), for tests of the crates under
+/// `crates/` that read `samples/` or write under `docs/` / `site/`: their working directory is
+/// the crate's own directory, not the repository root.
+///
+/// The root is found from the package under test (`CARGO_MANIFEST_DIR` at run time): the nearest
+/// ancestor whose `Cargo.toml` declares a `[workspace]`. This crate's own location is no guide,
+/// because in a plugin repository split out of konoma it comes from the registry.
+pub fn repo_root() -> PathBuf {
+    let here = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    here.ancestors()
+        .find(|dir| {
+            std::fs::read_to_string(dir.join("Cargo.toml"))
+                .is_ok_and(|t| t.lines().any(|l| l.trim() == "[workspace]"))
+        })
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or(here)
+}
+
+/// Root of the MAIN checkout (the parent of the git common dir), falling back to [`repo_root`].
+///
+/// Linked worktrees live outside the main checkout, and the git-ignored `evidence/` and
+/// `docs/` materials exist only there, so the repository root alone would point at a checkout
+/// that lacks them.
+fn main_checkout_root() -> PathBuf {
+    let manifest = repo_root();
+    let common = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&manifest)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim()));
+    common
+        .filter(|p| p.is_absolute() && p.file_name().is_some_and(|n| n == ".git"))
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .unwrap_or(manifest)
+}
+
+/// `<main checkout>/evidence`: local, never-committed Office materials read by the `#[ignore]`
+/// dump / survey tests (public corpus, reference renders, self-made decks, survey work).
+pub fn evidence_dir() -> PathBuf {
+    main_checkout_root().join("evidence")
+}
+
+/// `<main checkout>/.cache/<branch>/<purpose>`: where tests put heavy or regenerable output
+/// (git-ignored, may be deleted at any time). `<branch>` is the branch of the checkout being
+/// built, with `/` replaced by `-`; `detached` when git fails or HEAD is detached.
+/// `evidence/` is read-only for tests: never write there.
+pub fn cache_dir(purpose: &str) -> PathBuf {
+    let branch = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root())
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().replace('/', "-"))
+        .filter(|b| !b.is_empty() && b != "HEAD")
+        .unwrap_or_else(|| "detached".to_string());
+    main_checkout_root()
+        .join(".cache")
+        .join(branch)
+        .join(purpose)
+}
+
+/// `<main checkout>/docs/render-check`: where the dump tests write pictures for a human to review.
+pub fn render_check_dir() -> PathBuf {
+    main_checkout_root().join("docs/render-check")
+}
+
+/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
+/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
+/// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
+/// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test --manifest-path
+/// …`, is a real, supported invocation), so a bare relative path would silently miss the fixture
+/// and silently skip every assertion in every test that used it.
+///
+/// Returns `None` when the fixture is legitimately absent: `samples/` is excluded from the
+/// published crate (`Cargo.toml`'s `exclude`), so `cargo test` against the packaged tarball (not a
+/// git checkout) has nothing to read. Says so loudly (visible with `--nocapture`, or in the
+/// captured-output dump whenever the process later exits non-zero for any reason) instead of
+/// quietly passing zero assertions with no trace anywhere in the test output.
+pub fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
+    let p = samples_root().join("samples").join(name);
+    if p.exists() {
+        Some(p)
+    } else {
+        eprintln!(
+            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
+        );
+        None
+    }
+}
+
+/// The nearest ancestor of the package under test that has a `samples/` directory. The package is
+/// named by `CARGO_MANIFEST_DIR` at run time (set for the test process by the test runner), so the
+/// same call finds the fixtures in konoma's checkout and in a plugin repository split out of it,
+/// where this crate comes from the registry and its own location says nothing about the repo.
+fn samples_root() -> PathBuf {
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    manifest
+        .ancestors()
+        .find(|dir| dir.join("samples").is_dir())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or(manifest)
+}
+
+/// A PNG header that declares `w` x `h` with no pixel data behind it.
+pub fn png_header_only(w: u32, h: u32) -> Vec<u8> {
+    fn chunk(t: &[u8; 4], d: &[u8]) -> Vec<u8> {
+        let mut c = Vec::new();
+        c.extend_from_slice(&(d.len() as u32).to_be_bytes());
+        c.extend_from_slice(t);
+        c.extend_from_slice(d);
+        let mut crc = crc32(t);
+        crc = crc32_update(crc, d);
+        c.extend_from_slice(&(crc ^ 0xffff_ffff).to_be_bytes());
+        c
+    }
+    fn crc32(d: &[u8]) -> u32 {
+        crc32_update(0xffff_ffff, d)
+    }
+    fn crc32_update(mut c: u32, d: &[u8]) -> u32 {
+        for &b in d {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        c
+    }
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    out.extend(chunk(b"IHDR", &ihdr));
+    out.extend(chunk(b"IDAT", &[0x78, 0x01]));
+    out
+}
+
+/// Writes `contents` to `path` as an executable file that this process never holds open for
+/// writing. Writing the file here and then running it races with other test threads: a thread that
+/// forks while the write fd is open hands the fd to its child until that child execs, and running
+/// the file in that window fails with ETXTBSY ("Text file busy") on Linux. So the bytes go to a
+/// staging file that is never run, a `cp` child makes the real file (its write fd lives and dies
+/// inside `cp`), and only `chmod` touches `path` here.
+#[cfg(unix)]
+pub fn write_executable(path: &std::path::Path, contents: impl AsRef<[u8]>) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut staged = path.as_os_str().to_owned();
+    staged.push(".staged");
+    let staged = PathBuf::from(staged);
+    std::fs::write(&staged, contents).unwrap();
+    let status = std::process::Command::new("cp")
+        .arg(&staged)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "cp failed: {status}");
+    let _ = std::fs::remove_file(&staged);
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Serializes a minimal, valid, single-page PDF (hand-built, no external tool needed) from its bare
+/// essentials — a page size in points and a raw content-stream body — factoring out the
+/// object/xref/trailer plumbing shared by every hand-built PDF fixture in this crate (a Catalog, a
+/// one-page Pages tree, and a single Content stream holding `content` verbatim, with `/Length` set
+/// to its exact byte length). Passing `content: b""` produces a genuinely blank page (`/Length 0`,
+/// no operators) — the PDF-syntax-level blank a page needs to look like, as opposed to a
+/// corrupted/truncated file.
+pub fn build_minimal_one_page_pdf(w_pt: u32, h_pt: u32, content: &[u8]) -> Vec<u8> {
+    build_pdf(&[(w_pt, h_pt, content)])
+}
+
+/// A minimal valid PDF with one page per `(width, height, content stream)` entry, in order.
+pub fn build_pdf(pages: &[(u32, u32, &[u8])]) -> Vec<u8> {
+    // Objects: 1 catalog, 2 pages, then a (page, contents) pair per page.
+    let kids: Vec<String> = (0..pages.len())
+        .map(|i| format!("{} 0 R", 3 + 2 * i))
+        .collect();
+    let mut objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {} >>",
+            kids.join(" "),
+            pages.len()
+        )
+        .into_bytes(),
+    ];
+    for (i, (w_pt, h_pt, content)) in pages.iter().enumerate() {
+        objs.push(
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Contents {} 0 R /Resources << >> >>",
+                4 + 2 * i
+            )
+            .into_bytes(),
+        );
+        let mut content_obj = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+        content_obj.extend_from_slice(content);
+        content_obj.extend_from_slice(b"\nendstream");
+        objs.push(content_obj);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = vec![0usize];
+    for (i, body) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_offset = out.len();
+    let n = objs.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for off in &offsets[1..] {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
+            .as_bytes(),
+    );
+    out
+}
+
+/// Write a minimal xlsx: `(name, state, <sheetData> rows, extra xml after sheetData)` per sheet.
+pub fn build_xlsx(path: &std::path::Path, sheets: &[(&str, &str, &str, &str)]) {
+    build_xlsx_with_styles(path, sheets, None);
+}
+
+/// [`build_xlsx`] plus an optional `xl/styles.xml` (the cells' `s="N"` pick `cellXfs` entry N).
+pub fn build_xlsx_with_styles(
+    path: &std::path::Path,
+    sheets: &[(&str, &str, &str, &str)],
+    styles: Option<&str>,
+) {
+    use std::io::Write as _;
+    const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    const RNS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let mut wb = format!(r#"<?xml version="1.0"?><workbook xmlns="{NS}" xmlns:r="{RNS}"><sheets>"#);
+    let mut rels = String::from(
+        r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+    );
+    for (i, (name, state, _, _)) in sheets.iter().enumerate() {
+        let n = i + 1;
+        wb += &format!(r#"<sheet name="{name}" sheetId="{n}" state="{state}" r:id="rId{n}"/>"#);
+        rels += &format!(
+            r#"<Relationship Id="rId{n}" Type="x/worksheet" Target="worksheets/sheet{n}.xml"/>"#
+        );
+    }
+    wb += "</sheets></workbook>";
+    rels += "</Relationships>";
+    let root_rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
+    let f = std::fs::File::create(path).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut put = |name: &str, body: &str| {
+        zw.start_file(name, opts).unwrap();
+        zw.write_all(body.as_bytes()).unwrap();
+    };
+    put("_rels/.rels", root_rels);
+    put("xl/workbook.xml", &wb);
+    put("xl/_rels/workbook.xml.rels", &rels);
+    if let Some(styles) = styles {
+        put("xl/styles.xml", styles);
+    }
+    for (i, (_, _, rows, after)) in sheets.iter().enumerate() {
+        put(
+            &format!("xl/worksheets/sheet{}.xml", i + 1),
+            &format!(
+                r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData>{rows}</sheetData>{after}</worksheet>"#
+            ),
+        );
+    }
+    zw.finish().unwrap();
+}
+
+/// Run a plugin program (`konoma-office <file>` and the like) without a terminal: standard input
+/// is closed and standard output and error are pipes, so the program can only refuse or stop at
+/// "must be a terminal", and never takes over a screen. `home` becomes `HOME` and
+/// `XDG_CONFIG_HOME` (`<home>/xdg`) so the user's own `config.toml` is never read.
+pub fn run_program_without_terminal(
+    exe: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    home: &std::path::Path,
+) -> std::process::Output {
+    run_program_without_terminal_with_cwd(exe, args, home, None)
+}
+
+/// Like [`run_program_without_terminal`], with an optional child working directory.
+pub fn run_program_without_terminal_with_cwd(
+    exe: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    home: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+) -> std::process::Output {
+    let mut command = std::process::Command::new(exe);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("xdg"))
+        .env_remove("LC_ALL")
+        .env_remove("LC_MESSAGES")
+        .env("LANG", "C")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("the program starts")
+}
+
+/// An animated GIF (looping) of solid-color frames: each `(rgb, delay_ms)` is one frame of
+/// `w` x `h` pixels shown for its delay. Delays are rounded to 10 ms by the format.
+pub fn build_animated_gif(w: u32, h: u32, frames: &[([u8; 3], u32)]) -> Vec<u8> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::{Delay, Frame, Rgba, RgbaImage};
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).expect("repeat is written");
+        for (c, ms) in frames {
+            let img = RgbaImage::from_pixel(w, h, Rgba([c[0], c[1], c[2], 255]));
+            let delay = Delay::from_numer_denom_ms(*ms, 1);
+            enc.encode_frame(Frame::from_parts(img, 0, 0, delay))
+                .expect("a frame is written");
+        }
+    }
+    out
+}
+
+/// A backend that applies the updates as a terminal does. `ratatui::backend::TestBackend` only stores the cells it is
+/// given, so a cell that a wide character covered keeps what it held before: the wide character
+/// is drawn over a mark at the cell after it (ratatui skips that cell), and when a narrow one is
+/// drawn over the wide character's first cell later, ratatui sees a blank where a blank was and
+/// sends nothing, while a real terminal has blanked the second half (tmux does; xterm, kitty
+/// and Ghostty alike) and the stale mark would show in the test only. Tests that look at
+/// the edges of an overlay read the screen this leaves (`.1`).
+pub struct TermScreen(
+    pub ratatui::backend::TestBackend,
+    pub ratatui::buffer::Buffer,
+);
+
+impl TermScreen {
+    pub fn new(w: u16, h: u16) -> Self {
+        TermScreen(
+            ratatui::backend::TestBackend::new(w, h),
+            ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h)),
+        )
+    }
+}
+
+impl ratatui::backend::Backend for TermScreen {
+    type Error = std::convert::Infallible;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        let wide =
+            |c: &ratatui::buffer::Cell| unicode_width::UnicodeWidthStr::width(c.symbol()) > 1;
+        let width = self.1.area.width;
+        for (x, y, cell) in content {
+            let buf = &mut self.1;
+            // Drawing over the second half of a wide character blanks its first half.
+            if x > 0 && wide(&buf[(x - 1, y)]) {
+                buf[(x - 1, y)].reset();
+            }
+            // Drawing over the first half of one blanks its second half.
+            if wide(&buf[(x, y)]) && x + 1 < width {
+                buf[(x + 1, y)].reset();
+            }
+            buf[(x, y)] = cell.clone();
+            // A wide character covers the cell after it.
+            if wide(cell) && x + 1 < width {
+                buf[(x + 1, y)].reset();
+            }
+        }
+        Ok(())
+    }
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+        self.0.get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        p: P,
+    ) -> Result<(), Self::Error> {
+        self.0.set_cursor_position(p)
+    }
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.1.reset();
+        self.0.clear()
+    }
+    fn clear_region(&mut self, c: ratatui::backend::ClearType) -> Result<(), Self::Error> {
+        self.0.clear_region(c)
+    }
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.0.scroll_region_up(region, line_count)
+    }
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> Result<(), Self::Error> {
+        self.0.scroll_region_down(region, line_count)
+    }
+    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+        self.0.size()
+    }
+    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+        self.0.window_size()
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush()
+    }
+}
+
+/// The rectangle an overlay covers: the bounding box of the cells it draws on an empty screen.
+fn overlay_rect(
+    w: u16,
+    h: u16,
+    overlay: &mut dyn FnMut(&mut ratatui::Frame),
+) -> ratatui::layout::Rect {
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    term.draw(|f| overlay(f)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let (mut x0, mut y0, mut x1, mut y1) = (u16::MAX, u16::MAX, 0u16, 0u16);
+    for y in 0..h {
+        for x in 0..w {
+            if buf[(x, y)].symbol() != " " {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    assert!(
+        x0 != u16::MAX,
+        "the overlay draws nothing on an empty screen"
+    );
+    ratatui::layout::Rect::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+}
+
+/// Checks that an overlay looks the same on a background of wide characters as on an empty one,
+/// as a terminal shows it (see [`TermScreen`]). The background is `日` repeated across the whole
+/// screen, once with the characters starting on even columns and once on odd ones, so a wide
+/// character always crosses the overlay's left edge (its second half under the overlay's first
+/// column) in one run and its right edge (its first half in the overlay's last column) in the
+/// other. Each run is drawn as the first frame and after a frame of ASCII (where every cell
+/// changes, so ratatui sends the wide characters and skips the cell after each).
+///
+/// `overlay` draws the overlay over whatever the frame holds. Returns the overlay's rectangle.
+pub fn assert_overlay_over_wide_background(
+    name: &str,
+    w: u16,
+    h: u16,
+    mut overlay: impl FnMut(&mut ratatui::Frame),
+) -> ratatui::layout::Rect {
+    use ratatui::Terminal;
+    let rect = overlay_rect(w, h, &mut overlay);
+    let mut empty = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    empty.draw(|f| overlay(f)).unwrap();
+    let expected = empty.backend().buffer().clone();
+    for parity in 0..2u16 {
+        for after_ascii in [false, true] {
+            let mut term = Terminal::new(TermScreen::new(w, h)).unwrap();
+            if after_ascii {
+                term.draw(|f| {
+                    for y in 0..h {
+                        f.buffer_mut().set_string(
+                            0,
+                            y,
+                            "a".repeat(w as usize),
+                            ratatui::style::Style::default(),
+                        );
+                    }
+                })
+                .unwrap();
+            }
+            term.draw(|f| {
+                for y in 0..h {
+                    let mut x = parity;
+                    while x + 1 < w {
+                        f.buffer_mut()
+                            .set_string(x, y, "日", ratatui::style::Style::default());
+                        x += 2;
+                    }
+                }
+                overlay(f);
+            })
+            .unwrap();
+            let screen = &term.backend().1;
+            let what = format!(
+                "{name}, wide characters from column parity {parity}, after ASCII: {after_ascii}"
+            );
+            for y in rect.top()..rect.bottom() {
+                for x in rect.left()..rect.right() {
+                    assert_eq!(
+                        screen[(x, y)].symbol(),
+                        expected[(x, y)].symbol(),
+                        "{what}: the overlay's cell ({x}, {y}) differs"
+                    );
+                }
+                // A wide character left of the overlay would have its second half under the border.
+                if rect.x > 0 {
+                    let sym = screen[(rect.x - 1, y)].symbol();
+                    assert!(
+                        unicode_width::UnicodeWidthStr::width(sym) <= 1,
+                        "{what}: ({}, {y}) holds {sym:?}",
+                        rect.x - 1
+                    );
+                }
+            }
+        }
+    }
+    rect
+}
+
+#[cfg(test)]
+mod samples_root_tests {
+    use super::*;
+
+    #[test]
+    fn a_package_below_the_repo_root_finds_the_repo_samples() {
+        assert!(sample_path_or_skip("sample.pdf").is_some());
+        assert!(samples_root().join("samples").is_dir());
+    }
+
+    #[test]
+    fn the_repo_root_is_the_workspace_above_the_package_under_test() {
+        let root = repo_root();
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(manifest.lines().any(|l| l.trim() == "[workspace]"));
+        assert!(root.join("crates").join("konoma-test-support").is_dir());
+    }
+
+    #[test]
+    fn a_missing_fixture_is_none_not_a_panic() {
+        assert!(sample_path_or_skip("no-such-fixture.bin").is_none());
+    }
+}

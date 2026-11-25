@@ -503,43 +503,8 @@ fn too_many_gif_frames_fall_back_to_a_still() {
     assert!(decode_gif_bytes_inline(&gif((8, 8), 5_001)).is_none());
 }
 
-/// A PNG header that declares `w` x `h` with no pixel data behind it.
-pub(crate) fn png_header_only(w: u32, h: u32) -> Vec<u8> {
-    fn chunk(t: &[u8; 4], d: &[u8]) -> Vec<u8> {
-        let mut c = Vec::new();
-        c.extend_from_slice(&(d.len() as u32).to_be_bytes());
-        c.extend_from_slice(t);
-        c.extend_from_slice(d);
-        let mut crc = crc32(t);
-        crc = crc32_update(crc, d);
-        c.extend_from_slice(&(crc ^ 0xffff_ffff).to_be_bytes());
-        c
-    }
-    fn crc32(d: &[u8]) -> u32 {
-        crc32_update(0xffff_ffff, d)
-    }
-    fn crc32_update(mut c: u32, d: &[u8]) -> u32 {
-        for &b in d {
-            c ^= u32::from(b);
-            for _ in 0..8 {
-                c = if c & 1 != 0 {
-                    0xedb8_8320 ^ (c >> 1)
-                } else {
-                    c >> 1
-                };
-            }
-        }
-        c
-    }
-    let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&w.to_be_bytes());
-    ihdr.extend_from_slice(&h.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
-    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
-    out.extend(chunk(b"IHDR", &ihdr));
-    out.extend(chunk(b"IDAT", &[0x78, 0x01]));
-    out
-}
+// Lives in `konoma-test-support` (the `konoma-svg` crate's tests use it too).
+pub(crate) use konoma_test_support::png_header_only;
 
 #[test]
 fn a_still_image_over_the_pixel_limit_is_refused_from_its_header() {

@@ -5,6 +5,101 @@ use crate::config::Config;
 use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git};
 use crate::test_support::{sample_path_or_skip, unique_tmp, write_solid_png};
 
+#[cfg(feature = "git")]
+#[test]
+fn git_watch_cache_tracks_roots_and_tabs_without_tick_discovery() {
+    if !crate::vcs::Git::git_binary_available() {
+        eprintln!("skipping: git unavailable");
+        return;
+    }
+    let first = unique_tmp("git_watch_cache_first");
+    let second = unique_tmp("git_watch_cache_second");
+    let plain = unique_tmp("git_watch_cache_plain");
+    for dir in [&first, &second] {
+        init_git_repo(dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+    }
+    std::fs::create_dir_all(&plain).unwrap();
+    let fresh = |app: &App| {
+        let root = app.tab.root.canonicalize().unwrap();
+        crate::vcs::watch_dir(&app.tab.root).filter(|p| !p.starts_with(&root))
+    };
+    let (mut app, calls) = crate::vcs::count_watch_dir_calls(|| {
+        App::new(first.to_path_buf(), Config::default()).unwrap()
+    });
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        for _ in 0..20 {
+            app.git_dir_watch();
+        }
+        app.rebuild_tree().unwrap();
+    });
+    assert_eq!(
+        calls, 0,
+        "ticks and same-root rebuilds do not rediscover the watch"
+    );
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(first.join("src")));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    assert!(app.git_dir_watch().is_some());
+    let first_watch = app.git_dir_watch();
+    app.tab_new().unwrap();
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(second.join("src")));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let second_watch = app.git_dir_watch();
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        app.tab_goto(0);
+        assert_eq!(app.git_dir_watch(), first_watch);
+        app.tab_goto(1);
+        assert_eq!(app.git_dir_watch(), second_watch);
+    });
+    assert_eq!(calls, 0, "each tab keeps its own watch value");
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| app.jump_to_dir(plain.to_path_buf()));
+    assert_eq!(calls, 1);
+    assert_eq!(app.git_dir_watch(), fresh(&app));
+    assert!(app.git_dir_watch().is_none());
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn jj_watch_cache_updates_when_the_chosen_backend_changes() {
+    if !crate::vcs::Git::git_binary_available() || !crate::vcs::jj::available() {
+        eprintln!("skipping: git and jj required");
+        return;
+    }
+    let dir = unique_tmp("jj_watch_backend_change");
+    init_git_repo(&dir);
+    assert!(crate::test_support::run_jj(
+        &dir,
+        &["git", "init", "--colocate", "."]
+    ));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::Auto));
+    let mut app = App::new(dir.join("src"), Config::default()).unwrap();
+    let git_watch = app.git_dir_watch();
+    let (_, calls) = crate::vcs::count_watch_dir_calls(|| {
+        app.apply_statuses(StatusResult {
+            gen: app.git_status_gen,
+            statuses: Default::default(),
+            branch: None,
+            worktree_origin: None,
+            vcs: crate::vcs::VcsKind::Jj,
+            workdir: Some(dir.to_path_buf()),
+        });
+    });
+    assert_eq!(calls, 1);
+    assert_ne!(app.git_dir_watch(), git_watch);
+    assert_eq!(
+        app.git_dir_watch(),
+        crate::vcs::Vcs::watch_dir(&crate::vcs::Jj, &dir)
+    );
+    crate::vcs::set_preference_for_test(None);
+}
+
 /// Test helper: the link target of an `MdItem` (panics if the item is a checkbox).
 fn item_target(it: &MdItem) -> &str {
     match &it.kind {
@@ -639,7 +734,7 @@ fn gitignored_entries_detected_and_dimmed() {
     let dir = unique_tmp("konoma_gitignore_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git2::Repository::init(&dir).unwrap();
+    konoma_vcs_core::git2::Repository::init(&dir).unwrap();
     std::fs::write(dir.join(".gitignore"), b"ignored.log\nnode_modules/\n").unwrap();
     std::fs::write(dir.join("tracked.txt"), b"x").unwrap();
     std::fs::write(dir.join("ignored.log"), b"y").unwrap();
@@ -704,7 +799,7 @@ fn fs_burst_build_churn_skips_only_all_ignored_paths() {
     let dir = unique_tmp("konoma_fs_burst_churn_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git2::Repository::init(&dir).unwrap();
+    konoma_vcs_core::git2::Repository::init(&dir).unwrap();
     std::fs::write(dir.join(".gitignore"), b"build/\n").unwrap();
     std::fs::create_dir_all(dir.join("build")).unwrap();
     std::fs::write(dir.join("build").join("out.o"), b"x").unwrap();
@@ -785,7 +880,7 @@ fn deleting_a_file_inside_an_ignored_directory_updates_the_tree() {
     let dir = unique_tmp("konoma_ignored_delete_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("out")).unwrap();
-    git2::Repository::init(&dir).unwrap();
+    konoma_vcs_core::git2::Repository::init(&dir).unwrap();
     std::fs::write(dir.join(".gitignore"), b"out/\n").unwrap();
     std::fs::write(dir.join("out").join("a_keep.jpg"), b"keep-me").unwrap();
     std::fs::write(dir.join("out").join("b_delete.png"), b"delete-me").unwrap();
@@ -893,84 +988,6 @@ fn diff_layout_parse_and_resolve() {
     assert_eq!(DiffLayout::Unified.next(), DiffLayout::Split);
     assert_eq!(DiffLayout::Split.next(), DiffLayout::Auto);
     assert_eq!(DiffLayout::Auto.next(), DiffLayout::Unified);
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn diff_from_tree_and_worktree_detail_and_cycle() {
-    let dir = unique_tmp("konoma_diff_entrypoints");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    std::fs::write(dir.join("a.txt"), b"v1\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-m", "init"]);
-    std::fs::write(dir.join("a.txt"), b"v2\n").unwrap(); // modified
-    std::fs::write(dir.join("b.txt"), b"new\n").unwrap(); // untracked
-
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.rebuild_tree().unwrap();
-    app.refresh_git_if_needed();
-
-    // Feature 1: cursor on changed file a.txt in the tree → `=` opens a diff preview directly.
-    let ai = app
-        .tab
-        .entries
-        .iter()
-        .position(|e| e.path == canon.join("a.txt"))
-        .expect("a.txt がツリーに無い");
-    app.tab.selected = ai;
-    app.tree_open_git_diff();
-    assert!(
-        app.is_git_diff_preview(),
-        "ツリーから diff プレビューが開く"
-    );
-    assert!(!app.git_diff_lines().is_empty(), "diff 行がある");
-    app.close_git_diff();
-
-    // Feature 2: in the git view, `D` = diff (detail) of all working-tree changes. Includes multiple files.
-    app.open_git_view();
-    app.open_worktree_detail();
-    assert!(app.is_git_detail(), "全変更 diff(詳細)が開く");
-    assert_eq!(
-        app.git_detail_title(),
-        Some("Uncommitted changes"),
-        "タイトル上書き"
-    );
-    // A file-boundary header = Context, with both line numbers None.
-    let headers = app
-        .git_detail_lines()
-        .iter()
-        .filter(|l| {
-            matches!(l.kind, crate::git::DiffLineKind::Context)
-                && l.old_no.is_none()
-                && l.new_no.is_none()
-        })
-        .count();
-    assert!(
-        headers >= 2,
-        "全変更 diff が複数ファイル: headers={headers}"
-    );
-
-    // Features 3+4: `s` cycles vertical→horizontal→Auto→vertical (works in detail too).
-    assert!(!app.diff_is_split(200), "初期は unified(既定設定)");
-    app.cycle_diff_layout();
-    assert!(app.diff_is_split(200), "→ split");
-    app.cycle_diff_layout();
-    assert!(
-        app.diff_is_split(200) && !app.diff_is_split(40),
-        "→ auto(幅で縦横)"
-    );
-    app.cycle_diff_layout();
-    assert!(!app.diff_is_split(200), "→ unified に戻る");
 }
 
 /// macOS-only end-to-end regression for the NFC/NFD status-key mismatch (see `git.rs`'s
@@ -1224,139 +1241,6 @@ fn tree_move_extremes_no_panic() {
     assert_eq!(app.tab.selected, 0, "先頭へ");
 }
 
-#[test]
-fn git_branch_move_extremes_no_panic() {
-    let dir = unique_tmp("konoma_branch_move_extremes_test");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.tab.git_branches = Some(
-        (0..6)
-            .map(|i| crate::git::BranchInfo {
-                name: format!("br{i}"),
-                is_current: i == 0,
-            })
-            .collect(),
-    );
-    app.tab.git_branch_sel = 2; // not the start
-    app.git_branch_move(i32::MAX);
-    assert_eq!(app.tab.git_branch_sel, 5, "末尾へ");
-    app.git_branch_move(i32::MIN);
-    assert_eq!(app.tab.git_branch_sel, 0, "先頭へ");
-}
-
-#[test]
-fn git_graph_move_extremes_no_panic() {
-    let dir = unique_tmp("konoma_graph_move_extremes_test");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    let commit = |id: &str| crate::git::GraphRow {
-        graph: Vec::new(),
-        node: Some(crate::git::NodeKind::Normal),
-        node_col: Some(0),
-        commit: Some(id.to_string()),
-        short: String::new(),
-        subject: String::new(),
-        author: String::new(),
-        date: String::new(),
-        refs: String::new(),
-        worktree: false,
-    };
-    let connector = || crate::git::GraphRow {
-        graph: Vec::new(),
-        node: None,
-        node_col: None,
-        commit: None,
-        short: String::new(),
-        subject: String::new(),
-        author: String::new(),
-        date: String::new(),
-        refs: String::new(),
-        worktree: false,
-    };
-    // Commit rows (0,2,4) and connector rows (1,3) are mixed in: the cursor only targets commit rows.
-    app.tab.git_graph = Some(vec![
-        commit("a"),
-        connector(),
-        commit("b"),
-        connector(),
-        commit("c"),
-    ]);
-    app.tab.git_graph_sel = 2; // the middle commit row (commits index=1)
-    app.git_graph_move(i32::MAX);
-    assert_eq!(app.tab.git_graph_sel, 4, "末尾コミット行へ");
-    app.git_graph_move(i32::MIN);
-    assert_eq!(app.tab.git_graph_sel, 0, "先頭コミット行へ");
-}
-
-#[test]
-fn git_log_move_extremes_no_panic() {
-    let dir = unique_tmp("konoma_log_move_extremes_test");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.tab.git_log = Some(
-        (0..5)
-            .map(|i| crate::git::CommitInfo {
-                id: format!("id{i}"),
-                short: format!("s{i}"),
-                summary: String::new(),
-                author: String::new(),
-                time_epoch: 0,
-            })
-            .collect(),
-    );
-    app.tab.git_log_sel = 1; // not the start
-    app.git_log_move(i32::MAX);
-    assert_eq!(app.tab.git_log_sel, 4, "末尾へ");
-    app.git_log_move(i32::MIN);
-    assert_eq!(app.tab.git_log_sel, 0, "先頭へ");
-}
-
-#[test]
-fn git_view_move_extremes_no_panic() {
-    let dir = unique_tmp("konoma_view_move_extremes_test");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.tab.git_view_entries = (0..4)
-        .map(|i| crate::git::ChangeEntry {
-            path: dir.join(format!("f{i}")),
-            status: crate::git::FileStatus::Modified,
-            staged: false,
-        })
-        .collect();
-    app.tab.git_view_sel = 1; // not the start
-                              // git_view only ever passes ±1, but since it now goes through the shared
-                              // helper, it must also be safe at extreme values.
-    app.git_view_move(i32::MAX);
-    assert_eq!(app.tab.git_view_sel, 3, "末尾へ");
-    app.git_view_move(i32::MIN);
-    assert_eq!(app.tab.git_view_sel, 0, "先頭へ");
-}
-
-#[test]
-fn centered_fit_centers_and_downscales() {
-    let inner = Rect {
-        x: 0,
-        y: 0,
-        width: 80,
-        height: 24,
-    };
-    // A small image: centered at native (40x15) without upscaling (allow_upscale=false).
-    let r = centered_rect((40, 15), inner, false);
-    assert_eq!((r.width, r.height), (40, 15));
-    assert_eq!((r.x, r.y), (20, 4));
-
-    // A large image: downscaled preserving aspect ratio and centered (200x100 → scale 0.24).
-    let r = centered_rect((200, 100), inner, false);
-    assert_eq!((r.width, r.height), (48, 24));
-    assert_eq!((r.x, r.y), (16, 0));
-
-    // When zoomed (allow_upscale=true): even a small image is upscaled to fill the area and centered.
-    let r = centered_rect((40, 15), inner, true);
-    // scale = min(80/40, 24/15)=min(2.0,1.6)=1.6 → 64x24, x=(80-64)/2=8.
-    assert_eq!((r.width, r.height), (64, 24));
-    assert_eq!((r.x, r.y), (8, 0));
-}
-
 /// A test App with image state. Provides a source image (400x300=4:3), the image kind, a halfblocks picker
 /// (font 10x20, no terminal needed), and a dummy tx so that prepare_image can run.
 fn app_with_image() -> (App, crate::test_support::TmpDir) {
@@ -1364,7 +1248,7 @@ fn app_with_image() -> (App, crate::test_support::TmpDir) {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(400, 300)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     // Leak tx so it isn't dropped (keeps it alive until the test ends).
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1408,7 +1292,7 @@ fn media_load_is_async_then_applied() {
     let (mut app, _dir) = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
-    let kind = PreviewKind::Svg(p.clone());
+    let kind = PreviewKind::svg(p.clone());
     app.tab.preview_kind = Some(kind.clone());
 
     app.start_media_load(&kind, &p);
@@ -1417,9 +1301,12 @@ fn media_load_is_async_then_applied() {
     assert!(!app.is_image_preview(), "まだ読み込めていない");
 
     // Wait for the other thread's result and apply it → the image is in place and loading clears.
-    let result = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("worker should return");
+    let result = crate::test_support::recv_media_final(
+        &mut app,
+        &rx,
+        std::time::Duration::from_secs(10),
+        "SVG initial media load",
+    );
     assert!(app.apply_media(result), "結果を反映");
     assert!(!app.is_media_loading());
     assert!(app.is_image_preview(), "SVG ラスタが image_src に載る");
@@ -1436,7 +1323,7 @@ fn media_loading_renders_shared_spinner() {
     Box::leak(Box::new(rx)); // don't drain the result → stays loading
     app.attach_media_loader(tx);
     let path = PathBuf::from("/does-not-exist.svg");
-    let kind = PreviewKind::Svg(path.clone());
+    let kind = PreviewKind::svg(path.clone());
     app.tab.preview_kind = Some(kind.clone());
     app.tab.preview_path = Some(path.clone());
     app.tab.mode = Mode::Preview;
@@ -1472,46 +1359,46 @@ fn pdf_page_navigation_clamps_and_indicates() {
     let dir = unique_tmp("konoma_pdf_nav_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.tab.preview_kind = Some(PreviewKind::Pdf(PathBuf::from("/x/doc.pdf")));
+    app.tab.preview_kind = Some(PreviewKind::pdf(PathBuf::from("/x/doc.pdf")));
     app.tab.mode = Mode::Preview;
 
     // Unknown total: cannot navigate, no indicator.
-    app.tab.pdf_pages = None;
-    app.tab.pdf_page = 1;
-    assert!(!app.pdf_can_navigate());
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 1, "総数不明では動かない");
-    assert_eq!(app.pdf_page_indicator(), None);
+    app.tab.page_count = None;
+    app.tab.page = 1;
+    assert!(!app.can_turn_pages());
+    app.next_page();
+    assert_eq!(app.tab.page, 1, "総数不明では動かない");
+    assert_eq!(app.page_indicator(), None);
 
     // Single page: cannot navigate.
-    app.tab.pdf_pages = Some(1);
-    assert!(!app.pdf_can_navigate(), "単ページは移動不可");
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 1);
+    app.tab.page_count = Some(1);
+    assert!(!app.can_turn_pages(), "単ページは移動不可");
+    app.next_page();
+    assert_eq!(app.tab.page, 1);
 
     // Three pages: forward/backward navigation, edge clamping, and the indicator.
-    app.tab.pdf_pages = Some(3);
-    app.tab.pdf_page = 1;
-    assert!(app.pdf_can_navigate());
-    assert_eq!(app.pdf_page_indicator(), Some((1, 3)));
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 3);
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 3, "末尾でクランプ");
-    assert_eq!(app.pdf_page_indicator(), Some((3, 3)));
-    app.pdf_prev_page();
-    assert_eq!(app.tab.pdf_page, 2);
-    app.pdf_prev_page();
-    app.pdf_prev_page();
-    assert_eq!(app.tab.pdf_page, 1, "先頭でクランプ");
+    app.tab.page_count = Some(3);
+    app.tab.page = 1;
+    assert!(app.can_turn_pages());
+    assert_eq!(app.page_indicator(), Some((1, 3)));
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
+    app.next_page();
+    assert_eq!(app.tab.page, 3);
+    app.next_page();
+    assert_eq!(app.tab.page, 3, "末尾でクランプ");
+    assert_eq!(app.page_indicator(), Some((3, 3)));
+    app.prev_page();
+    assert_eq!(app.tab.page, 2);
+    app.prev_page();
+    app.prev_page();
+    assert_eq!(app.tab.page, 1, "先頭でクランプ");
 
     // A page move resets zoom back to fit (1.0).
-    app.tab.image_zoom = 4.0;
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
-    assert_eq!(app.tab.image_zoom, 1.0, "ページ移動で fit に戻る");
+    app.tab.image_view.zoom = 4.0;
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
+    assert_eq!(app.tab.image_view.zoom, 1.0, "ページ移動で fit に戻る");
 }
 
 /// PDF multi-page end-to-end: navigating to page 2 kicks off an off-thread re-rasterization (via
@@ -1533,28 +1420,34 @@ fn pdf_next_page_renders_off_thread() {
     let (mut app, _dir) = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
-    let kind = PreviewKind::Pdf(p.clone());
+    let kind = PreviewKind::pdf(p.clone());
     app.tab.preview_kind = Some(kind.clone());
     app.tab.preview_path = Some(p.clone());
     app.tab.mode = Mode::Preview;
-    app.tab.pdf_pages = Some(pages);
-    app.tab.pdf_page = 1;
+    app.tab.page_count = Some(pages);
+    app.tab.page = 1;
 
     // Load page 1 and apply it.
     app.start_media_load(&kind, &p);
-    let r1 = rx
-        .recv_timeout(std::time::Duration::from_secs(15))
-        .expect("page1 worker should return");
+    let r1 = crate::test_support::recv_media_final(
+        &mut app,
+        &rx,
+        std::time::Duration::from_secs(15),
+        "PDF page 1",
+    );
     assert!(app.apply_media(r1));
     assert!(app.is_image_preview(), "page1 が image_src に載る");
 
     // To page 2: kicks off re-rasterization on another thread → apply it.
-    app.pdf_next_page();
-    assert_eq!(app.tab.pdf_page, 2);
+    app.next_page();
+    assert_eq!(app.tab.page, 2);
     assert!(app.is_media_loading(), "ページ送りで再読み込みが始まる");
-    let r2 = rx
-        .recv_timeout(std::time::Duration::from_secs(15))
-        .expect("page2 worker should return");
+    let r2 = crate::test_support::recv_media_final(
+        &mut app,
+        &rx,
+        std::time::Duration::from_secs(15),
+        "PDF page 2",
+    );
     assert!(app.apply_media(r2));
     assert!(app.is_image_preview(), "page2 が image_src に載る");
 }
@@ -1563,13 +1456,12 @@ fn pdf_next_page_renders_off_thread() {
 #[test]
 fn stale_media_result_is_ignored() {
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Svg(PathBuf::from("x.svg")));
+    app.tab.preview_kind = Some(PreviewKind::svg(PathBuf::from("x.svg")));
     // Build a result that doesn't match the current generation (a stale generation).
     let img =
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
     let stale = MediaResult {
         gen: app.media_gen.wrapping_sub(1),
-        wb_worker: false,
         payload: Some(MediaPayload::Static(img)),
     };
     assert!(!app.apply_media(stale), "古い世代は反映しない");
@@ -1586,7 +1478,7 @@ fn gif_emits_kitty_image_data_per_frame() {
     use ratatui_image::Image;
 
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.gif")));
     // Set two different frames (solid red/green) directly, verifying only the render path
     // without going through decode.
     let red = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
@@ -1599,11 +1491,11 @@ fn gif_emits_kitty_image_data_per_frame() {
         30,
         image::Rgb([0, 255, 0]),
     ));
-    app.gif_frames = vec![
+    app.gif.set_frames(vec![
         (red, std::time::Duration::from_millis(50)),
         (green, std::time::Duration::from_millis(50)),
-    ];
-    app.gif_idx = 0;
+    ]);
+    app.gif.force_frame_index(0);
     assert!(app.is_gif_active(), "2 フレームならアニメ扱い");
     assert!(
         app.is_image_preview(),
@@ -1625,7 +1517,7 @@ fn gif_emits_kitty_image_data_per_frame() {
 
     // Advance to frame 1 and re-prepare + render → different image data appears (an atomic
     // switch, no churn).
-    app.gif_idx = 1;
+    app.gif.force_frame_index(1);
     let t1 = app.prepare_gif(area).expect("frame1 layout");
     let proto1 = app.gif_protocol().expect("frame1 should be encoded");
     let mut buf1 = Buffer::empty(area);
@@ -1641,16 +1533,16 @@ fn gif_emits_kitty_image_data_per_frame() {
 #[test]
 fn zoom_clamps_between_1_and_16() {
     let (mut app, _dir) = app_with_image();
-    assert_eq!(app.tab.image_zoom, 1.0);
+    assert_eq!(app.tab.image_view.zoom, 1.0);
     app.image_zoom_by(0.5); // never goes below 1.0
-    assert_eq!(app.tab.image_zoom, 1.0);
+    assert_eq!(app.tab.image_view.zoom, 1.0);
     for _ in 0..40 {
         app.image_zoom_by(1.25);
     }
-    assert_eq!(app.tab.image_zoom, 16.0);
+    assert_eq!(app.tab.image_view.zoom, 16.0);
     app.image_zoom_reset();
-    assert_eq!(app.tab.image_zoom, 1.0);
-    assert_eq!(app.tab.image_center, (0.5, 0.5));
+    assert_eq!(app.tab.image_view.zoom, 1.0);
+    assert_eq!(app.tab.image_view.center, (0.5, 0.5));
 }
 
 #[test]
@@ -1664,7 +1556,7 @@ fn fit_is_natural_size_and_centered_at_z1() {
     assert_eq!(r.x, (200 - 40) / 2);
     assert_eq!(r.y, (40 - 15) / 2);
     // Not clipped → panning is disabled.
-    assert_eq!(app.image_vis_frac, (1.0, 1.0));
+    assert_eq!(app.image_viewer.vis_frac(), (1.0, 1.0));
 }
 
 #[test]
@@ -1672,18 +1564,18 @@ fn zoom_grows_then_clips_and_enables_pan() {
     let (mut app, _dir) = app_with_image();
     let inner = inner(200, 40);
     // z=2: 80x30 cells, still within the viewport (200x40) → shown in full, centered, no panning.
-    app.tab.image_zoom = 2.0;
+    app.tab.image_view.zoom = 2.0;
     let r = app.prepare_image(inner).unwrap();
     assert_eq!((r.width, r.height), (80, 30));
-    assert_eq!(app.image_vis_frac, (1.0, 1.0));
+    assert_eq!(app.image_viewer.vis_frac(), (1.0, 1.0));
     // z=4: 160x60 → height 60>40 clips vertically. Display height is constrained to the
     // viewport, and vertical panning is enabled.
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     let r = app.prepare_image(inner).unwrap();
     assert_eq!(r.height, 40, "高さは viewport に制限");
     assert_eq!(r.width, 160);
-    assert!(app.image_vis_frac.1 < 1.0, "縦が見切れ=パン可");
-    assert_eq!(app.image_vis_frac.0, 1.0, "横はまだ収まる");
+    assert!(app.image_viewer.vis_frac().1 < 1.0, "縦が見切れ=パン可");
+    assert_eq!(app.image_viewer.vis_frac().0, 1.0, "横はまだ収まる");
     // Still centered.
     assert_eq!(r.x, (200 - 160) / 2);
 }
@@ -1695,19 +1587,19 @@ fn pan_noop_when_not_clipped_and_moves_when_clipped() {
     // z=1: no clipping → even after panning, prepare resets the center back to 0.5.
     app.image_pan(1.0, 1.0);
     app.prepare_image(inner).unwrap();
-    assert_eq!(app.tab.image_center, (0.5, 0.5));
+    assert_eq!(app.tab.image_view.center, (0.5, 0.5));
     // Zoom in far enough to clip on both axes → panning moves the center, clamped at the edges.
-    app.tab.image_zoom = 12.0;
+    app.tab.image_view.zoom = 12.0;
     app.prepare_image(inner).unwrap(); // update the visible fraction
     for _ in 0..50 {
         app.image_pan(1.0, 1.0);
         app.prepare_image(inner).unwrap();
     }
-    let (fw, fh) = app.image_vis_frac;
+    let (fw, fh) = app.image_viewer.vis_frac();
     assert!(fw < 1.0 && fh < 1.0, "両軸見切れ");
     // Clamped at the edge = 1 - frac/2.
-    assert!((app.tab.image_center.0 - (1.0 - fw / 2.0)).abs() < 1e-6);
-    assert!((app.tab.image_center.1 - (1.0 - fh / 2.0)).abs() < 1e-6);
+    assert!((app.tab.image_view.center.0 - (1.0 - fw / 2.0)).abs() < 1e-6);
+    assert!((app.tab.image_view.center.1 - (1.0 - fh / 2.0)).abs() < 1e-6);
 }
 
 #[test]
@@ -2620,14 +2512,16 @@ fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
     assert!(toks.iter().any(|t| t == "↵:full screen"), "{toks:?}");
     assert!(toks.iter().any(|t| t == "+/-:zoom"), "{toks:?}");
     assert!(
-        !toks.iter().any(|t| t.starts_with("hjkl:") || t == "0:fit"),
+        !toks
+            .iter()
+            .any(|t| t.starts_with("h/j/k/l:") || t == "0:fit"),
         "1x なのに pan/fit が出ている: {toks:?}"
     );
 
     // Zoomed and on screen: hjkl:pan + 0:fit appear.
     app.image_zoom_by(2.0);
     let toks = hint_tokens(&app);
-    assert!(toks.iter().any(|t| t == "hjkl:pan"), "{toks:?}");
+    assert!(toks.iter().any(|t| t == "h/j/k/l:pan"), "{toks:?}");
     assert!(toks.iter().any(|t| t == "0:fit"), "{toks:?}");
 
     // Scrolled off screen while still zoomed: pan/fit hints disappear again (mirrors
@@ -2637,7 +2531,9 @@ fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
     assert!(app.tab.fence_zoom > 1.9, "前提: ズーム状態は保持");
     let toks = hint_tokens(&app);
     assert!(
-        !toks.iter().any(|t| t.starts_with("hjkl:") || t == "0:fit"),
+        !toks
+            .iter()
+            .any(|t| t.starts_with("h/j/k/l:") || t == "0:fit"),
         "画面外なのに pan/fit が出ている: {toks:?}"
     );
     assert!(
@@ -2979,7 +2875,10 @@ fn code_file_decorates_with_colored_syntax() {
     app.tab.selected = i;
     app.tree_activate().unwrap();
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Code(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_code_plugin),
         "Code 種別に解決されない"
     );
     let lines = app.decorated_lines(80);
@@ -3965,54 +3864,6 @@ fn stale_listing_chip_is_localized_and_only_shown_when_stale() {
     }
 }
 
-/// The Git full-screen views bypass `ui/tree.rs` entirely, so an indicator that only reached the
-/// tree would silently stop existing there. The chip is drawn by `context_spans`, which every mode
-/// shares — pinned here through a real full-screen draw of the Git view, since "it is in the shared
-/// helper" is exactly the kind of assumption that quietly stops being true.
-#[cfg(feature = "git")]
-#[test]
-fn stale_listing_chip_shows_in_the_git_view() {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-
-    let base = unique_tmp("konoma_stale_chip_git_test");
-    let _ = std::fs::remove_dir_all(&base);
-    let root = base.join("repo");
-    std::fs::create_dir_all(&root).unwrap();
-    init_git_repo(&root);
-    std::fs::write(root.join("tracked.txt"), b"one\n").unwrap();
-
-    let mut app = App::new(root.clone(), Config::default()).unwrap();
-    app.lang = crate::i18n::Lang::En;
-    app.refresh_git_if_needed();
-    app.open_git_view();
-    assert!(app.in_git_view(), "Git ビューに入れている");
-
-    let screen = |app: &mut App| -> String {
-        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        term.draw(|f| crate::ui::render(f, app)).unwrap();
-        term.backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect()
-    };
-    assert!(
-        !screen(&mut app).contains("STALE"),
-        "健全なうちは Git ビューにも出ない"
-    );
-
-    std::fs::remove_dir_all(&root).unwrap();
-    app.refresh_fs_watched(false, &[]);
-    assert!(app.tree_stale());
-    let text = screen(&mut app);
-    assert!(
-        text.contains("STALE"),
-        "Git ビューでもチップが出る:\n{text}"
-    );
-}
-
 #[test]
 fn media_preview_reloads_only_when_file_changes() {
     // An image/media preview only reloads when the target file actually changes (an mtime
@@ -4036,10 +3887,10 @@ fn media_preview_reloads_only_when_file_changes() {
     app.tab.selected = idx;
     app.tree_activate().unwrap(); // opens in image preview
     assert!(
-        matches!(
-            app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Image(_))
-        ),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("image")),
         "画像として開く"
     );
     assert!(
@@ -4091,25 +3942,20 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
     assert_eq!(names(&app), vec!["zdir", "a.md", "b.txt", "c.log"]);
 
     // Size ascending (directories still pinned first): files are 10<30<50 = b,a,c.
-    app.open_sort_menu();
     app.sort_menu_key('s').unwrap();
     assert_eq!(names(&app), vec!["zdir", "b.txt", "a.md", "c.log"]);
-    assert!(!app.is_sort_menu(), "基準選択(n/s/m/e)でメニューは閉じる");
 
-    // Reversed (size descending): large→small = c,a,b. Toggling keeps the menu open.
-    app.open_sort_menu();
+    // Reversed (size descending): large→small = c,a,b.
     app.sort_menu_key('r').unwrap();
-    assert!(app.is_sort_menu(), "トグル(r/.)はメニューを開いたまま");
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
 
     // Turn off directories-first and go back to name ascending → dirs get mixed in by name too.
     app.sort_menu_key('.').unwrap(); // dirs_first off
     app.sort_menu_key('r').unwrap(); // reverse off (back to normal)
-    app.sort_menu_key('n').unwrap(); // name (closes the menu on selection)
+    app.sort_menu_key('n').unwrap(); // name
     assert_eq!(names(&app), vec!["a.md", "b.txt", "c.log", "zdir"]);
 
     // Extension ascending (dirs_first off): "" < log < md < txt = zdir, c.log, a.md, b.txt.
-    app.open_sort_menu();
     app.sort_menu_key('e').unwrap();
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
 }
@@ -4614,11 +4460,11 @@ fn status_shows_image_zoom_factor() {
             .map(|c| c.symbol())
             .collect()
     };
-    app.tab.image_zoom = 1.0;
+    app.tab.image_view.zoom = 1.0;
     let s = text(&app);
     assert!(s.contains("IMAGE"), "IMAGE チップ: {s}");
     assert!(s.contains("x1.00"), "フィットで x1.00: {s}");
-    app.tab.image_zoom = 2.5;
+    app.tab.image_view.zoom = 2.5;
     assert!(text(&app).contains("x2.50"), "拡大時に倍率");
 }
 
@@ -5191,72 +5037,6 @@ fn re_following_recaptures_baseline_and_drops_stale_diff() {
     );
 }
 
-#[cfg(feature = "git")]
-#[test]
-fn graph_config_base_branches_drive_base_order_and_picker_reorder() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_graph_config_base");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let git = |args: &[&str]| {
-        Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "init"]);
-    git(&["branch", "-M", "trunk"]); // HEAD=trunk
-    for n in ["main", "develop", "feat"] {
-        git(&["checkout", "-q", "trunk"]);
-        git(&["checkout", "-q", "-b", n]);
-        std::fs::write(dir.join(format!("{n}.txt")), b"x\n").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", &format!("{n} c")]);
-    }
-    git(&["checkout", "-q", "trunk"]); // HEAD=trunk
-
-    let mut cfg = Config::default();
-    cfg.ui.graph_base_branches = vec!["develop".into(), "main".into()];
-    let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
-    app.open_git_graph();
-
-    // (2) Base = develop, the first one in the array (left to right) that exists.
-    assert_eq!(
-        app.git_graph_base_label(),
-        Some("develop"),
-        "config 配列の最初の存在ブランチが基準"
-    );
-    // (4) Ordering: array order (develop→main) → HEAD (trunk) → most-recent order.
-    let names: Vec<String> = app
-        .git_graph_legend()
-        .iter()
-        .map(|e| e.name.clone())
-        .collect();
-    let pos = |n: &str| names.iter().position(|x| x == n);
-    assert_eq!(names.first().map(|s| s.as_str()), Some("develop"));
-    assert!(
-        pos("develop") < pos("main"),
-        "配列順 develop→main: {names:?}"
-    );
-    assert!(pos("main") < pos("trunk"), "配列が HEAD より先: {names:?}");
-
-    // (5) Reordering in the panel → the base is re-derived from the new first entry.
-    app.git_graph_open_picker();
-    // Panel order = [develop, main, trunk, feat]. Move main (index 1) up by one.
-    app.git_graph_picker_sel = 1;
-    app.git_graph_picker_reorder(-1); // main to the front
-    app.git_graph_picker_apply();
-    assert_eq!(
-        app.git_graph_base_label(),
-        Some("main"),
-        "並び替えで先頭になった main が基準に再導出される"
-    );
-}
-
 // Phase G: the heavy ignored (ignore set) is cached per repo (workdir), and descending with `l`
 // into a subdirectory of the same repo doesn't recompute it (moving to a different repo does
 // recompute). We plant a sentinel and observe whether it was recomputed (= whether the
@@ -5577,817 +5357,7 @@ fn apply_ignored_with_a_panic_shaped_result_still_clears_pending() {
     );
 }
 
-#[cfg(feature = "git")]
-#[test]
-fn graph_legend_caps_branches_head_first_and_picker_toggles() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_graph_legend_cap_picker");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let git = |args: &[&str]| {
-        Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "init"]);
-    git(&["branch", "-M", "trunk"]); // give it a known current branch name.
-                                     // 5 feature branches (each with its own commit = its own lane).
-    for n in ["f1", "f2", "f3", "f4", "f5"] {
-        git(&["checkout", "-q", "trunk"]);
-        git(&["checkout", "-q", "-b", n]);
-        std::fs::write(dir.join(format!("{n}.txt")), b"x\n").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", &format!("{n} c")]);
-    }
-    git(&["checkout", "-q", "trunk"]); // HEAD=trunk. 6 branches total.
-
-    let mut cfg = Config::default();
-    cfg.ui.graph_max_branches = 3; // a small cap.
-    let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
-    app.open_git_graph();
-    assert!(app.is_git_graph(), "グラフが開く");
-
-    // Legend: HEAD (trunk) comes first, up to the cap of 3, and the rest are hidden.
-    let legend = app.git_graph_legend();
-    assert!(!legend.is_empty(), "凡例が空でない");
-    assert!(
-        legend[0].is_head && legend[0].name == "trunk",
-        "凡例の先頭は HEAD(trunk): {:?}",
-        legend
-            .iter()
-            .map(|e| (&e.name, e.is_head))
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        legend.len() <= 3,
-        "表示ブランチは上限3まで: {}",
-        legend.len()
-    );
-    assert!(app.git_graph_hidden_count() >= 1, "一部は非表示");
-
-    // Panel: HEAD is always first and always ON (can't be turned off).
-    app.git_graph_open_picker();
-    assert!(app.is_git_graph_picker(), "パネルが開く");
-    let items = app.git_graph_picker_items();
-    assert!(items[0].1, "パネル先頭は HEAD(is_current)");
-    app.git_graph_picker_sel = 0;
-    app.git_graph_picker_toggle(); // trying to toggle off HEAD has no effect.
-    assert!(
-        app.git_graph_picker_items()[0].2,
-        "HEAD はトグルしても表示のまま"
-    );
-
-    // a=everything → apply → 0 hidden, 6 in the legend.
-    app.git_graph_picker_all();
-    app.git_graph_picker_apply();
-    assert!(!app.is_git_graph_picker(), "適用でパネルが閉じる");
-    assert_eq!(app.git_graph_hidden_count(), 0, "全表示で非表示0");
-    assert_eq!(app.git_graph_legend().len(), 6, "全6ブランチが凡例に出る");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn open_git_view_lists_changes_and_stage_reloads() {
-    let dir = unique_tmp("konoma_app_git_view");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    // Create and commit one tracked file → then change it (=Modified).
-    std::fs::write(dir.join("tracked.txt"), b"v1\n").unwrap();
-    let out = std::process::Command::new("git")
-        .current_dir(&dir)
-        .args(["add", "-A"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let out = std::process::Command::new("git")
-        .current_dir(&dir)
-        .args(["commit", "-m", "init"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    std::fs::write(dir.join("tracked.txt"), b"v2\n").unwrap(); // modified
-    std::fs::write(dir.join("untracked.txt"), b"new\n").unwrap(); // untracked
-
-    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.open_git_view();
-    assert!(app.is_git_view(), "Git ビューが開く");
-    // The 2 changes (modified + untracked) show up in the list.
-    assert_eq!(app.git_view_entries().len(), 2, "変更2件");
-    // Both are unstaged by default.
-    assert!(
-        app.git_view_entries().iter().all(|e| !e.staged),
-        "初期は全て未ステージ"
-    );
-
-    // Stage the first entry (tracked.txt comes first in path order) → reload sets staged=true.
-    app.tab.git_view_sel = 0;
-    let target = app.git_view_selected().unwrap();
-    app.git_view_stage();
-    let staged_now = app
-        .git_view_entries()
-        .iter()
-        .find(|e| e.path == target)
-        .map(|e| e.staged)
-        .unwrap_or(false);
-    assert!(staged_now, "ステージ後は staged=true (reload 反映)");
-
-    app.close_git_view();
-    assert!(!app.is_git_view(), "閉じる");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn refresh_in_git_view_refetches_entries() {
-    // #4: refresh() while showing the Git view re-fetches the change list (git_view_entries)
-    // (reflects changes that grew/shrank via returning from an external git tool or via FSEvents).
-    let dir = unique_tmp("konoma_refresh_git_view_refetch");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("tracked.txt"), b"v1\n").unwrap();
-    let git = |args: &[&str]| {
-        assert!(std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success());
-    };
-    git(&["add", "-A"]);
-    git(&["commit", "-m", "init"]);
-    std::fs::write(dir.join("tracked.txt"), b"v2\n").unwrap(); // modified
-
-    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.open_git_view();
-    assert!(app.is_git_view());
-    assert_eq!(app.git_view_entries().len(), 1, "変更1件(modified)");
-    // Add a new file externally → refresh re-fetches the change list and it grows to 2 entries.
-    std::fs::write(dir.join("untracked.txt"), b"new\n").unwrap();
-    app.refresh().unwrap();
-    assert_eq!(
-        app.git_view_entries().len(),
-        2,
-        "refresh で git_view_entries が再取得され untracked が増える"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_view_stage_all_then_unstage_all() {
-    let dir = unique_tmp("konoma_app_git_stage_all");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    std::fs::write(dir.join("a.txt"), b"v1\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-m", "init"]);
-    std::fs::write(dir.join("a.txt"), b"v2\n").unwrap(); // modified
-    std::fs::write(dir.join("b.txt"), b"new\n").unwrap(); // untracked
-
-    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.open_git_view();
-    assert_eq!(app.git_view_entries().len(), 2, "変更2件");
-    assert!(
-        app.git_view_entries().iter().all(|e| !e.staged),
-        "初期は全未ステージ"
-    );
-
-    // S=stage all → everything becomes staged (add -A, including new files).
-    app.git_view_stage_all();
-    assert!(
-        app.git_view_entries().iter().all(|e| e.staged),
-        "全ステージ後は全 staged"
-    );
-
-    // U=unstage all → everything becomes unstaged.
-    app.git_view_unstage_all();
-    assert!(
-        app.git_view_entries().iter().all(|e| !e.staged),
-        "全アンステージ後は全未ステージ"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_diff_opens_from_view_and_esc_returns_to_view() {
-    let dir = unique_tmp("konoma_app_gitdiff_roundtrip");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"v1\n").unwrap();
-    let sh = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-    };
-    sh(&["add", "-A"]);
-    sh(&["commit", "-m", "init"]);
-    std::fs::write(dir.join("a.txt"), b"v2\n").unwrap(); // modified
-
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.open_git_view();
-    assert!(app.is_git_view());
-    let target = app.git_view_selected().unwrap();
-    // Open a diff from the Git view: enters Preview mode, GitDiff, and the Git view closes.
-    app.open_git_diff(&target);
-    assert!(app.is_git_diff_preview(), "GitDiff プレビューになる");
-    assert_eq!(app.tab.mode, Mode::Preview);
-    assert!(!app.is_git_view(), "Git ビューは閉じる");
-    // diff lines can be fetched (non-empty since there's a change).
-    assert!(!app.git_diff_lines().is_empty(), "diff 行が空");
-    // C2: a diff, once fetched, is cached per path (doesn't hit git on every frame).
-    assert!(app.diff_cache.is_some(), "diff キャッシュが張られる");
-    // A refresh that could change the working tree (an FS event / a manual refresh) drops the
-    // cache (follows external edits and never shows a stale diff).
-    app.refresh().unwrap();
-    assert!(
-        app.diff_cache.is_none(),
-        "refresh で diff キャッシュが無効化される"
-    );
-    // Equivalent to Esc: returns to the Git view.
-    app.close_git_diff();
-    assert!(app.is_git_view(), "Esc で Git ビューへ戻る");
-    assert!(!app.is_git_diff_preview());
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_diff_discard_confirm_reverts_and_returns_to_view() {
-    let dir = unique_tmp("konoma_app_gitdiff_discard");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let f = dir.join("a.txt");
-    std::fs::write(&f, b"v1\n").unwrap();
-    let sh = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-    };
-    sh(&["add", "-A"]);
-    sh(&["commit", "-m", "init"]);
-    std::fs::write(&f, b"v2\n").unwrap(); // modified
-
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.open_git_view();
-    let target = app.git_view_selected().unwrap();
-    app.open_git_diff(&target);
-    // x: the discard-confirmation dialog.
-    app.git_diff_start_discard();
-    assert!(app.is_dialog() && app.dialog_is_confirm(), "破棄確認が出る");
-    // Confirm with y: the file reverts to v1, and it returns to the Git view now clean.
-    app.dialog_confirm(true).unwrap();
-    assert_eq!(std::fs::read_to_string(&f).unwrap(), "v1\n", "破棄で復元");
-    assert!(app.is_git_view(), "破棄後は Git ビューへ戻る");
-    assert!(!app.is_git_diff_preview());
-    assert!(
-        app.git_view_entries().is_empty(),
-        "破棄後はクリーン(変更0件)"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn open_git_view_noop_when_not_a_repo() {
-    // Doesn't open in a directory that's not a git repository (no-op + flash).
-    let dir = unique_tmp("konoma_app_git_view_norepo");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.open_git_view();
-    assert!(!app.is_git_view(), "repo でなければ開かない");
-    assert!(app.flash.is_some(), "flash で知らせる");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_branches_list_checkout_and_create() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_app_git_branch");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let git = |args: &[&str]| {
-        Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    git(&["init", "-q"]);
-    git(&["config", "user.email", "t@t.t"]);
-    git(&["config", "user.name", "t"]);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    git(&["add", "."]);
-    git(&["commit", "-q", "-m", "init"]);
-    git(&["branch", "feature"]); // a second branch
-    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-
-    // The list: includes feature, and the cursor sits on the current branch.
-    app.open_git_branches();
-    assert!(app.is_git_branches());
-    let view = app.git_branch_view();
-    let names: Vec<String> = view.iter().map(|b| b.name.clone()).collect();
-    assert!(
-        names.iter().any(|n| n == "feature"),
-        "feature が一覧に: {names:?}"
-    );
-    assert!(
-        view[app.git_branch_sel()].is_current,
-        "カーソルは現在ブランチ"
-    );
-
-    // Filter: "feat" narrows it down to feature.
-    app.git_branch_start_filter();
-    for c in "feat".chars() {
-        app.git_branch_filter_push(c);
-    }
-    let filtered = app.git_branch_view();
-    assert_eq!(filtered.len(), 1, "絞り込みで1件");
-    assert_eq!(filtered[0].name, "feature");
-    app.git_branch_filter_clear();
-    assert_eq!(app.git_branch_view().len(), names.len(), "解除で全件へ戻る");
-
-    // Select feature and check it out → the current branch changes and the list closes.
-    let fi = app
-        .git_branch_view()
-        .iter()
-        .position(|b| b.name == "feature")
-        .unwrap();
-    app.git_branch_move(fi as i32 - app.git_branch_sel() as i32);
-    app.checkout_selected_branch().unwrap();
-    assert!(!app.is_git_branches(), "checkout で一覧は閉じる");
-    assert_eq!(app.git_branch(), Some("feature"), "現在ブランチ=feature");
-
-    // New branch creation flow: enter a name → submit creates it and switches (now on "newbr").
-    app.open_git_branches();
-    app.start_create_branch();
-    for c in "newbr".chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-    assert_eq!(app.git_branch(), Some("newbr"), "作成して切替");
-
-    // Delete: the current branch (newbr) cannot be deleted; another branch (feature) can be.
-    app.open_git_branches();
-    // Put the cursor on the current branch (newbr) and press d → the guard prevents it opening.
-    app.start_delete_branch();
-    assert!(!app.is_dialog(), "現在ブランチは削除確認を開かない");
-    // Move the cursor to feature and confirm deletion → y (a safe delete).
-    let fi = app
-        .git_branch_view()
-        .iter()
-        .position(|b| b.name == "feature")
-        .unwrap();
-    app.git_branch_move(fi as i32 - app.git_branch_sel() as i32);
-    app.start_delete_branch();
-    assert!(app.is_dialog() && app.dialog_is_confirm(), "削除確認が開く");
-    app.dialog_confirm(true).unwrap(); // y=safe delete (-d)
-    assert!(
-        !app.git_branch_view().iter().any(|b| b.name == "feature"),
-        "feature が削除された"
-    );
-}
-
-/// `worktree_create_target`'s directory-name rule: every `/` in the branch name becomes `-` (git
-/// would otherwise create a **nested** directory for a branch like `feat/nested/deep`, i.e.
-/// `feat/nested/deep/` as three levels, not one flat sibling directory).
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_target_replaces_slash_with_dash_for_the_directory_name() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_wt_target_slash");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["commit", "-q", "-m", "init"])
-        .output()
-        .unwrap();
-    let root = dir.canonicalize().unwrap();
-    let app = App::new(root.clone(), Config::default()).unwrap();
-
-    let target = app.worktree_create_target("feat/nested/deep");
-    assert_eq!(
-        target.file_name().and_then(|n| n.to_str()),
-        Some("feat-nested-deep"),
-        "全ての / が - に置換され、1階層のディレクトリ名になる: {target:?}"
-    );
-    // Not a nested structure: the parent of `target` must not itself be named after a slash-split prefix.
-    let parent_name = target
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str());
-    assert_ne!(
-        parent_name,
-        Some("feat"),
-        "入れ子ディレクトリが作られてはいけない: {target:?}"
-    );
-    assert_ne!(
-        parent_name,
-        Some("feat-nested"),
-        "入れ子ディレクトリが作られてはいけない: {target:?}"
-    );
-}
-
-/// `worktree_create_target` resolves against the **main** worktree's own path, not `self.tab.root`,
-/// and respects `[git] worktree_dir` — the default `"../"` places it as a sibling of the main
-/// worktree, and a custom (here: absolute) value changes the placement entirely.
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_target_respects_worktree_dir_config() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_wt_target_dircfg");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["commit", "-q", "-m", "init"])
-        .output()
-        .unwrap();
-    let root = dir.canonicalize().unwrap();
-
-    // Default ("../"): a sibling of the main worktree.
-    let app_default = App::new(root.clone(), Config::default()).unwrap();
-    let default_target = app_default.worktree_create_target("brA");
-    assert_eq!(
-        default_target.parent().unwrap().canonicalize().unwrap(),
-        root.parent().unwrap().canonicalize().unwrap(),
-        "既定 \"../\" はメインワークツリーの隣に置く: {default_target:?}"
-    );
-
-    // Custom (absolute) worktree_dir: placement follows it instead.
-    let custom_base = unique_tmp("konoma_wt_target_dircfg_custom");
-    std::fs::create_dir_all(&custom_base).unwrap();
-    let mut cfg = Config::default();
-    cfg.git.worktree_dir = custom_base.to_string_lossy().into_owned();
-    let app_custom = App::new(root.clone(), cfg).unwrap();
-    let custom_target = app_custom.worktree_create_target("brB");
-    assert_eq!(
-        custom_target.parent().unwrap().canonicalize().unwrap(),
-        custom_base.canonicalize().unwrap(),
-        "worktree_dir を変えると置き場所が変わる: {custom_target:?}"
-    );
-}
-
-/// Full `n` flow: type a brand-new branch name, submit → `git worktree add -b` creates the branch
-/// and the directory, the list closes, and this tab switches its root (and `open_dir`) into it.
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_flow_creates_a_new_branch_and_switches_into_it() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_wt_flow_new");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["commit", "-q", "-m", "init"])
-        .output()
-        .unwrap();
-    let root = dir.canonicalize().unwrap();
-    // A private worktree_dir keeps this test's placement from ever colliding with another
-    // test/parallel run sharing the OS temp dir (unlike a branch name, this base is unique per test).
-    let base = unique_tmp("konoma_wt_flow_new_base");
-    std::fs::create_dir_all(&base).unwrap();
-    let mut cfg = Config::default();
-    cfg.git.worktree_dir = base.to_string_lossy().into_owned();
-    let mut app = App::new(root.clone(), cfg).unwrap();
-
-    app.open_git_worktrees();
-    assert!(app.is_git_worktrees());
-    app.start_create_worktree();
-    assert!(app.is_dialog());
-    for c in "feat-fresh".chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-
-    assert!(!app.is_git_worktrees(), "作成後は一覧を閉じる");
-    let new_root = app.tab.root.clone();
-    assert_ne!(new_root, root, "root が新しいワークツリーへ切替わる");
-    assert_eq!(app.tab.open_dir, new_root, "open_dir も追従する");
-    assert!(new_root.is_dir(), "ディレクトリが実際に作られる");
-
-    let list = crate::git::worktrees(&root);
-    let created = list
-        .iter()
-        .find(|w| w.path == new_root)
-        .expect("git worktree list に出る");
-    assert_eq!(created.branch.as_deref(), Some("feat-fresh"));
-    assert!(
-        crate::git::branch_tip(&root, "feat-fresh").is_some(),
-        "新規ブランチが作られる"
-    );
-}
-
-/// Full `n` flow on an **existing** branch (not checked out anywhere): no `-b`, checked out as-is,
-/// and the branch is not duplicated.
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_flow_checks_out_an_existing_branch_without_creating_a_duplicate() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_wt_flow_existing");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["commit", "-q", "-m", "init"])
-        .output()
-        .unwrap();
-    // A branch that already exists but isn't checked out anywhere yet.
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["branch", "already-there"])
-        .output()
-        .unwrap();
-    let root = dir.canonicalize().unwrap();
-    let base = unique_tmp("konoma_wt_flow_existing_base");
-    std::fs::create_dir_all(&base).unwrap();
-    let mut cfg = Config::default();
-    cfg.git.worktree_dir = base.to_string_lossy().into_owned();
-    let mut app = App::new(root.clone(), cfg).unwrap();
-
-    app.open_git_worktrees();
-    app.start_create_worktree();
-    for c in "already-there".chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-
-    let new_root = app.tab.root.clone();
-    assert_ne!(new_root, root);
-    assert!(new_root.is_dir());
-    let branches = crate::git::branches(&root);
-    assert_eq!(
-        branches
-            .iter()
-            .filter(|b| b.name == "already-there")
-            .count(),
-        1,
-        "既存ブランチが二重作成されない: {branches:?}"
-    );
-    let list = crate::git::worktrees(&root);
-    let created = list
-        .iter()
-        .find(|w| w.path == new_root)
-        .expect("git worktree list に出る");
-    assert_eq!(created.branch.as_deref(), Some("already-there"));
-}
-
-/// A branch already checked out by another worktree: `git worktree add` refuses, `dialog_submit`
-/// flashes git's own `fatal: ...` line (leading, not buried behind the command that was run — the
-/// flash footer is a single line clipped at the terminal width, so anything ahead of the reason
-/// pushes it off-screen), the root stays put, and the list — never touched on this failure path —
-/// is still open once the (now-closed) dialog is gone.
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_flow_fails_with_gits_message_when_branch_is_already_checked_out_elsewhere() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_wt_flow_conflict");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .current_dir(&dir)
-        .args(["commit", "-q", "-m", "init"])
-        .output()
-        .unwrap();
-    let root = dir.canonicalize().unwrap();
-    let base = unique_tmp("konoma_wt_flow_conflict_base");
-    std::fs::create_dir_all(&base).unwrap();
-
-    // A first worktree already has branch "taken" checked out.
-    let first = base.join("first");
-    let out = Command::new("git")
-        .current_dir(&root)
-        .args([
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "taken",
-            first.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "setup: git worktree add: {out:?}");
-
-    let mut cfg = Config::default();
-    cfg.git.worktree_dir = base.to_string_lossy().into_owned();
-    let mut app = App::new(root.clone(), cfg).unwrap();
-
-    app.open_git_worktrees();
-    app.start_create_worktree();
-    for c in "taken".chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-
-    assert_eq!(app.tab.root, root, "失敗時は root が変わらない");
-    assert!(app.is_git_worktrees(), "失敗時は一覧が開いたまま");
-    let flash = app.flash.clone().unwrap_or_default();
-    assert!(
-        flash.starts_with("fatal:"),
-        "git の fatal: メッセージが先頭に来る(コマンド文字列で押し出されない): {flash}"
-    );
-    assert!(
-        !flash.contains("worktree add"),
-        "実行したコマンド文字列は含まない: {flash}"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_commit_flow_creates_commit_with_message() {
-    let dir = unique_tmp("konoma_app_git_commit_flow");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let f = dir.join("a.txt");
-    std::fs::write(&f, b"hello\n").unwrap();
-    // Stage via the public API (commit uses the staged index).
-    crate::git::stage(&dir, &f).unwrap();
-
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.open_git_view();
-    assert!(app.is_git_view());
-
-    // Equivalent to c: opens the commit message input dialog.
-    app.start_git_commit();
-    assert!(app.is_dialog(), "コミット入力ダイアログが出る");
-    // internal_mode reports Commit (distinguishable from other Input states).
-    assert_eq!(app.internal_mode(), Some(InternalMode::Commit));
-
-    // Type the message one character at a time.
-    for c in "feat: add a".chars() {
-        app.dialog_input_push(c);
-    }
-    // Equivalent to Enter: commit → commit succeeds.
-    app.dialog_submit().unwrap();
-    assert!(!app.is_dialog(), "成功するとダイアログは閉じる");
-
-    // HEAD now has a commit with that summary.
-    let entries = crate::git::log(&canon, 10);
-    assert_eq!(entries.len(), 1, "コミット1件のはず");
-    assert_eq!(entries[0].summary, "feat: add a");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_commit_empty_message_is_rejected() {
-    let dir = unique_tmp("konoma_app_git_commit_empty");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let f = dir.join("a.txt");
-    std::fs::write(&f, b"hello\n").unwrap();
-    crate::git::stage(&dir, &f).unwrap();
-
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.start_git_commit();
-    // Enter only whitespace → committing it is rejected, and no commit is created.
-    app.dialog_input_push(' ');
-    app.dialog_submit().unwrap();
-    assert!(
-        app.flash
-            .as_deref()
-            .is_some_and(|s| s.contains("empty") || s.contains("空")),
-        "空メッセージは flash で拒否: {:?}",
-        app.flash
-    );
-    assert!(
-        crate::git::log(&canon, 10).is_empty(),
-        "空メッセージではコミットされない"
-    );
-}
-
 // --- git log + commit detail ---------------------------------------------
-#[cfg(feature = "git")]
-#[test]
-fn git_log_lists_commits_and_detail_has_diff_lines() {
-    let dir = unique_tmp("konoma_app_git_log_detail");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let sh = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} 失敗");
-    };
-    // Create 2 commits.
-    std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
-    sh(&["add", "-A"]);
-    sh(&["commit", "-m", "first commit"]);
-    std::fs::write(dir.join("a.txt"), b"one\ntwo\n").unwrap();
-    sh(&["add", "-A"]);
-    sh(&["commit", "-m", "second commit"]);
-
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    // Open log via the Git view (matches the real flow).
-    app.open_git_view();
-    app.open_git_log();
-    assert!(app.is_git_log(), "git log が開く");
-    assert!(!app.is_git_view(), "log を開くと Git ビューは閉じる");
-    assert_eq!(app.git_log_entries().len(), 2, "コミット2件");
-    // Newest first: second commit is at the front.
-    assert_eq!(app.git_log_entries()[0].summary, "second commit");
-    assert_eq!(app.internal_mode(), Some(InternalMode::GitLog));
-
-    // Select the 2nd entry (the older one = first commit, the root) and open its detail →
-    // the diff lines are non-empty.
-    app.git_log_move(1);
-    assert_eq!(app.git_log_sel(), 1);
-    app.open_git_commit_detail();
-    assert!(app.is_git_detail(), "コミット詳細が開く");
-    assert_eq!(app.internal_mode(), Some(InternalMode::GitDetail));
-    let lines = app.git_detail_lines();
-    assert!(!lines.is_empty(), "コミット詳細の diff 行が空");
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.kind == crate::git::DiffLineKind::Added),
-        "Added 行が無い: {lines:?}"
-    );
-
-    // Equivalent to q: closing the detail returns to log.
-    app.close_git_detail();
-    assert!(!app.is_git_detail());
-    assert!(app.is_git_log(), "詳細を閉じると log へ戻る");
-    // Closing log returns to the Git view.
-    app.close_git_log();
-    assert!(!app.is_git_log());
-    assert!(app.is_git_view(), "log を閉じると Git ビューへ戻る");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn open_git_log_noop_when_no_commits() {
-    let dir = unique_tmp("konoma_app_git_log_unborn");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir); // no commits (unborn)
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon, Config::default()).unwrap();
-    app.open_git_log();
-    assert!(!app.is_git_log(), "コミットが無ければ log は開かない");
-}
-
 // ============================================================================
 // Additional coverage: App's pure state, preview scrolling, images/GIF, links, tabs, etc.
 // Follows the existing convention (temp_dir + a unique name, cleaned up at the end with
@@ -6439,17 +5409,20 @@ fn toggle_hidden_reveals_and_hides_dotfiles() {
     assert!(!app.tab.show_hidden && !has_dot(&app), "もう一度で隠れる");
 }
 
+/// The sort overlay is gone: sorting never puts a layer in front of the tree (the `,` menu is a
+/// leader, which is not a surface), whichever sort operation runs.
 #[test]
-fn sort_menu_open_and_close_toggles_flag() {
+fn sorting_never_opens_an_overlay() {
     let dir = unique_tmp("konoma_sortmenu_close_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    assert!(!app.is_sort_menu());
-    app.open_sort_menu();
-    assert!(app.is_sort_menu());
-    app.close_sort_menu();
-    assert!(!app.is_sort_menu(), "close_sort_menu でフラグが下りる");
+    assert_eq!(app.surface(), crate::keymap::Surface::Tree);
+    for c in ['s', 'r', '.', 'n'] {
+        app.sort_menu_key(c).unwrap();
+        assert_eq!(app.surface(), crate::keymap::Surface::Tree, "after {c}");
+        assert_eq!(app.internal_mode(), None, "after {c}");
+    }
 }
 
 #[test]
@@ -7243,11 +6216,39 @@ fn set_gif_frames_and_advance_when_due() {
     ]);
     assert!(app.is_gif_active());
     assert!(!app.advance_gif_if_due(), "最初の tick は計時開始だけ");
-    assert_eq!(app.gif_idx, 0);
+    assert_eq!(app.gif.frame_index(), 0);
     // Pretend the display duration has elapsed and advance to the next frame.
-    app.gif_shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    app.gif.force_shown_at(Some(
+        std::time::Instant::now() - std::time::Duration::from_secs(1),
+    ));
     assert!(app.advance_gif_if_due(), "期限超過で次フレームへ");
-    assert_eq!(app.gif_idx, 1);
+    assert_eq!(app.gif.frame_index(), 1);
+}
+
+/// The run loop asks `animation_timers_due`: a full-screen GIF frame that is due draws again.
+#[test]
+fn the_loops_animation_timers_report_a_due_full_screen_gif_frame() {
+    let (mut app, _dir) = app_with_image();
+    let frame = |c: [u8; 3]| {
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb(c)))
+    };
+    let now = std::time::Instant::now();
+    assert!(!crate::animation_timers_due(&mut app, now), "nothing plays");
+    app.set_gif_frames(vec![
+        (frame([255, 0, 0]), std::time::Duration::from_millis(50)),
+        (frame([0, 255, 0]), std::time::Duration::from_millis(50)),
+    ]);
+    assert!(
+        !crate::animation_timers_due(&mut app, now),
+        "starts the timer"
+    );
+    app.gif
+        .force_shown_at(Some(now - std::time::Duration::from_secs(1)));
+    assert!(
+        crate::animation_timers_due(&mut app, now),
+        "the frame is due"
+    );
+    assert_eq!(app.gif.frame_index(), 1);
 }
 
 #[test]
@@ -7257,10 +6258,10 @@ fn gif_poll_timeout_none_without_anim_some_when_playing() {
     assert!(app.gif_poll_timeout().is_none(), "アニメでなければ None");
     let frame =
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([0; 3])));
-    app.gif_frames = vec![
+    app.gif.set_frames(vec![
         (frame.clone(), Duration::from_millis(50)),
         (frame, Duration::from_millis(50)),
-    ];
+    ]);
     let t = app.gif_poll_timeout().expect("再生中は Some");
     assert!(
         t >= Duration::from_millis(10) && t <= Duration::from_millis(100),
@@ -7279,7 +6280,7 @@ fn advance_md_gifs_single_frame_entry_does_not_advance() {
 
     let key = PathBuf::from("/tmp/one.gif");
     let frame = Arc::new(image::DynamicImage::new_rgba8(4, 4));
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(frame.clone()),
@@ -7292,7 +6293,7 @@ fn advance_md_gifs_single_frame_entry_does_not_advance() {
         !app.advance_md_gifs_if_due(),
         "1フレームしか無いエントリは進めない"
     );
-    let e = &app.md_image_cache[&key];
+    let e = &app.md_images.cache[&key];
     assert_eq!(e.idx, 0);
     assert!(e.shown_at.is_none(), "アニメ対象外なので計時も始めない");
 }
@@ -7328,7 +6329,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
         )
         .expect("halfblocks エンコードは端末無しでも成功する");
 
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(f0.clone()),
@@ -7358,7 +6359,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
     // Before the deadline (the first tick): only starts the timer, doesn't advance.
     assert!(!app.advance_md_gifs_if_due(), "最初の tick は計時開始だけ");
     {
-        let e = &app.md_image_cache[&key];
+        let e = &app.md_images.cache[&key];
         assert_eq!(e.idx, 0);
         assert!(e.shown_at.is_some(), "計時は始まる");
         assert!(
@@ -7369,12 +6370,12 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
 
     // Shift the deadline into the past to advance to the next frame.
     {
-        let e = app.md_image_cache.get_mut(&key).unwrap();
+        let e = app.md_images.cache.get_mut(&key).unwrap();
         e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
     }
     assert!(app.advance_md_gifs_if_due(), "期限超過で次フレームへ進む");
     {
-        let e = &app.md_image_cache[&key];
+        let e = &app.md_images.cache[&key];
         assert_eq!(e.idx, 1, "次フレームへ進む");
         assert!(
             Arc::ptr_eq(e.decoded.as_ref().unwrap(), &f1),
@@ -7396,12 +6397,12 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
 
     // Full cycle: shifting the deadline into the past once more returns idx to 0.
     {
-        let e = app.md_image_cache.get_mut(&key).unwrap();
+        let e = app.md_images.cache.get_mut(&key).unwrap();
         e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
     }
     assert!(app.advance_md_gifs_if_due());
     assert_eq!(
-        app.md_image_cache[&key].idx, 0,
+        app.md_images.cache[&key].idx, 0,
         "2フレームを一周して先頭へ戻る"
     );
 }
@@ -7427,7 +6428,7 @@ fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
 
     let key = PathBuf::from("/tmp/anim2.gif");
     let frame = Arc::new(image::DynamicImage::new_rgba8(4, 4));
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key,
         MdImgEntry {
             decoded: Some(frame.clone()),
@@ -7512,7 +6513,7 @@ fn inline_gif_app(
         })
         .collect();
     app.tab.mode = Mode::Preview;
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         file.clone(),
         MdImgEntry {
             decoded: Some(frames[0].0.clone()),
@@ -7589,7 +6590,7 @@ fn inline_gif_animation_never_transmits_a_second_kitty_image_id() {
 
     // Nothing accumulates in konoma either: one entry holds exactly one encoded full-image slot,
     // whose payload stays one frame's worth however long it has been playing.
-    let entry = &app.md_image_cache[&PathBuf::from(&url)];
+    let entry = &app.md_images.cache[&PathBuf::from(&url)];
     assert_eq!(
         entry.full.len(),
         1,
@@ -7684,18 +6685,18 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
 
     // Fully visible → the Full slot.
     app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
-    let full_req_id = app.md_kitty_ids[&key][0][0];
+    let full_req_id = app.md_images.kitty_ids[&key][0][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     // Scrolled so only the lower band shows → the Clip slot, which needs an id of its own.
     app.ensure_md_image(&url, cols, full_rows, 3, 5);
-    let clip_id = app.md_kitty_ids[&key][1][0];
+    let clip_id = app.md_images.kitty_ids[&key][1][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     // The in-place zoom of a focused diagram → the Zoom slot.
     app.tab.fence_zoom = 2.0;
     app.ensure_md_fence_zoom(&url, cols, full_rows);
-    let zoom_id = app.md_kitty_ids[&key][2][0];
+    let zoom_id = app.md_images.kitty_ids[&key][2][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     let ids = [full_req_id, clip_id, zoom_id];
@@ -7706,22 +6707,23 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
     );
 
     // Re-encoding any slot reuses that slot's id rather than taking a new one.
-    let entry = app.md_image_cache.get_mut(&key).unwrap();
+    let entry = app.md_images.cache.get_mut(&key).unwrap();
     entry.mark_stale(); // what a GIF frame advance does
     app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
     assert_eq!(
-        app.md_kitty_ids[&key],
+        app.md_images.kitty_ids[&key],
         [vec![full_req_id], vec![clip_id], vec![zoom_id]],
         "再エンコードでは ID を取り直さない"
     );
 
     // ...and neither does throwing the cache entry away, which is what moving to another file
     // does: the ids belong to the *picture*, not to whatever decode happens to be cached for it.
-    app.md_image_cache.remove(&key);
-    app.md_image_cache
+    app.md_images.cache.remove(&key);
+    app.md_images
+        .cache
         .insert(key.clone(), MdImgEntry::default());
     assert_eq!(
-        app.md_kitty_ids[&key],
+        app.md_images.kitty_ids[&key],
         [vec![full_req_id], vec![clip_id], vec![zoom_id]],
         "キャッシュ項目を捨てても ID は生き残る(開き直しで端末の常駐画像が増えない)"
     );
@@ -7731,7 +6733,7 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
 
 /// The cell size a full-image slot currently holds.
 fn full_slot_widths(app: &App, key: &PathBuf) -> std::collections::BTreeSet<u16> {
-    app.md_image_cache[key]
+    app.md_images.cache[key]
         .full
         .iter()
         .map(|s| match s.key {
@@ -7746,18 +6748,14 @@ fn full_slot_widths(app: &App, key: &PathBuf) -> std::collections::BTreeSet<u16>
 /// and this waits however long a loaded machine needs, so a slow test run can never be mistaken for
 /// "the renderer stopped asking" (which is the very property these tests assert).
 fn apply_one_encode(app: &mut App, rx: &std::sync::mpsc::Receiver<MdEncodeResult>) -> bool {
-    let wait = if app.md_encode_in_flight() {
-        std::time::Duration::from_secs(10)
-    } else {
-        std::time::Duration::from_millis(50)
-    };
-    match rx.recv_timeout(wait) {
-        Ok(res) => {
-            app.apply_md_encode(res);
-            true
-        }
-        Err(_) => false,
+    if !app.md_encode_in_flight() {
+        return false;
     }
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("inline encode convergence: the outstanding encode must answer");
+    app.apply_md_encode(res);
+    true
 }
 
 /// The same picture at two cell sizes **one column apart** is still two pictures. Nothing about the
@@ -7780,11 +6778,11 @@ fn inline_image_at_two_nearly_equal_sizes_gets_two_slots_and_two_kitty_ids() {
         std::collections::BTreeSet::from([20, 21]),
         "1桁違いでも別々のスロットに載る"
     );
-    let ids = &app.md_kitty_ids[&key][0];
+    let ids = &app.md_images.kitty_ids[&key][0];
     assert_eq!(ids.len(), 2, "サイズごとに ID が要る: {ids:?}");
     assert_ne!(ids[0], ids[1], "同じ ID を共有すると端末側で消し合う");
     assert!(
-        app.md_image_cache[&key]
+        app.md_images.cache[&key]
             .full
             .iter()
             .all(|s| s.image.is_some()),
@@ -7821,7 +6819,7 @@ fn resizing_recycles_a_protocol_slot_instead_of_burning_a_kitty_id() {
     }
 
     assert_eq!(
-        app.md_image_cache[&key].full.len(),
+        app.md_images.cache[&key].full.len(),
         MD_PROTO_SLOTS,
         "保持サイズ数は上限で頭打ちになる"
     );
@@ -7831,7 +6829,7 @@ fn resizing_recycles_a_protocol_slot_instead_of_burning_a_kitty_id() {
         "落ちるのは一番古いサイズ"
     );
     assert_eq!(
-        app.md_kitty_ids[&key][0].len(),
+        app.md_images.kitty_ids[&key][0].len(),
         MD_PROTO_SLOTS,
         "6回リサイズしても端末に載る画像は上限ぶんだけ(リサイズ回数に比例しない)"
     );
@@ -7894,7 +6892,7 @@ fn more_simultaneous_sizes_than_the_cap_still_go_quiet() {
 
     // What that retention costs, measured rather than assumed: the sizes on screen at one moment
     // occupy disjoint parts of the viewport, so their protocols add up to about one screenful.
-    let held: usize = app.md_image_cache[&key]
+    let held: usize = app.md_images.cache[&key]
         .full
         .iter()
         .filter_map(|s| s.image.as_ref())
@@ -7935,7 +6933,7 @@ fn a_size_still_encoding_keeps_the_previous_size_on_screen() {
         "新しい幅が届くまでは直前の幅の絵が出たまま"
     );
     assert_eq!(
-        app.md_image_cache[&key].full.len(),
+        app.md_images.cache[&key].full.len(),
         2,
         "新しい幅は空きスロットを取る(古い方を潰さない)"
     );
@@ -7988,7 +6986,7 @@ fn zooming_a_focused_diagram_keeps_the_previous_crop_on_screen() {
         "直前のクロップが出たまま(素の図へ戻ってちらつかない)"
     );
     assert_eq!(
-        app.md_image_cache[&key].zoom.len(),
+        app.md_images.cache[&key].zoom.len(),
         MD_ZOOM_SLOTS,
         "ズームは2枠を交互に使う"
     );
@@ -8015,7 +7013,7 @@ fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
 
     let (req_tx, req_rx) = std::sync::mpsc::channel();
     app.attach_md_encoder(req_tx);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         file.clone(),
         MdImgEntry {
             decoded: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(
@@ -8028,7 +7026,7 @@ fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
     let req = req_rx.try_recv().expect("エンコードを要求する");
     assert!(req.kitty.is_none(), "非 kitty 端末では固定 ID を渡さない");
     // ...and no id was burned for a picture whose slots will never use one.
-    assert!(!app.md_kitty_ids.contains_key(&file));
+    assert!(!app.md_images.kitty_ids.contains_key(&file));
 }
 
 #[test]
@@ -8098,9 +7096,7 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     app.rebuild_tree().unwrap();
 
     // Pretend an md is open, with a.md as the relative link base.
-    app.tab.preview_path = Some(base.join("a.md"));
-    app.tab.preview_kind = Some(PreviewKind::Markdown(base.join("a.md")));
-    app.tab.mode = Mode::Preview;
+    app.show_markdown_for_test(base.join("a.md"));
 
     // For an anchor (#), if there's no matching heading, flash a "not found" notice (this isn't
     // "unsupported"). Here md_cache hasn't been built (nothing has rendered), so anchors is
@@ -8212,374 +7208,6 @@ fn git_repo_with_commits(dir: &Path) {
     std::fs::write(dir.join("a.txt"), b"one\ntwo\n").unwrap();
     sh(&["add", "-A"]);
     sh(&["commit", "-m", "second commit"]);
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn current_commit_meta_resolves_per_surface_and_none_in_tree() {
-    let dir = unique_tmp("konoma_current_commit_meta_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir);
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
-
-    // No commit on the Tree surface → None.
-    assert!(
-        app.current_commit_meta().is_none(),
-        "Tree ではコミットメタ無し"
-    );
-
-    // The log surface: returns the meta of the selected commit (the first one = second).
-    app.open_git_view();
-    app.open_git_log();
-    let meta = app.current_commit_meta().expect("log の選択コミットメタ");
-    assert!(
-        meta.message.starts_with("second commit"),
-        "件名: {:?}",
-        meta.message
-    );
-    assert_eq!(
-        meta.short.len(),
-        meta.id.chars().take(meta.short.len()).count()
-    );
-    assert!(
-        !meta.id.is_empty() && meta.id.starts_with(&meta.short),
-        "完全ハッシュは短縮から始まる"
-    );
-
-    // The detail surface: uses the already-loaded git_detail_meta (open the older one = first commit).
-    app.git_log_move(1);
-    app.open_git_commit_detail();
-    let dmeta = app.current_commit_meta().expect("detail のメタ");
-    assert!(
-        dmeta.message.starts_with("first commit"),
-        "詳細は first: {:?}",
-        dmeta.message
-    );
-    assert!(
-        dmeta.message.contains("body line"),
-        "完全メッセージ(本文)も含む"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_copy_message_and_branch_name_set_flash() {
-    let dir = unique_tmp("konoma_git_copy_flash_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir);
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon, Config::default()).unwrap();
-    let copied = tr(app.lang, crate::i18n::Msg::CopiedPrefix);
-    let failed = tr(app.lang, crate::i18n::Msg::CopyFailed);
-    let no_target = tr(app.lang, crate::i18n::Msg::NoCopyTarget);
-
-    // Copy the log's selected commit via Message: flashes either copied/failed regardless of
-    // clipboard availability.
-    app.open_git_view();
-    app.open_git_log();
-    app.git_copy(GitCopyKind::Message);
-    let f = app.flash.clone().expect("コピーで flash");
-    assert!(
-        f.starts_with(copied) || f.starts_with(failed),
-        "copied/failed のどちらかを通知: {f:?}"
-    );
-    assert_ne!(f, no_target, "コミットがあるので no-target ではない");
-
-    // git_copy_branch_name with branches unloaded → hits the no-target guard.
-    app.close_git_log();
-    app.close_git_view();
-    app.tab.git_branches = None;
-    app.git_copy_branch_name();
-    assert_eq!(
-        app.flash.as_deref(),
-        Some(no_target),
-        "ブランチ未選択は no-target"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_copy_branch_name_copies_current_branch() {
-    let dir = unique_tmp("konoma_git_copy_branch_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir);
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon, Config::default()).unwrap();
-    app.open_git_branches();
-    let branch = app.git_branch_view()[app.git_branch_sel()].name.clone();
-    let no_target = tr(app.lang, crate::i18n::Msg::NoCopyTarget);
-    app.git_copy_branch_name();
-    let f = app.flash.clone().expect("flash");
-    // If the clipboard succeeds, "copied: <branch>"; even on failure, "copy failed: ...". Either
-    // way it's already past the guard.
-    assert_ne!(
-        f, no_target,
-        "選択ブランチがあるので no-target ではない: {f:?}"
-    );
-    assert!(!branch.is_empty(), "現在ブランチ名が取れる");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_view_unstage_single_file_reloads() {
-    let dir = unique_tmp("konoma_git_view_unstage_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let sh = |args: &[&str]| {
-        std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    std::fs::write(dir.join("a.txt"), b"v1\n").unwrap();
-    sh(&["add", "-A"]);
-    sh(&["commit", "-m", "init"]);
-    std::fs::write(dir.join("a.txt"), b"v2\n").unwrap();
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon, Config::default()).unwrap();
-    app.open_git_view();
-    app.tab.git_view_sel = 0;
-    let target = app.git_view_selected().unwrap();
-    app.git_view_stage();
-    assert!(
-        app.git_view_entries()
-            .iter()
-            .find(|e| e.path == target)
-            .unwrap()
-            .staged
-    );
-    // u = unstage a single file.
-    app.git_view_unstage();
-    assert!(
-        !app.git_view_entries()
-            .iter()
-            .find(|e| e.path == target)
-            .unwrap()
-            .staged,
-        "unstage で staged=false に戻る"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_view_start_discard_opens_confirm_without_destroying() {
-    let dir = unique_tmp("konoma_git_view_start_discard_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let sh = |args: &[&str]| {
-        std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    std::fs::write(dir.join("a.txt"), b"v1\n").unwrap();
-    sh(&["add", "-A"]);
-    sh(&["commit", "-m", "init"]);
-    std::fs::write(dir.join("a.txt"), b"v2\n").unwrap();
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon, Config::default()).unwrap();
-    app.open_git_view();
-    app.git_view_start_discard();
-    // Only the confirmation dialog opens (nothing is discarded yet = the file stays at v2).
-    assert!(
-        app.is_dialog() && app.dialog_is_confirm(),
-        "破棄は確認ダイアログ"
-    );
-    assert_eq!(
-        std::fs::read_to_string(dir.join("a.txt")).unwrap(),
-        "v2\n",
-        "確認段階では破棄しない"
-    );
-    app.dialog_cancel();
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn git_branch_filter_commit_and_backspace() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_branch_filter_commit_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let git = |args: &[&str]| {
-        Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    git(&["init", "-q"]);
-    git(&["config", "user.email", "t@t.t"]);
-    git(&["config", "user.name", "t"]);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    git(&["add", "."]);
-    git(&["commit", "-q", "-m", "init"]);
-    git(&["branch", "feature"]);
-    git(&["branch", "fixup"]);
-    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.open_git_branches();
-    app.git_branch_start_filter();
-    // "f" narrows it to the 2 entries feature/fixup, "fi" narrows it to the 1 entry fixup
-    // (substring match).
-    app.git_branch_filter_push('f');
-    assert_eq!(app.git_branch_view().len(), 2, "f で feature/fixup の2件");
-    app.git_branch_filter_push('i');
-    assert_eq!(app.git_branch_view().len(), 1, "fi で fixup の1件に絞る");
-    // Backspacing back to "f" widens it to 2 entries again (backspace's effect).
-    app.git_branch_filter_backspace();
-    assert_eq!(app.git_branch_view().len(), 2, "backspace で2件へ広がる");
-    // commit (Enter): exits input mode but the query remains (j/k can navigate).
-    assert!(app.git_branch_filtering());
-    app.git_branch_filter_commit();
-    assert!(!app.git_branch_filtering(), "Enter で入力モードを抜ける");
-    assert_eq!(app.git_branch_query(), "f", "クエリは保持される");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn graph_base_set_clear_and_detail_scroll_hscroll() {
-    let dir = unique_tmp("konoma_graph_base_detail_scroll_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir);
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon, Config::default()).unwrap();
-    app.open_git_graph();
-    assert!(app.is_git_graph());
-
-    // Set the base: pins the selected commit row as the base → gets a label.
-    assert!(app.git_graph_base_label().is_none(), "初期は基準なし");
-    app.git_graph_set_base();
-    assert!(
-        app.git_graph_base_label().is_some(),
-        "set_base で基準ラベルが付く"
-    );
-    // Clearing removes it.
-    app.git_graph_clear_base();
-    assert!(app.git_graph_base_label().is_none(), "clear_base で消える");
-
-    // Open the commit detail and verify the scroll behavior.
-    app.open_git_graph_detail();
-    assert!(app.is_git_detail());
-    app.set_git_detail_viewport(5);
-    app.set_git_detail_total(100);
-    assert_eq!(app.git_detail_scroll(), 0);
-    app.git_detail_scroll_by(10);
-    assert_eq!(app.git_detail_scroll(), 10, "下へ10");
-    app.git_detail_scroll_by(-3);
-    assert_eq!(app.git_detail_scroll(), 7, "上へ3");
-    app.git_detail_scroll_to(true); // G: to the end (total-viewport=95)
-    assert_eq!(app.git_detail_scroll(), 95, "G で末尾(クランプ)");
-    app.git_detail_scroll_to(false); // g: to the top
-    assert_eq!(app.git_detail_scroll(), 0);
-    // Horizontal scroll.
-    app.git_detail_hscroll_by(4);
-    assert_eq!(app.git_detail_hscroll(), 4);
-    app.git_detail_hscroll_home();
-    assert_eq!(app.git_detail_hscroll(), 0);
-    app.git_detail_hscroll_end();
-    assert_eq!(app.git_detail_hscroll(), u16::MAX);
-    app.clamp_git_detail_hscroll(12);
-    assert_eq!(app.git_detail_hscroll(), 12, "描画側の最大幅でクランプ");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn graph_picker_move_jump_toggle_current_only_and_cancel() {
-    use std::process::Command;
-    let dir = unique_tmp("konoma_graph_picker_ops_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let git = |args: &[&str]| {
-        Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "-m", "init"]);
-    git(&["branch", "-M", "trunk"]);
-    for n in ["f1", "f2", "f3"] {
-        git(&["checkout", "-q", "trunk"]);
-        git(&["checkout", "-q", "-b", n]);
-        std::fs::write(dir.join(format!("{n}.txt")), b"x\n").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", &format!("{n} c")]);
-    }
-    git(&["checkout", "-q", "trunk"]);
-    let mut cfg = Config::default();
-    cfg.ui.graph_max_branches = 10;
-    let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
-    app.open_git_graph();
-    app.git_graph_open_picker();
-    assert!(app.is_git_graph_picker());
-    let n = app.git_graph_picker_items().len();
-    assert!(n >= 4, "4ブランチ以上");
-
-    // Move + jump.
-    app.git_graph_picker_move(2);
-    assert_eq!(app.git_graph_picker_sel(), 2);
-    app.git_graph_picker_jump(false);
-    assert_eq!(app.git_graph_picker_sel(), n - 1, "末尾へジャンプ");
-    app.git_graph_picker_jump(true);
-    assert_eq!(app.git_graph_picker_sel(), 0, "先頭へジャンプ");
-
-    // current_only → only HEAD (trunk) is ON.
-    app.git_graph_picker_current_only();
-    let on: Vec<String> = app
-        .git_graph_picker_items()
-        .into_iter()
-        .filter(|(_, _, on)| *on)
-        .map(|(n, _, _)| n)
-        .collect();
-    assert_eq!(
-        on,
-        vec!["trunk".to_string()],
-        "current only は HEAD だけ: {on:?}"
-    );
-
-    // Toggle a non-HEAD row ON.
-    let non_head = app
-        .git_graph_picker_items()
-        .iter()
-        .position(|(_, is_cur, _)| !*is_cur)
-        .unwrap();
-    app.git_graph_picker_move(non_head as i32 - app.git_graph_picker_sel() as i32);
-    app.git_graph_picker_toggle();
-    assert!(
-        app.git_graph_picker_items()[non_head].2,
-        "非 HEAD はトグルで ON"
-    );
-
-    // cancel closes it without changing the visible set.
-    app.git_graph_picker_cancel();
-    assert!(!app.is_git_graph_picker(), "cancel でパネルが閉じる");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn close_git_graph_returns_to_git_view() {
-    let dir = unique_tmp("konoma_close_git_graph_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir);
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon, Config::default()).unwrap();
-    app.open_git_graph();
-    assert!(app.is_git_graph());
-    app.close_git_graph();
-    assert!(!app.is_git_graph(), "グラフは閉じる");
-    assert!(app.is_git_view(), "閉じると変更ハブへ戻る");
 }
 
 // --- bookmark_actions / file_actions coverage ---------------------------
@@ -9682,641 +8310,6 @@ fn returning_to_the_originating_tab_prunes_its_stale_selection() {
 // holding `.git/index.lock` each froze konoma outright. Deliberately **not** solved with a
 // timeout+kill — killing `git commit` leaves `.git/index.lock` behind and the repo unusable.
 
-/// A repo with one commit plus one uncommitted modification, and an `App` already in its Git view
-/// (so `git_view_entries` has the row the stage/discard tests act on). Returns the canonical root.
-#[cfg(feature = "git")]
-fn git_repo_with_one_change(prefix: &str) -> (crate::test_support::TmpDir, App) {
-    let dir = unique_tmp(prefix);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let f = dir.join("a.txt");
-    std::fs::write(&f, b"one\n").unwrap();
-    crate::git::stage(&dir, &f).unwrap();
-    crate::git::commit(&dir, "init").unwrap();
-    // Modify the tracked file so there is exactly one changed entry to act on.
-    std::fs::write(&f, b"two\n").unwrap();
-
-    // `.into_canonical()` transfers cleanup responsibility onto the returned guard (see its own
-    // doc comment) instead of leaving it on `dir`, which would otherwise drop (and rm -rf the
-    // fixture) the moment this function returns — before any caller ever touches it.
-    let canon = dir.into_canonical().unwrap();
-    let mut app = App::new(canon.to_path_buf(), Config::default()).unwrap();
-    app.open_git_view();
-    assert!(app.is_git_view(), "{prefix}: Git ビューが開く");
-    assert_eq!(app.git_view_entries().len(), 1, "{prefix}: 変更1件");
-    (canon, app)
-}
-
-/// A git-write runner is attached → the dispatching call must return **immediately**, with the
-/// write still out on the worker (`gitop_pending` set, busy indicator reporting it, watcher bursts
-/// deferred), and the result must apply only once the channel delivers it. This is the whole point
-/// of D3: `git` has no bounded runtime, so it must never run on the UI thread.
-#[cfg(feature = "git")]
-#[test]
-fn git_op_runs_in_background_when_runner_attached() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_bg");
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-
-    app.git_view_stage();
-    // The moment the key handler returns, the write is still in flight: only the main thread's
-    // `apply_git_op` clears `gitop_pending`, so it is always set here even if the worker has
-    // already finished running.
-    assert!(
-        app.gitop_pending.is_some(),
-        "バックグラウンド実行中は gitop_pending が立つ"
-    );
-    assert!(
-        app.busy_jobs().contains(&crate::i18n::Msg::BusyGitOp),
-        "busy インジケーターに git 操作が出る: {:?}",
-        app.busy_jobs()
-    );
-    // Forced on even with `ui.busy_indicator = false`: nothing on screen moves while a hook runs,
-    // so suppressing the spinner would leave no evidence at all that the commit is still going.
-    app.cfg.ui.busy_indicator = false;
-    assert!(
-        app.busy_indicator_active(),
-        "busy_indicator=false でも git 書き込み中は表示する"
-    );
-    app.cfg.ui.busy_indicator = true;
-    assert!(
-        app.should_defer_fs_events(),
-        "実行中は自分が生む watcher イベントを溜める"
-    );
-    // Not applied yet: the Git view still shows the file as unstaged.
-    assert_eq!(
-        app.git_view_entries().first().map(|e| e.staged),
-        Some(false),
-        "結果適用前に UI が先走らない"
-    );
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res), "現世代の結果は適用される");
-    assert!(app.gitop_pending.is_none(), "適用で pending が解ける");
-    assert!(
-        !app.should_defer_fs_events(),
-        "完了後は watcher イベントの保留も解ける"
-    );
-    assert_eq!(
-        app.git_view_entries().first().map(|e| e.staged),
-        Some(true),
-        "適用後は一覧が staged になる"
-    );
-    assert!(
-        crate::git::changed_files(&dir).iter().any(|e| e.staged),
-        "index に実際にステージされている"
-    );
-    assert!(
-        app.flash
-            .as_deref()
-            .unwrap_or_default()
-            .contains(crate::i18n::tr(app.lang, crate::i18n::Msg::Staged)),
-        "flash にステージ結果が出る: {:?}",
-        app.flash
-    );
-}
-
-/// With **no** runner attached (unit tests / no run loop), the write must still complete inline and
-/// be observable on return — the same contract as `start_file_op`/`spawn_or_sync_statuses`. This is
-/// what lets every pre-existing test of these flows keep passing unchanged.
-#[cfg(feature = "git")]
-#[test]
-fn git_op_falls_back_to_synchronous_without_a_runner() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_sync");
-    app.git_view_stage();
-    assert!(
-        app.gitop_pending.is_none(),
-        "ランナー未 attach ならその場で完了する(pending が残らない)"
-    );
-    assert_eq!(
-        app.git_view_entries().first().map(|e| e.staged),
-        Some(true),
-        "戻った時点で一覧に反映されている"
-    );
-    assert!(
-        crate::git::changed_files(&dir).iter().any(|e| e.staged),
-        "index に実際にステージされている"
-    );
-}
-
-/// While one git write is in flight, a second must be rejected (flash `GitOpBusy`, generation
-/// unchanged, nothing written) rather than starting a second `git` that would only lose the race
-/// for `.git/index.lock`.
-#[cfg(feature = "git")]
-#[test]
-fn second_git_op_is_rejected_while_one_is_in_flight() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_busy");
-    // Without launching an actual worker, build the in-flight state directly (private fields are
-    // reachable from within the module).
-    app.gitop_gen = app.gitop_gen.wrapping_add(1);
-    app.gitop_pending = Some(crate::app::GitOpKind::Commit);
-    let gen_before = app.gitop_gen;
-
-    app.git_view_stage();
-    assert_eq!(
-        app.flash.as_deref(),
-        Some(crate::i18n::tr(app.lang, crate::i18n::Msg::GitOpBusy)),
-        "実行中は GitOpBusy フラッシュで拒否される"
-    );
-    assert_eq!(app.gitop_gen, gen_before, "拒否された2件目は世代を進めない");
-    assert!(
-        !crate::git::changed_files(&dir).iter().any(|e| e.staged),
-        "拒否された操作は git を一度も呼ばない"
-    );
-}
-
-/// `apply_git_op` must ignore a result whose generation doesn't match the current one (superseded)
-/// and must not clear `gitop_pending`.
-#[cfg(feature = "git")]
-#[test]
-fn stale_git_op_result_is_dropped() {
-    let dir = unique_tmp("konoma_gitop_stale");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = dir.canonicalize().unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
-
-    app.gitop_gen = 5;
-    app.gitop_pending = Some(crate::app::GitOpKind::Stage);
-    let stale = crate::app::GitOpResult {
-        gen: 4,
-        kind: crate::app::GitOpKind::Stage,
-        root: dir.clone(),
-        tab_id: app.tab.id,
-        path: dir.join("a.txt"),
-        text: String::new(),
-        label: "a.txt".into(),
-        count: 0,
-        err: None,
-    };
-    assert!(
-        !app.apply_git_op(stale),
-        "陳腐化した世代の結果は適用されない"
-    );
-    assert!(
-        app.gitop_pending.is_some(),
-        "陳腐化した結果は pending を解かない"
-    );
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-/// A finished git write must not disturb whatever tab happens to be active when the result arrives.
-/// The user can switch tabs while a `pre-commit` hook runs — that is the entire point of moving the
-/// write off the UI thread — so the tab active on arrival may not be the one that dispatched it.
-/// `rebuild_tree_notify`/`git_view_reload` would collapse that other tab's `/` filter and replace
-/// its change list. The generation check does **not** protect against this (the generation is frozen
-/// while an operation is pending) — the root comparison in `apply_git_op` does.
-#[cfg(feature = "git")]
-#[test]
-fn git_op_result_does_not_disturb_another_tab() {
-    let (a, mut app) = git_repo_with_one_change("konoma_gitop_other_tab");
-    // Tab 2's root: a different, plain directory.
-    let b = unique_tmp("konoma_gitop_other_tab_b");
-    let _ = std::fs::remove_dir_all(&b);
-    std::fs::create_dir_all(&b).unwrap();
-    for n in ["alpha.txt", "beta.txt", "gamma.txt"] {
-        std::fs::write(b.join(n), b"x").unwrap();
-    }
-    let b = b.canonicalize().unwrap();
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-    // Discard through the real key path (`x` → confirm `y`), which on the same tab rebuilds the
-    // tree and reloads the change list.
-    app.git_view_start_discard();
-    assert!(app.is_dialog(), "破棄確認ダイアログが出る");
-    app.dialog_confirm(true).unwrap();
-    assert!(app.gitop_pending.is_some(), "実行中");
-
-    // Switch to a tab with a different root during the write, and put it into a `/` filter there.
-    app.tab_new().unwrap();
-    app.tab.root = b.clone();
-    app.tab.entries.clear();
-    app.tab.selected = 0;
-    app.rebuild_tree().unwrap();
-    app.start_filter();
-    for c in "beta".chars() {
-        app.filter_input_push(c);
-    }
-    app.filter_commit();
-    let before_len = app.tab.entries.len();
-    let before_sel = app.tab.selected;
-    let before_path = app.tab.entries.get(before_sel).map(|e| e.path.clone());
-    assert_eq!(before_len, 1, "絞り込みで beta.txt だけが残っている");
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res), "現世代の結果は適用される");
-    assert_eq!(
-        std::fs::read_to_string(a.join("a.txt")).unwrap(),
-        "one\n",
-        "破棄自体は完了している(コミット時点の内容に戻る)"
-    );
-    assert_eq!(
-        app.tab.entries.len(),
-        before_len,
-        "別タブの絞り込み結果を全表示に戻さない"
-    );
-    assert_eq!(app.tab.selected, before_sel, "別タブのカーソルを動かさない");
-    assert_eq!(
-        app.tab
-            .entries
-            .get(app.tab.selected)
-            .map(|e| e.path.clone()),
-        before_path,
-        "カーソルが指すエントリも変わらない"
-    );
-    // The repo really did change, so the status cache must still be invalidated — that part is
-    // deliberately *not* gated on the root, or the originating tab would keep showing a stale marker.
-    assert!(
-        app.git_status_dirty && app.git_status_for.is_none(),
-        "別タブに着地しても git status の再検証は要求される"
-    );
-
-    std::fs::remove_dir_all(&b).ok();
-}
-
-/// Moving the write off-thread must not degrade the failure message: `run_git`'s contract is that
-/// git's own `fatal:` line comes **first**, so the reason is never pushed off the end of the
-/// one-line flash by the command string (the v0.23.1 fix). Also checks the retry affordance —
-/// the input dialog reopens carrying what was typed.
-#[cfg(feature = "git")]
-#[test]
-fn failed_git_op_keeps_gits_fatal_line_first_and_reopens_the_dialog() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_fatal");
-    let current = crate::git::branch(&dir).expect("現在のブランチ名が取れる");
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-
-    // Creating a branch that already exists → `fatal: a branch named '<x>' already exists`.
-    app.start_create_branch();
-    for c in current.chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-    assert!(app.gitop_pending.is_some(), "失敗する書き込みも裏で走る");
-    assert!(
-        !app.is_dialog(),
-        "投げた時点で入力ダイアログは閉じている(結果待ち)"
-    );
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res));
-    let flash = app.flash.clone().unwrap_or_default();
-    assert!(
-        flash.starts_with("fatal:"),
-        "git の fatal: 行が先頭に来る(コマンド文字列で押し出されない): {flash}"
-    );
-    assert!(
-        !flash.contains("switch -c"),
-        "実行したコマンド文字列は含まない: {flash}"
-    );
-    // The retry affordance the synchronous version had: the dialog comes back with the same text.
-    assert!(app.is_dialog(), "失敗すると入力ダイアログが戻る");
-    assert_eq!(
-        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
-        Some(current.clone()),
-        "打った名前が保持されている(打ち直させない)"
-    );
-}
-
-/// A failed write must never restore its own dialog **over** one the user opened in the meantime —
-/// only possible now that the write is asynchronous. Losing the draft message is bad; silently
-/// swapping a "new file name" prompt for a commit box mid-typing is worse.
-#[cfg(feature = "git")]
-#[test]
-fn failed_git_op_does_not_clobber_a_dialog_opened_meanwhile() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_no_clobber");
-    let current = crate::git::branch(&dir).expect("現在のブランチ名");
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-
-    app.start_create_branch();
-    for c in current.chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-
-    // While the (doomed) branch creation is out on the worker, the user opens another prompt.
-    app.start_create();
-    assert!(app.is_dialog(), "別のダイアログが開いている");
-    for c in "newfile.txt".chars() {
-        app.dialog_input_push(c);
-    }
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res));
-    assert_eq!(
-        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
-        Some("newfile.txt".to_string()),
-        "入力中のダイアログを git の失敗で置き換えない"
-    );
-    assert!(
-        app.flash
-            .as_deref()
-            .unwrap_or_default()
-            .starts_with("fatal:"),
-        "失敗自体は flash で伝える: {:?}",
-        app.flash
-    );
-}
-
-/// A failed **commit** must bring its own dialog back carrying the message, so it can be retried
-/// without retyping — the affordance the synchronous version had. (`git commit` with nothing staged
-/// fails, which is what `git_repo_with_one_change` leaves the repo in.)
-#[cfg(feature = "git")]
-#[test]
-fn failed_commit_reopens_the_dialog_with_the_message() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_commit_retry");
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-
-    app.start_git_commit();
-    for c in "wip: try".chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-    assert!(app.gitop_pending.is_some(), "コミットは裏で走る");
-    assert!(!app.is_dialog(), "投げた時点では閉じている");
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res));
-    assert_eq!(
-        app.internal_mode(),
-        Some(InternalMode::Commit),
-        "失敗するとコミット入力に戻る"
-    );
-    assert_eq!(
-        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
-        Some("wip: try".to_string()),
-        "打ったメッセージが保持されている(打ち直させない)"
-    );
-    assert!(
-        app.flash.as_deref().is_some_and(|s| !s.is_empty()),
-        "失敗理由が flash に出る: {:?}",
-        app.flash
-    );
-    assert!(
-        crate::git::log(&dir, 10).len() == 1,
-        "コミットは作られていない"
-    );
-}
-
-/// …but it must not restore that commit box **over** a dialog the user opened while the commit was
-/// out on the worker. Losing the draft message is bad; silently swapping a "new file name" prompt
-/// for a commit box mid-typing is worse. (The `CreateBranch` arm carries the same guard and is
-/// covered by `failed_git_op_does_not_clobber_a_dialog_opened_meanwhile`.)
-#[cfg(feature = "git")]
-#[test]
-fn failed_commit_does_not_clobber_a_dialog_opened_meanwhile() {
-    let (_dir, mut app) = git_repo_with_one_change("konoma_gitop_commit_no_clobber");
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-
-    app.start_git_commit();
-    for c in "wip".chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-
-    // While the (doomed) commit is out on the worker, the user opens another prompt and types.
-    app.start_create();
-    assert!(app.is_dialog(), "別のダイアログが開いている");
-    for c in "newfile.txt".chars() {
-        app.dialog_input_push(c);
-    }
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res));
-    assert_ne!(
-        app.internal_mode(),
-        Some(InternalMode::Commit),
-        "入力中のダイアログをコミット入力で置き換えない"
-    );
-    assert_eq!(
-        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
-        Some("newfile.txt".to_string()),
-        "入力中の内容がそのまま残る"
-    );
-}
-
-/// A completed write changed the repository, so the cached `git status` must be re-validated —
-/// otherwise the tree keeps showing the marker the write just removed.
-#[cfg(feature = "git")]
-#[test]
-fn git_status_is_revalidated_after_a_git_write() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_revalidate");
-    // Pretend the status cache is fresh for this root.
-    app.git_status_for = Some(dir.to_path_buf());
-    app.git_status_dirty = false;
-
-    app.git_view_stage(); // synchronous fallback: completes inline
-    assert!(
-        app.git_status_dirty,
-        "書き込み後は status の再取得が要求される"
-    );
-    assert!(
-        app.git_status_for.is_none(),
-        "ツリーの status キャッシュも無効化される"
-    );
-}
-
-/// A refused dispatch (one git write at a time) must not eat what the user typed. `dialog_submit`
-/// takes the dialog before it knows whether the write can start, so the prompt has to come back
-/// with the text intact — otherwise pressing `c`, writing a paragraph and hitting Enter while a
-/// stage happens to still be running silently throws the message away.
-#[cfg(feature = "git")]
-#[test]
-fn refused_git_op_puts_the_typed_text_back() {
-    let (_dir, mut app) = git_repo_with_one_change("konoma_gitop_refused_keeps_text");
-    // Build the in-flight state directly, without launching a worker.
-    app.gitop_gen = app.gitop_gen.wrapping_add(1);
-    app.gitop_pending = Some(crate::app::GitOpKind::Stage);
-
-    let message = "a carefully written commit message";
-    app.start_git_commit();
-    for c in message.chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-
-    assert_eq!(
-        app.internal_mode(),
-        Some(InternalMode::Commit),
-        "拒否されてもコミット入力は残る"
-    );
-    assert_eq!(
-        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
-        Some(message.to_string()),
-        "打ったメッセージが捨てられない"
-    );
-    assert_eq!(
-        app.dialog_view().map(|(_, _, _, cur)| cur),
-        Some(message.chars().count()),
-        "カーソルは末尾(続けて打てる)"
-    );
-    assert_eq!(
-        app.flash.as_deref(),
-        Some(crate::i18n::tr(app.lang, crate::i18n::Msg::GitOpBusy)),
-        "なぜ起きなかったかは flash が説明する"
-    );
-}
-
-/// The retry dialog must not pop up over input the user has already started. `/` (tree filter),
-/// search and the branch filter are text input too, but none of them is a `Dialog` — checking only
-/// `dialog.is_none()` would restore a commit box on top of a half-typed filter and steal the next
-/// keystrokes. Only reachable because the write is asynchronous.
-#[cfg(feature = "git")]
-#[test]
-fn failed_git_op_does_not_restore_over_an_active_filter() {
-    let (_dir, mut app) = git_repo_with_one_change("konoma_gitop_no_filter_hijack");
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-
-    app.start_git_commit(); // nothing is staged → the commit will fail
-    for c in "wip".chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-    assert!(app.gitop_pending.is_some());
-
-    // While the commit is out on the worker, the user starts filtering the tree.
-    app.back_to_tree();
-    app.start_filter();
-    for c in "a.t".chars() {
-        app.filter_input_push(c);
-    }
-    assert!(app.is_filtering(), "絞り込み入力中");
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res));
-    assert!(
-        !app.is_dialog(),
-        "入力中の絞り込みの上にダイアログを出さない"
-    );
-    assert!(app.is_filtering(), "絞り込み入力はそのまま続けられる");
-    assert_eq!(app.filter_query(), Some("a.t"), "打った内容も無傷");
-    assert!(
-        app.flash.as_deref().is_some_and(|s| !s.is_empty()),
-        "失敗自体は flash で伝える"
-    );
-}
-
-/// **Root equality is not tab identity.** `t` (`tab_new`) opens the new tab *at the current root*,
-/// so two tabs sharing a root is the ordinary case — and `worktree add` relocates whichever tab it
-/// decides is "the one that asked". Pressing `t` while the worktree is being written must not drag
-/// that brand-new tab into it and strand the tab that actually asked.
-#[cfg(feature = "git")]
-#[test]
-fn worktree_add_never_relocates_a_tab_that_did_not_ask() {
-    let base = unique_tmp("konoma_gitop_worktree_wrong_tab");
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
-    let base = base.canonicalize().unwrap();
-    let repo = base.join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    init_git_repo(&repo);
-    let f = repo.join("a.txt");
-    std::fs::write(&f, b"one\n").unwrap();
-    crate::git::stage(&repo, &f).unwrap();
-    crate::git::commit(&repo, "init").unwrap();
-
-    let mut cfg = Config::default();
-    cfg.git.worktree_dir = base.to_string_lossy().into_owned();
-    let mut app = App::new(repo.clone(), cfg).unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-
-    // Tab A asks for a new worktree.
-    app.open_git_worktrees();
-    app.start_create_worktree();
-    for c in "wt-branch".chars() {
-        app.dialog_input_push(c);
-    }
-    app.dialog_submit().unwrap();
-    assert!(app.gitop_pending.is_some(), "worktree add は裏で走る");
-    let tab_a = app.tab.id;
-
-    // …and the user opens a new tab while it runs. Same root, different tab.
-    app.tab_new().unwrap();
-    let tab_b = app.tab.id;
-    assert_ne!(tab_a, tab_b, "新しいタブは別の識別子を持つ");
-    assert_eq!(app.tab.root, repo, "新しいタブは同じ root で開く(t の既定)");
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(20))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res));
-
-    assert!(
-        base.join("wt-branch").join("a.txt").is_file(),
-        "worktree 自体は作られている"
-    );
-    assert_eq!(
-        app.tab.root, repo,
-        "頼んでいないタブ(B)を新しい worktree へ引きずり込まない"
-    );
-    assert_eq!(app.tab.open_dir, repo, "open_dir(@参照の基準)も動かさない");
-    assert!(
-        app.flash
-            .as_deref()
-            .unwrap_or_default()
-            .contains(crate::i18n::tr(app.lang, crate::i18n::Msg::CreatedWorktree)),
-        "作成できたことは flash で伝える: {:?}",
-        app.flash
-    );
-
-    std::fs::remove_dir_all(&base).ok();
-}
-
-/// The counterpart to the guard above: a *repo-scoped refresh* must still happen on any tab rooted
-/// at the repository that changed, even one that did not ask. The two questions ("is this the tab
-/// that asked" / "is this tab showing the repo that changed") have deliberately different answers —
-/// collapsing them into one would either strand stale change lists or relocate innocent tabs.
-#[cfg(feature = "git")]
-#[test]
-fn same_root_tab_is_refreshed_even_though_it_is_not_the_origin() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_same_root_refresh");
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_gitop_runner(tx);
-
-    app.git_view_stage();
-    let tab_a = app.tab.id;
-
-    // A second tab on the same root (what `t` gives you), which has never opened the Git view.
-    app.tab_new().unwrap();
-    assert_ne!(tab_a, app.tab.id);
-    assert_eq!(app.tab.root, dir);
-    assert!(
-        app.git_view_entries().is_empty(),
-        "新しいタブはまだ変更一覧を持たない"
-    );
-
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("ワーカーが結果を返す");
-    assert!(app.apply_git_op(res));
-    assert_eq!(
-        app.git_view_entries().first().map(|e| e.staged),
-        Some(true),
-        "同じ repo を映すタブは、頼んでいなくても最新の変更一覧に追従する"
-    );
-}
-
 /// Quitting mid-write orphans a `git` still holding `.git/index.lock`, so the confirmation is shown
 /// **even with `confirm_quit = false`** — same rule as a running file operation. It only warns;
 /// `y` still quits.
@@ -10335,7 +8328,7 @@ fn quit_confirms_while_a_git_op_is_running() {
         !app.request_quit(),
         "confirm_quit=false かつアイドルなら即終了"
     );
-    app.gitop_pending = Some(crate::app::GitOpKind::Commit);
+    app.gitop_pending = Some(crate::app::GitOpKind::Discard);
     assert!(
         app.request_quit(),
         "git 書き込み中は設定に関わらず確認を出す"
@@ -11036,15 +9029,15 @@ fn ui_preview_renders_image_via_kitty_path() {
     // (the kitty transfer sequence _G) even with a workerless TestBackend. A still image is
     // asynchronous (app.image arrives later).
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.gif")));
     let frame = |c: [u8; 3]| {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(40, 30, image::Rgb(c)))
     };
-    app.gif_frames = vec![
+    app.gif.set_frames(vec![
         (frame([255, 0, 0]), std::time::Duration::from_millis(50)),
         (frame([0, 255, 0]), std::time::Duration::from_millis(50)),
-    ];
-    app.gif_idx = 0;
+    ]);
+    app.gif.force_frame_index(0);
     app.tab.mode = Mode::Preview;
     assert!(app.is_gif_active() && app.is_image_preview());
     let mut term = Terminal::new(TestBackend::new(48, 20)).unwrap();
@@ -11068,7 +9061,7 @@ fn ui_preview_image_falls_back_when_not_yet_encoded() {
     // A still image, but app.image (the already-encoded protocol) hasn't arrived → falls back
     // to ImageUnsupported. Exercises render_image's still-image fallback branch.
     let (mut app, _dir) = app_with_kitty();
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(20, 10)));
     app.tab.mode = Mode::Preview;
     let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
@@ -11115,7 +9108,7 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     );
 
     // A video with no thumbnail (no image_src) → falls back to the hint text.
-    app.tab.preview_kind = Some(PreviewKind::Video(dir.join("v.mp4")));
+    app.tab.preview_kind = Some(PreviewKind::video(dir.join("v.mp4")));
     let video = dump(&mut app);
     assert!(
         video.contains("video") || video.contains("動画"),
@@ -11701,7 +9694,8 @@ fn an_fs_event_drops_only_the_changed_local_inline_image_entry() {
         "flowchart TD\nA-->B\n",
     ));
     for key in [&changed, &untouched, &remote_key, &fence] {
-        app.md_image_cache
+        app.md_images
+            .cache
             .insert(key.clone(), MdImgEntry::default());
     }
 
@@ -11709,30 +9703,31 @@ fn an_fs_event_drops_only_the_changed_local_inline_image_entry() {
     app.refresh_fs_watched(false, std::slice::from_ref(&changed));
 
     assert!(
-        !app.md_image_cache.contains_key(&changed),
+        !app.md_images.cache.contains_key(&changed),
         "書き換えられたローカル画像の項目は落ちる"
     );
     assert!(
-        app.md_image_cache.contains_key(&untouched),
+        app.md_images.cache.contains_key(&untouched),
         "同じ文書の他のローカル画像は残る(全消ししない)"
     );
     assert!(
-        app.md_image_cache.contains_key(&remote_key),
+        app.md_images.cache.contains_key(&remote_key),
         "リモート画像は対象外(監視ツリーの外に住んでいる)"
     );
     assert!(
-        app.md_image_cache.contains_key(&fence),
+        app.md_images.cache.contains_key(&fence),
         "mermaid/math の内容ハッシュ鍵は対象外(自分で陳腐化する)"
     );
 
     // A burst whose paths are unknown (empty = `.git`-only or over the cap) reloads the preview but
     // must not sweep the image cache: every `git` command produces one, and blanking every picture
     // on each of them would be a visible flicker for no gain.
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(changed.clone(), MdImgEntry::default());
     app.refresh_fs_watched(false, &[]);
     assert_eq!(
-        app.md_image_cache.len(),
+        app.md_images.cache.len(),
         4,
         "パス不明のバーストでは1件も落とさない"
     );
@@ -12038,10 +10033,11 @@ fn preview_survives_target_file_overwrite_and_delete() {
         .unwrap();
     app.tab.selected = idx;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Image(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(|k| k.is_plugin("image")));
     // Overwrite with different valid bytes, force the reload path — no panic.
     RgbImage::new(8, 6).save(&pic).unwrap();
     app.preview_media_mtime = None;
@@ -12181,13 +10177,11 @@ fn csv_resolves_to_table_preview() {
     let (app, _dir) = app_with_table();
     assert!(
         matches!(
-            app.tab.preview_kind,
-            Some(PreviewKind::Table {
-                delimiter: b',',
-                ..
-            })
+            &app.tab.preview_kind,
+            Some(PreviewKind::Plugin { id, hint, .. })
+                if id == "csv" && hint.as_deref() == Some("csv")
         ),
-        "*.csv は Table(カンマ区切り)に解決される"
+        "*.csv は csv プラグイン(カンマ区切り)に解決される"
     );
     assert!(app.is_table_preview(), "パース成功でテーブル面が有効");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
@@ -12225,13 +10219,13 @@ fn zip_resolves_to_archive_table_preview() {
     let (app, _dir) = app_with_archive_zip();
     assert!(
         matches!(
-            app.tab.preview_kind,
-            Some(PreviewKind::Archive {
-                kind: crate::preview::archive::ArchiveKind::Zip,
-                ..
-            })
+            &app.tab.preview_kind,
+            Some(PreviewKind::Plugin { id, path, .. })
+                if id == "archive"
+                    && crate::preview::archive::ArchiveKind::from_path(path)
+                        == Some(crate::preview::archive::ArchiveKind::Zip)
         ),
-        "*.zip は Archive(Zip) に解決される"
+        "*.zip は archive プラグイン(Zip) に解決される"
     );
     assert!(app.is_table_preview(), "一覧化成功でテーブル面が有効");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
@@ -12336,6 +10330,36 @@ fn table_page_and_half_page_move_by_viewport() {
         app.table_page(-1);
     }
     assert_eq!(app.table_cursor().0, 0, "先頭でクランプ");
+}
+
+/// A page of 0 is no move at all (`dir * page` rows): neither `table_page` nor `table_half_page`
+/// turns it into a PageDown / HalfDown.
+#[test]
+fn table_page_zero_does_not_move() {
+    let dir = unique_tmp("konoma_table_page_zero_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("tall.csv");
+    let mut body = String::from("c0,c1\n");
+    for i in 0..20 {
+        body.push_str(&format!("r{i}a,r{i}b\n"));
+    }
+    std::fs::write(&csv, body).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    app.table_viewport_rows = 6;
+    app.table_page(0);
+    assert_eq!(app.table_cursor(), (0, 0), "table_page(0) stays");
+    app.table_half_page(0);
+    assert_eq!(app.table_cursor(), (0, 0), "table_half_page(0) stays");
+    app.table_page(1);
+    let at = app.table_cursor();
+    assert_ne!(at.0, 0);
+    app.table_page(0);
+    app.table_half_page(0);
+    assert_eq!(app.table_cursor(), at, "0 does not move from a later row");
 }
 
 #[test]
@@ -12869,60 +10893,6 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
         app.tab.preview_path.as_deref(),
         Some(canon.join("keep.txt").as_path())
     );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn diff_view_n_switches_changed_files_and_keeps_return_target() {
-    // n/N inside the diff view: switches to the next/previous changed file's diff without
-    // leaving the view (wraps, shows position, syncs the tree cursor, and also saves q's
-    // return target).
-    let dir = unique_tmp("konoma_diff_nav_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir); // a.txt is already committed
-    let canon = dir.canonicalize().unwrap();
-    std::fs::write(canon.join("a.txt"), b"CHANGED\n").unwrap();
-    std::fs::write(canon.join("b.txt"), b"new b\n").unwrap();
-    std::fs::write(canon.join("e.txt"), b"new e\n").unwrap();
-
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.refresh_git_if_needed(); // in real usage the first render already fetched this (the position display comes from statuses)
-    app.open_git_diff(&canon.join("a.txt"));
-    assert_eq!(app.diff_change_position(), Some((1, 3)));
-
-    app.jump_changed(1); // a → b
-    assert!(app.is_git_diff_preview(), "diff ビューのまま");
-    assert_eq!(
-        app.tab.preview_path.as_deref(),
-        Some(canon.join("b.txt").as_path())
-    );
-    assert_eq!(app.diff_change_position(), Some((2, 3)));
-    assert_eq!(
-        app.tab.entries[app.tab.selected].path,
-        canon.join("b.txt"),
-        "ツリーカーソルも同期"
-    );
-
-    app.jump_changed(1); // b → e
-    app.jump_changed(1); // e → a (wrap)
-    assert_eq!(
-        app.tab.preview_path.as_deref(),
-        Some(canon.join("a.txt").as_path())
-    );
-    app.jump_changed(-1); // a → e (reverse-direction wrap)
-    assert_eq!(
-        app.tab.preview_path.as_deref(),
-        Some(canon.join("e.txt").as_path())
-    );
-
-    // The marker for having opened via the hub (came_from_git_view) survives cycling around,
-    // and q returns to the hub.
-    app.tab.came_from_git_view = true;
-    app.jump_changed(1); // e → a
-    assert!(app.tab.came_from_git_view, "戻り先(ハブ)が回遊で失われない");
-    app.close_git_diff();
-    assert!(app.is_git_view(), "q でハブへ戻る");
 }
 
 #[cfg(feature = "git")]
@@ -13649,7 +11619,8 @@ fn mermaid_curve_and_mermaid_rows_are_independent_axes() {
         // `App::vector_svg` — that field only ever holds the *full-screen* zoom surface's source
         // (standalone `.mmd` or an opened `MermaidFence`), neither of which this test opens.
         let svg = app
-            .md_image_cache
+            .md_images
+            .cache
             .get(&PathBuf::from(&img.url))
             .and_then(|e| e.svg.clone())
             .expect("the inline fence's SVG source must be retained");
@@ -13770,7 +11741,10 @@ fn vector_zoom_rerasters_sharper_without_moving_geometry() {
         "ズームで密度が上がる: {before:?} -> {after:?}"
     );
     assert_eq!(app.image_logical.unwrap(), logical, "論理サイズは不変");
-    assert!(app.tab.image_zoom > 1.9, "ユーザー向けズーム値は保たれる");
+    assert!(
+        app.tab.image_view.zoom > 1.9,
+        "ユーザー向けズーム値は保たれる"
+    );
 }
 
 #[test]
@@ -13821,7 +11795,10 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     // q (back_to_tree) = returns to the md, restoring scroll/focus.
     app.back_to_tree();
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown),
         "ツリーでなく md プレビューへ戻る"
     );
     assert!(matches!(app.tab.mode, Mode::Preview));
@@ -14353,25 +12330,6 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
     assert!((app.fence_zoom_level() - 1.0).abs() < 1e-9);
 }
 
-/// fence_crop: pure-function verification of the visible fraction and clamping (ratio-based =
-/// maps to the same window even after re-rasterizing).
-#[test]
-fn fence_crop_clamps_and_scales() {
-    // 2x zoom (f=0.5), centered: a half-size window at the center.
-    let ((x, y, w, h), c) = fence_crop((800, 400), 0.5, (0.5, 0.5));
-    assert_eq!((w, h), (400, 200));
-    assert_eq!((x, y), (200, 100));
-    assert_eq!(c, (0.5, 0.5));
-    // Pan to the edge: the center is clamped and the window stays within the image.
-    let ((x, _y, w, _h), c) = fence_crop((800, 400), 0.5, (1.0, 0.5));
-    assert_eq!(x + w, 800, "右端で止まる");
-    assert!((c.0 - 0.75).abs() < 1e-9, "中心は f/2 でクランプ");
-    // A raster at 4x density (f=0.25): the same ratio window maps to 2x the pixels.
-    let ((x1, _, w1, _), _) = fence_crop((800, 400), 0.25, (0.5, 0.5));
-    let ((x2, _, w2, _), _) = fence_crop((1600, 800), 0.25, (0.5, 0.5));
-    assert_eq!((x2, w2), (x1 * 2, w1 * 2));
-}
-
 /// A math expression's cell dimensions (pure function): the SVG's em unit (40/em) → rows,
 /// aspect ratio → columns. Inline math always tries one row first (placed in the running text,
 /// like ordinary Markdown); it only falls back to the taller, multi-row layout when the expression
@@ -14606,14 +12564,14 @@ fn mermaid_rows_is_an_upper_limit_not_a_fill_target() {
     app.ensure_md_cache(120);
     let p = app.md_images()[0].clone();
     let key = std::path::PathBuf::from(&p.url);
-    let layout_before = app.md_image_cache[&key].layout_px;
-    let before = app.md_image_cache[&key]
+    let layout_before = app.md_images.cache[&key].layout_px;
+    let before = app.md_images.cache[&key]
         .decoded
         .as_ref()
         .unwrap()
         .dimensions();
     app.ensure_md_fence_density(&p.url, p.cols, p.rows);
-    let e = &app.md_image_cache[&key];
+    let e = &app.md_images.cache[&key];
     let after = e.decoded.as_ref().unwrap().dimensions();
     assert!(
         after.0.max(after.1) > before.0.max(before.1),
@@ -14758,59 +12716,6 @@ fn md_overlay_move_detection_requests_full_redraw() {
 /// load_active's media-restoration branch had no case for the Mermaid family, and clear_image
 /// also left preview_media_mtime in place, so reload_media_if_changed also misjudged it as
 /// "unchanged" and was blocked, so returning to the tab fell back to the text ruled-line diagram —
-/// A git graph's decoration state (the pinned base, visible branches, priority order, legend) is
-/// saved/restored per tab. Regression 2026-07-18: git_graph (GraphRow) is saved, but these
-/// derived states were not, so changing the base/visibility in another tab and coming back left
-/// the legend or the `base:` title showing the other tab's values (load_active doesn't rebuild
-/// the graph). It is not carried over to a new tab, and is restored on returning.
-#[test]
-fn git_graph_decoration_state_is_per_tab() {
-    let dir = unique_tmp("konoma_graph_pertab_test");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("a.txt"), "x").unwrap();
-
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    // Simulate tab 0's graph decoration state (set the derived fields directly, without building
-    // a real graph).
-    app.tab.git_graph_base = Some("release/1.0".into());
-    app.tab.git_graph_base_label = Some("release/1.0".into());
-    app.tab.git_graph_visible = ["main".to_string(), "dev".to_string()]
-        .into_iter()
-        .collect();
-    app.tab.git_graph_order = vec!["release/1.0".into(), "main".into(), "dev".into()];
-    app.tab.git_graph_hidden = 3;
-
-    app.tab_new().unwrap(); // tab 1 (a plain Tree)
-    assert!(
-        app.tab.git_graph_base.is_none(),
-        "新規タブへ基準ピンは漏れない"
-    );
-    assert!(
-        app.tab.git_graph_visible.is_empty(),
-        "新規タブへ表示ブランチは漏れない"
-    );
-    assert!(
-        app.tab.git_graph_order.is_empty(),
-        "新規タブへ優先順は漏れない"
-    );
-    assert_eq!(app.tab.git_graph_hidden, 0, "新規タブの hidden は 0");
-
-    // Put tab 1 into a different decoration state, then go back.
-    app.tab.git_graph_base = Some("hotfix".into());
-    app.tab_goto(0);
-    assert_eq!(
-        app.tab.git_graph_base.as_deref(),
-        Some("release/1.0"),
-        "タブ0の基準ピンが復元される"
-    );
-    assert_eq!(app.tab.git_graph_hidden, 3, "タブ0の hidden が復元される");
-    assert!(
-        app.tab.git_graph_visible.contains("main") && app.tab.git_graph_visible.contains("dev"),
-        "タブ0の表示ブランチが復元される"
-    );
-}
-
 /// It had been silently degrading (a non-deterministic behavior that happened to recover only
 /// when a different media was opened in the background).
 #[test]
@@ -14944,7 +12849,7 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
     let code1 = crate::preview::markdown::collect_mermaid_fences(v1).remove(0);
     let key1 = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code1));
     assert!(
-        app.md_image_cache.contains_key(&key1),
+        app.md_images.cache.contains_key(&key1),
         "前提: v1 がキャッシュ済み"
     );
 
@@ -14956,11 +12861,11 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
     let code2 = crate::preview::markdown::collect_mermaid_fences(v2).remove(0);
     let key2 = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code2));
     assert!(
-        app.md_image_cache.contains_key(&key2),
+        app.md_images.cache.contains_key(&key2),
         "v2 はキャッシュ済み"
     );
     assert!(
-        !app.md_image_cache.contains_key(&key1),
+        !app.md_images.cache.contains_key(&key1),
         "旧内容のエントリは prune される(単調成長しない)"
     );
 }
@@ -15029,7 +12934,8 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
     let code = crate::preview::markdown::collect_mermaid_fences(src).remove(0);
     let key = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code));
     let arc0 = app
-        .md_image_cache
+        .md_images
+        .cache
         .get(&key)
         .and_then(|e| e.decoded.clone())
         .expect("前提: フェンスがレンダ済み");
@@ -15043,11 +12949,15 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
     app.md_activate_focused().unwrap(); // Enter -> full screen
     app.back_to_tree(); // q -> return to md
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_markdown),
         "md ビューへ戻る"
     );
     let arc1 = app
-        .md_image_cache
+        .md_images
+        .cache
         .get(&key)
         .and_then(|e| e.decoded.clone())
         .expect("復帰後もキャッシュが残る");
@@ -15072,7 +12982,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
 
     // Full failure, no protocol held -> degrades to failed and busy clears.
     let key = std::path::PathBuf::from("mermaid-fence://feedfeedfeedfeed");
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             enc_inflight: true,
@@ -15094,7 +13004,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     });
     assert!(redraw);
     {
-        let e = app.md_image_cache.get(&key).unwrap();
+        let e = app.md_images.cache.get(&key).unwrap();
         assert!(!e.enc_inflight, "inflight が解除される");
         assert!(e.failed, "表示できる protocol が無ければテキスト降格");
         assert_eq!(
@@ -15109,7 +13019,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     // A Zoom failure keeps the old display (does not mark failed) -- only the key is recorded.
     let key2 = std::path::PathBuf::from("mermaid-fence://cafecafecafecafe");
     let crop = (0u32, 0u32, 4u32, 4u32);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key2.clone(),
         MdImgEntry {
             enc_inflight: true,
@@ -15132,7 +13042,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
         image: None,
         born: 0,
     });
-    let e2 = app.md_image_cache.get(&key2).unwrap();
+    let e2 = app.md_images.cache.get(&key2).unwrap();
     assert!(!e2.enc_inflight);
     assert!(!e2.failed, "ズーム失敗で図全体を殺さない");
     assert_eq!(
@@ -15174,7 +13084,7 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
     // Reproduce the state after ensure_math_render -> apply_md_image: a synthetic-key entry with decoded + layout_px.
     let url = math_url("E=mc^2", false);
     let key = std::path::PathBuf::from(&url);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(120, 48))),
@@ -15222,6 +13132,52 @@ fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
     assert!(
         after.0 > before.0 || after.1 > before.1,
         "解除後は最新ズームへ収束: {before:?} -> {after:?}"
+    );
+}
+
+/// The host asks the shared sharp-zoom decision (`konoma_plugin::canvas_pictures::sharp_zoom_target`)
+/// the standalone app asks too: the size the raster is drawn again at is exactly that function's
+/// answer for (raster, logical, zoom), at fit, inside the margin, over it and at the cap.
+#[test]
+fn vector_reraster_size_is_the_shared_sharp_zoom_target() {
+    use image::GenericImageView;
+    let dir = unique_tmp("konoma_vector_shared_target");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("a.svg"),
+        "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 200 100'>\
+         <rect width='200' height='100' fill='#c33'/></svg>",
+    )
+    .unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&dir.join("a.svg"));
+    let logical = app.image_logical.expect("logical size");
+    for _ in 0..8 {
+        let raster = app.image_src.as_ref().unwrap().dimensions();
+        let next_zoom = (app.tab.image_view.zoom * 1.25).clamp(1.0, 16.0);
+        let want = konoma_plugin::canvas_pictures::sharp_zoom_target(raster, logical, next_zoom);
+        app.image_zoom_by(1.25);
+        let after = app.image_src.as_ref().unwrap().dimensions();
+        match want {
+            // Drawn again at (about) the size asked for (the drawer caps at 4096 and may round the
+            // scale up by 1px).
+            Some(w) => assert!(
+                after.0.max(after.1).abs_diff(w.min(4096)) <= 1,
+                "{raster:?} -> {after:?}, asked {w}"
+            ),
+            None => assert_eq!(after, raster, "nothing asked, nothing drawn"),
+        }
+        assert_eq!(
+            app.image_logical,
+            Some(logical),
+            "the layout size never moves"
+        );
+    }
+    assert!(
+        app.image_src.as_ref().unwrap().dimensions().0 > logical.0,
+        "it was drawn again at least once"
     );
 }
 
@@ -15342,14 +13298,13 @@ fn stale_md_image_result_is_dropped() {
         path: stale.clone(),
         image: Ok(image::DynamicImage::new_rgba8(4, 4)),
         svg: None,
-        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&stale),
     });
     assert!(!redraw, "陳腐化結果は再描画も要求しない");
     assert!(
-        !app.md_image_cache.contains_key(&stale),
+        !app.md_images.cache.contains_key(&stale),
         "エントリを復活させない"
     );
     assert!(
@@ -15376,7 +13331,7 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
 
     let key = std::path::PathBuf::from("mermaid-fence://deadbeefdeadbeef");
     let existing = std::sync::Arc::new(image::DynamicImage::new_rgba8(120, 48));
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(existing.clone()),
@@ -15391,7 +13346,6 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
         path: key.clone(),
         image: Err("re-raster panicked".to_string()),
         svg: None,
-        svg_trust: Default::default(),
         reraster: true,
         frames: None,
         request: app.md_request_for_test(&key),
@@ -15399,7 +13353,8 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
     let redraw = app.apply_md_image(panic_fallback);
     assert!(redraw);
     let entry = app
-        .md_image_cache
+        .md_images
+        .cache
         .get(&key)
         .expect("エントリは残る(消えない)");
     assert!(
@@ -15623,9 +13578,7 @@ fn decorated_markdown_search_scrolls_to_matches() {
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     let md = dir.canonicalize().unwrap().join("doc.md");
-    app.tab.preview_kind = Some(app.cfg.resolve_preview(&md));
-    app.tab.preview_path = Some(md);
-    app.tab.mode = Mode::Preview;
+    app.show_markdown_for_test(md);
     app.tab.preview_viewport = 10;
     let _ = app.md_layout(80); // populate the decoration cache (same path as the real render)
 
@@ -15692,7 +13645,7 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(rx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15758,7 +13711,10 @@ fn non_kitty_terminal_keeps_ratatui_image_path() {
     );
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_image_ref().is_none(), "KittyImage は作らない");
-    assert!(app.image.is_some(), "従来の ThreadProtocol 経路を使う");
+    assert!(
+        app.image_viewer.protocol().is_some(),
+        "従来の ThreadProtocol 経路を使う"
+    );
 }
 
 /// A tab switch must not leak table search match highlighting into another tab. The highlight is
@@ -15823,7 +13779,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15843,7 +13799,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     assert!(krx.try_recv().is_err(), "初回は worker を使わない(同期)");
 
     // Zoom: async from here on. kitty_image stays at the old size, pending=true.
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_build_pending(), "ズーム後は build in-flight");
     assert_eq!(
@@ -15863,9 +13819,9 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     // discarded (threads run concurrently = arrival order is non-deterministic, so "arrives
     // first" doesn't necessarily mean "older". Judged by gen, so regardless of order exactly one,
     // the latest, gets applied).
-    app.tab.image_zoom = 6.0;
+    app.tab.image_view.zoom = 6.0;
     app.prepare_image(inner(200, 40)).unwrap();
-    app.tab.image_zoom = 8.0;
+    app.tab.image_view.zoom = 8.0;
     app.prepare_image(inner(200, 40)).unwrap();
     let a = krx.recv().unwrap();
     let b = krx.recv().unwrap();
@@ -15884,7 +13840,7 @@ fn kitty_rebuilds_on_same_size_image_swap() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(800, 600)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("doc.pdf")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("doc.pdf")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15924,7 +13880,7 @@ fn kitty_failed_build_clears_pending() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -15936,12 +13892,12 @@ fn kitty_failed_build_clears_pending() {
 
     // Initial sync -> async build in-flight via zoom (pending=true).
     app.prepare_image(inner(200, 40)).unwrap();
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_build_pending(), "ズーム後は in-flight");
 
     // Inject a build failure (None) for the current generation -> apply returns false but pending clears.
-    let gen = app.kitty_gen;
+    let gen = app.image_viewer.kitty_gen();
     assert!(
         !app.apply_kitty(KittyResult { gen, image: None }),
         "失敗は適用しない"
@@ -16069,7 +14025,7 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("a.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("a.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -16080,7 +14036,7 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
 
     // Open A (initial synchronous), then kick off async build gen=N via zoom.
     app.prepare_image(inner(200, 40)).unwrap();
-    app.tab.image_zoom = 4.0;
+    app.tab.image_view.zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     let stale = krx.recv().expect("Aのズームの worker 結果"); // the gen=N result
 
@@ -16721,7 +14677,7 @@ fn apply_md_diff_ignores_a_landed_result_for_a_path_no_longer_on_screen() {
     let other = dir.join("other.md"); // whatever is actually on screen now
     app.tab.preview_path = Some(other.clone());
     app.tab.diff_view = DiffView::Rendered;
-    app.md_diff_gen = 7;
+    *app.md_diff.generation_for_test() = 7;
     app.flash = None;
     let res = MdDiffResult {
         gen: 7,
@@ -16760,7 +14716,7 @@ fn apply_md_diff_ignores_a_landed_gutter_result_while_rendered_is_showing() {
     let doc = dir.join("doc.md");
     app.tab.preview_path = Some(doc.clone());
     app.tab.diff_view = DiffView::Rendered;
-    app.md_diff_gen = 7;
+    *app.md_diff.generation_for_test() = 7;
     app.flash = None;
     let res = MdDiffResult {
         gen: 7,
@@ -16793,7 +14749,7 @@ fn apply_md_diff_ignores_a_landed_rendered_result_after_leaving_rendered_for_sou
     let doc = dir.join("doc.md");
     app.tab.preview_path = Some(doc.clone());
     app.tab.diff_view = DiffView::Source; // already left Rendered by the time this result lands
-    app.md_diff_gen = 7;
+    *app.md_diff.generation_for_test() = 7;
     app.flash = None;
     let res = MdDiffResult {
         gen: 7,
@@ -16956,7 +14912,7 @@ fn apply_md_diff_unavailable_clears_the_scroll_reservation_for_its_own_path() {
     let path = dir.join("doc.md");
     app.tab.preview_path = Some(path.clone());
     app.tab.diff_view = DiffView::Rendered;
-    app.md_diff_gen = 5;
+    *app.md_diff.generation_for_test() = 5;
     app.tab.diff_scroll_pending = Some(path.clone());
 
     let res = MdDiffResult {
@@ -16989,7 +14945,7 @@ fn apply_md_diff_unavailable_does_not_clear_a_different_paths_scroll_reservation
     let other = dir.join("other.md");
     app.tab.preview_path = Some(path.clone());
     app.tab.diff_view = DiffView::Rendered;
-    app.md_diff_gen = 5;
+    *app.md_diff.generation_for_test() = 5;
     app.tab.diff_scroll_pending = Some(other.clone());
 
     let res = MdDiffResult {
@@ -17022,7 +14978,7 @@ fn poll_md_diff_does_not_reuse_a_landed_result_whose_gen_no_longer_matches() {
     std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // A landed `Ready` result under an old generation.
-    app.md_diff_landed = Some((
+    *app.md_diff.landed_for_test() = Some((
         doc.clone(),
         MdDiffKind::Gutter,
         3,
@@ -17034,8 +14990,8 @@ fn poll_md_diff_does_not_reuse_a_landed_result_whose_gen_no_longer_matches() {
             front_matter_only: false,
         },
     ));
-    app.md_diff_gen = 4; // bumped since — the landed tuple above is now stale
-    app.md_diff_pending = None;
+    *app.md_diff.generation_for_test() = 4; // bumped since — the landed tuple above is now stale
+    *app.md_diff.pending_for_test() = None;
 
     // No `md_diff_tx` attached: the re-kick this should trigger runs the synchronous fallback for
     // real (against `doc`, which sits outside a repo — `Gutter` with no baseline lands
@@ -17058,8 +15014,8 @@ fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
     let doc = dir.join("doc.md");
     std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_diff_gen = 5;
-    app.md_diff_landed = Some((
+    *app.md_diff.generation_for_test() = 5;
+    *app.md_diff.landed_for_test() = Some((
         doc.clone(),
         MdDiffKind::Gutter,
         5, // matches the current gen
@@ -17071,7 +15027,7 @@ fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
             front_matter_only: false,
         },
     ));
-    app.md_diff_pending = None;
+    *app.md_diff.pending_for_test() = None;
 
     // `doc` sits outside a repo, so a genuinely fresh `Rendered` computation lands `Ready` with an
     // *empty* old side (§5's "no baseline = all added") — never the Gutter-flavored `old_pre` ("old")
@@ -17098,7 +15054,7 @@ fn md_diff_pending_for_current_is_false_when_the_pending_computation_is_for_a_di
     let a = dir.join("a.md");
     let b = dir.join("b.md");
     app.tab.preview_path = Some(a);
-    app.md_diff_pending = Some((b, MdDiffKind::Gutter));
+    *app.md_diff.pending_for_test() = Some((b, MdDiffKind::Gutter));
     assert!(
         !app.md_diff_pending_for_current(),
         "別ファイル(b.md)の計算中は a.md 自身の消費を止めてはならない"
@@ -17280,9 +15236,7 @@ fn diff_rendered_matches_the_ordinary_preview_for_a_document_past_the_line_cap()
 
     let mut ordinary = App::new(dir.clone(), Config::default()).unwrap();
     ordinary.picker = Some(ratatui_image::picker::Picker::halfblocks());
-    ordinary.tab.preview_path = Some(doc.clone());
-    ordinary.tab.preview_kind = Some(PreviewKind::Markdown(doc.clone()));
-    ordinary.tab.mode = Mode::Preview;
+    ordinary.show_markdown_for_test(doc.clone());
     let ordinary_lines = ordinary.decorated_lines(width);
 
     let mut diffed = App::new(dir.clone(), Config::default()).unwrap();
@@ -17377,8 +15331,8 @@ fn apply_md_diff_with_a_panic_shaped_result_still_clears_pending() {
     let dir = dir.canonicalize().unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let path = dir.join("doc.md");
-    app.md_diff_gen = 9;
-    app.md_diff_pending = Some((path.clone(), crate::app::MdDiffKind::Gutter));
+    *app.md_diff.generation_for_test() = 9;
+    *app.md_diff.pending_for_test() = Some((path.clone(), crate::app::MdDiffKind::Gutter));
 
     let panic_fallback = crate::app::MdDiffResult {
         gen: 9,
@@ -17388,14 +15342,14 @@ fn apply_md_diff_with_a_panic_shaped_result_still_clears_pending() {
     };
     assert!(app.apply_md_diff(panic_fallback), "現世代なので適用される");
     assert!(
-        app.md_diff_pending.is_none(),
+        (*app.md_diff.pending_for_test()).is_none(),
         "パニックのフォールバック結果でも pending が解ける(スピナーが固着せず\
          ガター/Rendered も固まらない)"
     );
 
     // A stale-generation fallback must still be discarded, and must not clear the *current* pending.
-    app.md_diff_gen = 10;
-    app.md_diff_pending = Some((path.clone(), crate::app::MdDiffKind::Gutter));
+    *app.md_diff.generation_for_test() = 10;
+    *app.md_diff.pending_for_test() = Some((path.clone(), crate::app::MdDiffKind::Gutter));
     let stale_panic_fallback = crate::app::MdDiffResult {
         gen: 9,
         path,
@@ -17407,7 +15361,7 @@ fn apply_md_diff_with_a_panic_shaped_result_still_clears_pending() {
         "古い世代のフォールバックは捨てる"
     );
     assert!(
-        app.md_diff_pending.is_some(),
+        (*app.md_diff.pending_for_test()).is_some(),
         "stale では pending を残す(現行計算待ちのまま)"
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -17581,115 +15535,6 @@ fn changed_filter_list_follows_async_status_results() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// **Core regression**: switching to a different repository's tab must re-verify `git_branch`
-/// even when the destination view is the Git changes hub (not Tree). `git_branch`/`worktree_origin`
-/// used to be re-verified only inside `tree::render`'s own call to `refresh_git_if_needed` — and the
-/// changes hub (like log/graph/branches/worktrees/commit-detail and Preview) bypasses `tree::render`
-/// entirely (see the content dispatch in `ui::render`), so switching straight from one repo's
-/// changes hub to another's never re-verified the branch name. The hub's *file list*
-/// (`git_view_entries`) is separate per-tab state rebuilt by `open_git_view`/`git_view_reload` and
-/// was already correct across tab switches — only the branch-name title (and the `WT <origin>`
-/// chip, covered separately below) lagged behind.
-///
-/// Renders through the real `crate::ui::render` (not a direct `refresh_git_if_needed()` call), so
-/// this exercises the actual call site the fix moved to, rather than the primitive it calls.
-#[cfg(feature = "git")]
-#[test]
-fn git_view_branch_re_verifies_when_switching_to_a_different_repo() {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-
-    let repo_a = unique_tmp("konoma_git_view_branch_switch_a");
-    let repo_b = unique_tmp("konoma_git_view_branch_switch_b");
-    for d in [&repo_a, &repo_b] {
-        let _ = std::fs::remove_dir_all(d);
-        std::fs::create_dir_all(d).unwrap();
-    }
-    init_git_repo(&repo_a);
-    init_git_repo(&repo_b);
-    let git = |cwd: &std::path::Path, args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    };
-    // repoA: branch "alpha", with a modified tracked file (shows up in the changes hub).
-    std::fs::write(repo_a.join("fileA.txt"), b"one\n").unwrap();
-    git(&repo_a, &["add", "-A"]);
-    git(&repo_a, &["commit", "-qm", "init"]);
-    git(&repo_a, &["checkout", "-q", "-b", "alpha"]);
-    std::fs::write(repo_a.join("fileA.txt"), b"one\nmodified\n").unwrap();
-    // repoB: branch "beta", likewise with a modified tracked file.
-    std::fs::write(repo_b.join("fileB.txt"), b"two\n").unwrap();
-    git(&repo_b, &["add", "-A"]);
-    git(&repo_b, &["commit", "-qm", "init"]);
-    git(&repo_b, &["checkout", "-q", "-b", "beta"]);
-    std::fs::write(repo_b.join("fileB.txt"), b"two\nmodified\n").unwrap();
-
-    let root_a = repo_a.canonicalize().unwrap();
-    let root_b = repo_b.canonicalize().unwrap();
-
-    let render_text = |app: &mut App| -> String {
-        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        term.draw(|f| crate::ui::render(f, app)).unwrap();
-        term.backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect()
-    };
-
-    // tab0 = repoA, changes hub open, rendered once (establishes git_branch = "alpha").
-    let mut app = App::new(root_a.clone(), Config::default()).unwrap();
-    app.open_git_view();
-    assert!(app.is_git_view(), "テストの前提: Git changes hub にいる");
-    let text = render_text(&mut app);
-    assert!(
-        text.contains("⎇ alpha"),
-        "repoA の初回描画で alpha が出ない: {text}"
-    );
-
-    // tab1 = repoB, changes hub open, rendered once (establishes git_branch = "beta").
-    app.tab_new().unwrap();
-    app.tab.root = root_b.clone();
-    app.tab.open_dir = root_b.clone();
-    app.open_git_view();
-    assert!(app.is_git_view());
-    let text = render_text(&mut app);
-    assert!(
-        text.contains("⎇ beta"),
-        "repoB の描画で beta が出ない: {text}"
-    );
-
-    // Switch back to tab0 (repoA) and render once more: the branch title must follow, not stay on
-    // the previously-active tab's repo.
-    app.tab_cycle(-1);
-    assert!(
-        app.is_git_view(),
-        "タブ0は Git changes hub のままのはず(per-tab 状態)"
-    );
-    let text = render_text(&mut app);
-    assert!(
-        text.contains("⎇ alpha"),
-        "別 repo のタブへ戻ったのにブランチ名が更新されない(スケール前の症状): {text}"
-    );
-    assert!(
-        !text.contains("⎇ beta"),
-        "前のタブ(repoB)のブランチ名が居座っている: {text}"
-    );
-    // The change list itself is per-tab state and was already correct before this fix — confirm it
-    // stays correct alongside the now-fixed branch name (no regression introduced in that half).
-    assert!(
-        app.git_view_entries()
-            .iter()
-            .any(|e| e.path.ends_with("fileA.txt")),
-        "変更ファイル一覧は repoA のものであるべき"
-    );
-}
-
 /// The persistent `WT <origin>` chip (linked-worktree indicator) must likewise re-verify across a
 /// tab switch to/from an unrelated repo — in **both directions**, and while the destination tab is
 /// showing **Preview**, not just Tree/the Git hub (the chip is drawn by `context_spans`, shared by
@@ -17811,64 +15656,6 @@ fn worktree_chip_re_verifies_across_tab_switch_into_preview() {
         text.contains("WT") && text.contains(&expected_origin),
         "linked worktree のタブへ戻ったら WT チップが復活するはず: {text}"
     );
-}
-
-/// Performance invariant for the new call site: `ui::render` now calls `refresh_git_if_needed`
-/// unconditionally every frame (previously only `tree::render` did), so this guards that rendering
-/// a **non-Tree** view (the changes hub) repeatedly still dispatches **at most one** git-status scan
-/// while one is in flight, and none at all once it has landed and the root hasn't changed —
-/// mirroring `repeated_renders_dispatch_at_most_one_git_status_scan`, but through the real
-/// `crate::ui::render` call site instead of a direct `refresh_git_if_needed()` loop.
-#[cfg(feature = "git")]
-#[test]
-fn repeated_ui_renders_of_the_changes_hub_do_not_rescan_git_status() {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-
-    let dir = unique_tmp("konoma_status_async_render_norekick");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    let dir = dir.canonicalize().unwrap();
-
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.attach_status_loader(tx);
-    app.open_git_view();
-    assert!(
-        app.is_git_view(),
-        "テストの前提: changes hub(非 Tree)にいる"
-    );
-
-    let render_once = |app: &mut App| {
-        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        term.draw(|f| crate::ui::render(f, app)).unwrap();
-    };
-
-    // 20 renders while the 1st scan is still in flight (nothing has been received/applied yet).
-    for _ in 0..20 {
-        render_once(&mut app);
-    }
-    let res = rx
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .expect("1本目の結果");
-    assert_eq!(
-        rx.try_iter().count(),
-        0,
-        "非 Tree 面を毎フレーム描画しても走行中に git status を投げ直してはいけない"
-    );
-    assert!(app.apply_statuses(res));
-
-    // 20 more renders after applying: the per-workdir cache must still prevent a rescan.
-    for _ in 0..20 {
-        render_once(&mut app);
-    }
-    assert_eq!(
-        rx.try_iter().count(),
-        0,
-        "適用後も非 Tree 面の毎フレーム描画で再スキャンしてはいけない"
-    );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Commands that answer *from* the status (`d` = open diff) must not report "no changes" merely because
@@ -17997,17 +15784,21 @@ fn tab_switch_parses_a_table_preview_only_once() {
         .position(|e| e.path.ends_with("data.csv"))
         .unwrap();
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(PreviewKind::Table { .. })
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(|k| k.is_plugin("csv")));
     app.tab_new().unwrap();
 
     // Switch back to tab 1 (the table) = load_active runs.
     crate::preview::table::PARSE_CALLS.with(|c| c.set(0));
     app.tab_cycle(1);
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Table { .. })),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("csv")),
         "表タブへ戻っている"
     );
     assert_eq!(
@@ -18015,7 +15806,7 @@ fn tab_switch_parses_a_table_preview_only_once() {
         1,
         "タブ切替での CSV 全行パースは1回だけ(旧実装は load_active と reload_preview で2回)"
     );
-    assert!(app.table_data.is_some(), "表の中身は復元されている");
+    assert!(app.table_data().is_some(), "表の中身は復元されている");
 }
 
 /// Returning to a media tab must reuse the decoded image instead of redoing the work that produced it
@@ -18040,7 +15831,7 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
         .unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     let decoded = std::sync::Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4)));
     app.image_src = Some(decoded.clone());
     app.preview_media_mtime = crate::app::file_mtime(&img);
@@ -18085,7 +15876,7 @@ fn oversized_media_is_not_cached() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     // 17M pixels = looking only at the pixel count it would slip under a "32MP cap", but at
     // 16-bit (8B/px) that's 136MB. Squeeze the buffer into 1 row to keep the memory at its true
@@ -18161,7 +15952,7 @@ fn closing_a_media_tab_releases_its_cached_image() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
@@ -18190,7 +15981,7 @@ fn media_cache_misses_when_size_changes_under_the_same_mtime() {
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
-    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.preview_kind = Some(PreviewKind::image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
@@ -19041,56 +16832,6 @@ fn md_focus_reveals_a_wrapping_code_block_in_full() {
 // [external] — one on/off switch per external process konoma can launch
 // =========================================================================================
 
-/// `[external] git = false` in a real repo: `o` (Git view) refuses with a message distinct from
-/// "not a repo" (`ExternalGitDisabled`, not `NotAGitRepo` — this really is a repo), and the tree
-/// still renders without panicking (git status/branch/ignored all degrade to empty/None, same as a
-/// `--no-default-features` build).
-#[cfg(feature = "git")]
-#[test]
-fn external_git_disabled_flashes_distinct_message_and_tree_renders() {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-
-    let dir = unique_tmp("konoma_external_git_view_test");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let sh = |args: &[&str]| {
-        std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
-    sh(&["add", "-A"]);
-    sh(&["commit", "-qm", "init"]);
-    std::fs::write(dir.join("a.txt"), b"changed\n").unwrap(); // would normally show an `M` marker
-
-    let mut cfg = Config::default();
-    cfg.external.git = false;
-    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
-
-    app.open_git_view();
-    assert!(!app.is_git_view(), "git=false: the Git view does not open");
-    assert_eq!(
-        app.flash.as_deref(),
-        Some(tr(app.lang, crate::i18n::Msg::ExternalGitDisabled)),
-        "distinct from NotAGitRepo"
-    );
-
-    // The tree still renders (no color markers since status/branch are gated to empty/None, but no panic).
-    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
-    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-
-    // Sanity: with git enabled (default), `o` really does open on the same repo.
-    let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app2.open_git_view();
-    assert!(
-        app2.is_git_view(),
-        "sanity: default config opens the Git view on a real repo"
-    );
-}
-
 /// A machine without a `git` executable, with `[external] git = true` (the default): every read
 /// degrades to exactly what a `--no-default-features` build returns, **even though the directory is a
 /// real repo with real history**. Repo discovery goes through the embedded libgit2 and would still
@@ -19134,50 +16875,6 @@ fn git_integration_is_off_when_the_binary_is_missing() {
     assert!(crate::git::workdir(&dir).is_none(), "workdir");
 
     crate::git::set_git_binary_available_for_test(None);
-}
-
-/// A machine without a `git` executable: `o` refuses with `GitNotInstalled` — not `NotAGitRepo`
-/// (this is a repo; blaming the directory would be wrong) and not `ExternalGitDisabled` (the config
-/// allows git). The `[external] git = false` case is covered by the neighbouring test.
-#[cfg(feature = "git")]
-#[test]
-fn open_git_view_reports_a_missing_git_binary_distinctly() {
-    let dir = unique_tmp("konoma_git_binary_missing_view");
-    std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir);
-    let sh = |args: &[&str]| {
-        std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-    };
-    std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
-    sh(&["add", "-A"]);
-    sh(&["commit", "-qm", "init"]);
-    std::fs::write(dir.join("a.txt"), b"changed\n").unwrap();
-
-    crate::git::set_git_binary_available_for_test(Some(false));
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap(); // external.git = true (default)
-    app.open_git_view();
-    assert!(
-        !app.is_git_view(),
-        "no git binary: the Git view does not open"
-    );
-    assert_eq!(
-        app.flash.as_deref(),
-        Some(tr(app.lang, crate::i18n::Msg::GitNotInstalled)),
-        "distinct from NotAGitRepo / ExternalGitDisabled"
-    );
-
-    // Unchanged when the binary IS available: the same repo opens the view as before.
-    crate::git::set_git_binary_available_for_test(None);
-    let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app2.open_git_view();
-    assert!(
-        app2.is_git_view(),
-        "sanity: with git installed the Git view opens on a real repo"
-    );
 }
 
 /// A machine without a `git` executable still renders: the tree draws (no markers, no branch name)
@@ -19333,7 +17030,7 @@ fn remote_image_disabled_does_not_stick_on_loading_forever() {
 
 /// `[external] pdf = false` means "never spawn macOS's bundled qlmanage/sips" — it does **not**
 /// disable PDF preview, because `hayro` (the primary renderer) and `page_count` (`hayro-syntax`) are
-/// both pure Rust and never touch an external process. `tab.pdf_pages` must resolve identically
+/// both pure Rust and never touch an external process. `tab.page_count` must resolve identically
 /// (`Some(3)`, the bundled sample's known page count) whether the flag is on or off — unlike before
 /// `hayro` existed, when this flag (and `arbitrary_page_renderer_available`) gated whether page
 /// navigation was exposed at all.
@@ -19348,18 +17045,22 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
     let mut cfg = Config::default();
     cfg.external.pdf = false;
     let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+    // The page count is the PDF plugin's to report when the picture is made, which needs a
+    // graphics backend (a terminal without one shows no picture and has no page keys to serve).
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     app.enter_preview(&p);
     assert_eq!(
-        app.tab.pdf_pages,
+        app.tab.page_count,
         Some(3),
         "pdf=false: page_count (hayro-syntax) still runs — it never touched an external process"
     );
 
-    // Same with the flag enabled (default) — external.pdf must not change what pdf_pages resolves to.
+    // Same with the flag enabled (default) — external.pdf must not change what page_count resolves to.
     let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app2.picker = Some(ratatui_image::picker::Picker::halfblocks());
     app2.enter_preview(&p);
     assert_eq!(
-        app2.tab.pdf_pages,
+        app2.tab.page_count,
         Some(3),
         "external.pdf doesn't change the resolved page count"
     );
@@ -19393,7 +17094,10 @@ fn video_thumbnail_is_native_even_when_external_video_disabled() {
         app.picker = Some(test_picker());
         app.enter_preview(&p);
         assert!(
-            matches!(app.tab.preview_kind, Some(PreviewKind::Video(_))),
+            app.tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(|k| k.is_plugin("video")),
             "{name}: 動画プレビューとして解決されていない(でなければ以下は何も検査していない)"
         );
         assert!(
@@ -19435,7 +17139,10 @@ fn video_thumbnail_falls_back_to_external_tools_only_when_allowed() {
     app.picker = Some(test_picker());
     app.enter_preview(&p);
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Video(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("video")),
         "sanity: このファイルは動画プレビューとして解決される(でなければ以下は何も検査していない)"
     );
     assert!(
@@ -20105,7 +17812,7 @@ fn lc_open_text(app: &mut App) {
 /// `preview_win` / visual anchor the case set up beforehand survives.
 fn lc_make_image(app: &mut App) {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(4, 4)));
-    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::image(PathBuf::from("x.png")));
     app.tab.mode = Mode::Preview;
 }
 /// Same idea for a parsed CSV table.
@@ -20115,6 +17822,30 @@ fn lc_make_table(app: &mut App) {
     app.tab.preview_path = Some(p);
     app.tab.mode = Mode::Preview;
     app.load_table();
+}
+/// A plugin's canvas on screen, asking for the typing or not.
+fn lc_make_canvas(app: &mut App, text_input: bool) {
+    let p = app.tab.root.join("c.typ");
+    app.tab.preview_kind = Some(PreviewKind::Plugin {
+        path: p.clone(),
+        id: "cv".into(),
+        hint: None,
+    });
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    app.plugin = Some(plugin_host::PluginShow {
+        id: "cv".into(),
+        path: p,
+        phase: plugin_host::PluginPhase::Ready,
+        session: None,
+        layout: konoma_plugin::view::Layout::single(),
+        view: Some(konoma_plugin::View::Canvas(
+            konoma_plugin::view::CanvasView::new(1, 1).text_input(text_input),
+        )),
+        req: konoma_plugin::view::ViewReq::default(),
+        enabled: Default::default(),
+        flow: Default::default(),
+    });
 }
 fn lc_confirm(app: &mut App, op: PendingOp) {
     app.dialog = Some(Dialog {
@@ -20188,6 +17919,38 @@ fn layer_cases() -> Vec<LayerCase> {
             setup: lc_make_table,
             surface: S::PreviewTable,
             internal: None,
+        },
+        LayerCase {
+            name: "PreviewCanvas / (none)",
+            setup: |a| lc_make_canvas(a, false),
+            surface: S::PreviewCanvas,
+            internal: None,
+        },
+        LayerCase {
+            name: "PluginInput / PluginInput",
+            setup: |a| lc_make_canvas(a, true),
+            surface: S::PluginInput,
+            internal: Some(InternalMode::PluginInput),
+        },
+        LayerCase {
+            // Esc left the plugin's text input: the canvas is a plain canvas again.
+            name: "PreviewCanvas / (none) — after Esc left the text input",
+            setup: |a| {
+                lc_make_canvas(a, true);
+                a.plugin_input_left = true;
+            },
+            surface: S::PreviewCanvas,
+            internal: None,
+        },
+        LayerCase {
+            // Every overlay is in front of the plugin's text input.
+            name: "Help / Help — in front of the plugin's text input",
+            setup: |a| {
+                lc_make_canvas(a, true);
+                a.show_help = true;
+            },
+            surface: S::Help,
+            internal: Some(InternalMode::Help),
         },
         // The next three are states the UI cannot actually produce (a visual anchor survives only
         // in a windowed preview). They are here because they pin the *exact* semantics of the two
@@ -20266,12 +18029,6 @@ fn layer_cases() -> Vec<LayerCase> {
             setup: |a| a.mark_set_pending = true,
             surface: S::Mark,
             internal: Some(InternalMode::Mark),
-        },
-        LayerCase {
-            name: "Sort / Sort",
-            setup: |a| a.sort_menu = true,
-            surface: S::Sort,
-            internal: Some(InternalMode::Sort),
         },
         LayerCase {
             name: "Search / Search",
@@ -20395,24 +18152,6 @@ fn layer_cases() -> Vec<LayerCase> {
             internal: Some(InternalMode::BatchRename),
         },
         LayerCase {
-            name: "DialogInput / Commit",
-            setup: |a| lc_input(a, PendingOp::GitCommit),
-            surface: S::DialogInput,
-            internal: Some(InternalMode::Commit),
-        },
-        LayerCase {
-            name: "DialogInput / GitBranch",
-            setup: |a| lc_input(a, PendingOp::GitCreateBranch),
-            surface: S::DialogInput,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "DialogInput / GitWorktrees",
-            setup: |a| lc_input(a, PendingOp::WorktreeCreate),
-            surface: S::DialogInput,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
             // The input catch-all.
             name: "DialogInput / Rename",
             setup: |a| {
@@ -20460,22 +18199,13 @@ fn layer_cases() -> Vec<LayerCase> {
             internal: Some(InternalMode::Filter),
         },
         LayerCase {
-            name: "order: search beats the sort menu",
+            name: "order: search beats mark",
             setup: |a| {
                 a.tab.search_input = Some(String::new());
-                a.sort_menu = true;
+                a.mark_set_pending = true;
             },
             surface: S::Search,
             internal: Some(InternalMode::Search),
-        },
-        LayerCase {
-            name: "order: sort beats mark",
-            setup: |a| {
-                a.sort_menu = true;
-                a.mark_set_pending = true;
-            },
-            surface: S::Sort,
-            internal: Some(InternalMode::Sort),
         },
         LayerCase {
             name: "order: mark beats the bookmark list",
@@ -20493,6 +18223,49 @@ fn layer_cases() -> Vec<LayerCase> {
                 a.tab_list = true;
             },
             surface: S::Bookmarks,
+            internal: Some(InternalMode::Bookmarks),
+        },
+        LayerCase {
+            name: "overlay filter: the bookmark list's /query input",
+            setup: |a| {
+                a.bookmark_list = true;
+                a.bookmark_list_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Bookmarks),
+        },
+        LayerCase {
+            name: "overlay filter: the tab list's /query input",
+            setup: |a| {
+                a.tab_list = true;
+                a.tab_list_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Tabs),
+        },
+        LayerCase {
+            name: "overlay filter: the outline's /query input",
+            setup: |a| {
+                a.outline_open = true;
+                a.outline_filtering = true;
+            },
+            surface: S::ListFilter,
+            internal: Some(InternalMode::Outline),
+        },
+        LayerCase {
+            name: "overlay filter: typing into a closed overlay does not capture keys",
+            setup: |a| a.outline_filtering = true,
+            surface: S::Tree,
+            internal: None,
+        },
+        LayerCase {
+            name: "order: the bookmark filter beats the tab list",
+            setup: |a| {
+                a.bookmark_list = true;
+                a.bookmark_list_filtering = true;
+                a.tab_list = true;
+            },
+            surface: S::ListFilter,
             internal: Some(InternalMode::Bookmarks),
         },
         LayerCase {
@@ -20566,12 +18339,7 @@ fn layer_cases() -> Vec<LayerCase> {
     v
 }
 
-/// The git layers. `surface()` gates its whole git block behind `#[cfg(feature = "git")]` while
-/// `internal_mode()` does not, so on a no-git build the very same state reports a git *chip* while
-/// the keys fall through to whatever is behind it. That asymmetry is characterized here too: it is
-/// unreachable through the UI (every opener bails out because the no-git `git.rs` stubs return
-/// empty/None), but a merged cascade must still reproduce it exactly.
-#[cfg(feature = "git")]
+/// The diff preview layer, which exists in every build.
 fn layer_cases_git() -> Vec<LayerCase> {
     use crate::keymap::Surface as S;
     vec![
@@ -20585,149 +18353,6 @@ fn layer_cases_git() -> Vec<LayerCase> {
             internal: Some(InternalMode::GitDiff),
         },
         LayerCase {
-            name: "GitChanges / GitChanges",
-            setup: |a| a.tab.git_view = true,
-            surface: S::GitChanges,
-            internal: Some(InternalMode::GitChanges),
-        },
-        LayerCase {
-            name: "GitWorktrees / GitWorktrees",
-            setup: |a| a.tab.git_worktrees = Some(Vec::new()),
-            surface: S::GitWorktrees,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
-            name: "WorktreeFilter / GitWorktrees",
-            setup: |a| {
-                a.tab.git_worktrees = Some(Vec::new());
-                a.tab.git_worktree_filtering = true;
-            },
-            surface: S::WorktreeFilter,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
-            name: "GitBranches / GitBranch",
-            setup: |a| a.tab.git_branches = Some(Vec::new()),
-            surface: S::GitBranches,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "BranchFilter / GitBranch",
-            setup: |a| {
-                a.tab.git_branches = Some(Vec::new());
-                a.tab.git_branch_filtering = true;
-            },
-            surface: S::BranchFilter,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "GitGraph / GitGraph",
-            setup: |a| a.tab.git_graph = Some(Vec::new()),
-            surface: S::GitGraph,
-            internal: Some(InternalMode::GitGraph),
-        },
-        LayerCase {
-            name: "GitGraphPicker / GitGraphPicker (panel over the graph)",
-            setup: |a| {
-                a.tab.git_graph = Some(Vec::new());
-                a.git_graph_picker = true;
-            },
-            surface: S::GitGraphPicker,
-            internal: Some(InternalMode::GitGraphPicker),
-        },
-        LayerCase {
-            name: "GitGraphPicker / GitGraphPicker (panel without a graph)",
-            setup: |a| a.git_graph_picker = true,
-            surface: S::GitGraphPicker,
-            internal: Some(InternalMode::GitGraphPicker),
-        },
-        LayerCase {
-            name: "GitLog / GitLog",
-            setup: |a| a.tab.git_log = Some(Vec::new()),
-            surface: S::GitLog,
-            internal: Some(InternalMode::GitLog),
-        },
-        LayerCase {
-            name: "GitDetail / GitDetail",
-            setup: |a| a.tab.git_detail = Some(Vec::new()),
-            surface: S::GitDetail,
-            internal: Some(InternalMode::GitDetail),
-        },
-        // -- adjacent-pair ordering inside and around the git block --
-        LayerCase {
-            name: "order: help beats the git detail",
-            setup: |a| {
-                a.show_help = true;
-                a.tab.git_detail = Some(Vec::new());
-            },
-            surface: S::Help,
-            internal: Some(InternalMode::Help),
-        },
-        LayerCase {
-            name: "order: the git detail beats the log",
-            setup: |a| {
-                a.tab.git_detail = Some(Vec::new());
-                a.tab.git_log = Some(Vec::new());
-            },
-            surface: S::GitDetail,
-            internal: Some(InternalMode::GitDetail),
-        },
-        LayerCase {
-            name: "order: the log beats the graph picker",
-            setup: |a| {
-                a.tab.git_log = Some(Vec::new());
-                a.git_graph_picker = true;
-            },
-            surface: S::GitLog,
-            internal: Some(InternalMode::GitLog),
-        },
-        LayerCase {
-            name: "order: the graph picker beats the graph",
-            setup: |a| {
-                a.git_graph_picker = true;
-                a.tab.git_graph = Some(Vec::new());
-            },
-            surface: S::GitGraphPicker,
-            internal: Some(InternalMode::GitGraphPicker),
-        },
-        LayerCase {
-            name: "order: the graph beats the branch list",
-            setup: |a| {
-                a.tab.git_graph = Some(Vec::new());
-                a.tab.git_branches = Some(Vec::new());
-            },
-            surface: S::GitGraph,
-            internal: Some(InternalMode::GitGraph),
-        },
-        LayerCase {
-            name: "order: the branch list beats the worktree list",
-            setup: |a| {
-                a.tab.git_branches = Some(Vec::new());
-                a.tab.git_worktrees = Some(Vec::new());
-            },
-            surface: S::GitBranches,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "order: the worktree list beats the changes hub",
-            setup: |a| {
-                a.tab.git_worktrees = Some(Vec::new());
-                a.tab.git_view = true;
-            },
-            surface: S::GitWorktrees,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
-            name: "order: the changes hub beats the diff preview",
-            setup: |a| {
-                a.tab.git_view = true;
-                a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
-                a.tab.mode = Mode::Preview;
-            },
-            surface: S::GitChanges,
-            internal: Some(InternalMode::GitChanges),
-        },
-        LayerCase {
             name: "order: the diff preview beats the filter input",
             setup: |a| {
                 a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
@@ -20736,87 +18361,6 @@ fn layer_cases_git() -> Vec<LayerCase> {
             },
             surface: S::PreviewGitDiff,
             internal: Some(InternalMode::GitDiff),
-        },
-    ]
-}
-
-/// On a no-git build `keymap::Surface` has no git variants, so `surface()` skips its whole git
-/// block and the keys land on whatever is behind the git state, while `internal_mode()` still
-/// reports the git chip. Characterized so the merge cannot quietly "fix" it.
-#[cfg(not(feature = "git"))]
-fn layer_cases_git() -> Vec<LayerCase> {
-    use crate::keymap::Surface as S;
-    vec![
-        LayerCase {
-            name: "Tree / GitChanges (no-git: the hub has no surface, keys fall through)",
-            setup: |a| a.tab.git_view = true,
-            surface: S::Tree,
-            internal: Some(InternalMode::GitChanges),
-        },
-        LayerCase {
-            name:
-                "Filter / GitChanges (no-git: falls through to the layer behind, not to the base)",
-            setup: |a| {
-                a.tab.git_view = true;
-                a.tab.filter_input = Some(String::new());
-            },
-            surface: S::Filter,
-            internal: Some(InternalMode::GitChanges),
-        },
-        LayerCase {
-            name: "Tree / GitDetail (no-git)",
-            setup: |a| a.tab.git_detail = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitDetail),
-        },
-        LayerCase {
-            name:
-                "PreviewText / GitDiff (no-git: a GitDiff kind is not windowed, so it stays text)",
-            setup: |a| {
-                a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
-                a.tab.mode = Mode::Preview;
-            },
-            surface: S::PreviewText,
-            internal: Some(InternalMode::GitDiff),
-        },
-        LayerCase {
-            name: "Tree / GitGraphPicker (no-git)",
-            setup: |a| a.git_graph_picker = true,
-            surface: S::Tree,
-            internal: Some(InternalMode::GitGraphPicker),
-        },
-        LayerCase {
-            name: "Tree / GitLog (no-git)",
-            setup: |a| a.tab.git_log = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitLog),
-        },
-        LayerCase {
-            name: "Tree / GitGraph (no-git)",
-            setup: |a| a.tab.git_graph = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitGraph),
-        },
-        LayerCase {
-            name: "Tree / GitBranch (no-git: the branch-list arm)",
-            setup: |a| a.tab.git_branches = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitBranch),
-        },
-        LayerCase {
-            name: "Tree / GitWorktrees (no-git: the worktree-list arm)",
-            setup: |a| a.tab.git_worktrees = Some(Vec::new()),
-            surface: S::Tree,
-            internal: Some(InternalMode::GitWorktrees),
-        },
-        LayerCase {
-            name: "order: the git detail beats the log (no-git: still ordered for the chip)",
-            setup: |a| {
-                a.tab.git_detail = Some(Vec::new());
-                a.tab.git_log = Some(Vec::new());
-            },
-            surface: S::Tree,
-            internal: Some(InternalMode::GitDetail),
         },
     ]
 }
@@ -20899,8 +18443,8 @@ fn all_internal_modes() -> Vec<InternalMode> {
         M::Filter,
         M::ChangedFilter,
         M::Search,
-        M::Sort,
         M::Mark,
+        M::PluginInput,
         M::Bookmarks,
         M::Tabs,
         M::Outline,
@@ -20914,15 +18458,7 @@ fn all_internal_modes() -> Vec<InternalMode> {
         M::DropConfirm,
         M::QuitConfirm,
         M::BookmarkConfirm,
-        M::GitChanges,
         M::GitDiff,
-        M::Commit,
-        M::GitLog,
-        M::GitDetail,
-        M::GitBranch,
-        M::GitWorktrees,
-        M::GitGraph,
-        M::GitGraphPicker,
     ];
     // Exhaustive on purpose: a new variant does not compile until it is named here, and the
     // duplicate/count check below then forces it into the list above.
@@ -20947,8 +18483,8 @@ fn internal_mode_name(m: InternalMode) -> &'static str {
         M::Filter => "Filter",
         M::ChangedFilter => "ChangedFilter",
         M::Search => "Search",
-        M::Sort => "Sort",
         M::Mark => "Mark",
+        M::PluginInput => "PluginInput",
         M::Bookmarks => "Bookmarks",
         M::Tabs => "Tabs",
         M::Outline => "Outline",
@@ -20962,15 +18498,7 @@ fn internal_mode_name(m: InternalMode) -> &'static str {
         M::DropConfirm => "DropConfirm",
         M::QuitConfirm => "QuitConfirm",
         M::BookmarkConfirm => "BookmarkConfirm",
-        M::GitChanges => "GitChanges",
         M::GitDiff => "GitDiff",
-        M::Commit => "Commit",
-        M::GitLog => "GitLog",
-        M::GitDetail => "GitDetail",
-        M::GitBranch => "GitBranch",
-        M::GitWorktrees => "GitWorktrees",
-        M::GitGraph => "GitGraph",
-        M::GitGraphPicker => "GitGraphPicker",
     }
 }
 
@@ -20982,43 +18510,26 @@ fn all_surfaces() -> Vec<crate::keymap::Surface> {
         S::Filter,
         S::Search,
         S::Mark,
-        #[cfg(feature = "git")]
-        S::BranchFilter,
-        #[cfg(feature = "git")]
-        S::WorktreeFilter,
         S::DialogConfirmDelete,
         S::DialogConfirmDrop,
         S::DialogRenamePreview,
         S::DialogConfirmQuit,
         S::DialogConfirmBookmark,
         S::Help,
-        S::Sort,
+        S::ListFilter,
         S::Bookmarks,
         S::Tabs,
         S::Outline,
         S::Info,
         S::TableCell,
-        #[cfg(feature = "git")]
-        S::GitDetail,
-        #[cfg(feature = "git")]
-        S::GitLog,
-        #[cfg(feature = "git")]
-        S::GitGraph,
-        #[cfg(feature = "git")]
-        S::GitGraphPicker,
-        #[cfg(feature = "git")]
-        S::GitBranches,
-        #[cfg(feature = "git")]
-        S::GitChanges,
-        #[cfg(feature = "git")]
-        S::GitWorktrees,
         S::Visual,
         S::Tree,
         S::PreviewText,
         S::PreviewTextVisual,
         S::PreviewImage,
         S::PreviewTable,
-        #[cfg(feature = "git")]
+        S::PreviewCanvas,
+        S::PluginInput,
         S::PreviewGitDiff,
     ]
 }
@@ -21038,6 +18549,15 @@ fn surface_round_trips_through_its_layer() {
     }
 }
 
+#[test]
+fn project_diff_surface_is_produced_by_open_diff_in_every_build() {
+    let dir = layer_fixture();
+    let mut app = layer_app(&dir);
+    app.open_git_diff(&dir.join("a.txt"));
+    assert_eq!(app.surface(), crate::keymap::Surface::PreviewGitDiff);
+    assert_eq!(app.key_context(), Some(crate::keymap::Context::Diff));
+}
+
 /// The general form of the `?` help bug: whatever is in front decides **both** what the chip and
 /// footer say and which keys work. Checked over every characterized state — the chip must be the
 /// frontmost layer's mode, and the keymap must be that same layer's surface whenever it has one.
@@ -21052,8 +18572,6 @@ fn the_chip_and_the_keys_come_from_the_same_layer() {
         if app.internal_mode() != front.internal_mode() {
             failures.push(format!("{}: the chip does not follow {front:?}", c.name));
         }
-        // The one documented exception is a git layer on a no-git build, which owns no surface at
-        // all; then — and only then — the keys legitimately belong to a layer further back.
         match front.surface() {
             Some(s) if app.surface() != s => {
                 failures.push(format!("{}: the keys do not follow {front:?}", c.name))
@@ -21078,17 +18596,6 @@ fn help_wins_over_whatever_screen_is_behind_it() {
         ("tree visual", |a| a.tab.visual_anchor = Some(0)),
         ("filter input", |a| a.tab.filter_input = Some(String::new())),
         ("tab list", |a| a.tab_list = true),
-        #[cfg(feature = "git")]
-        ("git changes hub", |a| a.tab.git_view = true),
-        #[cfg(feature = "git")]
-        ("git commit detail", |a| a.tab.git_detail = Some(Vec::new())),
-        #[cfg(feature = "git")]
-        ("git log", |a| a.tab.git_log = Some(Vec::new())),
-        #[cfg(feature = "git")]
-        ("git graph picker", |a| {
-            a.tab.git_graph = Some(Vec::new());
-            a.git_graph_picker = true;
-        }),
     ];
     for (name, setup) in behind {
         let mut app = layer_app(&dir);
@@ -21107,29 +18614,29 @@ fn help_wins_over_whatever_screen_is_behind_it() {
     }
 }
 
-/// The branch/worktree list `/` filter is deliberately **not** symmetric across the three consumers,
-/// and this pins why (see `UiLayer::internal_mode`): the keymap needs its own surface because typing
-/// must be captured instead of dispatched, the chip deliberately stays on the list (the list is
-/// still what you are looking at, cursor and all), and the footer swaps to the `/query` prompt
-/// through its own branch in `footer_spans`, not through the mode.
-#[cfg(feature = "git")]
+/// The `/` filter of the overlay lists (bookmarks, tabs, outline): its
+/// own text-input surface for the keys, the overlay's own chip, the `/query` prompt in the footer.
 #[test]
-fn a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
+fn an_overlay_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
     let dir = layer_fixture();
-    for (name, list, filtering, surface, mode) in [
+    for (name, list, filtering, mode) in [
         (
-            "branches",
-            (|a: &mut App| a.tab.git_branches = Some(Vec::new())) as fn(&mut App),
-            (|a: &mut App| a.tab.git_branch_filtering = true) as fn(&mut App),
-            crate::keymap::Surface::BranchFilter,
-            InternalMode::GitBranch,
+            "bookmarks",
+            (|a: &mut App| a.bookmark_list = true) as fn(&mut App),
+            (|a: &mut App| a.bookmark_list_filtering = true) as fn(&mut App),
+            InternalMode::Bookmarks,
         ),
         (
-            "worktrees",
-            (|a: &mut App| a.tab.git_worktrees = Some(Vec::new())) as fn(&mut App),
-            (|a: &mut App| a.tab.git_worktree_filtering = true) as fn(&mut App),
-            crate::keymap::Surface::WorktreeFilter,
-            InternalMode::GitWorktrees,
+            "tabs",
+            (|a: &mut App| a.tab_list = true) as fn(&mut App),
+            (|a: &mut App| a.tab_list_filtering = true) as fn(&mut App),
+            InternalMode::Tabs,
+        ),
+        (
+            "outline",
+            (|a: &mut App| a.outline_open = true) as fn(&mut App),
+            (|a: &mut App| a.outline_filtering = true) as fn(&mut App),
+            InternalMode::Outline,
         ),
     ] {
         let mut app = layer_app(&dir);
@@ -21139,22 +18646,17 @@ fn a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(app.internal_mode(), Some(mode), "{name}: chip before");
+        assert_ne!(app.surface(), crate::keymap::Surface::ListFilter, "{name}");
 
         filtering(&mut app);
         assert_eq!(
             app.surface(),
-            surface,
+            crate::keymap::Surface::ListFilter,
             "{name}: the keymap must switch to the text-input surface"
         );
-        assert!(
-            app.surface().is_text_input(),
-            "{name}: characters must be captured, not dispatched"
-        );
-        assert_eq!(
-            app.internal_mode(),
-            Some(mode),
-            "{name}: the chip must stay on the list — the filter is an input inside it, not a mode"
-        );
+        assert!(app.surface().is_text_input(), "{name}");
+        assert_eq!(app.internal_mode(), Some(mode), "{name}: the chip stays");
+        assert_eq!(app.key_context(), None, "{name}: no keymap while typing");
         let footer_after: String = crate::ui::status::footer_spans(&app, 80)
             .iter()
             .map(|s| s.content.as_ref())
@@ -21181,25 +18683,15 @@ fn the_walk_visits_the_layers_in_their_declaration_order() {
     let dir = layer_fixture();
     let mut app = layer_app(&dir);
     app.show_help = true;
-    #[cfg(feature = "git")]
-    {
-        app.tab.git_detail = Some(Vec::new());
-        app.tab.git_log = Some(Vec::new());
-        app.git_graph_picker = true;
-        app.tab.git_graph = Some(Vec::new());
-        app.tab.git_branches = Some(Vec::new());
-        app.tab.git_branch_filtering = true;
-        app.tab.git_worktrees = Some(Vec::new());
-        app.tab.git_worktree_filtering = true;
-        app.tab.git_view = true;
-    }
     app.tab.filter_input = Some(String::new());
     app.tab.search_input = Some(String::new());
-    app.sort_menu = true;
     app.mark_set_pending = true;
     app.bookmark_list = true;
+    app.bookmark_list_filtering = true;
     app.tab_list = true;
+    app.tab_list_filtering = true;
     app.outline_open = true;
+    app.outline_filtering = true;
     app.show_info = true;
     app.table_cell_open = true;
     app.tab.visual_anchor = Some(0);
@@ -22484,8 +19976,9 @@ fn changed_cursor_follows_its_file_when_a_new_change_sorts_above_it() {
 }
 
 /// The asynchronous half — **the path the real app takes**. `refresh_fs` only *kicks* the scan, so
-/// the rebuild is deferred to `apply_statuses`, by which time `entries` is the whole tree. Fixing
-/// only the synchronous call site leaves this one broken while the test above goes green.
+/// the rebuild is deferred to `apply_statuses`; meanwhile the list it had is kept, with the cursor
+/// on its file. Fixing only the synchronous call site leaves this one broken while the test above
+/// goes green.
 #[cfg(feature = "git")]
 #[test]
 fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
@@ -22499,24 +19992,27 @@ fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
     let newfile = add_change_above(&dir);
     app.refresh_fs_changed(false, &[newfile]).unwrap();
 
-    // Ground truth for what makes this the harder half: the rebuild really was deferred, and what
-    // is in `entries` right now is the *tree* — so the cursor's identity cannot be recovered from it.
+    // Ground truth: the rebuild really was deferred, and until the scan lands the list it had is
+    // kept (not the whole tree), with the cursor still on its file.
     assert!(
         app.git_status_pending.is_some(),
         "土台: 走査中なので一覧の作り直しは apply_statuses に先送りされる"
     );
     assert!(
-        app.tab
+        !app.tab
             .entries
             .iter()
             .any(|e| e.path.ends_with("committed_a.txt")),
-        "土台: この時点の entries は変更一覧ではなく通常ツリー"
+        "走査中も entries は持っていた変更一覧のまま(通常ツリーではない)"
     );
-    assert!(
-        !app.tab.entries[app.tab.selected]
-            .path
-            .ends_with("m_two.txt"),
-        "土台: ここで entries から読むと別のファイルになる(だから呼び出し元が持ち越す)"
+    assert_eq!(
+        app.tab.entries.len(),
+        3,
+        "走査中は持っていた一覧(新しいファイルはまだ入らない)"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "走査中もカーソルは同じファイルの上"
     );
 
     let res = rx
@@ -22534,6 +20030,153 @@ fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
     assert_eq!(
         app.tab.entries[app.tab.selected].path, target,
         "先送りされた作り直しでもカーソルは同じファイルに残る"
+    );
+}
+
+/// Every rebuild under `C` while its scan is out keeps the list it had, not only the refresh: a
+/// sort, `.` (hidden files) and the rebuild after a discard each run `rebuild_tree`, which puts
+/// the whole tree in `entries`. Until the scan lands the list stays the changed list with the
+/// cursor on its file; when it lands the list is rebuilt from the new statuses (the new change
+/// above appears) and the cursor is still on its file.
+#[cfg(feature = "git")]
+#[test]
+fn changed_list_is_kept_by_every_rebuild_while_its_scan_is_out() {
+    type Op = fn(&mut App);
+    let ops: [(&str, Op); 4] = [
+        ("並べ替え", |app| app.sort_menu_key('s').unwrap()),
+        ("並べ替えの逆順", |app| {
+            app.sort_menu_key('r').unwrap()
+        }),
+        ("隠しファイルの切り替え", |app| {
+            app.toggle_hidden().unwrap()
+        }),
+        ("破棄の後の作り直し", |app| {
+            assert!(app.rebuild_tree_notify());
+        }),
+    ];
+    for (name, op) in ops {
+        let dir = changed_cursor_repo("konoma_changed_kept_by_rebuild");
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_status_loader(tx);
+        app.toggle_changed_filter();
+        let target = park_on_last_change(&mut app);
+        let kept: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+        let newfile = add_change_above(&dir);
+        app.refresh_fs_changed(false, std::slice::from_ref(&newfile))
+            .unwrap();
+        assert!(
+            app.git_status_pending.is_some(),
+            "{name}: 土台: 走査が出ている"
+        );
+
+        op(&mut app);
+
+        assert!(app.tab.changed_filter, "{name}: C は付いたまま");
+        let now: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            now, kept,
+            "{name}: 走査中の作り直しで、持っていた変更一覧が保たれない"
+        );
+        assert_eq!(
+            app.tab.entries[app.tab.selected].path, target,
+            "{name}: 走査中もカーソルは同じファイルの上"
+        );
+
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("スキャン結果");
+        app.apply_statuses(res);
+        assert!(app.tab.changed_filter, "{name}: 到着後も C は付いたまま");
+        assert!(
+            app.tab.entries.iter().any(|e| e.path == newfile),
+            "{name}: 到着で一覧が新しい状態から作り直される"
+        );
+        assert!(
+            !app.tab
+                .entries
+                .iter()
+                .any(|e| e.path.ends_with("committed_a.txt")),
+            "{name}: 到着後の一覧は変更一覧(通常ツリーではない)"
+        );
+        assert_eq!(
+            app.tab.entries[app.tab.selected].path, target,
+            "{name}: 到着後もカーソルは同じファイルの上"
+        );
+    }
+}
+
+/// The hard side that is left: a reveal after a file operation (`reveal_and_select`) aims the
+/// cursor at a file the kept list cannot name yet. The file was just created, so it has no row in
+/// the list kept while the scan is out, and `entries[selected]` is still the old cursor's file.
+/// The target travels with the deferred rebuild (`changed_anchor_pending`), so when the scan
+/// lands the cursor is on the new file, as it is when no scan is out (the list rebuilt at once
+/// and the cursor on the target).
+#[cfg(feature = "git")]
+#[test]
+fn changed_cursor_reveal_of_a_new_file_lands_on_it_when_the_deferred_scan_lands() {
+    // No scan out: the reveal rebuilds the list from the statuses at once and lands on the file.
+    let dir = changed_cursor_repo("konoma_changed_reveal_sync");
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    let old = park_on_last_change(&mut app);
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, std::slice::from_ref(&newfile))
+        .unwrap();
+    app.reveal_and_select(&newfile).unwrap();
+    assert!(app.git_status_pending.is_none(), "土台: 同期の走査");
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, newfile,
+        "土台: 走査が無い時はカーソルが作ったファイルに乗る"
+    );
+
+    // A scan out: the same reveal keeps the list it had, so the new file has no row yet and the
+    // cursor stays where it was; the identity waits with the deferred rebuild.
+    let dir = changed_cursor_repo("konoma_changed_reveal_async");
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.toggle_changed_filter();
+    let old_async = park_on_last_change(&mut app);
+    assert!(old_async.ends_with(old.file_name().unwrap()));
+    let kept: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, std::slice::from_ref(&newfile))
+        .unwrap();
+    app.reveal_and_select(&newfile).unwrap();
+    assert!(
+        app.git_status_pending.is_some(),
+        "土台: 走査中なので一覧の作り直しは apply_statuses に先送りされる"
+    );
+    let now: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(
+        now, kept,
+        "走査中の reveal で、持っていた変更一覧が保たれない"
+    );
+    assert!(
+        !app.tab.entries.iter().any(|e| e.path == newfile),
+        "持っていた一覧にはまだ作ったファイルの行が無い(entries からは辿れない)"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, old_async,
+        "走査中のカーソルは元のファイルの上(entries[selected] は作ったファイルではない)"
+    );
+    assert_eq!(
+        app.tab.changed_anchor_pending.as_deref(),
+        Some(newfile.as_path()),
+        "作ったファイルが先送りされた作り直しの行き先として持ち越される"
+    );
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("スキャン結果");
+    app.apply_statuses(res);
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == newfile),
+        "土台: 到着で一覧が作り直されている"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, newfile,
+        "走査が着いたら、走査が無い時と同じく作ったファイルの上"
     );
 }
 
@@ -22816,7 +20459,7 @@ fn changed_cursor_survives_two_refreshes_deferred_to_the_same_scan() {
     );
 }
 
-/// **Bug 2**: `toggle_hidden`'s reapply of `C` (via `refilter_after_visibility_change`) rebuilt the
+/// **Bug 2**: `toggle_hidden`'s reapply of `C` (via `rebuild_tree_refiltered`) rebuilt the
 /// changed list *unconditionally*, without the same "a scan is in flight" guard `refresh_fs_inner`
 /// already has. Switching to a different repo's tab and back leaves `git_status` briefly empty
 /// (the kick clears it because the workdir changed) while the real result is still on its way —
@@ -22892,7 +20535,7 @@ fn toggle_hidden_does_not_falsely_disable_changed_filter_during_a_pending_scan()
 }
 
 /// **Bug 3**: `sort_menu_key` rebuilt the tree on `n`/`s`/`m`/`e`/`r`/`.` without ever reapplying
-/// `C` (unlike `toggle_hidden`, which does via `refilter_after_visibility_change`) — so pressing a
+/// `C` (unlike `toggle_hidden`, which does via `rebuild_tree_refiltered`) — so pressing a
 /// sort key while the changed-files view was up silently replaced the flat changed list with the
 /// ordinary tree, while the header/chip kept claiming CHANGED (`changed_filter` itself was never
 /// touched, so nothing else noticed the mismatch).
@@ -22905,7 +20548,6 @@ fn sort_menu_key_keeps_the_changed_filter_active() {
     let changed_before: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_eq!(changed_before.len(), 3, "土台: 変更3件");
 
-    app.open_sort_menu();
     app.sort_menu_key('s').unwrap(); // switch sort key to Size
 
     assert!(
@@ -23266,6 +20908,74 @@ fn entering_preview_on_a_regular_file_still_works() {
     assert_eq!(app.tab.mode, Mode::Preview);
 }
 
+/// A FIFO under the tree cursor: the footer (every frame), `e` and `o` ask which plugin takes the
+/// file, which sniffs its content; they must stop at the preview's own gate instead of opening a
+/// pipe nobody writes to (which blocks the key thread for good).
+#[cfg(unix)]
+#[test]
+fn a_fifo_under_the_tree_cursor_does_not_hang_the_footer_e_or_o() {
+    use crate::keymap::{Action, Context};
+    let dir = unique_tmp("konoma_fifo_verbs");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("pipe");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo コマンドを起動できない");
+    assert!(status.success(), "mkfifo に失敗");
+
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    // No program is ever started: the launcher is a recorder.
+    app.set_office_runner(std::sync::Arc::new(|_| Ok(Some(0))));
+    app.tab.selected = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path == fifo)
+        .expect("the pipe is listed");
+    let app = run_with_hang_guard(app, std::time::Duration::from_secs(5), move |a| {
+        let _ = crate::ops::footer::tokens(a, Context::Tree);
+        assert_eq!(a.verb_plugin_id(&fifo), None);
+        let _ = crate::ops::action_enabled(a, Context::Tree, Action::RequestEdit);
+        let _ = crate::ops::action_enabled(a, Context::Tree, Action::OpenExternal);
+        a.request_edit();
+        a.open_in_other_app();
+    });
+    assert!(app.pending_edit.is_some(), "e falls back to the editor");
+}
+
+/// The file on screen is not read again to learn which plugin takes it (its preview already
+/// resolved that); another file is read once and then remembered.
+#[test]
+fn the_previewed_file_is_not_read_again_for_the_verbs() {
+    let dir = unique_tmp("konoma_verb_no_reread");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("a.md");
+    std::fs::write(&md, "# t\n").unwrap();
+    let other = dir.join("b.md");
+    std::fs::write(&other, "# u\n").unwrap();
+
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.enter_preview(&md);
+    let want = match &app.tab.preview_kind {
+        Some(PreviewKind::Plugin { id, .. }) => id.clone(),
+        k => panic!("a Markdown file previews through a plugin: {k:?}"),
+    };
+    let (id, reads) = crate::test_support::count_plugin_id_reads(|| {
+        (0..3).map(|_| app.verb_plugin_id(&md)).last().unwrap()
+    });
+    assert_eq!(id.as_deref(), Some(want.as_str()));
+    assert_eq!(reads, 0, "the previewed file is not read");
+
+    let (id, reads) = crate::test_support::count_plugin_id_reads(|| {
+        (0..3).map(|_| app.verb_plugin_id(&other)).last().unwrap()
+    });
+    assert_eq!(id.as_deref(), Some(want.as_str()));
+    assert_eq!(reads, 1, "another file is read once, then remembered");
+}
+
 /// Non-regression: a symlink to a regular file still previews the link target's content, exactly
 /// as before (the guard follows symlinks rather than rejecting them outright).
 #[cfg(unix)]
@@ -23314,115 +21024,6 @@ fn tree_descend_still_descends_into_directories() {
         "ディレクトリはツリーの新しい root として潜行する(プレビューは開かない)"
     );
     assert_eq!(app.tab.mode, Mode::Tree, "モードは Tree のまま");
-}
-
-/// `[ui] confirm_jj_sync` decides whether `R` asks first. konoma writes to a jj repository only
-/// here, so the default has to be the one that asks.
-#[cfg(feature = "git")]
-#[test]
-fn ui_confirm_jj_sync_gates_the_only_write() {
-    let Some(dir) = jj_scratch_seeded("konoma_confirm_jj_sync") else {
-        return;
-    };
-
-    let mut on = Config::default();
-    assert!(
-        on.ui.confirm_jj_sync,
-        "the setting that guards konoma's only write must default to asking"
-    );
-    on.ui.confirm_jj_sync = true;
-    let mut app = App::new(dir.to_path_buf(), on).unwrap();
-    app.jj_start_sync();
-    assert!(
-        app.dialog.is_some(),
-        "with the confirmation on, R must ask before letting jj snapshot"
-    );
-
-    let mut off = Config::default();
-    off.ui.confirm_jj_sync = false;
-    let mut app = App::new(dir.to_path_buf(), off).unwrap();
-    app.jj_start_sync();
-    assert!(
-        app.dialog.is_none(),
-        "with the confirmation off, R must act without asking"
-    );
-    assert!(
-        app.flash.is_some(),
-        "acting without asking still has to report what happened"
-    );
-}
-
-/// The jj backend never shells out to `git` — `src/vcs/jj.rs` only ever runs the `jj` executable —
-/// so a machine with no `git` executable at all must not block `o` on a jj workspace. Before the fix,
-/// `open_git_view` probed `git_binary_available()` before it had even decided which backend would
-/// answer, so this refused with `GitNotInstalled` on a directory the tree was already rendering jj's
-/// chip and change markers for (see `open_git_view_reports_a_missing_git_binary_distinctly` for the
-/// matching git-repo case, which this must not regress).
-#[cfg(feature = "git")]
-#[test]
-fn jj_hub_opens_even_when_the_git_binary_is_missing() {
-    let Some(dir) = jj_scratch_seeded("konoma_jj_hub_no_git_binary") else {
-        return;
-    };
-    crate::git::set_git_binary_available_for_test(Some(false));
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap(); // external.git = true (default)
-    assert_eq!(
-        crate::vcs::detect(&app.tab.root),
-        crate::vcs::VcsKind::Jj,
-        "sanity: the fixture must resolve to the jj backend, or this test proves nothing"
-    );
-
-    app.open_git_view();
-    assert!(
-        app.is_git_view(),
-        "the jj hub must open even though this machine has no git executable"
-    );
-    assert_ne!(
-        app.flash.as_deref(),
-        Some(tr(app.lang, crate::i18n::Msg::GitNotInstalled)),
-        "the jj backend never touches the git executable, so this reason must never fire for it"
-    );
-
-    crate::git::set_git_binary_available_for_test(None);
-}
-
-/// The matching case for `[external] git = false`: turning git integration off must not close the jj
-/// hub either — jj never asks that setting. This is also where the tree/hub inconsistency the bug
-/// report described gets pinned directly: the tree's markers (`crate::vcs::statuses`, driving the
-/// `M a.txt`-style rows and the `@ ...` chip) already ignore `[external] git` for the jj backend, so
-/// the hub refusing to open on the same directory was the two views disagreeing about the same repo.
-#[cfg(feature = "git")]
-#[test]
-fn jj_hub_opens_even_when_the_git_integration_is_switched_off() {
-    let Some(dir) = jj_scratch_seeded("konoma_jj_hub_git_disabled") else {
-        return;
-    };
-    let mut cfg = Config::default();
-    cfg.external.git = false;
-    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
-    assert_eq!(
-        crate::vcs::detect(&app.tab.root),
-        crate::vcs::VcsKind::Jj,
-        "sanity: the fixture must resolve to the jj backend, or this test proves nothing"
-    );
-
-    // The tree side of the same inconsistency: jj's status markers don't consult `[external] git`,
-    // so the tree already shows this workspace's uncommitted change regardless of the setting.
-    assert!(
-        !crate::vcs::statuses(&app.tab.root).is_empty(),
-        "sanity: the tree's markers come from jj regardless of [external] git"
-    );
-
-    app.open_git_view();
-    assert!(
-        app.is_git_view(),
-        "external.git=false must not block the jj hub — the tree and the hub must agree on this repo"
-    );
-    assert_ne!(
-        app.flash.as_deref(),
-        Some(tr(app.lang, crate::i18n::Msg::ExternalGitDisabled)),
-        "jj never asks [external] git, so this reason must never fire for it"
-    );
 }
 
 /// Moving to a different repository has to settle **which backend answers** right away, not when
@@ -23504,76 +21105,33 @@ fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
 
 // =============================================================================
 // jj write-safety audit (2026-08): the read-only gate itself
-// (`Action::writes_repository()` + `dispatch_action`'s check, `src/main.rs`), which had no test
+// (`ops::decl` write metadata + `ops::write_guard`), which had no test
 // coverage of its own before this. The key-driven walk through every reachable write action lives
 // in `src/e2e_tests.rs` (needs `Sim`); what stays here needs either private `PerTab` field access
 // (only visible inside `app` and its submodules) or is a pure source/logic check unrelated to keys.
 // =============================================================================
 
-/// `WorktreeCreate` cannot be reached through real navigation in a jj repository: `w` from the
-/// changes hub redirects to the `JjWorkspacesUnlisted` flash before `Surface::GitWorktrees` is ever
-/// entered (`open_git_worktrees`, `src/app/git_view.rs`) — see
-/// `e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list` (`src/e2e_tests.rs`). That
-/// unreachability is exactly why this needs its own test: the gate in `dispatch_action` must hold
-/// even if the surface is somehow reached anyway — a future regression in `open_git_worktrees`'s own
-/// redirect, or stale per-tab state. Forcing `tab.git_worktrees` open directly (rather than pressing
-/// `w`) is what lets this test exist despite the surface being unreachable through keys; it needs
-/// `PerTab`'s private fields, which is why it lives here rather than in `e2e_tests.rs`.
-#[cfg(feature = "git")]
-#[test]
-fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_open() {
-    let Some(dir) = jj_scratch_seeded("konoma_worktree_create_gate") else {
-        return;
-    };
-    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    assert!(
-        !crate::vcs::caps(&app.tab.root).write,
-        "sanity: the fixture must resolve to the read-only jj backend, or this test proves nothing"
-    );
-    app.tab.git_worktrees = Some(Vec::new()); // force the surface open; `w` cannot reach it in jj
-    app.tab.git_worktree_sel = 0;
-    assert_eq!(
-        app.surface(),
-        crate::keymap::Surface::GitWorktrees,
-        "sanity: the forced state must read as the worktree list"
-    );
-
-    let res = crate::handle_key(
-        &mut app,
-        crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('n'),
-            crossterm::event::KeyModifiers::NONE,
-        ),
-    );
-    assert!(
-        res.is_ok(),
-        "the gate must return Ok(false), not error: {res:?}"
-    );
-    assert!(
-        app.flash
-            .as_deref()
-            .is_some_and(|f| f.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::VcsReadOnly))),
-        "expected the VcsReadOnly flash, got {:?}",
-        app.flash
-    );
-    assert!(
-        !app.is_dialog(),
-        "n must not have opened the new-worktree input dialog"
-    );
-}
-
 /// The read-only gate in `dispatch_action` only protects a write if it is reached through an
-/// `Action` — a git write that bypasses `run_git_op` (the one place every `crate::git::` write call
+/// `Action` — a git write that bypasses `run_git_op` (the one place every `crate::vcs::Git::` write call
 /// lives, `src/app/git_view.rs`) would bypass the gate entirely, no matter what
-/// `Action::writes_repository()` says. This scans the actual source of `git_view.rs` at compile time
+/// the key declaration says. This scans the actual source of `git_view.rs` at compile time
 /// (`include_str!`) and confirms every one of the write API's call sites is still exactly the one
 /// inside `run_git_op`.
 ///
 /// What this catches: a write call added, or moved, to somewhere else in this file, outside
 /// `run_git_op` — the concrete way today's single gate could stop covering a write that already
 /// exists. What this does **not** catch: a brand new write-shaped `Action` that calls a brand new
-/// `crate::git::` function correctly routed *through* `run_git_op`, but never added to
+/// `crate::vcs::Git::` function correctly routed *through* `run_git_op`, but never added to
 /// `writes_repository()` in the first place — see `writes_repository_set_is_pinned...` below for
+/// that (still incomplete) half of the picture.
+/// A second source scan in `ops::write_guard_tests` covers other production source files and
+/// checks the guard at each execution boundary.
+///
+/// What this catches: a write call added, or moved, to somewhere else in this file, outside
+/// `run_git_op` — the concrete way today's single gate could stop covering a write that already
+/// exists. What this does **not** catch: a brand new write-shaped `Action` that calls a brand new
+/// `crate::vcs::Git::` function correctly routed *through* `run_git_op`, but never added to
+/// the write declarations in the first place — see `guard_write_declarations_are_pinned...` below for
 /// that (still incomplete) half of the picture.
 #[cfg(feature = "git")]
 #[test]
@@ -23596,26 +21154,15 @@ fn git_write_api_calls_stay_confined_to_run_git_op() {
     let body = &after_start[..rel_end + 1];
 
     // Exactly what `run_git_op`'s match calls today (mirrors `GitOpKind`, `src/app.rs`).
-    let write_calls = [
-        "crate::git::stage(",
-        "crate::git::unstage(",
-        "crate::git::stage_all(",
-        "crate::git::unstage_all(",
-        "crate::git::discard(",
-        "crate::git::commit(",
-        "crate::git::checkout(",
-        "crate::git::create_branch(",
-        "crate::git::delete_branch(",
-        "crate::git::worktree_add(",
-    ];
+    let write_calls = ["crate::vcs::Git::discard("];
     for needle in write_calls {
         let total = src.matches(needle).count();
         assert_eq!(
             total, 1,
             "{needle} must appear exactly once in git_view.rs (inside run_git_op). More than once \
              means a write path was added outside run_git_op — route it through \
-             start_git_op/run_git_op like every other write here, so dispatch_action's \
-             writes_repository() gate (src/main.rs) still covers it. Zero means this needle itself \
+             start_git_op/run_git_op like every other write here, so the execution guard \
+             still covers it. Zero means this needle itself \
              needs updating (the function was renamed, removed, or its call site changed shape)."
         );
         let inside = body.matches(needle).count();
@@ -23627,27 +21174,12 @@ fn git_write_api_calls_stay_confined_to_run_git_op() {
     }
 }
 
-/// `writes_repository()` (`src/keymap.rs`) is a hand-written list — the only thing that decides
-/// which `Action`s `dispatch_action`'s read-only gate refuses in a jj repository. Pinning its answer
-/// here means any change to the SET it returns true for breaks this test and forces a human to look.
-///
-/// If you just **added** a new write-shaped Action and correctly included it in
-/// `writes_repository()`, this test fails with a diff — add the new variant to both `candidates` and
-/// `want` below, AND add a real key press for it to
-/// `e2e_jj_write_actions_are_gated_by_the_read_only_backend` (`src/e2e_tests.rs`), so the new action
-/// is actually exercised against jj rather than merely declared correctly.
-///
-/// What this test **cannot** catch: a new write-shaped Action that was never added to
-/// `writes_repository()` at all. `Action` has no enumerable list of its own variants (unlike
-/// `i18n::Msg`'s `ALL_MSGS`, which `all_msg_variants_are_covered_by_all_msgs` checks against the
-/// enum source directly) — there is no way, from outside `src/keymap.rs`, to ask "what are all the
-/// Action variants", and therefore no way to mechanically prove none of them was left out of this
-/// list. That is a real, standing gap that only a human reviewing a diff to `keymap.rs` can close;
-/// the closest mechanical mitigation is `git_write_api_calls_stay_confined_to_run_git_op` (above),
-/// which at least confirms no git write call exists outside the one path this gate is meant to guard.
+/// Pin the write metadata used by keys, footer and help. Execution is guarded independently at
+/// `start_git_op`, so forgetting a key declaration cannot permit a write. New operations still
+/// need a key-driven test to keep their hints consistent with that execution boundary.
 #[cfg(feature = "git")]
 #[test]
-fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
+fn guard_write_declarations_are_pinned_add_new_write_actions_to_e2e_tests_too() {
     use crate::keymap::{action_name, Action};
     let candidates = [
         Action::GitStage,
@@ -23661,10 +21193,11 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
         Action::BranchCreate,
         Action::BranchDelete,
         Action::WorktreeCreate,
+        Action::JjSync,
     ];
     let mut got: Vec<String> = candidates
         .into_iter()
-        .filter(|a| a.writes_repository())
+        .filter(|a| crate::ops::decl::decl(*a).writes.is_some())
         .map(action_name)
         .collect();
     got.sort();
@@ -23681,6 +21214,7 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
         "git_unstage",
         "git_unstage_all",
         "worktree_create",
+        "jj_sync",
     ]
     .into_iter()
     .map(String::from)
@@ -23689,7 +21223,7 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
 
     assert_eq!(
         got, want,
-        "writes_repository()'s answer for the known write actions changed. If you removed one, the \
+        "The write declarations for known write actions changed. If you removed one, the \
          jj gate just got weaker — put it back unless that was deliberate. If you added a brand new \
          write action, this candidate list (and the pinned `want` list) also needs the new variant, \
          AND it needs a real key press in e2e_jj_write_actions_are_gated_by_the_read_only_backend \
@@ -23697,16 +21231,15 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
     );
 
     // Sanity: some read/navigation Actions must stay ungated, or the pinned lists above could
-    // vacuously agree even if writes_repository() had degenerated into "gate everything".
+    // vacuously agree even if the declarations had degenerated into "gate everything".
     for (name, a) in [
-        ("jj_sync", Action::JjSync),
         ("git_open_worktrees", Action::GitOpenWorktrees),
         ("git_open_branches", Action::GitOpenBranches),
         ("git_close", Action::GitClose),
         ("git_graph_toggle_all", Action::GitGraphToggleAll),
     ] {
         assert!(
-            !a.writes_repository(),
+            crate::ops::decl::decl(a).writes.is_none(),
             "{name} is a read/navigation action and must not be gated as a write"
         );
     }
@@ -23949,10 +21482,11 @@ fn ordinary_preview_gutter_decision_matches_render_for_a_truncated_file() {
         .expect("doc.md がツリーにあるはず");
     app.tab.selected = i;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Markdown(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(crate::preview::PreviewKind::is_markdown));
 
     let width: u16 = 40;
     let (total_rows, _) = app.md_layout(width);
@@ -24660,7 +22194,7 @@ fn diff_media_active_agrees_with_the_single_not_markdown_check_across_every_reac
     ) {
         app.open_git_diff(path);
         let kind = app.diff_target_kind(path);
-        let ground_truth = !matches!(kind, PreviewKind::Markdown(_));
+        let ground_truth = !kind.is_markdown();
         assert_eq!(
             app.diff_media_active(),
             ground_truth,
@@ -24769,6 +22303,99 @@ fn diff_media_active_agrees_with_the_single_not_markdown_check_across_every_reac
     );
 }
 
+#[test]
+fn diff_target_classification_covers_every_reachable_kind_sample() {
+    use konoma_host_core::project::DiffTarget;
+
+    // The five samples from the media-active equivalence test, plus every other classification
+    // branch. Extensions decide picture formats without reading files or starting a worker.
+    let dir = unique_tmp("konoma_diff_target_classification");
+    std::fs::create_dir_all(&dir).unwrap();
+    let command = |render_as: Option<&str>| PreviewKind::Command {
+        path: dir.join("command"),
+        template: String::new(),
+        render_as: render_as.map(str::to_string),
+        detached: false,
+    };
+    let samples = [
+        (
+            "markdown",
+            PreviewKind::markdown(dir.join("doc.md")),
+            DiffTarget::Markdown,
+        ),
+        (
+            "image",
+            PreviewKind::image(dir.join("pic.png")),
+            DiffTarget::Picture,
+        ),
+        (
+            "svg",
+            PreviewKind::svg(dir.join("pic.svg")),
+            DiffTarget::Svg,
+        ),
+        (
+            "deleted extensionless (ex-image)",
+            PreviewKind::CanNotPreview { ext: String::new() },
+            DiffTarget::Other,
+        ),
+        (
+            "deleted code",
+            PreviewKind::plugin("code", dir.join("a.rs")),
+            DiffTarget::Text,
+        ),
+        (
+            "plain text",
+            PreviewKind::Text(dir.join("plain.txt")),
+            DiffTarget::Text,
+        ),
+        (
+            "mermaid",
+            PreviewKind::mermaid(dir.join("diagram.mmd")),
+            DiffTarget::Text,
+        ),
+        (
+            "pdf",
+            PreviewKind::plugin("pdf", dir.join("doc.pdf")),
+            DiffTarget::Picture,
+        ),
+        (
+            "non-picture plugin",
+            PreviewKind::plugin("csv", dir.join("data.csv")),
+            DiffTarget::Other,
+        ),
+        (
+            "picture plugin with non-picture format",
+            PreviewKind::image(dir.join("unknown")),
+            DiffTarget::Other,
+        ),
+        (
+            "picture format from another image plugin",
+            PreviewKind::image(dir.join("doc.svg")),
+            DiffTarget::Svg,
+        ),
+        ("default command", command(None), DiffTarget::Text),
+        ("text command", command(Some("text")), DiffTarget::Text),
+        ("image command", command(Some("image")), DiffTarget::Other),
+        (
+            "git diff",
+            PreviewKind::GitDiff(dir.join("doc.md")),
+            DiffTarget::Other,
+        ),
+        (
+            "mermaid fence",
+            PreviewKind::MermaidFence(0),
+            DiffTarget::Other,
+        ),
+    ];
+    for (label, kind, expected) in samples {
+        assert_eq!(
+            diff_view::classify_diff_target(&kind),
+            expected,
+            "{label}: {kind:?}"
+        );
+    }
+}
+
 /// The table highlight is a binary search of `search_matches`: it relies on the matches being in
 /// reading order. Compare it with a brute-force check of every cell, for a CSV with ragged,
 /// repeated and CJK cells, searching text that matches many of them.
@@ -24823,7 +22450,7 @@ fn table_search_highlight_is_exactly_the_matching_cells() {
 // Spreadsheet preview: what the App does with a worker's answer, and how the title reads
 // ---------------------------------------------------------------------------------------------
 
-use crate::preview::office::{OfficeError, Sheet, Workbook};
+use crate::preview::office::{Sheet, Workbook};
 
 /// A workbook of one sheet with the given shape (cells stay empty: the title and the cap marker
 /// only depend on the dimensions and the truncation flags).
@@ -24841,8 +22468,8 @@ fn shaped_workbook(nrows: usize, ncols: usize, rows_cut: bool, cols_cut: bool) -
     }
 }
 
-/// An English-UI App previewing `b.xlsx` as a spreadsheet (the file is never read: the workbook,
-/// when there is one, is put in by hand).
+/// An English-UI App previewing `b.xlsx` as a spreadsheet (the file is never read: the plugin's
+/// show, when there is one, is put in by hand).
 fn app_previewing_a_sheet(name: &str) -> (App, crate::test_support::TmpDir) {
     let dir = unique_tmp(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -24853,9 +22480,110 @@ fn app_previewing_a_sheet(name: &str) -> (App, crate::test_support::TmpDir) {
     cfg.ui.lang = "en".into();
     let mut app = App::new(root, cfg).unwrap();
     app.tab.preview_path = Some(book.clone());
-    app.tab.preview_kind = Some(PreviewKind::Spreadsheet(book));
+    app.tab.preview_kind = Some(PreviewKind::spreadsheet(book));
     app.tab.mode = Mode::Preview;
     (app, dir)
+}
+
+/// The layout the spreadsheet plugin reports for a workbook of the given sheets.
+fn sheet_layout(wb: &Workbook) -> konoma_plugin::view::Layout {
+    use konoma_plugin::view::{Layout, PageLayout};
+    Layout {
+        pages: Some(PageLayout::Separate {
+            count: Some(wb.sheets.len()),
+            titles: wb.sheets.iter().map(|s| s.name.clone()).collect(),
+        }),
+        ..Layout::default()
+    }
+}
+
+/// What the spreadsheet plugin's worker answers with for `wb` (sheet 0 on screen), for the
+/// current generation.
+fn sheet_result(app: &App, wb: Workbook) -> MediaResult {
+    use konoma_plugin::view::{View, ViewReq};
+    let layout = sheet_layout(&wb);
+    let view = View::Table(konoma_office::table_view(wb, 0, "en", true));
+    MediaResult {
+        gen: app.media_gen,
+        payload: Some(MediaPayload::Plugin(Box::new(
+            plugin_host::PluginResult::answer(
+                app.media_gen,
+                konoma_office::SPREADSHEET_ID,
+                Some(layout),
+                Some(view),
+                None,
+                ViewReq::default(),
+            ),
+        ))),
+    }
+}
+
+/// What the worker answers when the workbook could not be read.
+fn sheet_failure_result(app: &App, failure: konoma_plugin::Failure) -> MediaResult {
+    MediaResult {
+        gen: app.media_gen,
+        payload: Some(MediaPayload::Plugin(Box::new(
+            plugin_host::PluginResult::answer(
+                app.media_gen,
+                konoma_office::SPREADSHEET_ID,
+                Some(konoma_plugin::view::Layout::single()),
+                None,
+                Some(failure),
+                konoma_plugin::view::ViewReq::default(),
+            ),
+        ))),
+    }
+}
+
+/// Puts the sheet of `wb` on screen the way a landed read does (a `Ready` show of the table).
+fn show_sheet(app: &mut App, wb: Workbook) {
+    let layout = sheet_layout(&wb);
+    let view = konoma_plugin::view::View::Table(konoma_office::table_view(wb, 0, "en", true));
+    let path = app.tab.preview_path.clone().unwrap();
+    app.plugin = Some(plugin_host::PluginShow {
+        id: konoma_office::SPREADSHEET_ID.to_string(),
+        path,
+        phase: plugin_host::PluginPhase::Ready,
+        session: None,
+        layout,
+        view: Some(view),
+        req: konoma_plugin::view::ViewReq::default(),
+        enabled: Default::default(),
+        flow: Default::default(),
+    });
+}
+
+/// A show that has asked for the workbook and is waiting for the answer.
+fn show_sheet_loading(app: &mut App) {
+    let path = app.tab.preview_path.clone().unwrap();
+    app.plugin = Some(plugin_host::PluginShow {
+        id: konoma_office::SPREADSHEET_ID.to_string(),
+        path,
+        phase: plugin_host::PluginPhase::Loading,
+        session: None,
+        layout: konoma_plugin::view::Layout::single(),
+        view: None,
+        req: konoma_plugin::view::ViewReq::default(),
+        enabled: Default::default(),
+        flow: Default::default(),
+    });
+}
+
+/// The failure the real spreadsheet plugin gives for the workbook at `path`.
+fn spreadsheet_failure(path: &std::path::Path) -> konoma_plugin::Failure {
+    use konoma_plugin::{Input, OpenCx, Plugin, ViewCx};
+    let mut session = konoma_office::SpreadsheetPlugin
+        .open(
+            Input::File {
+                path: path.to_path_buf(),
+                hint: None,
+            },
+            &OpenCx::bare(),
+        )
+        .unwrap();
+    session
+        .view(&konoma_plugin::view::ViewReq::default(), &ViewCx::bare())
+        .expect_err("the workbook cannot be shown")
 }
 
 /// The text of a 90x26 frame drawn from `app`.
@@ -24891,7 +22619,7 @@ fn sheet_title_marks_a_capped_sheet_for_either_kind_of_cut() {
         (true, true, true),
     ] {
         let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_capped");
-        app.workbook = Some(Box::new(shaped_workbook(5, 3, rows_cut, cols_cut)));
+        show_sheet(&mut app, shaped_workbook(5, 3, rows_cut, cols_cut));
         let title = title_row(&drawn_screen(&mut app));
         assert_eq!(
             title.contains("(capped)"),
@@ -24908,7 +22636,7 @@ fn sheet_title_marks_a_capped_sheet_for_either_kind_of_cut() {
 fn sheet_title_names_no_cell_when_the_sheet_has_no_rows_or_no_columns() {
     for (nrows, ncols) in [(0, 0), (3, 0), (0, 3)] {
         let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_no_addr");
-        app.workbook = Some(Box::new(shaped_workbook(nrows, ncols, false, false)));
+        show_sheet(&mut app, shaped_workbook(nrows, ncols, false, false));
         let title = title_row(&drawn_screen(&mut app));
         assert!(
             title.contains(&format!("S (1/1)  {nrows}×{ncols}")),
@@ -24919,18 +22647,31 @@ fn sheet_title_names_no_cell_when_the_sheet_has_no_rows_or_no_columns() {
 }
 
 /// "Loading" is exactly: a spreadsheet is being previewed, nothing is loaded and no error is
-/// known **and a worker is still out** (`media_loading`). Without the worker it is the empty
-/// workbook, not a spinner that would never end.
+/// known **and a worker is still out** (`media_loading`). Without the worker it is the reason the
+/// workbook gave (here: every sheet is hidden), not a spinner that would never end.
 #[test]
 fn sheet_loading_needs_a_worker_that_is_still_out() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_wait_state");
+    // A workbook whose sheets are all hidden: the real plugin's reason for it.
+    let hidden = app
+        .tab
+        .preview_path
+        .clone()
+        .unwrap()
+        .with_file_name("h.xlsx");
+    konoma_test_support::build_xlsx(&hidden, &[("Secret", "hidden", "", "")]);
+    let reason = spreadsheet_failure(&hidden);
+
     app.media_loading = true;
     assert!(app.is_sheet_loading());
     let s = drawn_screen(&mut app);
     assert!(s.contains("loading"), "{s}");
     assert!(!s.contains("nothing to show"), "{s}");
 
-    app.media_loading = false;
+    // The worker answered with the reason: nothing is loading, and the reason is on screen.
+    show_sheet_loading(&mut app);
+    let r = sheet_failure_result(&app, reason);
+    app.apply_media(r);
     assert!(!app.is_sheet_loading(), "no worker out: not loading");
     let s = drawn_screen(&mut app);
     assert!(s.contains("nothing to show"), "{s}");
@@ -24938,28 +22679,18 @@ fn sheet_loading_needs_a_worker_that_is_still_out() {
 
     // A loaded workbook or a known error is never "loading", worker or not.
     app.media_loading = true;
-    app.workbook = Some(Box::new(shaped_workbook(1, 1, false, false)));
-    assert!(!app.is_sheet_loading());
-    app.workbook = None;
-    app.workbook_error = Some(OfficeError::Encrypted);
-    assert!(!app.is_sheet_loading());
+    assert!(!app.is_sheet_loading(), "a known error is not loading");
+    show_sheet(&mut app, shaped_workbook(1, 1, false, false));
+    assert!(!app.is_sheet_loading(), "a loaded workbook is not loading");
     // And never for a preview that is not a spreadsheet.
-    app.workbook_error = None;
+    app.drop_plugin();
     app.tab.preview_kind = Some(PreviewKind::CanNotPreview { ext: "x".into() });
     assert!(!app.is_sheet_loading());
 }
 
-fn workbook_result(app: &App, payload: MediaPayload) -> MediaResult {
-    MediaResult {
-        gen: app.media_gen,
-        wb_worker: false,
-        payload: Some(payload),
-    }
-}
-
 /// A worker's workbook that arrives for the *current* job but while the preview is something else
 /// (a CSV here — the job's generation is still current because a non-media preview starts no job
-/// of its own) is dropped: the kind check is what keeps a late workbook out of another preview.
+/// of its own) is dropped: the plugin check is what keeps a late workbook out of another preview.
 /// The same goes for a failure, which must not leave an error behind either.
 #[test]
 fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
@@ -24974,22 +22705,23 @@ fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
     app.load_table();
     assert!(app.is_table_preview() && !app.is_sheet_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::Workbook(Box::new(shaped_workbook(2, 2, false, false))),
-    );
+    let r = sheet_result(&app, shaped_workbook(2, 2, false, false));
     app.apply_media(r);
     assert!(
-        app.workbook.is_none(),
+        app.loaded_sheet_count().is_none(),
         "the CSV preview did not take the workbook"
     );
     assert!(!app.is_sheet_preview());
     assert!(app.table_data().is_some());
     assert!(app.workbook_matches_preview());
 
-    let r = workbook_result(&app, MediaPayload::WorkbookFailed(OfficeError::Encrypted));
+    let r = sheet_failure_result(
+        &app,
+        konoma_plugin::Failure::unsupported(konoma_plugin::Tr::new("encrypted")),
+    );
     app.apply_media(r);
     assert!(app.sheet_error().is_none(), "nor did it take the failure");
+    assert!(app.plugin_failure().is_none());
     assert!(app.workbook_matches_preview());
     assert!(app.is_table_preview(), "the CSV is still shown");
 }
@@ -24999,26 +22731,45 @@ fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
 #[test]
 fn a_failed_workbook_result_replaces_the_previous_workbook_and_a_good_one_the_error() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_result_swap");
-    app.workbook = Some(Box::new(shaped_workbook(2, 2, false, false)));
+    show_sheet(&mut app, shaped_workbook(2, 2, false, false));
     assert!(app.is_sheet_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::WorkbookFailed(OfficeError::Corrupt("x".into())),
-    );
+    let broken = konoma_plugin::Failure::corrupt(konoma_plugin::Tr::new("damaged"));
+    let r = sheet_failure_result(&app, broken.clone());
     app.apply_media(r);
-    assert!(app.workbook.is_none(), "the old workbook is gone");
-    assert_eq!(app.sheet_error(), Some(&OfficeError::Corrupt("x".into())));
+    assert_eq!(
+        app.loaded_sheet_count(),
+        Some(0),
+        "the old workbook is gone"
+    );
+    assert_eq!(app.sheet_error(), Some(&broken));
     assert!(!app.is_sheet_preview() && !app.is_table_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::Workbook(Box::new(shaped_workbook(3, 1, false, false))),
-    );
+    let r = sheet_result(&app, shaped_workbook(3, 1, false, false));
     app.apply_media(r);
     assert!(app.sheet_error().is_none(), "a good load clears the error");
     assert!(app.is_sheet_preview());
     assert_eq!(app.grid().map(|g| g.nrows()), Some(3));
+}
+
+/// A workbook's sheets are pages (the page keys turn them), but their position is already in the
+/// table's frame title (`S (1/2)`): the status bar does not add the PDF-style `1/2` chip to it.
+#[test]
+fn a_sheets_position_is_in_the_title_and_not_a_status_chip() {
+    let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_no_chip");
+    let mut wb = shaped_workbook(2, 2, false, false);
+    let mut second = Sheet::default();
+    second.name = "T".into();
+    wb.sheets.push(second);
+    show_sheet(&mut app, wb);
+    app.tab.page_count = Some(2);
+    assert!(app.can_turn_pages() && app.is_table_preview());
+    let chip: String = crate::ui::preview::context(&app)
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect();
+    assert!(!chip.contains("1/2"), "{chip:?}");
+    assert!(title_row(&drawn_screen(&mut app)).contains("S (1/2)"));
 }
 
 /// A result of an older job (a newer one has been started since) is ignored altogether.
@@ -25026,15 +22777,10 @@ fn a_failed_workbook_result_replaces_the_previous_workbook_and_a_good_one_the_er
 fn a_workbook_result_of_a_superseded_job_is_ignored() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_result_stale");
     app.media_loading = true;
-    let stale = MediaResult {
-        gen: app.media_gen.wrapping_add(1),
-        wb_worker: false,
-        payload: Some(MediaPayload::Workbook(Box::new(shaped_workbook(
-            1, 1, false, false,
-        )))),
-    };
+    let mut stale = sheet_result(&app, shaped_workbook(1, 1, false, false));
+    stale.gen = app.media_gen.wrapping_add(1);
     assert!(!app.apply_media(stale));
-    assert!(app.workbook.is_none());
+    assert!(app.loaded_sheet_count().is_none());
     assert!(app.is_sheet_loading(), "still waiting for the current job");
 }
 
@@ -25055,10 +22801,10 @@ fn md_cache_evicts_the_least_recently_used_pixels_first() {
     let dir = unique_tmp("konoma_md_lru_order");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_frame = 10;
+    app.md_images.frame = 10;
     // 4 pictures of 256 KB (256 x 256 x 4) with ascending recency.
     for i in 0..4u64 {
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             PathBuf::from(format!("/x/img{i}.png")),
             entry_with_pixels(256, 256, i + 1),
         );
@@ -25071,7 +22817,7 @@ fn md_cache_evicts_the_least_recently_used_pixels_first() {
         "trimmed to the budget, no further"
     );
     for (i, gone) in [(0, true), (1, true), (2, false), (3, false)] {
-        let e = &app.md_image_cache[&PathBuf::from(format!("/x/img{i}.png"))];
+        let e = &app.md_images.cache[&PathBuf::from(format!("/x/img{i}.png"))];
         assert_eq!(e.decoded.is_none(), gone, "img{i}");
         assert_eq!(e.evicted, gone, "img{i}");
         assert_eq!(
@@ -25091,9 +22837,9 @@ fn md_cache_never_evicts_what_the_current_frame_draws() {
     let dir = unique_tmp("konoma_md_lru_visible");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_frame = 7;
+    app.md_images.frame = 7;
     for i in 0..3 {
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             PathBuf::from(format!("/x/v{i}.png")),
             entry_with_pixels(256, 256, 7),
         );
@@ -25113,25 +22859,26 @@ fn md_cache_only_evicts_what_it_can_rebuild() {
     let dir = unique_tmp("konoma_md_lru_rebuildable");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     let diff_key = PathBuf::from(crate::preview::media_diff::media_diff_url(
         crate::preview::media_diff::MediaDiffSide::Old,
         1,
         0,
         None,
     ));
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(diff_key.clone(), entry_with_pixels(256, 256, 1));
     let math_key = PathBuf::from(crate::preview::markdown::math_url("x^2", false));
     let mut math = entry_with_pixels(256, 256, 1);
     math.svg = Some(Arc::new(b"<svg/>".to_vec()));
-    app.md_image_cache.insert(math_key.clone(), math);
+    app.md_images.cache.insert(math_key.clone(), math);
     app.evict_md_images_to(0);
     assert!(
-        app.md_image_cache[&diff_key].decoded.is_some(),
+        app.md_images.cache[&diff_key].decoded.is_some(),
         "a media-diff picture stays"
     );
-    let m = &app.md_image_cache[&math_key];
+    let m = &app.md_images.cache[&math_key];
     assert!(m.decoded.is_none() && m.evicted, "a formula's raster goes");
     assert!(
         m.svg.is_some(),
@@ -25151,16 +22898,16 @@ fn md_cache_rebuilds_an_evicted_image_from_its_file() {
     app.attach_md_image_loader(tx);
     let mut entry = entry_with_pixels(40, 30, 1);
     entry.layout_px = Some((40, 30));
-    app.md_image_cache.insert(png.clone(), entry);
-    app.md_frame = 3;
+    app.md_images.cache.insert(png.clone(), entry);
+    app.md_images.frame = 3;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&png].evicted);
+    assert!(app.md_images.cache[&png].evicted);
     assert!(!app.ensure_md_pixels(&png), "the pixels are being rebuilt");
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(20))
         .expect("decode result");
     assert!(app.apply_md_image(res));
-    let e = &app.md_image_cache[&png];
+    let e = &app.md_images.cache[&png];
     assert_eq!(
         e.decoded.as_ref().map(|i| (i.width(), i.height())),
         Some((40, 30))
@@ -25183,10 +22930,10 @@ fn md_cache_rebuilds_an_evicted_formula_from_its_svg() {
     let mut entry = entry_with_pixels(8, 8, 1);
     entry.layout_px = Some((20, 10));
     entry.svg = Some(Arc::new(svg.to_vec()));
-    app.md_image_cache.insert(key.clone(), entry);
-    app.md_frame = 3;
+    app.md_images.cache.insert(key.clone(), entry);
+    app.md_images.frame = 3;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&key].evicted);
+    assert!(app.md_images.cache[&key].evicted);
     assert!(!app.ensure_md_pixels(&key), "the pixels are being rebuilt");
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(20))
@@ -25196,7 +22943,7 @@ fn md_cache_rebuilds_an_evicted_formula_from_its_svg() {
         "applied as a re-raster: layout and decoration cache untouched"
     );
     assert!(app.apply_md_image(res));
-    let e = &app.md_image_cache[&key];
+    let e = &app.md_images.cache[&key];
     assert!(e.decoded.is_some() && !e.evicted);
     assert_eq!(
         e.layout_px,
@@ -25212,12 +22959,12 @@ fn md_cache_holds_a_formula_heavy_document_to_the_budget() {
     let dir = unique_tmp("konoma_md_lru_formulas");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_frame = 2;
+    app.md_images.frame = 2;
     for i in 0..500 {
         let key = PathBuf::from(crate::preview::markdown::math_url(&format!("x_{i}"), false));
         let mut e = entry_with_pixels(1024, 440, 0);
         e.svg = Some(Arc::new(Vec::new()));
-        app.md_image_cache.insert(key, e);
+        app.md_images.cache.insert(key, e);
     }
     let before = app.md_image_cache_pixel_bytes();
     assert!(
@@ -25227,7 +22974,7 @@ fn md_cache_holds_a_formula_heavy_document_to_the_budget() {
     app.evict_md_images_over_budget();
     assert!(app.md_image_cache_pixel_bytes() <= super::MD_IMAGE_CACHE_BYTES);
     assert_eq!(
-        app.md_image_cache.len(),
+        app.md_images.cache.len(),
         500,
         "entries (and so the layout) all remain"
     );
@@ -25279,7 +23026,8 @@ fn an_inline_svg_that_the_drawing_process_stopped_says_why() {
         // What the worker reports when the supervisor stopped the drawing.
         let key = app.md_images()[0].url.clone();
         let path = resolve_md_image_path(&key, Some(&dir)).expect("the cached picture's path");
-        app.md_image_cache
+        app.md_images
+            .cache
             .insert(path.clone(), MdImgEntry::default());
         assert!(app.apply_md_image(MdImageResult {
             path: path.clone(),
@@ -25287,7 +23035,6 @@ fn an_inline_svg_that_the_drawing_process_stopped_says_why() {
                 .code()
                 .to_string()),
             svg: None,
-            svg_trust: Default::default(),
             reraster: false,
             frames: None,
             request: app.md_request_for_test(&path),
@@ -25369,20 +23116,19 @@ fn a_cancelled_inline_svg_drawing_leaves_no_failed_entry() {
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("a.svg");
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.md_image_cache.insert(p.clone(), MdImgEntry::default());
+    app.md_images.cache.insert(p.clone(), MdImgEntry::default());
     let redraw = app.apply_md_image(MdImageResult {
         path: p.clone(),
         image: Err(crate::preview::image::ImageFailure::Cancelled
             .code()
             .to_string()),
         svg: None,
-        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&p),
     });
     assert!(!redraw);
-    assert!(!app.md_image_cache.contains_key(&p));
+    assert!(!app.md_images.cache.contains_key(&p));
 }
 
 /// A full-screen SVG that was refused carries its reason to the screen.
@@ -25397,7 +23143,7 @@ fn a_full_screen_svg_that_was_refused_records_why() {
     );
     let p = dir.join("deep.svg");
     std::fs::write(&p, deep).unwrap();
-    let payload = MediaJob::Svg(p.clone(), 800).run().expect("a payload");
+    let payload = svg_file_payload(&p, 800).expect("a payload");
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(matches!(
         payload,
@@ -25430,7 +23176,7 @@ fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
         .unwrap();
     let t = std::time::Instant::now();
     assert!(matches!(
-        MediaJob::Svg(big, 800).run(),
+        svg_file_payload(&big, 800),
         Some(MediaPayload::ImageFailed(
             crate::preview::image::ImageFailure::Svg(crate::preview::svg_guard::SvgFail::TooLarge)
         ))
@@ -25442,7 +23188,7 @@ fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
         // SAFETY: a valid NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         assert!(matches!(
-            MediaJob::Svg(fifo, 800).run(),
+            svg_file_payload(&fifo, 800),
             Some(MediaPayload::ImageFailed(
                 crate::preview::image::ImageFailure::Svg(
                     crate::preview::svg_guard::SvgFail::Invalid
@@ -25451,4 +23197,54 @@ fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
         ));
     }
     assert!(t.elapsed() < std::time::Duration::from_secs(2));
+}
+#[cfg(feature = "git")]
+impl super::App {}
+
+/// The project canvas is a paused surface too: a follow file-diff result that lands while the
+/// `p` canvas is shown must not replace it (same contract as the paused legacy hub).
+#[cfg(feature = "git")]
+#[test]
+fn jj_follow_result_does_not_interrupt_the_project_canvas() {
+    if !crate::vcs::jj::available() {
+        eprintln!("skipping: jj unavailable");
+        return;
+    }
+    let Some(dir) = jj_scratch_seeded("konoma_follow_project_canvas") else {
+        return;
+    };
+    std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+    assert!(crate::test_support::run_jj(&dir, &["status"]));
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root, Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_follow_loader(tx);
+    app.toggle_follow();
+    let receive = |rx: &std::sync::mpsc::Receiver<_>| {
+        rx.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("follow worker answers")
+    };
+    assert!(app.apply_follow(receive(&rx)));
+    let path = app.tab.root.join("a.txt");
+    std::fs::write(&path, b"after\n").unwrap();
+    assert!(app.follow_note_change(&path));
+    app.follow_jump(&path);
+    let held = receive(&rx);
+    app.tab.projects.wait_for_result();
+    app.poll_projects();
+    assert!(app.enter_project());
+    for _ in 0..32 {
+        app.poll_projects();
+        if !app.project_jobs_pending() {
+            break;
+        }
+        app.wait_project_job();
+    }
+    assert!(app.project_active(), "the `p` project canvas must be open");
+    assert!(app.apply_follow(held));
+    assert!(
+        app.project_active(),
+        "a late follow result must not replace the project canvas with a diff"
+    );
+    assert!(!app.is_git_diff_preview());
 }

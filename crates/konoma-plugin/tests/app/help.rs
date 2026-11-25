@@ -1,0 +1,1037 @@
+//! The footer and the `?` help of the app come from the builders shared with the host
+//! (`konoma_host_core::help`): the labels follow the real bindings and the language follows
+//! `ui.lang`. In memory only: the config is a string, no file and no HOME is read.
+
+use std::sync::Arc;
+
+use konoma_host_core::lang::Lang;
+use konoma_host_core::shared::SharedConfig;
+use konoma_plugin::app::{open_file, run_with, AppCx, AppEvent, AppKeys};
+use konoma_plugin::prelude::*;
+use konoma_plugin::TermCaps;
+use konoma_test_support::unique_tmp;
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
+
+use crate::plugin::TestPlugin;
+
+fn keys(config: &str, lang: Lang) -> AppKeys {
+    let c = SharedConfig::parse(config).expect("the test config parses");
+    AppKeys::new(&c.keys, &c.ui.keys).with_lang(lang)
+}
+
+fn key(c: char) -> AppEvent {
+    AppEvent::Key(Key::char(c))
+}
+
+/// Run the app over a 40-line text on a `w` x `h` screen; the rows of the last frame and how
+/// many events were left unread.
+fn run(k: &AppKeys, size: (u16, u16), events: Vec<AppEvent>) -> (Vec<String>, usize) {
+    run_as(k, "a.t", size, events)
+}
+
+/// [`run`] over the file `name` (its extension picks the view: see `plugin.rs`).
+fn run_as(
+    k: &AppKeys,
+    name: &str,
+    size: (u16, u16),
+    events: Vec<AppEvent>,
+) -> (Vec<String>, usize) {
+    let (rows, left, _) = run_marked(k, name, size, events);
+    (rows, left)
+}
+
+/// [`run_as`] plus where the caret and its line are drawn (the cells that are reversed or carry
+/// the line highlight), as text: a key that only moves the caret changes this and no row.
+fn run_marked(
+    k: &AppKeys,
+    name: &str,
+    (w, h): (u16, u16),
+    events: Vec<AppEvent>,
+) -> (Vec<String>, usize, String) {
+    let dir = unique_tmp("app_help");
+    std::fs::create_dir_all(dir.as_path()).unwrap();
+    let p = dir.as_path().join(name);
+    let body: String = (0..40).map(|i| format!("line {i:02}\n")).collect();
+    std::fs::write(&p, body).unwrap();
+    let mut opened =
+        open_file(vec![Arc::new(TestPlugin::all())], &p, "en", TermCaps::new()).expect("opens");
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let cx = AppCx {
+        lang: "en".into(),
+        term: TermCaps::new(),
+        title: "title".into(),
+        ..AppCx::default()
+    };
+    let mut it = events.into_iter();
+    run_with(&mut term, &mut *opened.session, &mut it, &cx, k).expect("runs");
+    let buf = term.backend().buffer();
+    // A wide character covers the cell after it; that cell keeps what an earlier frame left in
+    // it on the test backend, so it is skipped.
+    let rows = (0..buf.area.height)
+        .map(|y| {
+            let mut row = String::new();
+            let mut skip = 0;
+            for x in 0..buf.area.width {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                let s = buf[(x, y)].symbol();
+                skip = unicode_width::UnicodeWidthStr::width(s).saturating_sub(1);
+                row.push_str(s);
+            }
+            row.trim_end().to_string()
+        })
+        .collect();
+    let mut marks = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let c = &buf[(x, y)];
+            if c.modifier.contains(ratatui::style::Modifier::REVERSED) {
+                marks.push_str(&format!("R({x},{y})"));
+            } else if c.bg == ratatui::style::Color::Rgb(55, 60, 74) && x == 1 {
+                marks.push_str(&format!("L({y})"));
+            }
+        }
+    }
+    (rows, it.count(), marks)
+}
+
+/// Whether the help panel is on the screen.
+fn help_open(rows: &[String]) -> bool {
+    rows.iter()
+        .any(|r| r.contains("┌ Help") || r.contains("┌ ヘルプ"))
+}
+
+/// The help panel on a screen: its top border (the title on it) and the text inside, one string
+/// per row (the borders cut, the end trimmed). The panel is drawn over the text, as the host's.
+fn panel(rows: &[String]) -> (String, Vec<String>) {
+    use unicode_width::UnicodeWidthStr;
+    let top = rows
+        .iter()
+        .position(|r| r.contains("┌ Help") || r.contains("┌ ヘルプ"))
+        .unwrap_or_else(|| panic!("a help panel in {rows:#?}"));
+    let x = rows[top].find('┌').map(|b| rows[top][..b].width()).unwrap();
+    let cut = |r: &str| -> String {
+        let mut col = 0;
+        let mut out = String::new();
+        for c in r.chars() {
+            if col >= x {
+                out.push(c);
+            }
+            col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+        out
+    };
+    // The panel's own width: from the corner to the other corner.
+    let border = cut(&rows[top]);
+    let end = border.find('┐').expect("the border has a right corner") + '┐'.len_utf8();
+    let border = border[..end].to_string();
+    let w = border.width();
+    let take = |r: &str| -> String {
+        let mut col = 0;
+        let mut out = String::new();
+        for c in r.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if col + cw > w {
+                break;
+            }
+            out.push(c);
+            col += cw;
+        }
+        out
+    };
+    let mut body = Vec::new();
+    for r in &rows[top + 1..] {
+        let r = take(&cut(r));
+        if r.starts_with('└') {
+            break;
+        }
+        let inner = r.strip_prefix('│').unwrap_or(&r);
+        let inner = inner.strip_suffix('│').unwrap_or(inner);
+        body.push(inner.trim_end().to_string());
+    }
+    (border, body)
+}
+
+#[test]
+fn the_footer_and_the_help_in_english() {
+    let k = keys("", Lang::En);
+    let (r, left) = run(&k, (80, 5), vec![]);
+    assert_eq!(left, 0);
+    // The text sits in the host's frame: the position is the label on it, not "line N".
+    assert!(r[0].starts_with("┌ title "), "{}", r[0]);
+    assert!(r[1].starts_with("│line 00"), "{}", r[1]);
+    assert!(r[2].starts_with("│line 01"), "{}", r[2]);
+    assert_eq!(
+        r[4],
+        "j/k:scroll  q:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …"
+    );
+    let (r, left) = run(&k, (70, 38), vec![key('?')]);
+    assert_eq!(left, 0);
+    let body = [
+        "Preview: text / Markdown",
+        "  g / G           top / bottom",
+        "  h / l / \u{2190} \u{2192}     horizontal scroll",
+        "  0 / $           line start / line end (horizontal)",
+        "  Ctrl-f / Ctrl-b  ·  PageDown / PageUp  page",
+        "  Ctrl-d / Ctrl-u half page",
+        "  q / Esc         quit",
+        "",
+        "Movement",
+        "  j / k / ↑ ↓     scroll",
+        "",
+        "Actions",
+        "  Space c         back",
+        "  Space ?         help",
+        "  Space d         path",
+        "  Space w         wrap",
+        "",
+        "Sort & display",
+        "  , p             path",
+        "  , w             wrap",
+        "",
+        "Copy path",
+        "  y n             name",
+        "  y r             relative",
+        "  y f             full",
+        "  y p             parent",
+        "  y @             @ref",
+        "",
+        "Global",
+        "  ?               toggle this help",
+        "  Q               quit",
+    ];
+    let (border, rows) = panel(&r);
+    assert!(
+        border.starts_with("┌ Help  (?/Esc to close, j/k to scroll) "),
+        "{border}"
+    );
+    assert_eq!(rows, body);
+    // The help is a panel over the text (the host's), not a screen of its own: the text shows
+    // around it, and the footer is the help's: the host's `Help` context closes with `q` too.
+    assert!(r[0].starts_with("┌ title "), "{}", r[0]);
+    assert!(r[1].starts_with("│line 00"), "{}", r[1]);
+    assert_eq!(r[37], "j/k:scroll  g/G:top/bottom  ?/q/Esc:close");
+}
+
+#[test]
+fn the_footer_and_the_help_in_japanese() {
+    let k = keys("", Lang::Jp);
+    let (r, _) = run(&k, (70, 5), vec![]);
+    assert!(r[1].starts_with("│line 00"), "{}", r[1]);
+    assert_eq!(
+        r[4],
+        "j/k:スクロール  q:終了  ?:ヘルプ  g/G:先頭/末尾  h/l:横移動 …"
+    );
+    let (r, _) = run(&k, (70, 36), vec![key('?')]);
+    let body = [
+        "プレビュー: テキスト/Markdown",
+        "  g / G           先頭 / 末尾",
+        "  h / l / \u{2190} \u{2192}     横スクロール(非折返し時)",
+        "  0 / $           行頭 / 行末へ(横)",
+        "  Ctrl-f / Ctrl-b  ·  PageDown / PageUp  ページ",
+        "  Ctrl-d / Ctrl-u 半ページ",
+        "  q / Esc         終了",
+        "",
+        "移動 (Movement)",
+        "  j / k / ↑ ↓     スクロール",
+        "",
+        "操作",
+        "  Space c         戻る",
+        "  Space ?         ヘルプ",
+        "  Space d         パス",
+        "  Space w         折返し",
+        "",
+        "並べ替えと表示",
+        "  , p             パス",
+        "  , w             折返し",
+        "",
+        "パスをコピー",
+        "  y n             名前",
+        "  y r             相対",
+        "  y f             フル",
+        "  y p             親",
+        "  y @             @参照",
+        "",
+        "共通 (Global)",
+        "  ?               このヘルプの開閉",
+        "  Q               終了",
+    ];
+    let (border, rows) = panel(&r);
+    assert!(
+        border.starts_with("┌ ヘルプ  (?/Esc で閉じる, j/k スクロール) "),
+        "{border}"
+    );
+    assert_eq!(rows, body);
+}
+
+#[test]
+fn the_help_closes_with_question_esc_and_q_and_scrolls() {
+    let k = keys("", Lang::En);
+    for close in [key('?'), key('q'), AppEvent::Key(Key::new(KeyCode::Esc))] {
+        // Closed: the text is back and the loop is still running (the next `q` leaves).
+        let (r, left) = run(
+            &k,
+            (70, 6),
+            // Three `j` take the caret past the 3 rows of the window: the text scrolls.
+            vec![
+                key('?'),
+                close.clone(),
+                key('j'),
+                key('j'),
+                key('j'),
+                key('q'),
+                key('x'),
+            ],
+        );
+        assert_eq!(
+            left, 1,
+            "{close:?}: the last `q` ended the loop, not the close"
+        );
+        assert!(r[1].starts_with("│line 01"), "{close:?}: {r:?}");
+        assert!(r[5].contains("q:quit"), "{close:?}: {r:?}");
+        assert!(!r.iter().any(|l| l.contains("┌ Help")), "{close:?}: {r:?}");
+    }
+    // `j` scrolls the help (the first row moves off), not the text.
+    let (r, _) = run(&k, (70, 28), vec![key('?'), key('j')]);
+    // (a screen too short for the whole help: the panel is capped and scrolls)
+    let (_, rows) = panel(&run(&k, (70, 8), vec![key('?')]).0);
+    let (_, scrolled) = panel(&run(&k, (70, 8), vec![key('?'), key('j')]).0);
+    assert_eq!(scrolled[0], rows[1], "{rows:?} {scrolled:?}");
+    assert!(!r.is_empty());
+    // Esc out of the help ends the app (the help row says `q / Esc` leaves).
+    let (_, left) = run(
+        &k,
+        (70, 6),
+        vec![AppEvent::Key(Key::new(KeyCode::Esc)), key('x')],
+    );
+    assert_eq!(left, 1);
+    // Ctrl-C leaves from the help.
+    let (_, left) = run(
+        &k,
+        (70, 6),
+        vec![key('?'), AppEvent::Key(Key::ctrl('c')), key('x')],
+    );
+    assert_eq!(left, 1);
+}
+
+#[test]
+fn unbinding_q_changes_the_footer_and_the_help() {
+    // `q` gone: `Q` is what leaves, and the footer says so.
+    let k = keys("[keys.text]\nq = \"noop\"\n", Lang::En);
+    let (r, _) = run(&k, (80, 3), vec![]);
+    assert_eq!(
+        r[2],
+        "j/k:scroll  Q:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …"
+    );
+    // Both gone: only Ctrl-C quits, and the footer says that rather than `q`.
+    let k = keys(
+        "[keys.text]\nq = \"noop\"\n[keys.global]\nQ = \"noop\"\n",
+        Lang::En,
+    );
+    let (r, _) = run(&k, (80, 3), vec![]);
+    assert_eq!(
+        r[2],
+        "j/k:scroll  C-c:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …"
+    );
+    let (r, _) = run(&k, (70, 28), vec![key('?')]);
+    assert!(
+        !r.iter()
+            .any(|l| l.contains("quit") && !l.contains("Esc") && !l.contains(":quit")),
+        "no row claims a key quits that does not: {r:?}"
+    );
+    // The key rebound to scroll is the one the footer names; `?` rebound is named too.
+    let k = keys(
+        "[keys.text]\nx = \"toggle_help\"\n[keys.global]\n\"?\" = \"noop\"\n",
+        Lang::En,
+    );
+    let (r, _) = run(&k, (70, 3), vec![]);
+    assert!(r[2].contains(" x:help"), "{r:?}");
+    assert!(!r[2].contains("?"), "{r:?}");
+}
+
+#[test]
+fn the_less_scheme_names_its_own_keys() {
+    let k = keys("[ui]\nkeys = \"less\"\n", Lang::En);
+    let (r, _) = run(&k, (80, 3), vec![]);
+    assert_eq!(
+        r[2],
+        "j/k:scroll  q:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …"
+    );
+    let (r, _) = run(&k, (80, 40), vec![key('?')]);
+    let body = [
+        "Preview: text / Markdown",
+        "  g / G           top / bottom",
+        "  h / l / \u{2190} \u{2192}     horizontal scroll",
+        "  0 / $           line start / line end (horizontal)",
+        "  f / b  \u{b7}  PageDown / PageUp  page",
+        "  d / u           half page",
+        "  q / Esc         quit",
+        "",
+        "Movement",
+        "  j / k / \u{2191} \u{2193}     scroll",
+        "",
+        "Actions",
+        "  Space c         back",
+        "  Space ?         help",
+        "  Space d         path",
+        "  Space w         wrap",
+        "",
+        "Sort & display",
+        "  , p             path",
+        "  , w             wrap",
+        "",
+        "Copy path",
+        "  y n             name",
+        "  y r             relative",
+        "  y f             full",
+        "  y p             parent",
+        "  y @             @ref",
+        "",
+        "Global",
+        "  ?               toggle this help",
+        "  Q               quit",
+    ];
+    let (border, rows) = panel(&r);
+    assert!(
+        border.starts_with("┌ Help  (?/Esc to close, j/k to scroll) "),
+        "{border}"
+    );
+    assert_eq!(rows, body);
+    // Vim's page keys are not the less scheme's: `Ctrl-f` names nothing here.
+    assert!(!r.join("\n").contains("Ctrl-f"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The title of the help is made from the bindings.
+// ---------------------------------------------------------------------------------------------
+
+/// The last row of the screen with the help open (its title).
+fn title_of(config: &str, lang: Lang) -> String {
+    // Opened with `x` when the config rebinds it (the default `?` otherwise).
+    let opener = if config.contains("x = \"toggle_help\"") {
+        'x'
+    } else {
+        '?'
+    };
+    let (r, _) = run(&keys(config, lang), (70, 20), vec![key(opener)]);
+    let (border, _) = panel(&r);
+    // The title between the corner and the run of dashes that ends the border.
+    border
+        .trim_start_matches('┌')
+        .trim_end_matches(['─', '┐'])
+        .trim_end()
+        .to_string()
+}
+
+#[test]
+fn the_help_title_names_the_keys_that_close_and_scroll_it() {
+    // Rebound: `x` toggles the help and `?` does not, so the title names `x`.
+    let c = "[keys.global]\nx = \"toggle_help\"\n\"?\" = \"noop\"\n";
+    assert_eq!(
+        title_of(c, Lang::En),
+        " Help  (x/Esc to close, j/k to scroll)"
+    );
+    // ... and `x` really closes it, while `?` does nothing (it neither opens nor closes).
+    let k = keys(c, Lang::En);
+    let (r, _) = run(&k, (70, 6), vec![key('x'), key('?')]);
+    assert!(help_open(&r), "`?` did not close the help: {r:?}");
+    let (r, _) = run(&k, (70, 6), vec![key('x'), key('x')]);
+    assert!(r[5].contains("q:quit"), "`x` closed the help: {r:?}");
+    let (r, _) = run(&k, (70, 6), vec![key('?')]);
+    assert!(r[5].contains("q:quit"), "`?` did not open it: {r:?}");
+    // Both keys close it.
+    let c = "[keys.global]\nx = \"toggle_help\"\n";
+    assert_eq!(
+        title_of(c, Lang::En),
+        " Help  (?/x/Esc to close, j/k to scroll)"
+    );
+    // Unbound `j`: only `k` scrolls; both unbound: the clause is gone.
+    assert_eq!(
+        title_of("[keys.help]\nj = \"noop\"\n", Lang::En),
+        " Help  (?/Esc to close, k to scroll)"
+    );
+    assert_eq!(
+        title_of("[keys.help]\nj = \"noop\"\nk = \"noop\"\n", Lang::En),
+        " Help  (?/Esc to close)"
+    );
+    // A key rebound to move down is named.
+    assert_eq!(
+        title_of("[keys.help]\nH = \"navigate:down\"\n", Lang::En),
+        " Help  (?/Esc to close, H/k/j to scroll)"
+    );
+    // Japanese, with the same keys.
+    assert_eq!(
+        title_of("[keys.help]\nj = \"noop\"\nk = \"noop\"\n", Lang::Jp),
+        " ヘルプ  (?/Esc で閉じる)"
+    );
+    assert_eq!(
+        title_of(
+            "[keys.global]\nx = \"toggle_help\"\n\"?\" = \"noop\"\n",
+            Lang::Jp
+        ),
+        " ヘルプ  (x/Esc で閉じる, j/k スクロール)"
+    );
+}
+
+#[test]
+fn the_help_title_follows_the_global_table_and_the_scheme_too() {
+    // A global rebinding of the help key reaches the text context.
+    assert_eq!(
+        title_of("[keys.global]\nw = \"toggle_help\"\n", Lang::En),
+        " Help  (?/w/Esc to close, j/k to scroll)"
+    );
+    // The help is its own context: the text table's `j` does not reach it (the host's `Help`
+    // context resolves its own table, then the basic one, then `global`).
+    assert_eq!(
+        title_of("[keys.text]\nj = \"noop\"\n", Lang::En),
+        " Help  (?/Esc to close, j/k to scroll)"
+    );
+    // The title is the one `AppKeys` reports.
+    let k = keys("[keys.help]\nj = \"noop\"\n", Lang::En);
+    assert_eq!(k.help_title(), " Help  (?/Esc to close, k to scroll) ");
+}
+
+// ---------------------------------------------------------------------------------------------
+// `Q` with the help open: the host's `Q` quits (its confirmation aside), so does the app's.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn q_with_the_help_open_quits_the_app_like_the_host() {
+    let k = keys("", Lang::En);
+    let (_, left) = run(&k, (70, 6), vec![key('?'), key('Q'), key('x')]);
+    assert_eq!(left, 1, "`Q` ended the loop from the help");
+    // `q` closes the help (the host's `Help` table), it does not quit.
+    let k = keys("", Lang::En);
+    let (r, left) = run(&k, (70, 6), vec![key('?'), key('q'), key('x')]);
+    assert_eq!(left, 0, "`q` quit from the help");
+    assert!(!help_open(&r), "`q` closed the help: {r:?}");
+    // The text table's `q` is not the help's: unbinding it there changes nothing here.
+    let kt = keys("[keys.text]\nq = \"noop\"\n", Lang::En);
+    let (r, left) = run(&kt, (70, 6), vec![key('?'), key('q'), key('x')]);
+    assert_eq!(left, 0);
+    assert!(!help_open(&r), "{r:?}");
+    // With the help's `q` unbound `Q` still quits from the help.
+    let k = keys("[keys.help]\nq = \"noop\"\n", Lang::En);
+    let (_, left) = run(&k, (70, 6), vec![key('?'), key('Q'), key('x')]);
+    assert_eq!(left, 1);
+    // `q` unbound there: it does nothing in the help (the help stays), `Esc` still closes it.
+    let (r, left) = run(&k, (70, 6), vec![key('?'), key('q'), key('x')]);
+    assert_eq!(left, 0);
+    assert!(help_open(&r), "{r:?}");
+    let (r, left) = run(
+        &k,
+        (70, 6),
+        vec![key('?'), AppEvent::Key(Key::new(KeyCode::Esc)), key('x')],
+    );
+    assert_eq!(left, 0, "x is read after the close");
+    assert!(!help_open(&r), "Esc closed the help: {r:?}");
+    // `Q` unbound as well: it does nothing in the help.
+    let k = keys("[keys.global]\nQ = \"noop\"\n", Lang::En);
+    let (r, left) = run(&k, (70, 6), vec![key('?'), key('Q')]);
+    assert_eq!(left, 0);
+    assert!(help_open(&r), "{r:?}");
+    // Ctrl-C quits from the help whatever is bound.
+    let (_, left) = run(
+        &k,
+        (70, 6),
+        vec![key('?'), AppEvent::Key(Key::ctrl('c')), key('x')],
+    );
+    assert_eq!(left, 1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Widths are cells, not characters.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_full_width_key_aligns_the_help_by_cells() {
+    // `あ` is two cells wide; the config accepts any one-character key.
+    let k = keys("[keys.text]\n\"あ\" = \"toggle_help\"\n", Lang::En);
+    let (r, _) = run(&k, (70, 36), vec![key('?')]);
+    let w = |s: &str| unicode_width::UnicodeWidthStr::width(s);
+    let (_, inner) = panel(&r);
+    // The keys that fit the 16-cell key column (a longer one pushes its description right).
+    let rows: Vec<&String> = inner
+        .iter()
+        .filter(|l| l.starts_with("  ") && !l.contains('\u{b7}'))
+        .collect();
+    assert!(rows.iter().any(|l| l.contains("あ")), "{r:?}");
+    // Every description starts in the same cell column.
+    // (the longest first: `half page` ends in `page`)
+    let descs = [
+        "toggle this help",
+        "top / bottom",
+        "horizontal scroll",
+        "line start / line end (horizontal)",
+        "back",
+        "help",
+        "half page",
+        "scroll",
+        "page",
+        "quit",
+        "path",
+        "wrap",
+        "name",
+        "relative",
+        "full",
+        "parent",
+        "@ref",
+    ];
+    let cols: Vec<usize> = rows
+        .iter()
+        .filter_map(|l| {
+            descs
+                .iter()
+                .find_map(|d| l.rfind(d).filter(|_| l.ends_with(d)).map(|i| w(&l[..i])))
+        })
+        .collect();
+    assert_eq!(cols.len(), rows.len(), "{rows:?}");
+    assert!(cols.windows(2).all(|p| p[0] == p[1]), "{cols:?} {rows:?}");
+    // The key is bound, so the footer's hint names it and it scrolls.
+    let k = keys("[keys.text]\n\"あ\" = \"navigate:down\"\n", Lang::En);
+    let (r, _) = run(&k, (70, 5), vec![key('あ'); 3]);
+    assert!(r[1].starts_with("│line 02"), "{r:?}");
+    assert!(r[4].contains("あ"), "{r:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// A hint is there only when its key acts in the frame on screen.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_footer_names_scrolling_only_for_a_frame_that_scrolls() {
+    let k = keys("", Lang::En);
+    // Text in each form scrolls.
+    for name in ["a.t", "a.o", "a.l"] {
+        let (r, _) = run_as(&k, name, (80, 5), vec![]);
+        assert_eq!(
+            r[4], "j/k:scroll  q:quit  ?:help  g/G:ends  h/l:hscroll  0/$:line ends  ,:view …",
+            "{name}"
+        );
+        // The window is 2 rows: three `j` take the caret past it and the text scrolls.
+        let (r, _) = run_as(&k, name, (70, 5), vec![key('j'); 3]);
+        assert!(r[1].starts_with("│line 02"), "{name}: `j` scrolled {r:?}");
+    }
+    // A canvas, a message, a view the app cannot show and a failure do not: no hint, no
+    // position, and the key does nothing (the screen is the one before).
+    for name in ["a.c", "a.big", "a.m", "a.list", "a.fail"] {
+        let (before, _) = run_as(&k, name, (70, 5), vec![]);
+        // The host names the `,` menu on every screen of a file (a message and a failure
+        // included: `,` `w` is the wrap that a later text of the page takes), so every frame
+        // names it and none names a scroll.
+        let hints = "q:quit  ?:help  ,:view  title";
+        assert_eq!(before[4], hints, "{name}: no scroll hint, no line");
+        for press in ["j", "G", "k", "g"] {
+            let ev = vec![key(press.chars().next().unwrap())];
+            let (after, left) = run_as(&k, name, (70, 5), ev);
+            assert_eq!(left, 0);
+            assert_eq!(after, before, "{name}: `{press}` changed the screen");
+        }
+        // The help still opens and scrolls (it is its own frame).
+        // (a screen too short for the whole help: the panel is capped and scrolls)
+        let (shown, _) = run_as(&k, name, (70, 8), vec![key('?')]);
+        let (scrolled, _) = run_as(&k, name, (70, 8), vec![key('?'), key('j')]);
+        assert_eq!(panel(&scrolled).1[0], panel(&shown).1[1], "{name}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Property: every key the app names, in the footer or in the help, acts.
+// ---------------------------------------------------------------------------------------------
+
+/// A key as the footer writes it, back to a key.
+pub(crate) fn parse_footer_key(s: &str) -> Key {
+    if let Some(rest) = s.strip_prefix("C-") {
+        let mut it = rest.chars();
+        let c = it.next().expect("a key after C-");
+        assert!(it.next().is_none(), "Ctrl-chord of one character: {s}");
+        return Key::ctrl(c);
+    }
+    named_or_char(s, &[("PgDn", KeyCode::PageDown), ("PgUp", KeyCode::PageUp)])
+}
+
+/// A key as the help writes it, back to a key.
+pub(crate) fn parse_help_key(s: &str) -> Key {
+    if let Some(rest) = s.strip_prefix("Ctrl-") {
+        return parse_help_key_plain(rest, true);
+    }
+    parse_help_key_plain(s, false)
+}
+
+fn parse_help_key_plain(s: &str, ctrl: bool) -> Key {
+    let k = named_or_char(
+        s,
+        &[("PageDown", KeyCode::PageDown), ("PageUp", KeyCode::PageUp)],
+    );
+    if ctrl {
+        match k.code {
+            KeyCode::Char(c) => Key::ctrl(c),
+            other => panic!("a Ctrl-chord of {other:?}"),
+        }
+    } else {
+        k
+    }
+}
+
+fn named_or_char(s: &str, extra: &[(&str, KeyCode)]) -> Key {
+    if let Some((_, c)) = extra.iter().find(|(n, _)| *n == s) {
+        return Key::new(c.clone());
+    }
+    let code = match s {
+        "Space" => KeyCode::Char(' '),
+        "Enter" | "\u{21b5}" => KeyCode::Enter,
+        "Tab" => KeyCode::Tab,
+        "\u{21e7}Tab" => KeyCode::BackTab,
+        "Esc" => KeyCode::Esc,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "\u{2191}" => KeyCode::Up,
+        "\u{2193}" => KeyCode::Down,
+        "\u{2190}" => KeyCode::Left,
+        "\u{2192}" => KeyCode::Right,
+        _ => {
+            let mut it = s.chars();
+            let c = it.next().unwrap_or_else(|| panic!("an empty key"));
+            assert!(it.next().is_none(), "unparsed key notation `{s}`");
+            KeyCode::Char(c)
+        }
+    };
+    Key::new(code)
+}
+
+/// The keys of a footer token's text (`j/k:scroll` -> `j`, `k`).
+pub(crate) fn token_keys(text: &str) -> Vec<Key> {
+    let (keys, _label) = text.rsplit_once(':').expect("a token is keys:label");
+    keys.split('/').map(parse_footer_key).collect()
+}
+
+/// The keys of a help row's key column (`j / k / \u{2191} \u{2193}`, `Ctrl-f / Ctrl-b  \u{b7}  PageDown`).
+pub(crate) fn row_keys(text: &str) -> Vec<Key> {
+    text.split_whitespace()
+        .filter(|p| *p != "/" && *p != "\u{b7}")
+        .map(parse_help_key)
+        .collect()
+}
+
+/// The configs to try: (name, config).
+fn property_configs() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("default", ""),
+        (
+            "rebind",
+            "[keys.text]\nx = \"toggle_help\"\nH = \"navigate:down\"\n",
+        ),
+        (
+            "rebind help away",
+            "[keys.text]\nx = \"toggle_help\"\n[keys.global]\n\"?\" = \"noop\"\n",
+        ),
+        ("unbind j", "[keys.text]\nj = \"noop\"\n"),
+        ("unbind j k", "[keys.text]\nj = \"noop\"\nk = \"noop\"\n"),
+        ("unbind q", "[keys.text]\nq = \"noop\"\n"),
+        (
+            "unbind q Q",
+            "[keys.text]\nq = \"noop\"\n[keys.global]\nQ = \"noop\"\n",
+        ),
+        ("global rebind", "[keys.global]\nw = \"toggle_help\"\n"),
+        ("full width", "[keys.text]\n\"あ\" = \"navigate:down\"\n"),
+        ("less", "[ui]\nkeys = \"less\"\n"),
+        (
+            "less unbind",
+            "[ui]\nkeys = \"less\"\n[keys.text]\nj = \"noop\"\nd = \"noop\"\n",
+        ),
+        (
+            "page keys rebound",
+            "[keys.text]\n\"n\" = \"navigate:page_down\"\n",
+        ),
+    ]
+}
+
+#[test]
+fn every_key_the_footer_and_the_help_name_acts() {
+    let mut checked_tokens = 0;
+    let mut checked_rows = 0;
+    for (name, cfg) in property_configs() {
+        for lang in [Lang::En, Lang::Jp] {
+            let k = keys(cfg, lang);
+            // The footer, per kind of frame.
+            for scrolls in [true, false] {
+                let hints = k.footer_hints(scrolls);
+                assert!(!hints.is_empty(), "{name}: a footer always has the way out");
+                for t in &hints {
+                    let parsed = token_keys(&t.text);
+                    assert_eq!(parsed.len(), t.keys.len(), "{name} {}: {t:?}", t.text);
+                    for key in parsed {
+                        assert!(
+                            k.acts_on(&key, false, scrolls),
+                            "{name} {lang:?} scrolls={scrolls}: the footer names {key:?} in `{}` but it does nothing",
+                            t.text
+                        );
+                        checked_tokens += 1;
+                    }
+                }
+            }
+            // The help rows name the keys of the view behind the help (or the help's own scroll keys):
+            // each acts in one of the two.
+            for sec in k.help_sections() {
+                for (keys_text, desc) in &sec.rows {
+                    for key in row_keys(keys_text) {
+                        assert!(
+                            k.acts_on(&key, true, true)
+                                || k.acts_on(&key, false, true)
+                                || k.acts_in_copy_menu(&key),
+                            "{name} {lang:?}: the help names {key:?} for `{desc}` but it does nothing"
+                        );
+                        checked_rows += 1;
+                    }
+                }
+            }
+        }
+    }
+    // Not vacuous.
+    assert!(checked_tokens > 60, "{checked_tokens}");
+    assert!(checked_rows > 150, "{checked_rows}");
+}
+
+/// Every kind of frame the test plugin can put on screen: (file, whether it scrolls).
+const FRAMES: [(&str, bool); 8] = [
+    ("a.t", true),
+    ("a.o", true),
+    ("a.l", true),
+    ("a.c", false),
+    ("a.big", false),
+    ("a.m", false),
+    ("a.list", false),
+    ("a.fail", false),
+];
+
+/// The frames that are a plugin's canvas: the loop takes the host's `Canvas` keys there.
+const CANVAS_FRAMES: [&str; 2] = ["a.c", "a.big"];
+
+/// The frames that are the file's text in the host's frame: they have the caret, so the
+/// sideways keys act whether the text wraps or not.
+const CARET_FRAMES: [&str; 3] = ["a.t", "a.o", "a.l"];
+
+/// The keys as the loop holds them over `frame`.
+fn keys_of(k: &AppKeys, frame: &str) -> AppKeys {
+    k.clone().with_caret(CARET_FRAMES.contains(&frame))
+}
+
+/// `acts_on` of the keys that belong to `frame`: the canvas's own over a canvas.
+fn frame_acts_on(k: &AppKeys, frame: &str, key: &Key, in_help: bool, scrolls: bool) -> bool {
+    if CANVAS_FRAMES.contains(&frame) {
+        k.canvas_acts_on(key, in_help)
+    } else {
+        keys_of(k, frame).acts_on(key, in_help, scrolls)
+    }
+}
+
+/// The footer hints of `frame`: the canvas's own over a canvas.
+fn frame_footer_hints(
+    k: &AppKeys,
+    frame: &str,
+    scrolls: bool,
+) -> Vec<konoma_host_core::help::CoreToken> {
+    if CANVAS_FRAMES.contains(&frame) {
+        k.canvas_footer_hints()
+    } else {
+        keys_of(k, frame).footer_hints(scrolls)
+    }
+}
+
+const REAL_SIZE: (u16, u16) = (100, 6);
+
+/// What a real run left: the rows of the last frame and whether the loop ended (`quit`: a
+/// trailing `Resize` was left unread).
+fn observe(
+    k: &AppKeys,
+    name: &str,
+    setup: &[AppEvent],
+    pressed: Option<&Key>,
+) -> (Vec<String>, bool) {
+    let mut ev: Vec<AppEvent> = setup.to_vec();
+    if let Some(p) = pressed {
+        ev.push(AppEvent::Key(p.clone()));
+    }
+    ev.push(AppEvent::Resize);
+    let (mut rows, left, marks) = run_marked(k, name, REAL_SIZE, ev);
+    assert!(left <= 1, "{left} events left");
+    // The caret is part of what the screen shows.
+    rows.push(marks);
+    (rows, left == 1)
+}
+
+/// The key that opens the help, as the footer names it (`None` when none does).
+fn help_opener(k: &AppKeys, frame: &str) -> Option<Key> {
+    let hint = frame_footer_hints(k, frame, false)
+        .into_iter()
+        .rev()
+        .find(|t| {
+            t.ops.iter().any(|o| {
+                matches!(
+                    o,
+                    konoma_host_core::help::HelpOp::Act(
+                        konoma_host_core::keymap::CoreAction::ToggleHelp
+                    )
+                )
+            })
+        })?;
+    let key = token_keys(&hint.text).into_iter().next()?;
+    // It must really be the help: it opens it on a real frame.
+    let (closed, _) = observe(k, frame, &[], None);
+    let (open, quit) = observe(k, frame, &[], Some(&key));
+    (!quit && open != closed).then_some(key)
+}
+
+/// Whether `key` really acts in the loop on `name`: the screen differs from the one without the
+/// key, or the loop ends. The screen is first moved off its edges (three `Down` presses: fixed
+/// keys, in the help or not) so a motion that acts changes it whichever way it goes.
+fn acts_in_the_loop(k: &AppKeys, name: &str, help: Option<&Key>, key: &Key) -> bool {
+    let mut setup: Vec<AppEvent> = Vec::new();
+    if let Some(h) = help {
+        setup.push(AppEvent::Key(h.clone()));
+    }
+    for _ in 0..3 {
+        setup.push(AppEvent::Key(Key::new(KeyCode::Down)));
+    }
+    // And two columns in (the caret of a text): `h` and `0` then move it back.
+    for _ in 0..2 {
+        setup.push(AppEvent::Key(Key::new(KeyCode::Right)));
+    }
+    let (before, before_quit) = observe(k, name, &setup, None);
+    assert!(!before_quit, "the set-up alone ends the loop");
+    let (after, quit) = observe(k, name, &setup, Some(key));
+    quit || after != before
+}
+
+/// Whether a real screen has the scroll form: a text in the host's frame says where it is on the
+/// frame (its top border), a bare text says "line N" after the hints in the footer.
+fn footer_scrolls(k: &AppKeys, frame: &str, rows: &[String], title: &str) -> bool {
+    let plain_tokens = if CANVAS_FRAMES.contains(&frame) {
+        k.canvas_footer_tokens()
+    } else {
+        k.footer_tokens(false)
+    };
+    let plain = format!("{}  {title}", plain_tokens.join("  "));
+    rows[0].starts_with('┌') || *rows.last().expect("a footer row") != plain
+}
+
+#[test]
+fn what_acts_on_a_frame_is_what_the_loop_does() {
+    // `acts_on` is the property's oracle, so pin it to the loop on every kind of frame: it
+    // says true exactly when the real loop changes the screen (or ends), in the help or not.
+    let mut extra: Vec<Key> = "jkgGxeozdufbn \u{3042}HQq?"
+        .chars()
+        .map(Key::char)
+        .collect();
+    for c in ['f', 'b', 'd', 'u', 'c'] {
+        extra.push(Key::ctrl(c));
+    }
+    for code in [
+        KeyCode::Down,
+        KeyCode::Up,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Esc,
+        KeyCode::Enter,
+        KeyCode::Tab,
+        KeyCode::PageDown,
+        KeyCode::PageUp,
+        KeyCode::Left,
+        KeyCode::Right,
+    ] {
+        extra.push(Key::new(code));
+    }
+    let (mut checked, mut true_cases, mut false_cases, mut help_cases) = (0, 0, 0, 0);
+    for (name, cfg) in property_configs() {
+        let k = keys(cfg, Lang::En);
+        // The keys to try: the extras and every key the footer and the help name.
+        let mut cands = extra.clone();
+        for t in k
+            .footer_hints(true)
+            .into_iter()
+            .chain(k.clone().with_caret(true).footer_hints(true))
+        {
+            cands.extend(token_keys(&t.text));
+        }
+        for sec in k
+            .help_sections()
+            .into_iter()
+            .chain(k.clone().with_caret(true).help_sections())
+            .chain(k.canvas_help_sections())
+        {
+            for (keys_text, _) in &sec.rows {
+                cands.extend(row_keys(keys_text));
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        cands.retain(|c| seen.insert(format!("{c:?}")));
+        for (frame, scrolls) in FRAMES {
+            let opener = help_opener(&k, frame);
+            for key in &cands {
+                let mut states: Vec<(bool, Option<&Key>)> = vec![(false, None)];
+                if let Some(o) = &opener {
+                    states.push((true, Some(o)));
+                }
+                for (in_help, opener) in states {
+                    let oracle = frame_acts_on(&k, frame, key, in_help, scrolls);
+                    let real = acts_in_the_loop(&k, frame, opener, key);
+                    assert_eq!(
+                        oracle, real,
+                        "{name} {frame} help={in_help}: acts_on({key:?}) = {oracle} but the loop {}",
+                        if real { "acts" } else { "does nothing" }
+                    );
+                    checked += 1;
+                    help_cases += usize::from(in_help);
+                    true_cases += usize::from(real);
+                    false_cases += usize::from(!real);
+                }
+            }
+        }
+    }
+    // Not vacuous: both outcomes, in and out of the help, over many cases.
+    assert!(checked > 3000, "{checked}");
+    assert!(true_cases > 500, "{true_cases}");
+    assert!(false_cases > 500, "{false_cases}");
+    assert!(help_cases > 1000, "{help_cases}");
+    // The oracle's own fixed points.
+    let k = keys("", Lang::En);
+    assert!(k.acts_on(&Key::char('j'), false, true));
+    assert!(!k.acts_on(&Key::char('j'), false, false));
+    assert!(k.acts_on(&Key::char('j'), true, false));
+    assert!(k.acts_on(&Key::char('q'), false, false));
+    assert!(
+        !k.acts_on(&Key::char('e'), true, true),
+        "`e` edits nothing here"
+    );
+}
+
+#[test]
+fn what_the_footer_names_on_a_real_frame_acts_in_the_loop() {
+    // The property over real frames: `scrolls` is read off the screen the loop drew (not
+    // passed in), then every key the footer names there must act in the loop.
+    let mut checked = 0;
+    for (name, cfg) in property_configs() {
+        for lang in [Lang::En, Lang::Jp] {
+            let k = keys(cfg, lang);
+            for (frame, expect_scrolls) in FRAMES {
+                let (rows, _) = run_as(&k, frame, REAL_SIZE, vec![]);
+                let scrolls = footer_scrolls(&k, frame, &rows, "title");
+                assert_eq!(scrolls, expect_scrolls, "{name} {lang:?} {frame}: {rows:?}");
+                for t in frame_footer_hints(&k, frame, scrolls) {
+                    for key in token_keys(&t.text) {
+                        assert!(
+                            acts_in_the_loop(&k, frame, None, &key),
+                            "{name} {lang:?} {frame}: the footer names {key:?} in `{}` but the loop does nothing",
+                            t.text
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 400, "{checked}");
+}

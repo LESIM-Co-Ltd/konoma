@@ -1,29 +1,29 @@
 // External command delegation renderer.
 //
-// Policy (`PreviewKind::Command { path, template, render_as, detached }`):
+// The built-in `command` plugin (`plugins/command.rs`) calls this module on a worker; the host opens
+// it like any other plugin (`App::start_command_plugin`). Policy for a rule
+// (`PreviewKind::Command { path, template, render_as, detached }`):
 //   - `detached = true`: spawn the child process and don't wait (a video player, etc.) — never
-//     blocks the TUI. `run_detached` (this module) is called synchronously from
-//     `App::start_media_load`, since `Command::spawn` returning is fast (it doesn't wait for the
-//     child), unlike `run_capture` below.
-//   - `render_as = Some("image")`: run on the media worker thread (`App`'s existing
-//     SVG/GIF/video/PDF pipeline — see `MediaJob::Command`), then decode the produced artifact and
-//     display it full-screen like any other image.
-//   - anything else (`None`, `"text"`, or an unrecognized string): run on the media worker thread,
-//     write the captured output to a temp file, and show it through the existing windowed
-//     (less-style) text reader (`App::windowed_src` points the reader at that temp file while the
-//     preview title still shows the original `path`).
+//     blocks the TUI. `run_detached` (this module) returns as soon as `Command::spawn` does. The
+//     plugin does it once, when the preview is entered; a tab switch, an outside change to the file
+//     or `r` never starts it again (`App::kind_loads_media` leaves a detached rule out).
+//   - `render_as = Some("image")`: run `run_capture`, decode the produced artifact and show it
+//     full-screen like any other image.
+//   - anything else (`None`, `"text"`, or an unrecognized string): run `run_capture`, write the
+//     captured output to a temp file, and show it through the existing windowed (less-style) text
+//     reader (`App::windowed_src` points the reader at that temp file while the preview title
+//     still shows the original `path`).
 // A missing/failing command never crashes konoma — it degrades to the same `[can not preview: <ext>]`
 // display as an unmatched rule, with the failure reason appended (design principle #3).
 //
 // This module only builds argv and runs the child process; it does not know about `App`/`MediaJob`
 // (kept a pure/testable leaf, like `preview::video`).
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -97,26 +97,6 @@ fn private_temp_dir() -> PathBuf {
     super::private_dir::private_dir("cmd")
 }
 
-/// The unit-test process never reaches `main`'s exit cleanup, so it removes its own private
-/// directories when the process exits (libtest ends through `process::exit`). Every module that
-/// creates a `konoma-<kind>-<pid>` directory calls this first.
-#[cfg(all(test, unix))]
-pub(crate) fn register_test_exit_cleanup() {
-    static REGISTERED: std::sync::Once = std::sync::Once::new();
-    REGISTERED.call_once(|| {
-        extern "C" fn at_exit() {
-            remove_private_temp_dir();
-        }
-        // SAFETY: registers a plain `extern "C" fn()` that only removes directories.
-        unsafe {
-            libc::atexit(at_exit);
-        }
-    });
-}
-
-#[cfg(not(all(test, unix)))]
-pub(crate) fn register_test_exit_cleanup() {}
-
 /// Removes this process's whole private temp directory (every delegated command's `{out}` and every
 /// converted document's raw view). Called on every exit path — after the run loop, from the panic
 /// hook, and from the signal thread — because `App::clear_command_out` only covers the active tab
@@ -134,9 +114,20 @@ pub fn remove_private_temp_dir() {
 /// panic, and from the signal thread.
 pub fn exit_cleanup() {
     if dry_run() {
+        note_exit_step(ExitStep::StopCaptureProcesses);
+    } else {
+        CAPTURES.shutdown();
+    }
+    if dry_run() {
         note_exit_step(ExitStep::StopSvgProcesses);
     } else {
         super::svg_proc::shutdown();
+    }
+    // The children of plugins that are programs of their own, before their directories go.
+    if dry_run() {
+        note_exit_step(ExitStep::StopPluginProcesses);
+    } else {
+        crate::plugins::external::shutdown();
     }
     if dry_run() {
         note_exit_step(ExitStep::RemoveTempDir);
@@ -149,16 +140,24 @@ pub fn exit_cleanup() {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExitStep {
+    StopCaptureProcesses,
     StopSvgProcesses,
+    StopPluginProcesses,
     RemoveTempDir,
+    HoldTerminal,
+    DeleteCanvasImages,
     RestoreTerminal,
 }
 
 #[cfg(not(test))]
 #[derive(Clone, Copy)]
 enum ExitStep {
+    StopCaptureProcesses,
     StopSvgProcesses,
+    StopPluginProcesses,
     RemoveTempDir,
+    HoldTerminal,
+    DeleteCanvasImages,
     RestoreTerminal,
 }
 
@@ -200,60 +199,95 @@ pub(crate) fn recorded_exit_steps<R>(f: impl FnOnce() -> R) -> (R, Vec<ExitStep>
     (r, EXIT_STEPS.with(|s| std::mem::take(&mut *s.borrow_mut())))
 }
 
+// The right to write to the terminal, the foreground-child flag and the terminal restore live in
+// `konoma_host_core::term`, shared with the plugin SDK's small host: one lock for the process, so a
+// frame and an exit signal exclude each other whichever host drew the frame.
+use konoma_host_core::term::ignore_signal;
+pub use konoma_host_core::term::restore_terminal_quietly;
+pub(crate) use konoma_host_core::term::{terminal_write, terminal_write_within, TerminalWrite};
+
+/// How long the exit path waits for a frame in the middle of being written.
+const EXIT_TERMINAL_WAIT: Duration = Duration::from_millis(500);
+
 /// Leaving the program for good: `exit_cleanup`, then the terminal teardown. The one thing the
 /// normal exit, the signal thread and the fatal-panic hook all call, so none of them can stop
 /// short of the SVG drawing processes.
-pub fn leave_for_good() {
+///
+/// Returns the right to write to the terminal that it took (`None` when it was not given in time):
+/// the caller on the signal and fatal-panic paths keeps it until the process is gone
+/// ([`hold_until_exit`]), so the main thread, queued behind it, cannot draw onto the restored
+/// terminal in the moment before `exit`. The normal exit is the main thread itself and drops it.
+#[must_use]
+pub(crate) fn leave_for_good() -> Option<TerminalWrite> {
     exit_cleanup();
+    // Not in the middle of a frame (a transmit in chunks): wait for the draw that holds the
+    // terminal, and keep it through the deletes and the restore so the main thread cannot draw
+    // after the terminal is given back. (The restore of the terminal was always racy against a
+    // draw in progress; with this it no longer is, apart from a main thread stuck for longer than
+    // the wait, where the exit goes on without it.)
+    note_exit_step(ExitStep::HoldTerminal);
+    let terminal = terminal_write_within(EXIT_TERMINAL_WAIT);
+    // The pictures a plugin's canvas put on a kitty-graphics terminal stay in the terminal's image
+    // storage after the program is gone: delete them while the terminal is still ours.
+    if dry_run() {
+        note_exit_step(ExitStep::DeleteCanvasImages);
+    } else {
+        crate::app::canvas_images::delete_canvas_kitty_images(&mut std::io::stdout());
+    }
     if dry_run() {
         note_exit_step(ExitStep::RestoreTerminal);
     } else {
         restore_terminal_quietly();
     }
+    terminal
+}
+
+/// Keeps the right to write to the terminal until the process is gone: the guard is forgotten, so
+/// the lock is never released. (Under the exit-step recorder of the tests it is dropped instead,
+/// or one test would hold the lock for every other test of the process.)
+pub(crate) fn hold_until_exit(guard: Option<TerminalWrite>) {
+    if dry_run() {
+        drop(guard);
+    } else {
+        std::mem::forget(guard);
+    }
 }
 
 /// The panic hook's part: a panic that ends the process (see `panic_ends_process`) leaves for
-/// good before the previous hook prints its message. Returns whether it did.
+/// good before the previous hook prints its message, and keeps the terminal to the end. Returns
+/// whether it did.
 pub fn leave_if_panic_ends_process(thread_name: Option<&str>, caught: bool) -> bool {
-    if panic_ends_process(thread_name, caught) {
-        leave_for_good();
-        true
-    } else {
-        false
+    match leave_if_panic_ends_process_holding(thread_name, caught) {
+        Some(guard) => {
+            hold_until_exit(guard);
+            true
+        }
+        None => false,
     }
+}
+
+/// [`leave_if_panic_ends_process`] handing the terminal guard back instead of keeping it:
+/// `None` when the panic does not end the process.
+pub(crate) fn leave_if_panic_ends_process_holding(
+    thread_name: Option<&str>,
+    caught: bool,
+) -> Option<Option<TerminalWrite>> {
+    panic_ends_process(thread_name, caught).then(leave_for_good)
 }
 
 /// The signal thread's part: `Some(exit code)` after leaving for good, `None` for a signal that is
 /// ignored (SIGINT while a foreground child owns the terminal).
-pub(crate) fn leave_on_signal(sig: i32, child_running: bool) -> Option<i32> {
+///
+/// Returns the exit code together with the terminal guard, which the caller keeps through `exit`.
+pub(crate) fn leave_on_signal(
+    sig: i32,
+    child_running: bool,
+) -> Option<(i32, Option<TerminalWrite>)> {
     if ignore_signal(sig, child_running) {
         return None;
     }
-    leave_for_good();
-    Some(128 + sig)
-}
-
-/// The bytes that undo what konoma turned on in the terminal: bracketed paste off, alternate
-/// screen left, cursor shown (a hidden cursor would otherwise survive a signal or panic exit;
-/// showing an already visible cursor is a no-op, so the normal exit path is unaffected). Raw mode is a termios setting, not an escape sequence (see
-/// `restore_terminal_quietly`).
-pub(crate) const TERMINAL_RESTORE_SEQUENCE: &[u8] = b"\x1b[?2004l\x1b[?1049l\x1b[?25h";
-
-/// Writes the terminal-restore sequence to `w` and flushes, ignoring every error: a terminal that
-/// is already gone (SIGHUP: the pty's other end is closed, every write fails with `EIO`) leaves
-/// nothing to restore. Never panics and never prints (`eprintln!` itself panics on a failed
-/// write, and a panic inside a panic hook aborts the process).
-pub(crate) fn write_terminal_restore(w: &mut dyn std::io::Write) {
-    let _ = w.write_all(TERMINAL_RESTORE_SEQUENCE);
-    let _ = w.flush();
-}
-
-/// The one terminal teardown shared by every way out of the TUI (normal exit, SIGTERM / SIGHUP /
-/// SIGINT, a fatal panic): raw mode off first (it has more side effects than the screen switch),
-/// then the restore sequence on stdout. Every failure is dropped, nothing is printed.
-pub fn restore_terminal_quietly() {
-    let _ = crossterm::terminal::disable_raw_mode();
-    write_terminal_restore(&mut std::io::stdout());
+    let terminal = leave_for_good();
+    Some((128 + sig, terminal))
 }
 
 /// Whether a panic on a thread named `thread_name` ends the process, so the panic hook may remove
@@ -266,61 +300,20 @@ pub(crate) fn panic_ends_process(thread_name: Option<&str>, caught: bool) -> boo
     thread_name == Some("main") && !caught
 }
 
-/// True while a foreground child (`$EDITOR`, a git tool, a pager) owns the terminal.
-static FOREGROUND_CHILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// RAII marker for "a foreground child is running". The flag is cleared in `Drop`, so it comes
-/// down on every way out of the wait (an error return or a panic included).
-pub struct ForegroundChildGuard;
-
-impl ForegroundChildGuard {
-    pub fn new() -> Self {
-        FOREGROUND_CHILD.store(true, std::sync::atomic::Ordering::SeqCst);
-        ForegroundChildGuard
-    }
-}
-
-impl Drop for ForegroundChildGuard {
-    fn drop(&mut self) {
-        FOREGROUND_CHILD.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// Whether a caught signal should be ignored. Like a shell or `system(3)` waiting for a child,
-/// konoma ignores SIGINT while a foreground child runs: Ctrl-C reaches the whole foreground process
-/// group, the child decides what to do with it, and exiting here would tear down the alternate
-/// screen under a child that is still drawing. SIGTERM and SIGHUP still end konoma: SIGHUP means
-/// the terminal is gone, and SIGTERM is an explicit request to stop; leaving without cleaning up
-/// would leak the temp directory.
-pub(crate) fn ignore_signal(sig: i32, child_running: bool) -> bool {
-    sig == signal_hook::consts::SIGINT && child_running
-}
-
 /// Arranges for the private temp directory to be removed when the process is killed by SIGTERM,
-/// SIGHUP or SIGINT (it has no signal handling otherwise, so those left the files behind). A helper
-/// thread waits for the signal, restores the terminal (the same teardown `main` makes on a normal
-/// exit), removes the directory and exits with the conventional `128 + signal` (SIGINT is ignored
-/// while a foreground child runs, see `ignore_signal`).
-#[cfg(unix)]
+/// SIGHUP or SIGINT (it has no signal handling otherwise, so those left the files behind). The
+/// shared signal thread (`konoma_host_core::term::install_exit_signals`) waits for the signal and
+/// calls this hook, which restores the terminal (the same teardown `main` makes on a normal exit),
+/// removes the directory and answers the conventional `128 + signal` to exit with (SIGINT is
+/// ignored while a foreground child runs, see `ignore_signal`).
 pub fn install_exit_cleanup_signals() {
-    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT]) else {
-        return;
-    };
-    let _ = std::thread::Builder::new()
-        .name("konoma-signals".into())
-        .spawn(move || {
-            for sig in signals.forever() {
-                let running = FOREGROUND_CHILD.load(std::sync::atomic::Ordering::SeqCst);
-                if let Some(code) = leave_on_signal(sig, running) {
-                    std::process::exit(code);
-                }
-            }
-        });
+    konoma_host_core::term::install_exit_signals(|sig, running| {
+        let (code, terminal) = leave_on_signal(sig, running)?;
+        // The terminal stays ours until the process is gone.
+        hold_until_exit(terminal);
+        Some(code)
+    });
 }
-
-#[cfg(not(unix))]
-pub fn install_exit_cleanup_signals() {}
 
 /// A fresh temp path for a delegated command's `{out}`, unique within this process (pid + an
 /// atomic counter — no dependence on randomness/time, matching `preview::video::temp_png_path`'s
@@ -360,13 +353,30 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// the process could not even be launched (missing binary, permission denied, ...).
 pub fn run_detached(argv: &[String]) -> Result<()> {
     let (prog, rest) = argv.split_first().context("empty command template")?;
-    Command::new(prog)
+    let child = Command::new(prog)
         .args(rest)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("failed to launch `{prog}`"))?;
+    // The player owns its lifetime; a waiter still reaps it without holding up the caller.
+    let child = konoma_plugin::proc::process::ChildGuard::new(child);
+    let pending = Arc::new(Mutex::new(Some(child)));
+    let waiter = pending.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("detached-command".into())
+        .spawn(move || {
+            if let Some(mut child) = waiter.lock().unwrap().take() {
+                let _ = child.wait();
+            }
+        })
+    {
+        if let Some(mut child) = pending.lock().unwrap().take() {
+            let _ = konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
+        }
+        return Err(error).context("failed to start command waiter");
+    }
     Ok(())
 }
 
@@ -389,9 +399,11 @@ pub fn run_detached(argv: &[String]) -> Result<()> {
 /// disagree on how much is usable) — this is what stops a runaway/infinite-output command (`yes`,
 /// a `command="cat {path}"` misconfiguration reading a device file, ...) from growing this buffer
 /// without bound: once the cap is hit the child is killed rather than waiting for a natural exit
-/// that may never come. Both streams are drained on background threads (this thread instead polls
-/// `try_wait`, below) so a child that interleaves writes to both can't deadlock this by filling one
-/// pipe's small OS buffer while only the other is drained.
+/// that may never come. Both nonblocking streams are drained in bounded batches, so neither a full
+/// pipe nor a detached process retaining a pipe can prevent the deadline from being checked.
+/// Capture commands exist only to produce this output. Their process group is stopped even after
+/// a successful exit, so background helpers cannot leak into later previews. Detached players
+/// use `run_detached` instead and retain their own lifetime.
 ///
 /// Separately, the whole run is bounded by `RUN_TIMEOUT`: a command that produces *no* output at
 /// all (so the cap above never triggers) and never exits on its own used to block this function —
@@ -407,10 +419,65 @@ pub fn run_capture(argv: &[String], out: &Path, uses_out: bool) -> Result<PathBu
 /// only to turn "never returns" into "eventually gives up," not to police normal runtimes.
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How often the poll loop in `run_capture_impl` re-checks the child and the reader threads'
-/// progress. Small enough that both a timeout and an output-cap kill are noticed promptly, without
-/// busy-polling.
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
+type CapturedChild = Arc<Mutex<konoma_plugin::proc::process::ChildGuard>>;
+
+struct Captures {
+    exiting: AtomicBool,
+    children: Mutex<Vec<CapturedChild>>,
+}
+
+static CAPTURES: Captures = Captures {
+    exiting: AtomicBool::new(false),
+    children: Mutex::new(Vec::new()),
+};
+
+impl Captures {
+    fn start(
+        &self,
+        spawn: impl FnOnce() -> Result<std::process::Child>,
+    ) -> Result<CaptureRegistration<'_>> {
+        // Serialize the shutdown decision and spawn together: no child can appear after the
+        // exit path has taken ownership of all running captures.
+        let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
+        if self.exiting.load(Ordering::SeqCst) {
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
+        }
+        let child = Arc::new(Mutex::new(konoma_plugin::proc::process::ChildGuard::new(
+            spawn()?,
+        )));
+        children.push(child.clone());
+        Ok(CaptureRegistration { owner: self, child })
+    }
+
+    fn shutdown(&self) {
+        // Publish cancellation before waiting for an in-flight spawn's registration lock.
+        self.exiting.store(true, Ordering::SeqCst);
+        let children = {
+            let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *children)
+        };
+        for child in children {
+            // Cancellation releases collect_output's child lock before bounded cleanup here.
+            let mut child = child.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = konoma_plugin::proc::process::stop_group(&mut child, Duration::ZERO);
+        }
+    }
+}
+
+struct CaptureRegistration<'a> {
+    owner: &'a Captures,
+    child: CapturedChild,
+}
+
+impl Drop for CaptureRegistration<'_> {
+    fn drop(&mut self) {
+        self.owner
+            .children
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|child| !Arc::ptr_eq(child, &self.child));
+    }
+}
 
 /// `run_capture`'s real body, parameterized on the timeout purely for testability: `run_capture`
 /// itself always passes the real, generous `RUN_TIMEOUT`; tests pass something short so a
@@ -422,70 +489,49 @@ fn run_capture_impl(
     uses_out: bool,
     timeout: Duration,
 ) -> Result<PathBuf> {
+    run_capture_configured(argv, out, uses_out, timeout, |_| {})
+}
+
+fn run_capture_configured(
+    argv: &[String],
+    out: &Path,
+    uses_out: bool,
+    timeout: Duration,
+    configure: impl FnOnce(&mut Command),
+) -> Result<PathBuf> {
     let (prog, rest) = argv.split_first().context("empty command template")?;
-    let mut child = Command::new(prog)
-        .args(rest)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to launch `{prog}`"))?;
+    let mut command = Command::new(prog);
+    use std::os::unix::process::CommandExt;
+    command.args(rest).process_group(0);
+    let registration = CAPTURES.start(|| {
+        configure(&mut command);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to launch `{prog}`"))
+    })?;
 
-    let mut stdout = child.stdout.take().expect("stdout was piped above");
-    let mut stderr = child.stderr.take().expect("stderr was piped above");
-    let cap = crate::preview::text::MAX_BYTES;
-
-    // Draining stdout was previously synchronous on this thread; it now runs on a background
-    // thread (matching stderr) so this thread is free to poll `try_wait` below with a deadline —
-    // a blocking synchronous read can't be interrupted by a timeout on the same thread. The shared
-    // flag lets this thread notice a cap-triggered truncation and kill the child immediately
-    // (rather than only discovering it once the deadline arrives), preserving the prior fast-kill
-    // behavior for a runaway-output command like `yes`.
-    let stdout_capped = Arc::new(AtomicBool::new(false));
-    let stdout_capped_writer = Arc::clone(&stdout_capped);
-    let stdout_handle = std::thread::spawn(move || {
-        let (buf, truncated) = capped_read(&mut stdout, cap);
-        if truncated {
-            stdout_capped_writer.store(true, Ordering::Release);
+    let mut child = registration.child.lock().unwrap_or_else(|e| e.into_inner());
+    let capture = konoma_plugin::proc::process::collect_output(
+        &mut child,
+        || CAPTURES.exiting.load(Ordering::SeqCst),
+        Some(timeout),
+        crate::preview::text::MAX_BYTES,
+        Duration::ZERO,
+    )
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            anyhow::anyhow!("timed out after {}s without exiting", timeout.as_secs())
+        } else {
+            anyhow::Error::new(error).context(format!("failed to wait for `{prog}`"))
         }
-        (buf, truncated)
-    });
-    let stderr_handle = std::thread::spawn(move || capped_read(&mut stderr, cap));
-
-    let deadline = Instant::now() + timeout;
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if stdout_capped.load(Ordering::Acquire) {
-                    // A runaway/infinite-output command: stop waiting for a natural exit and reap
-                    // it instead (same trigger the old synchronous-read version killed on).
-                    let _ = child.kill();
-                    break child
-                        .wait()
-                        .with_context(|| format!("failed to wait for `{prog}`"))?;
-                }
-                if Instant::now() >= deadline {
-                    timed_out = true;
-                    let _ = child.kill();
-                    break child
-                        .wait()
-                        .with_context(|| format!("failed to wait for `{prog}`"))?;
-                }
-                std::thread::sleep(POLL_INTERVAL);
-            }
-            Err(e) => return Err(e).context(format!("failed to wait for `{prog}`")),
-        }
-    };
-
-    let (stdout_buf, stdout_truncated) =
-        stdout_handle.join().unwrap_or_else(|_| (Vec::new(), false));
-    let (stderr_buf, _) = stderr_handle.join().unwrap_or_else(|_| (Vec::new(), false));
-
-    if timed_out {
-        bail!("timed out after {}s without exiting", timeout.as_secs());
-    }
+    })?;
+    let stdout_buf = capture.output.stdout;
+    let stderr_buf = capture.output.stderr;
+    let status = capture.output.status;
+    let stdout_truncated = capture.stdout_truncated;
 
     // A capped run's exit status is meaningless (the child was killed mid-flight rather than
     // allowed to finish naturally) — only judge success/failure when it ran to a real EOF.
@@ -555,31 +601,6 @@ fn find_suffixed_out(out: &Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-/// Reads from `r` until EOF or `cap` bytes, whichever comes first — the rest is discarded, not
-/// buffered (that's the whole point: bounding memory against a command that never stops writing).
-/// Returns `(bytes read, whether the cap was hit before EOF)`.
-fn capped_read(r: &mut impl Read, cap: usize) -> (Vec<u8>, bool) {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        if buf.len() >= cap {
-            return (buf, true);
-        }
-        match r.read(&mut chunk) {
-            Ok(0) => return (buf, false), // EOF
-            Ok(n) => {
-                let room = cap - buf.len();
-                let take = n.min(room);
-                buf.extend_from_slice(&chunk[..take]);
-                if take < n {
-                    return (buf, true); // filled the cap mid-chunk
-                }
-            }
-            Err(_) => return (buf, false), // a read error ends the capture, not a crash
-        }
-    }
-}
-
 /// The first non-empty, trimmed line of `bytes` (lossily decoded), or None if there isn't one.
 fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
     String::from_utf8_lossy(bytes)
@@ -592,36 +613,130 @@ fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn sigint_is_ignored_only_while_a_foreground_child_runs() {
-        use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-        assert!(ignore_signal(SIGINT, true));
-        assert!(!ignore_signal(SIGINT, false));
-        assert!(
-            !ignore_signal(SIGTERM, true),
-            "a terminate request still ends konoma"
+    fn exit_cleanup_stops_running_captures_and_refuses_new_spawns() {
+        use crate::test_support::command::CommandOutput;
+        const ENV: &str = "KONOMA_TEST_CAPTURE_EXIT";
+        if std::env::var_os(ENV).is_none() {
+            let dir = crate::test_support::unique_tmp("capture-exit-env");
+            std::fs::create_dir_all(&dir).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["preview::command::tests::exit_cleanup_stops_running_captures_and_refuses_new_spawns", "--exact", "--nocapture"])
+                .env(ENV, "1").env("TMPDIR", dir.as_os_str()).supervised_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let dir = crate::test_support::unique_tmp("capture-exit-active");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut fixture = crate::test_support::ProgramFixture::new(
+            &dir,
+            "printf '%s\\n' \"$$\" >&3\nexec /bin/sleep 300",
         );
-        assert!(
-            !ignore_signal(SIGHUP, true),
-            "a closed terminal still ends konoma"
+        let program = fixture.program.to_str().unwrap().to_owned();
+        let out = dir.join("out");
+        let worker_out = out.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(super::run_capture_impl(
+                &[program],
+                &worker_out,
+                false,
+                std::time::Duration::MAX,
+            ))
+            .unwrap();
+        });
+        fixture.ready();
+        super::exit_cleanup();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+        if result.is_err() {
+            fixture.stop();
+        }
+        worker.join().unwrap();
+        assert!(result
+            .expect("exit cleanup must stop and reap captures")
+            .is_err());
+        assert!(fixture.gone());
+        let spawned = std::cell::Cell::new(false);
+        let result = super::run_capture_configured(
+            &["/bin/true".into()],
+            &out,
+            false,
+            std::time::Duration::MAX,
+            |_| {
+                spawned.set(true);
+            },
         );
+        assert!(result.is_err());
+        assert!(
+            !spawned.get(),
+            "exit has started: do not configure or spawn a new capture"
+        );
+    }
+    #[test]
+    fn capture_success_leaves_no_background_helper() {
+        let dir = crate::test_support::unique_tmp("capture-background");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut fixture = crate::test_support::ProgramFixture::new(
+            &dir,
+            "/bin/sleep 300 </dev/null >/dev/null 2>&1 &\nprintf '%s\\n' \"$!\" >&3\nexit 0",
+        );
+        let program = fixture.program.to_str().unwrap().to_owned();
+        let out = dir.join("output");
+        let expected = out.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(super::run_capture(&[program], &out, false))
+                .unwrap();
+        });
+        fixture.ready();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
+        let gone = fixture.gone();
+        assert_eq!(result.unwrap().unwrap(), expected);
+        worker.join().unwrap();
+        assert!(gone, "capture left its background helper alive");
     }
 
     #[test]
-    fn the_foreground_child_flag_comes_down_on_drop_and_on_unwind() {
-        use std::sync::atomic::Ordering::SeqCst;
-        {
-            let _g = ForegroundChildGuard::new();
-            assert!(FOREGROUND_CHILD.load(SeqCst));
-        }
-        assert!(!FOREGROUND_CHILD.load(SeqCst));
-        let r = std::panic::catch_unwind(|| {
-            let _g = ForegroundChildGuard::new();
-            panic!("unwind");
+    fn capture_stops_a_command_that_floods_stderr() {
+        let dir = crate::test_support::unique_tmp("capture-stderr-cap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut fixture = crate::test_support::ProgramFixture::new(
+            &dir,
+            "printf '%s\\n' \"$$\" >&3\nexec /usr/bin/yes stderr-cap-fixture >&2",
+        );
+        let program = fixture.program.to_str().unwrap().to_owned();
+        let out = dir.join("output");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(super::run_capture_impl(
+                &[program],
+                &out,
+                false,
+                std::time::Duration::MAX,
+            ))
+            .unwrap();
         });
-        assert!(r.is_err());
-        assert!(!FOREGROUND_CHILD.load(SeqCst));
+        fixture.ready();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
+        if result.is_err() {
+            fixture.stop();
+        }
+        let gone = fixture.gone();
+        worker.join().unwrap();
+        let error = result
+            .expect("the stderr cap must stop the command")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error, "stderr-cap-fixture",
+            "the stderr cap, rather than the deadline, must stop the command"
+        );
+        assert!(gone, "the stderr writer survived capture");
     }
-
     #[test]
     fn only_an_uncaught_main_thread_panic_removes_the_temp_dir() {
         assert!(panic_ends_process(Some("main"), false));
@@ -632,7 +747,18 @@ mod tests {
     }
 
     use super::*;
+    use crate::test_support::command::CommandOutput;
     use crate::test_support::unique_tmp;
+
+    /// `TERMINAL_WRITE` is process-global, so the tests that take it (directly or through the exit
+    /// paths) must not overlap: one test holding it would make another test's "free now" or
+    /// "refused for 20 ms" check meet the wrong holder. Poison is ignored so one failure does not
+    /// cascade.
+    static TERMINAL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serialize_terminal_tests() -> std::sync::MutexGuard<'static, ()> {
+        TERMINAL_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     // ---- build_argv ---------------------------------------------------------------------------
 
@@ -1131,7 +1257,12 @@ mod tests {
         let ((), steps) = recorded_exit_steps(exit_cleanup);
         assert_eq!(
             steps,
-            vec![ExitStep::StopSvgProcesses, ExitStep::RemoveTempDir]
+            vec![
+                ExitStep::StopCaptureProcesses,
+                ExitStep::StopSvgProcesses,
+                ExitStep::StopPluginProcesses,
+                ExitStep::RemoveTempDir
+            ]
         );
     }
 
@@ -1153,7 +1284,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env(ENV, "1")
-                .output()
+                .supervised_output()
                 .unwrap();
             assert!(
                 out.status.success(),
@@ -1186,16 +1317,59 @@ mod tests {
         assert!(!temp.exists(), "the private temp directory was not removed");
     }
 
+    /// The real `leave_for_good`, in a process of its own (it is one-way and process-wide): the
+    /// deletes of the canvas pictures still on the terminal are written to stdout, **before** the
+    /// terminal is restored. The recorded steps above cannot tell a step that was noted from one
+    /// that was done.
+    #[cfg(unix)]
+    #[test]
+    fn leaving_for_good_really_writes_the_canvas_picture_deletes_before_the_restore() {
+        const ENV: &str = "KONOMA_TEST_LEAVE_DELETES_CHILD";
+        const ID: u32 = 4_242_424;
+        let name = "preview::command::tests::leaving_for_good_really_writes_the_canvas_picture_deletes_before_the_restore";
+        if std::env::var_os(ENV).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([name, "--exact", "--test-threads=1", "--nocapture"])
+                .env(ENV, "1")
+                .supervised_output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let wire = String::from_utf8_lossy(&out.stdout).into_owned();
+            let delete = format!("\x1b_Gq=2,a=d,d=I,i={ID}\x1b\\");
+            let at = wire
+                .find(&delete)
+                .unwrap_or_else(|| panic!("no delete in {wire:?}"));
+            let restore = wire.find("\x1b[?1049l").expect("the terminal was restored");
+            assert!(
+                at < restore,
+                "the delete comes before the restore: {wire:?}"
+            );
+            assert_eq!(wire.matches(&delete).count(), 1, "once");
+            return;
+        }
+        crate::app::canvas_images::LIVE_CANVAS_KITTY.note(ID);
+        let _ = leave_for_good();
+    }
+
     /// Every way out runs the whole exit cleanup (not just the temp-dir removal), and then the
     /// terminal teardown.
     #[test]
     fn every_way_out_runs_the_whole_exit_cleanup() {
+        let _serial = serialize_terminal_tests();
         let all = vec![
+            ExitStep::StopCaptureProcesses,
             ExitStep::StopSvgProcesses,
+            ExitStep::StopPluginProcesses,
             ExitStep::RemoveTempDir,
+            ExitStep::HoldTerminal,
+            ExitStep::DeleteCanvasImages,
             ExitStep::RestoreTerminal,
         ];
-        let ((), steps) = recorded_exit_steps(leave_for_good);
+        let (_, steps) = recorded_exit_steps(leave_for_good);
         assert_eq!(steps, all, "normal exit");
         let (r, steps) = recorded_exit_steps(|| leave_if_panic_ends_process(Some("main"), false));
         assert!(r);
@@ -1205,10 +1379,125 @@ mod tests {
             signal_hook::consts::SIGHUP,
             signal_hook::consts::SIGINT,
         ] {
-            let (code, steps) = recorded_exit_steps(|| leave_on_signal(sig, false));
+            let (code, steps) = recorded_exit_steps(|| leave_on_signal(sig, false).map(|(c, _)| c));
             assert_eq!(code, Some(128 + sig));
             assert_eq!(steps, all, "signal {sig}");
         }
+    }
+
+    /// The signal thread's escapes never land inside a frame the main thread is writing: it waits
+    /// for the draw that holds the terminal. (A transmit is a run of chunks; a delete between two
+    /// of them is taken for part of the transmit and the picture stays in the terminal.)
+    #[test]
+    fn the_exit_path_waits_for_the_frame_being_written_and_never_lands_inside_it() {
+        let _serial = serialize_terminal_tests();
+        use std::sync::mpsc::channel;
+        use std::sync::{Arc, Mutex};
+        let wire = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let (go_tx, go_rx) = channel::<()>();
+        let (done_tx, done_rx) = channel::<()>();
+        let w = wire.clone();
+        let exit = std::thread::spawn(move || {
+            go_rx.recv().unwrap();
+            // The signal thread: waits for the frame, then writes its delete.
+            let held = terminal_write_within(Duration::from_secs(30));
+            assert!(held.is_some(), "given the terminal once the frame is done");
+            w.lock().unwrap().push("delete");
+            drop(held);
+            done_tx.send(()).unwrap();
+        });
+        {
+            // The main thread: a frame in chunks.
+            let _frame = terminal_write();
+            wire.lock().unwrap().push("chunk 1");
+            go_tx.send(()).unwrap();
+            // Had the exit path not waited, it would be done well within this time.
+            assert!(
+                done_rx.recv_timeout(Duration::from_millis(150)).is_err(),
+                "the exit path wrote while a frame was being written"
+            );
+            wire.lock().unwrap().push("chunk 2");
+        }
+        done_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        exit.join().unwrap();
+        assert_eq!(*wire.lock().unwrap(), ["chunk 1", "chunk 2", "delete"]);
+        // A thread that holds the terminal itself (a panic inside a draw) does not wait for
+        // itself, and a stuck holder is given up on after the wait.
+        let _mine = terminal_write();
+        assert!(terminal_write_within(Duration::from_secs(30)).is_none());
+        let stuck =
+            std::thread::spawn(|| terminal_write_within(Duration::from_millis(20)).is_none());
+        assert!(
+            stuck.join().unwrap(),
+            "the exit goes on without a stuck frame"
+        );
+    }
+
+    /// The signal and fatal-panic exits keep the right to write to the terminal after the restore
+    /// (the caller holds it to the end of the process), so a main thread queued behind it cannot
+    /// draw onto the restored terminal: while the returned guard lives another thread is refused,
+    /// and it is given the terminal only once the guard is dropped.
+    #[test]
+    fn the_signal_and_panic_exits_keep_the_terminal_until_the_process_is_gone() {
+        let _serial = serialize_terminal_tests();
+        let refused_elsewhere = || {
+            std::thread::spawn(|| terminal_write_within(Duration::from_millis(20)).is_none())
+                .join()
+                .unwrap()
+        };
+        let (held, _) = recorded_exit_steps(|| {
+            leave_on_signal(signal_hook::consts::SIGTERM, false).map(|(_, g)| g)
+        });
+        let held = held
+            .expect("a SIGTERM leaves")
+            .expect("the terminal was given in time");
+        assert!(
+            refused_elsewhere(),
+            "signal exit: another thread is kept out"
+        );
+        drop(held);
+        assert!(!refused_elsewhere(), "released once the guard is dropped");
+
+        let (held, _) =
+            recorded_exit_steps(|| leave_if_panic_ends_process_holding(Some("main"), false));
+        let held = held.expect("a fatal panic leaves").expect("given in time");
+        assert!(
+            refused_elsewhere(),
+            "panic exit: another thread is kept out"
+        );
+        drop(held);
+        assert!(!refused_elsewhere());
+
+        // The normal exit hands it back too (the main thread drops it).
+        let (held, _) = recorded_exit_steps(leave_for_good);
+        assert!(held.is_some());
+        assert!(refused_elsewhere());
+        drop(held);
+
+        // The wrappers that end the process keep it for good rather than dropping it.
+        let this = include_str!("command.rs");
+        let signal = this
+            .split("pub fn install_exit_cleanup_signals() {\n")
+            .nth(1)
+            .and_then(|r| r.split("\n}\n").next())
+            .unwrap();
+        // The hook keeps the terminal before it hands the exit code back ...
+        assert!(
+            signal.find("hold_until_exit(terminal)").unwrap() < signal.find("Some(code)").unwrap()
+        );
+        // ... and the shared signal thread exits only with what the hook answered.
+        let shared = include_str!("../../crates/konoma-host-core/src/term.rs");
+        let thread = shared
+            .split("pub fn install_exit_signals(on_signal")
+            .nth(1)
+            .and_then(|r| r.split("#[cfg(not(unix))]").next())
+            .unwrap();
+        assert!(thread.find("on_signal(sig").unwrap() < thread.find("process::exit(").unwrap());
+        assert!(this.contains("std::mem::forget(guard)"));
+        assert!(
+            this.contains("hold_until_exit(guard);\n            true"),
+            "panic path"
+        );
     }
 
     /// What does not end the process does not clean up: a caught panic or a worker's panic, and
@@ -1219,7 +1508,7 @@ mod tests {
             (
                 leave_if_panic_ends_process(Some("main"), true),
                 leave_if_panic_ends_process(Some("konoma-md-decode"), false),
-                leave_on_signal(signal_hook::consts::SIGINT, true),
+                leave_on_signal(signal_hook::consts::SIGINT, true).map(|(c, _)| c),
             )
         });
         assert_eq!(r, (false, false, None));
@@ -1230,7 +1519,7 @@ mod tests {
     /// there would drop the SVG-process shutdown without a test noticing).
     #[test]
     fn main_leaves_only_through_the_cleanup_helpers() {
-        let main = include_str!("../main.rs");
+        let main = include_str!("../lib.rs");
         assert!(
             main.contains("preview::command::leave_for_good()"),
             "normal exit"
@@ -1245,59 +1534,12 @@ mod tests {
         );
         let this = include_str!("command.rs");
         let signal = this
-            .split("pub fn install_exit_cleanup_signals() {\n    use")
+            .split("pub fn install_exit_cleanup_signals() {\n")
             .nth(1)
-            .and_then(|r| r.split("#[cfg(not(unix))]").next())
+            .and_then(|r| r.split("\n}\n").next())
             .expect("signal installer");
         assert!(signal.contains("leave_on_signal("), "signal thread");
         assert!(!signal.contains("remove_private_temp_dir"));
-    }
-
-    /// A writer whose every write and flush fails with `EIO`, like a pty whose other end closed.
-    struct DeadTty;
-    impl std::io::Write for DeadTty {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::from_raw_os_error(5))
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Err(std::io::Error::from_raw_os_error(5))
-        }
-    }
-
-    /// The teardown must survive a dead terminal: it runs inside signal handling and panic hooks,
-    /// where a panic aborts the process.
-    #[test]
-    fn terminal_restore_never_panics_on_a_dead_tty() {
-        let r = std::panic::catch_unwind(|| write_terminal_restore(&mut DeadTty));
-        assert!(r.is_ok());
-    }
-
-    /// It undoes bracketed paste and the alternate screen (a normal exit used to leave paste mode
-    /// on, the signal path both).
-    #[test]
-    fn terminal_restore_turns_off_paste_mode_and_leaves_the_alt_screen() {
-        let mut buf = Vec::new();
-        write_terminal_restore(&mut buf);
-        let text = String::from_utf8(buf).unwrap();
-        assert!(text.contains("\x1b[?2004l"), "{text:?}");
-        assert!(text.contains("\x1b[?1049l"), "{text:?}");
-        assert!(text.contains("\x1b[?25h"), "{text:?}");
-    }
-
-    /// The bytes match what crossterm's own commands emit (so they cannot drift from what
-    /// `EnableBracketedPaste` / `EnterAlternateScreen` turned on).
-    #[test]
-    fn terminal_restore_sequence_matches_crossterm_commands() {
-        use crossterm::Command;
-        let mut want = String::new();
-        crossterm::event::DisableBracketedPaste
-            .write_ansi(&mut want)
-            .unwrap();
-        crossterm::terminal::LeaveAlternateScreen
-            .write_ansi(&mut want)
-            .unwrap();
-        crossterm::cursor::Show.write_ansi(&mut want).unwrap();
-        assert_eq!(TERMINAL_RESTORE_SEQUENCE, want.as_bytes());
     }
 
     #[cfg(unix)]
@@ -1324,5 +1566,116 @@ mod tests {
             "タイムアウトが機能せずブロックし続けた: elapsed={elapsed:?}"
         );
         let _ = std::fs::remove_file(&out);
+    }
+
+    // ---- the exit-time cleanup of the test process, seen from outside --------------------------
+
+    const CHILD_ENV: &str = "KONOMA_TEST_PRIVATE_DIR_CHILD";
+
+    /// Helper run only as a child of `test_process_removes_its_private_dir_on_exit` (ignored: a
+    /// normal run skips it; without the environment variable it does nothing).
+    #[test]
+    #[ignore = "helper of test_process_removes_its_private_dir_on_exit (runs as a child process)"]
+    fn private_dir_child_helper() {
+        if std::env::var_os(CHILD_ENV).is_none() {
+            return;
+        }
+        let dir = temp_out_path().parent().unwrap().to_path_buf();
+        assert!(
+            dir.is_dir(),
+            "the child could not create its private directory"
+        );
+        println!("CHILD_PRIVATE_DIR={}", dir.display());
+    }
+
+    /// The test process removes the private directory it made when it exits. Seen from outside: run
+    /// this test executable again (only the helper above, in its own `TMPDIR`), and look at the
+    /// directory after the child is gone. Fails if the exit cleanup is not active in this build
+    /// (for the host package: if `konoma-base`'s `test-hooks` is not enabled in its
+    /// `[dev-dependencies]`).
+    #[test]
+    fn test_process_removes_its_private_dir_on_exit() {
+        let tmp = unique_tmp("pd_exit_child");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "preview::command::tests::private_dir_child_helper",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("TMPDIR", &*tmp)
+            .supervised_output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "child failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let made = stdout
+            .lines()
+            .find_map(|l| l.split_once("CHILD_PRIVATE_DIR=").map(|(_, p)| p))
+            .unwrap_or_else(|| panic!("the child did not report a directory: {stdout}"));
+        let made = std::path::Path::new(made);
+        assert!(made.starts_with(&*tmp), "{made:?} is not under {tmp:?}");
+        assert!(
+            std::fs::symlink_metadata(made).is_err(),
+            "the child left {made:?} behind"
+        );
+        let left: Vec<_> = std::fs::read_dir(&*tmp)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert!(left.is_empty(), "the child left {left:?} in its TMPDIR");
+    }
+
+    mod process_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/process_fixture.rs"
+        ));
+    }
+
+    #[test]
+    fn capture_deadline_includes_detached_pipe_holders() {
+        use std::os::unix::process::CommandExt;
+        let d = crate::test_support::unique_tmp("capture-detached");
+        std::fs::create_dir_all(&d).unwrap();
+        let out = d.join("out");
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = run_capture_configured(
+                &["/bin/sh".into(), "-c".into(), "exit 0".into()],
+                &out,
+                false,
+                Duration::from_millis(100),
+                |command| {
+                    command.process_group(0);
+                    ready_tx
+                        .send(process_fixture::PendingHelper::attach(command, true, false))
+                        .unwrap();
+                },
+            );
+            tx.send(result).unwrap();
+        });
+        let pending = ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut helper = pending.ready();
+        let result = rx.recv_timeout(Duration::from_secs(6));
+        if result.is_err() {
+            helper.stop();
+        }
+        worker.join().unwrap();
+        helper.stop();
+        assert!(helper.gone());
+        let error = result
+            .expect("capture must bound detached pipe collection")
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error:#}");
     }
 }

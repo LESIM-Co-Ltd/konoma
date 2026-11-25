@@ -1,4 +1,4 @@
-//! End-to-end tests of the Word document preview (`PreviewKind::Document`): `testdata/office/word.docx`
+//! End-to-end tests of the Word document preview (the `document` plugin): `testdata/office/word.docx`
 //! and `word-ja.docx` opened through the real key path.
 
 use super::*;
@@ -74,7 +74,7 @@ fn same_bytes_after(path: &std::path::Path, f: impl FnOnce()) -> bool {
 }
 
 /// A minimal docx (three parts) whose body is `body` (the content of `<w:body>`).
-fn build_docx(path: &std::path::Path, body: &str) {
+pub(super) fn build_docx(path: &std::path::Path, body: &str) {
     use std::io::Write;
     let ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
@@ -99,13 +99,13 @@ fn build_docx(path: &std::path::Path, body: &str) {
     put(
         "word/document.xml",
         &format!(
-            r#"<?xml version="1.0"?><w:document xmlns:w="{ns}"><w:body>{body}</w:body></w:document>"#
+            r#"<?xml version="1.0"?><w:document xmlns:w="{ns}" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body>{body}</w:body></w:document>"#
         ),
     );
     zw.finish().unwrap();
 }
 
-fn para(text: &str) -> String {
+pub(super) fn para(text: &str) -> String {
     format!("<w:p><w:r><w:t>{text}</w:t></w:r></w:p>")
 }
 
@@ -113,29 +113,7 @@ fn para(text: &str) -> String {
 /// redrawing after each batch, until the pipeline has gone quiet.
 #[track_caller]
 fn settle_images(s: &mut Sim) {
-    // Idle-based: the limit restarts whenever a result arrives (see deck_view's `settle`).
-    let idle = std::time::Duration::from_secs(120);
-    let mut deadline = std::time::Instant::now() + idle;
-    loop {
-        let imgs: Vec<_> = s.md_img_rx.as_ref().unwrap().try_iter().collect();
-        let encs: Vec<_> = s.md_enc_rx.as_ref().unwrap().try_iter().collect();
-        let any = !imgs.is_empty() || !encs.is_empty();
-        for r in imgs {
-            s.app.apply_md_image(r);
-        }
-        for r in encs {
-            s.app.apply_md_encode(r);
-        }
-        s.draw();
-        if !any && !s.app.md_pixels_pending() {
-            return;
-        }
-        if any {
-            deadline = std::time::Instant::now() + idle;
-        }
-        assert!(std::time::Instant::now() < deadline, "images never settled");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    s.settle_inline_images("Word inline pictures", std::time::Duration::from_secs(120));
 }
 
 /// Moves the Tab focus forward until `want` is the focused kind (at most `max` presses).
@@ -250,8 +228,8 @@ fn e2e_word_a_japanese_document_opens_and_reads_in_japanese() {
         see_cjk(&mut s, want);
     }
     s.dont_see("can not preview");
-    // The outline (`o`) lists the Japanese headings.
-    s.key('o');
+    // The outline (`O`) lists the Japanese headings.
+    s.key('O');
     assert!(s.app.is_outline());
     see_cjk(&mut s, "図と脚注");
 }
@@ -573,7 +551,7 @@ fn e2e_word_the_outline_lists_the_headings_and_jumps() {
     let Some((mut s, _d)) = open_doc_sized("w_outline", EN, (90, 26), cfg_en()) else {
         return;
     };
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     for h in [
         "Word reader sample",
@@ -810,7 +788,7 @@ fn e2e_word_the_raw_view_help_and_footer_are_the_text_ones() {
     s.see("e:open");
     s.key('?');
     let help = s.screen();
-    assert!(help.contains("v / V → y"), "{help}");
+    assert!(help.contains("v / V"), "{help}");
     // `Y` is the file reference only (the converted text has no lines in the .docx).
     assert!(help.contains("copy the @path reference"), "{help}");
     assert!(!help.contains("@path#L reference of caret"), "{help}");
@@ -955,15 +933,17 @@ fn e2e_word_a_result_for_a_file_left_behind_is_dropped() {
     s.select(EN);
     s.enter();
     assert!(s.app.is_document_loading());
-    // Leave for another file before the conversion lands.
+    // Keep the conversion's answer out of the app until the next file is ready. A fast/slow
+    // plain-text plugin must never be mistaken for this conversion on the shared channel.
+    let res = crate::test_support::recv_media_final(
+        &mut s.app,
+        s.media_rx.as_ref().unwrap(),
+        std::time::Duration::from_secs(10),
+        "stale Word conversion: retain its final answer",
+    );
     s.ctrl('n');
     assert!(s.app.tab.preview_path.clone().unwrap().ends_with("z.txt"));
-    let res = s
-        .media_rx
-        .as_ref()
-        .unwrap()
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the worker answers");
+    s.await_media("stale Word conversion: finish opening z.txt before applying the old answer");
     assert!(!s.app.apply_media(res), "stale");
     assert!(!s.app.document_ready());
     s.see("after the document");
@@ -1200,7 +1180,7 @@ fn e2e_odt_a_japanese_document_opens_and_reads_in_japanese() {
         see_cjk(&mut s, want);
     }
     s.dont_see("can not preview");
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     see_cjk(&mut s, "図と脚注");
 }
@@ -1430,9 +1410,12 @@ fn footer_text(s: &Sim) -> String {
 fn e2e_word_a_failed_document_footer_offers_no_dead_keys() {
     let (s, _d) = open_bad("w_fail_footer", |p| std::fs::write(p, b"nope").unwrap());
     let f = footer_text(&s);
-    for dead in ["R:", "/:", "hl:", "v/V", "0/$", "g/G", "o:"] {
+    // (`O:` is the outline. The lower-case `o` is "open in another app" now, which acts here: the
+    // file exists, only its text is missing.)
+    for dead in ["R:", "/:", "hl:", "v/V", "0/$", "g/G", "O:"] {
         assert!(!f.contains(dead), "{dead} must not be offered: {f}");
     }
+    assert!(f.contains("o:open in app"), "{f}");
     assert!(f.contains("q:") && f.contains("?:"), "{f}");
 }
 
@@ -1630,7 +1613,12 @@ fn png_bytes(rgb: [u8; 3]) -> Vec<u8> {
 }
 
 /// A docx with the text `text` and one picture `media/<name>` holding `bytes`.
-fn build_docx_with_picture(path: &std::path::Path, text: &str, name: &str, bytes: &[u8]) {
+pub(super) fn build_docx_with_picture(
+    path: &std::path::Path,
+    text: &str,
+    name: &str,
+    bytes: &[u8],
+) {
     use std::io::Write;
     let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
     let f = std::fs::File::create(path).unwrap();
@@ -2092,10 +2080,17 @@ fn e2e_word_without_text_the_footer_and_help_offer_only_keys_that_act() {
         assert!(s.app.document_text_missing(), "{label}");
         let f = footer_text(&s);
         for dead in [
-            "R:", "/:", "hl:", "v/V", "0/$", "g/G", "o:", "Y:", "Tab:", "jk:",
+            "R:", "/:", "hl:", "v/V", "0/$", "g/G", "O:", "Y:", "Tab:", "jk:",
         ] {
             assert!(!f.contains(dead), "[{label}] footer offers {dead}: {f}");
         }
+        // `o` opens the file in another app: offered exactly while opening Office documents in
+        // an app is switched on.
+        assert_eq!(
+            f.contains("o:open in app"),
+            label != "office_apps = false",
+            "[{label}] {f}"
+        );
         s.key('?');
         let help = s.screen();
         for dead in [
@@ -2109,7 +2104,6 @@ fn e2e_word_without_text_the_footer_and_help_offer_only_keys_that_act() {
             "0 / $",
             "Ctrl-t",
             "outline",
-            "Space",
         ] {
             assert!(!help.contains(dead), "[{label}] help lists {dead}:\n{help}");
         }
@@ -2679,8 +2673,10 @@ fn e2e_word_the_picture_bytes_are_freed_when_the_document_is_left() {
     s.app.begin_md_image_frame();
     s.app.evict_md_images_to_for_test(0);
     settle_images(&mut s);
+    // The open document and the plugin's session (which serves the rendered view again after the
+    // source view) share the one allocation; the cache entry that was dropped keeps no third.
     assert!(
-        weak.strong_count() == 1,
+        weak.strong_count() == 2,
         "a dropped picture's entry keeps no copy of the bytes: {}",
         weak.strong_count()
     );

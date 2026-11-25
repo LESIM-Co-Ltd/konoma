@@ -1720,61 +1720,415 @@ dependencies = [
 
 [[package]]
 name = "konoma"
-version = "0.31.2"
+version = "0.32.0"
 dependencies = [
  "anyhow",
- "arboard",
  "base64 0.23.1",
- "calamine",
  "cfb 0.15.0",
  "crossterm",
- "csv",
  "emojis",
- "encoding_rs",
  "flate2",
- "git2",
  "globset",
- "hayro",
- "hayro-syntax",
- "ignore",
  "image",
  "infer",
+ "konoma-base",
+ "konoma-code",
+ "konoma-code-core",
+ "konoma-file-plugins",
+ "konoma-host-core",
+ "konoma-markdown",
+ "konoma-markdown-core",
+ "konoma-math",
+ "konoma-math-core",
+ "konoma-media",
+ "konoma-media-core",
+ "konoma-mermaid",
+ "konoma-mermaid-core",
+ "konoma-office",
+ "konoma-office-core",
+ "konoma-plugin",
+ "konoma-svg",
+ "konoma-table",
+ "konoma-test-support",
+ "konoma-vcs",
+ "konoma-vcs-core",
+ "konoma-widgets",
  "libc",
- "log",
  "mermaid-text",
  "notify",
  "nucleo-matcher",
  "pulldown-cmark",
- "quick-xml 0.42.0",
  "ratatui",
  "ratatui-image",
- "ratex-katex-fonts",
- "ratex-layout",
- "ratex-parser",
- "ratex-svg",
- "ratex-types",
- "re_mp4",
  "resvg",
- "rust_h264",
- "rust_h265",
+ "semver",
  "serde",
  "serde_json",
  "signal-hook 0.4.5",
  "similar",
  "skrifa 0.44.0",
  "svgtypes",
- "symphonia-core",
- "symphonia-format-mkv",
- "syntect",
- "sys-locale",
- "tar",
  "tokio",
  "toml",
+ "toml_edit",
  "trash",
- "two-face",
  "unicode-width",
  "ureq",
  "zip",
+]
+
+[[package]]
+name = "konoma-base"
+version = "0.1.0"
+dependencies = [
+ "konoma-test-support",
+ "libc",
+]
+
+[[package]]
+name = "konoma-code"
+version = "0.1.0"
+dependencies = [
+ "konoma-code-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "ratatui",
+]
+
+[[package]]
+name = "konoma-code-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-test-support",
+ "ratatui",
+ "syntect",
+ "two-face",
+ "unicode-width",
+]
+
+[[package]]
+name = "konoma-demo-clock"
+version = "0.1.0"
+dependencies = [
+ "konoma-plugin",
+ "konoma-plugin-ratatui",
+]
+
+[[package]]
+name = "konoma-file-plugins"
+version = "0.1.0"
+dependencies = [
+ "konoma-code",
+ "konoma-markdown",
+ "konoma-math",
+ "konoma-media",
+ "konoma-mermaid",
+ "konoma-office",
+ "konoma-plugin",
+ "konoma-table",
+ "konoma-test-support",
+]
+
+[[package]]
+name = "konoma-host-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "crossterm",
+ "infer",
+ "konoma-base",
+ "konoma-host-core",
+ "konoma-test-support",
+ "serde",
+ "signal-hook 0.4.5",
+ "svgtypes",
+ "sys-locale",
+ "toml",
+ "unicode-width",
+]
+
+[[package]]
+name = "konoma-markdown"
+version = "0.1.0"
+dependencies = [
+ "konoma-math",
+ "konoma-mermaid",
+ "konoma-plugin",
+ "konoma-test-support",
+ "ratatui",
+]
+
+[[package]]
+name = "konoma-markdown-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-test-support",
+ "pulldown-cmark",
+ "similar",
+]
+
+[[package]]
+name = "konoma-math"
+version = "0.1.0"
+dependencies = [
+ "konoma-math-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "svgtypes",
+]
+
+[[package]]
+name = "konoma-math-core"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "konoma-svg",
+ "konoma-test-support",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-svg",
+ "ratex-types",
+ "resvg",
+]
+
+[[package]]
+name = "konoma-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "konoma-media-core",
+ "konoma-plugin",
+ "konoma-svg",
+ "konoma-test-support",
+]
+
+[[package]]
+name = "konoma-media-core"
+version = "0.1.0"
+dependencies = [
+ "hayro",
+ "hayro-syntax",
+ "image",
+ "konoma-base",
+ "konoma-svg",
+ "konoma-test-support",
+ "re_mp4",
+ "resvg",
+ "rust_h264",
+ "rust_h265",
+ "symphonia-core",
+ "symphonia-format-mkv",
+]
+
+[[package]]
+name = "konoma-mermaid"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-mermaid-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "mermaid-text",
+]
+
+[[package]]
+name = "konoma-mermaid-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-svg",
+ "konoma-test-support",
+ "log",
+ "mermaid-text",
+ "resvg",
+ "serde",
+ "serde_json",
+ "svgtypes",
+]
+
+[[package]]
+name = "konoma-office"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-markdown",
+ "konoma-math",
+ "konoma-mermaid",
+ "konoma-office-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "ratatui",
+]
+
+[[package]]
+name = "konoma-office-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "calamine",
+ "cfb 0.15.0",
+ "encoding_rs",
+ "flate2",
+ "image",
+ "konoma-base",
+ "konoma-math-core",
+ "konoma-svg",
+ "konoma-test-support",
+ "libc",
+ "quick-xml 0.42.0",
+ "resvg",
+ "serde_json",
+ "skrifa 0.44.0",
+ "svgtypes",
+ "sys-locale",
+ "zip",
+]
+
+[[package]]
+name = "konoma-plugin"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "globset",
+ "image",
+ "konoma-base",
+ "konoma-host-core",
+ "konoma-media-core",
+ "konoma-plugin",
+ "konoma-svg",
+ "konoma-test-support",
+ "konoma-vcs-core",
+ "konoma-widgets",
+ "libc",
+ "notify",
+ "ratatui",
+ "ratatui-image",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "toml",
+ "unicode-segmentation",
+ "unicode-width",
+ "ureq",
+]
+
+[[package]]
+name = "konoma-plugin-ratatui"
+version = "0.1.0"
+dependencies = [
+ "konoma-plugin",
+ "ratatui",
+]
+
+[[package]]
+name = "konoma-plugin-test"
+version = "0.1.0"
+dependencies = [
+ "konoma-demo-clock",
+ "konoma-plugin",
+ "libc",
+]
+
+[[package]]
+name = "konoma-sample-hexdump"
+version = "0.1.0"
+dependencies = [
+ "konoma-plugin",
+ "konoma-plugin-test",
+]
+
+[[package]]
+name = "konoma-svg"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "flate2",
+ "image",
+ "konoma-test-support",
+ "libc",
+ "ratex-katex-fonts",
+ "resvg",
+ "skrifa 0.44.0",
+ "svgtypes",
+ "unicode-width",
+]
+
+[[package]]
+name = "konoma-table"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "flate2",
+ "konoma-base",
+ "konoma-plugin",
+ "konoma-test-support",
+ "tar",
+ "zip",
+]
+
+[[package]]
+name = "konoma-test-support"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "image",
+ "ratatui",
+ "serde_json",
+ "unicode-width",
+ "zip",
+]
+
+[[package]]
+name = "konoma-vcs"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-file-plugins",
+ "konoma-plugin",
+ "konoma-test-support",
+ "konoma-vcs-core",
+]
+
+[[package]]
+name = "konoma-vcs-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "git2",
+ "ignore",
+ "konoma-base",
+ "konoma-test-support",
+ "libc",
+ "similar",
+]
+
+[[package]]
+name = "konoma-widgets"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "crossterm",
+ "emojis",
+ "flate2",
+ "image",
+ "konoma-base",
+ "konoma-code-core",
+ "konoma-markdown-core",
+ "konoma-mermaid-core",
+ "konoma-svg",
+ "konoma-test-support",
+ "konoma-vcs-core",
+ "libc",
+ "mermaid-text",
+ "pulldown-cmark",
+ "ratatui",
+ "ratatui-image",
+ "tokio",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1997,7 +2351,9 @@ dependencies = [
 
 [[package]]
 name = "mermaid-text"
-version = "0.57.0"
+version = "0.58.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90fa78f1bb32963ed114d9c318d880901ee4fa7103e133c3c3e530ebe5a09090"
 dependencies = [
  "ascii-dag",
  "chrono",
@@ -2252,6 +2608,12 @@ checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "numtoa"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f"
 
 [[package]]
 name = "objc2"
@@ -2935,6 +3297,7 @@ dependencies = [
  "ratatui-crossterm",
  "ratatui-macros",
  "ratatui-termina",
+ "ratatui-termion",
  "ratatui-termwiz",
  "ratatui-widgets",
  "serde",
@@ -3012,6 +3375,17 @@ dependencies = [
  "instability",
  "ratatui-core",
  "termina",
+]
+
+[[package]]
+name = "ratatui-termion"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87c732202fa5a71a9da0991013f0853e53f87048f45198e3a1ca3ee722accc2f"
+dependencies = [
+ "instability",
+ "ratatui-core",
+ "termion",
 ]
 
 [[package]]
@@ -3376,6 +3750,25 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
 ]
 
 [[package]]
@@ -4012,6 +4405,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "termion"
+version = "4.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f44138a9ae08f0f502f24104d82517ef4da7330c35acd638f1f29d3cd5475ecb"
+dependencies = [
+ "libc",
+ "numtoa",
+]
+
+[[package]]
 name = "termios"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4240,6 +4643,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_edit"
+version = "0.25.17+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3641d5bbb5349a79e1020a242d251efbc546ad8048d133958323ce9c40a9c9c"
+dependencies = [
+ "indexmap",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
 name = "toml_parser"
 version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4379,9 +4795,9 @@ checksum = "b1d386ff53b415b7fe27b50bb44679e2cc4660272694b7b6f3326d8480823a94"
 
 [[package]]
 name = "unicode-width"
-version = "0.2.3"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
+checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "untrusted"
@@ -5175,6 +5591,9 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "wit-bindgen"

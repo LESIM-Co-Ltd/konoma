@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (371)
+- MIT License (397)
 - Apache License 2.0 (13)
 - BSD 3-Clause "New" or "Revised" License (11)
 - Unicode License v3 (6)
@@ -1792,7 +1792,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- libz-sys 1.1.29
+- libz-sys 1.1.33
 
 ```
 Copyright (c) 2014 Alex Crichton
@@ -2864,6 +2864,7 @@ Used by:
 - signal-hook-mio 0.2.5
 - signal-hook-registry 1.4.8
 - signal-hook 0.3.18
+- signal-hook 0.4.5
 
 ```
 Copyright (c) 2017 tokio-jsonrpc developers
@@ -4222,6 +4223,7 @@ Used by:
 - serde_spanned 1.1.2
 - toml 1.1.8+spec-1.1.0
 - toml_datetime 1.1.2+spec-1.1.0
+- toml_edit 0.25.17+spec-1.1.0
 - toml_parser 1.1.5+spec-1.1.0
 - toml_writer 1.1.3+spec-1.1.0
 
@@ -4330,7 +4332,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 ## MIT License
 
 Used by:
-- libc 0.2.189
+- libc 0.2.191
 
 ```
 Copyright (c) The Rust Project Developers
@@ -4616,7 +4618,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- ureq-proto 0.6.4
+- ureq-proto 0.6.5
 
 ```
 Copyright 2022 Martin Algesten
@@ -4785,6 +4787,37 @@ Used by:
 MIT License
 
 Copyright (c) 2017 Elliot Linder <darfink@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+- rmp-serde 1.3.1
+- rmp 0.8.15
+
+```
+MIT License
+
+Copyright (c) 2017 Evgeny Safronov
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -5192,7 +5225,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- ureq 3.4.2
+- ureq 3.5.0
 
 ```
 MIT License
@@ -5644,7 +5677,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- arboard 3.6.1
+- arboard 3.7.0
 
 ```
 MIT License
@@ -5933,7 +5966,25 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.31.1
+- konoma 0.31.2
+- konoma-base 0.1.0
+- konoma-code 0.1.0
+- konoma-code-core 0.1.0
+- konoma-markdown 0.1.0
+- konoma-markdown-core 0.1.0
+- konoma-math 0.1.0
+- konoma-math-core 0.1.0
+- konoma-media 0.1.0
+- konoma-media-core 0.1.0
+- konoma-mermaid 0.1.0
+- konoma-mermaid-core 0.1.0
+- konoma-office 0.1.0
+- konoma-office-core 0.1.0
+- konoma-plugin 0.1.0
+- konoma-svg 0.1.0
+- konoma-table 0.1.0
+- konoma-vcs-core 0.1.0
+- konoma-widgets 0.1.0
 
 ```
 MIT License
@@ -5963,11 +6014,15 @@ SOFTWARE.
 ## MIT License
 
 Used by:
+- konoma-file-plugins 0.1.0
+- konoma-host-core 0.1.0
+- konoma-vcs 0.1.0
 - base64-simd 0.8.0
 - brotli-decompressor 5.0.3
 - chrono 0.4.45
 - icy_sixel 0.5.1
 - libm 0.2.16
+- mermaid-text 0.58.0
 - objc2-app-kit 0.3.2
 - objc2-core-foundation 0.3.2
 - objc2-core-graphics 0.3.2
@@ -5980,13 +6035,13 @@ Used by:
 - pulp-wasm-simd-flag 0.1.1
 - quantette 0.6.0
 - ratex-font-loader 0.1.14
-- ratex-font 0.1.14
-- ratex-katex-fonts 0.1.14
-- ratex-layout 0.1.14
-- ratex-lexer 0.1.14
-- ratex-parser 0.1.14
+- ratex-font 0.1.15
+- ratex-katex-fonts 0.1.15
+- ratex-layout 0.1.15
+- ratex-lexer 0.1.15
+- ratex-parser 0.1.15
 - ratex-svg 0.1.14
-- ratex-types 0.1.14
+- ratex-types 0.1.15
 - ratex-unicode-font 0.1.14
 - simd_helpers 0.1.0
 - siphasher 1.0.3
@@ -6018,7 +6073,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- tokio 1.53.2
+- tokio 1.53.3
 
 ```
 MIT License
@@ -6442,6 +6497,7 @@ Used by:
 - rustix 0.38.44
 - rustix 1.1.4
 - rustversion 1.0.23
+- semver 1.0.28
 - serde 1.0.229
 - serde_core 1.0.229
 - serde_derive 1.0.229
@@ -6586,7 +6642,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## MIT License
 
 Used by:
-- pulldown-cmark 0.13.4
+- pulldown-cmark 0.13.6
 
 ```
 The MIT License
@@ -7118,7 +7174,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- calamine 0.37.0
+- calamine 0.38.0
 - quick-xml 0.42.0
 
 ```
@@ -7768,43 +7824,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-```
-
-## MIT License
-
-Used by:
-- mermaid-text 0.57.0
-
-```
-This is a vendored copy of the third-party crate `mermaid-text`, taken from its
-upstream project markdown-reader (https://github.com/leboiko/markdown-reader,
-crate path: crates/mermaid-text) and redistributed here under its original MIT
-license. konoma applies small local patches (UTF-8 char-boundary guards in the
-keyword-prefix parsers) on top of this copy; those patches are likewise covered
-by the MIT terms below. See konoma's `[patch.crates-io]` note in Cargo.toml.
-
-MIT License
-
-Copyright (c) leboiko and the mermaid-text contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 ```
 
@@ -8845,7 +8864,7 @@ the following restrictions:
 
 ### Markdown renderer, from `tui-markdown` (MIT)
 
-konoma's Markdown renderer (`src/preview/markdown/render.rs`) reimplements
+konoma's Markdown renderer (`crates/konoma-widgets/src/markdown/render.rs`) reimplements
 `tui_markdown::TextWriter` method-for-method -- the module doc there spells out
 the correspondence. `tui-markdown` itself is no longer a Cargo dependency (see
 `cargo tree -i tui-markdown`, which resolves to nothing), so `cargo-about` no
@@ -8899,7 +8918,7 @@ at `fonts/OFL.txt` in `ratex-katex-fonts`.
 
 konoma's mermaid renderer lays diagrams out with a vendored copy of the `dagre`
 crate, version 0.1.1 (https://github.com/kookyleo/dagre-rs, archived). The source
-lives in `src/preview/mermaid/layout/` and ships inside the konoma crate; it is not
+lives in `crates/konoma-mermaid-core/src/layout/` and ships inside the konoma-mermaid-core crate; it is not
 a Cargo dependency, because `[patch.crates-io]` is stripped by `cargo publish` and
 konoma has to be able to fix the layout engine in a released build. `cargo-about`
 walks the dependency graph, so it cannot see this code -- the notice below is
@@ -8908,9 +8927,9 @@ maintained by hand.
 The vendored files were modified by the konoma authors (edition-2024 let-chains
 desugared for konoma's edition 2021, module paths rewritten, unused graph algorithms
 dropped). Every file says so in its header and
-`src/preview/mermaid/layout/PROVENANCE.md` lists each change, as Apache-2.0 section
+`crates/konoma-mermaid-core/src/layout/PROVENANCE.md` lists each change, as Apache-2.0 section
 4(b) requires. Upstream ships no `NOTICE` file, so there is none to reproduce here.
-The full license text is in `src/preview/mermaid/layout/LICENSE-APACHE` and is also
+The full license text is in `crates/konoma-mermaid-core/src/layout/LICENSE-APACHE` and is also
 reproduced above under "Apache License 2.0".
 
 ```
@@ -8935,11 +8954,11 @@ konoma draws the PowerPoint/OpenDocument preset shapes from `presetShapeDefiniti
 the machine-readable definition of the DrawingML preset geometries published with
 ECMA-376 Part 1 (5th edition, December 2016;
 https://ecma-international.org/wp-content/uploads/ECMA-376-1_5th_edition_december_2016.zip).
-The file is embedded **unmodified** at `src/preview/office/slide_draw/presets/presetShapeDefinitions.xml`
+The file is embedded **unmodified** at `crates/konoma-office-core/src/slide_draw/presets/presetShapeDefinitions.xml`
 and parsed at run time; it is not a Cargo dependency, so `cargo-about` cannot see it and
 this notice is maintained by hand. **It is not under konoma's MIT licence**; it stays under
 the Ecma copyright licence below, which is also kept next to the file in
-`src/preview/office/slide_draw/presets/NOTICE.md`.
+`crates/konoma-office-core/src/slide_draw/presets/NOTICE.md`.
 
 ```
 COPYRIGHT NOTICE
@@ -8970,9 +8989,9 @@ This document and the information contained herein is provided on an “AS IS”
 ### Preset pattern bitmaps (OpenPresentation, MIT)
 
 The 54 8 x 8 bitmaps of the DrawingML preset patterns (`a:pattFill`) in
-`src/preview/office/slide_draw/patterns.rs` are the tiles measured from desktop PowerPoint and
+`crates/konoma-office-core/src/slide_draw/patterns.rs` are the tiles measured from desktop PowerPoint and
 published as `pattern-fills.ts` in https://github.com/OpenPresentation/opf (MIT licence). The
-Wingdings 2 and Webdings code tables in `src/preview/office/slide_draw/symbol_font.rs` were
+Wingdings 2 and Webdings code tables in `crates/konoma-office-core/src/slide_draw/symbol_font.rs` were
 read from the Unicode document L2/11-052 (https://www.unicode.org/L2/L2011/11052-wingding.pdf)
 and are konoma's own transcription.
 

@@ -70,7 +70,7 @@ const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" heigh
 fn evicted_fence(app: &mut App) -> (String, PathBuf) {
     let url = crate::preview::markdown::mermaid_fence_url("graph TD\nA-->B");
     let key = PathBuf::from(&url);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(frame_img(80, 40, 9)),
@@ -79,9 +79,9 @@ fn evicted_fence(app: &mut App) -> (String, PathBuf) {
             ..Default::default()
         },
     );
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&key].evicted, "setup: evicted");
+    assert!(app.md_images.cache[&key].evicted, "setup: evicted");
     (url, key)
 }
 
@@ -105,7 +105,7 @@ fn an_evicted_gif_with_a_settled_encode_is_rebuilt_and_plays_again() {
             )
         })
         .collect();
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         gif.clone(),
         MdImgEntry {
             decoded: Some(frames[0].0.clone()),
@@ -115,25 +115,28 @@ fn an_evicted_gif_with_a_settled_encode_is_rebuilt_and_plays_again() {
             ..Default::default()
         },
     );
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&gif].frames.is_empty(), "setup: evicted");
+    assert!(
+        app.md_images.cache[&gif].frames.is_empty(),
+        "setup: evicted"
+    );
 
     // The picture comes back on screen: its pixels must be asked for although its encode is settled.
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     app.ensure_md_image(&url, 10, 4, 0, 4);
     let res = img_rx
         .recv_timeout(WAIT)
         .expect("the evicted GIF must be rebuilt when it is drawn again");
     assert!(app.apply_md_image(res));
-    let e = app.md_image_cache.get_mut(&gif).unwrap();
+    let e = app.md_images.cache.get_mut(&gif).unwrap();
     assert_eq!(e.frames.len(), 3, "all frames are back");
     assert!(!e.evicted && !e.failed);
 
     // And it plays: a due tick advances past frame 0.
     e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
     assert!(app.advance_md_gifs_if_due());
-    assert_eq!(app.md_image_cache[&gif].idx, 1);
+    assert_eq!(app.md_images.cache[&gif].idx, 1);
 }
 
 /// The in-place zoom of a focused diagram needs the pixels as much as any placement does.
@@ -141,7 +144,7 @@ fn an_evicted_gif_with_a_settled_encode_is_rebuilt_and_plays_again() {
 fn zooming_an_evicted_diagram_rebuilds_it_and_then_encodes_the_crop() {
     let (mut app, _dir, img_rx, enc_rx) = setup("konoma_raster_zoom_evicted");
     let (url, key) = evicted_fence(&mut app);
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     app.tab.fence_zoom = 2.0;
     app.ensure_md_fence_zoom(&url, 20, 8);
     let res = img_rx
@@ -149,7 +152,7 @@ fn zooming_an_evicted_diagram_rebuilds_it_and_then_encodes_the_crop() {
         .expect("zooming an evicted diagram must rebuild its pixels");
     assert!(res.reraster, "rebuilt from the kept SVG, layout untouched");
     assert!(app.apply_md_image(res));
-    assert!(app.md_image_cache[&key].decoded.is_some());
+    assert!(app.md_images.cache[&key].decoded.is_some());
     // With the pixels back the next pass encodes the zoomed crop.
     app.ensure_md_fence_zoom(&url, 20, 8);
     enc_rx
@@ -162,7 +165,7 @@ fn zooming_an_evicted_diagram_rebuilds_it_and_then_encodes_the_crop() {
 fn sharpening_an_evicted_diagram_rebuilds_it() {
     let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_density_evicted");
     let (url, _key) = evicted_fence(&mut app);
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     app.ensure_md_fence_density(&url, 40, 20);
     let res = img_rx
         .recv_timeout(WAIT)
@@ -178,7 +181,7 @@ fn drawing_a_diagram_through_the_zoom_or_density_path_marks_it_used() {
     let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_stamp");
     let url = crate::preview::markdown::mermaid_fence_url("graph TD\nA-->B");
     let key = PathBuf::from(&url);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(frame_img(80, 40, 9)),
@@ -189,17 +192,17 @@ fn drawing_a_diagram_through_the_zoom_or_density_path_marks_it_used() {
         },
     );
     app.tab.fence_zoom = 2.0;
-    app.md_frame = 9;
+    app.md_images.frame = 9;
     app.ensure_md_fence_zoom(&url, 20, 8);
-    assert_eq!(app.md_image_cache[&key].last_used, 9, "zoom path");
-    app.md_frame = 12;
+    assert_eq!(app.md_images.cache[&key].last_used, 9, "zoom path");
+    app.md_images.frame = 12;
     app.ensure_md_fence_density(&url, 20, 8);
-    assert_eq!(app.md_image_cache[&key].last_used, 12, "density path");
+    assert_eq!(app.md_images.cache[&key].last_used, 12, "density path");
     // ... so a budget pass at that frame leaves it alone.
-    app.md_frame = 13;
+    app.md_images.frame = 13;
     app.evict_md_images_to(0);
     assert!(
-        app.md_image_cache[&key].decoded.is_some() || app.md_image_cache[&key].last_used == 12,
+        app.md_images.cache[&key].decoded.is_some() || app.md_images.cache[&key].last_used == 12,
         "stamped"
     );
 }
@@ -214,7 +217,7 @@ fn a_failed_rebuild_stops_the_loading_state() {
     let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_rebuild_fails");
     let url = crate::preview::markdown::math_url("x^2", false);
     let key = PathBuf::from(&url);
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(frame_img(40, 20, 3)),
@@ -223,9 +226,9 @@ fn a_failed_rebuild_stops_the_loading_state() {
             ..Default::default()
         },
     );
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     app.ensure_md_image(&url, 10, 4, 0, 4);
     let res = img_rx.recv_timeout(WAIT).expect("a rebuild is attempted");
     assert!(res.image.is_err(), "the broken SVG cannot be rasterized");
@@ -234,7 +237,7 @@ fn a_failed_rebuild_stops_the_loading_state() {
         !app.md_images_loading(),
         "a rebuild that failed must not leave the cache 'loading'"
     );
-    assert!(app.md_image_cache[&key].failed);
+    assert!(app.md_images.cache[&key].failed);
 }
 
 /// The same when the worker thread panicked (the fallback result the thread always sends).
@@ -242,19 +245,18 @@ fn a_failed_rebuild_stops_the_loading_state() {
 fn a_panicked_rebuild_stops_the_loading_state() {
     let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_rebuild_panics");
     let (url, key) = evicted_fence(&mut app);
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     app.ensure_md_image(&url, 10, 4, 0, 4); // starts the rebuild
     app.apply_md_image(MdImageResult {
         path: key.clone(),
         image: Err("re-raster panicked".to_string()),
         svg: None,
-        svg_trust: Default::default(),
         reraster: true,
         frames: None,
         request: app.md_request_for_test(&key),
     });
     assert!(!app.md_images_loading());
-    assert!(app.md_image_cache[&key].failed);
+    assert!(app.md_images.cache[&key].failed);
 }
 
 // ---- bytes of pixels are counted in the picture's own format ------------------------------
@@ -301,7 +303,7 @@ fn rebuilds_are_limited_and_every_picture_still_comes_back() {
     for i in 0..n {
         let p = dir.join(format!("p{i}.png"));
         crate::test_support::write_solid_png(&p, 24, 16, [i as u8, 2, 3]);
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             p.clone(),
             MdImgEntry {
                 decoded: Some(frame_img(24, 16, 1)),
@@ -311,12 +313,12 @@ fn rebuilds_are_limited_and_every_picture_still_comes_back() {
         );
         urls.push(p.to_string_lossy().to_string());
     }
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache.values().all(|e| e.evicted));
+    assert!(app.md_images.cache.values().all(|e| e.evicted));
 
     // They all come on screen in the same pass.
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     for u in &urls {
         app.ensure_md_image(u, 10, 4, 0, 4);
     }
@@ -332,13 +334,16 @@ fn rebuilds_are_limited_and_every_picture_still_comes_back() {
     );
 
     // Frame after frame: land what finished, ask again. All of them come back.
-    let t = std::time::Instant::now();
-    while app.md_image_cache.values().any(|e| e.decoded.is_none()) {
-        assert!(t.elapsed() < WAIT, "not every picture came back");
-        if let Ok(res) = img_rx.recv_timeout(std::time::Duration::from_millis(20)) {
-            app.apply_md_image(res);
-        }
-        app.md_frame += 1;
+    let deadline = std::time::Instant::now() + WAIT;
+    while app.md_images.cache.values().any(|e| e.decoded.is_none()) {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("rebuild cap: every picture must finish");
+        let res = img_rx
+            .recv_timeout(left)
+            .expect("rebuild cap: an outstanding rebuild must answer");
+        app.apply_md_image(res);
+        app.md_images.frame += 1;
         assert!(app.md_rebuilds_running() <= MD_MAX_REBUILDS);
         for u in &urls {
             app.ensure_md_image(u, 10, 4, 0, 4);
@@ -346,7 +351,7 @@ fn rebuilds_are_limited_and_every_picture_still_comes_back() {
         }
         // The cache budget is far above these 12 small pictures, so nothing is evicted again.
     }
-    assert!(!app.md_images_loading() || app.md_image_cache.values().any(|e| e.enc_inflight));
+    assert!(!app.md_images_loading() || app.md_images.cache.values().any(|e| e.enc_inflight));
 }
 
 /// An evicted entry nobody is asking for is idle, not loading (the idle-CPU guarantee).
@@ -364,13 +369,13 @@ fn drawing_a_picture_sets_its_decode_priority_to_the_current_pass() {
     let p = dir.join("a.png");
     crate::test_support::write_solid_png(&p, 24, 16, [1, 2, 3]);
     let url = p.to_string_lossy().to_string();
-    app.md_frame = 7;
+    app.md_images.frame = 7;
     app.ensure_md_image(&url, 10, 4, 0, 4); // starts the first decode
-    assert_eq!(app.md_image_cache[&p].wish.ticket().priority(), 7);
-    app.md_frame = 11;
+    assert_eq!(app.md_images.cache[&p].wish.ticket().priority(), 7);
+    app.md_images.frame = 11;
     app.ensure_md_image(&url, 10, 4, 0, 4);
     assert_eq!(
-        app.md_image_cache[&p].wish.ticket().priority(),
+        app.md_images.cache[&p].wish.ticket().priority(),
         11,
         "what is drawn now outranks what was drawn before"
     );
@@ -383,8 +388,8 @@ fn a_withdrawn_decode_reports_cancelled_without_decoding() {
     let (mut app, dir, img_rx, _enc_rx) = setup("konoma_raster_withdrawn");
     let p = dir.join("a.png");
     crate::test_support::write_solid_png(&p, 24, 16, [1, 2, 3]);
-    app.md_image_cache.insert(p.clone(), MdImgEntry::default());
-    app.md_image_cache[&p].wish.cancel_now();
+    app.md_images.cache.insert(p.clone(), MdImgEntry::default());
+    app.md_images.cache[&p].wish.cancel_now();
     assert!(app.spawn_md_decode(p.clone()));
     let res = img_rx
         .recv_timeout(WAIT)
@@ -398,7 +403,7 @@ fn a_withdrawn_decode_reports_cancelled_without_decoding() {
     // The control: the same request, still wanted, is answered.
     let q = dir.join("b.png");
     crate::test_support::write_solid_png(&q, 24, 16, [3, 2, 1]);
-    app.md_image_cache.insert(q.clone(), MdImgEntry::default());
+    app.md_images.cache.insert(q.clone(), MdImgEntry::default());
     assert!(app.spawn_md_decode(q.clone()));
     let res = img_rx
         .recv_timeout(WAIT)
@@ -469,10 +474,11 @@ fn markdown_app(name: &str, md_body: &str, files: &[(&str, Vec<u8>)]) -> Setup {
         .expect("doc.md in the tree");
     app.tab.selected = i;
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(PreviewKind::Markdown(_))
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(PreviewKind::is_markdown));
     (app, dir, img_rx, enc_rx)
 }
 
@@ -586,7 +592,12 @@ fn the_full_screen_fallback_names_the_reason() {
             .expect("the image is in the tree");
         app.tab.selected = i;
         app.tree_activate().unwrap();
-        let res = media_rx.recv_timeout(WAIT).expect("media result");
+        let res = crate::test_support::recv_media_final(
+            &mut app,
+            &media_rx,
+            WAIT,
+            "full-screen image failure: decode after layout",
+        );
         app.apply_media(res);
         assert!(app.image_failure().is_some(), "{name}: the reason is kept");
 
@@ -647,13 +658,15 @@ fn the_cache_budget_is_512_mib() {
 fn a_landing_picture_evicts_the_oldest_ones_over_budget() {
     let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_auto_evict");
     app.md_cache_budget_for_test = Some(300_000);
-    app.md_frame = 5;
-    app.md_image_cache
+    app.md_images.frame = 5;
+    app.md_images
+        .cache
         .insert(PathBuf::from("/x/old1.png"), pixels_entry(256, 256, 1));
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(PathBuf::from("/x/old2.png"), pixels_entry(256, 256, 2));
     let fresh = PathBuf::from("/x/fresh.png");
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         fresh.clone(),
         MdImgEntry {
             last_used: 5, // drawn by the pass in progress
@@ -664,15 +677,14 @@ fn a_landing_picture_evicts_the_oldest_ones_over_budget() {
         path: fresh.clone(),
         image: Ok((*frame_img(256, 256, 7)).clone()),
         svg: None,
-        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&fresh),
     }));
-    assert!(app.md_image_cache[&PathBuf::from("/x/old1.png")].evicted);
-    assert!(app.md_image_cache[&PathBuf::from("/x/old2.png")].evicted);
+    assert!(app.md_images.cache[&PathBuf::from("/x/old1.png")].evicted);
+    assert!(app.md_images.cache[&PathBuf::from("/x/old2.png")].evicted);
     assert!(
-        app.md_image_cache[&fresh].decoded.is_some(),
+        app.md_images.cache[&fresh].decoded.is_some(),
         "what landed stays"
     );
     assert!(app.md_image_cache_pixel_bytes() <= 300_000);
@@ -682,18 +694,19 @@ fn a_landing_picture_evicts_the_oldest_ones_over_budget() {
 #[test]
 fn eviction_takes_only_what_can_be_given_up() {
     let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_evict_rules");
-    app.md_frame = 0; // nothing has been drawn yet: last_used 0 counts as "not on screen"
+    app.md_images.frame = 0; // nothing has been drawn yet: last_used 0 counts as "not on screen"
     let k = |n: &str| PathBuf::from(format!("/x/{n}.png"));
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(k("plain"), pixels_entry(64, 64, 0));
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         k("encoding"),
         MdImgEntry {
             enc_inflight: true,
             ..pixels_entry(64, 64, 0)
         },
     );
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         k("sharpening"),
         MdImgEntry {
             reraster_inflight: true,
@@ -702,23 +715,24 @@ fn eviction_takes_only_what_can_be_given_up() {
     );
     // Still decoding for the first time: nothing to give up (and "evicted" would hide it from
     // the loading indicator).
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(k("pending"), MdImgEntry::default());
     app.evict_md_images_to(0);
     assert!(
-        app.md_image_cache[&k("plain")].evicted,
+        app.md_images.cache[&k("plain")].evicted,
         "frame 0 draws nothing yet"
     );
     assert!(
-        !app.md_image_cache[&k("encoding")].evicted,
+        !app.md_images.cache[&k("encoding")].evicted,
         "its encode needs the pixels"
     );
     assert!(
-        !app.md_image_cache[&k("sharpening")].evicted,
+        !app.md_images.cache[&k("sharpening")].evicted,
         "its re-raster is in flight"
     );
     assert!(
-        !app.md_image_cache[&k("pending")].evicted,
+        !app.md_images.cache[&k("pending")].evicted,
         "it has no pixels yet"
     );
     assert!(app.md_images_loading(), "the pending one is still loading");
@@ -728,9 +742,9 @@ fn eviction_takes_only_what_can_be_given_up() {
 #[test]
 fn a_cache_exactly_at_its_budget_keeps_everything() {
     let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_exact_budget");
-    app.md_frame = 9;
+    app.md_images.frame = 9;
     for i in 0..3 {
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             PathBuf::from(format!("/x/{i}.png")),
             pixels_entry(100, 100, 1),
         );
@@ -738,10 +752,10 @@ fn a_cache_exactly_at_its_budget_keeps_everything() {
     let total = app.md_image_cache_pixel_bytes();
     assert_eq!(total, 3 * 100 * 100 * 4);
     app.evict_md_images_to(total);
-    assert!(app.md_image_cache.values().all(|e| !e.evicted));
+    assert!(app.md_images.cache.values().all(|e| !e.evicted));
     app.evict_md_images_to(total - 1);
     assert_eq!(
-        app.md_image_cache.values().filter(|e| e.evicted).count(),
+        app.md_images.cache.values().filter(|e| e.evicted).count(),
         1,
         "one byte over: exactly one goes"
     );
@@ -777,15 +791,15 @@ fn every_draw_call_stamps_the_picture_with_the_pass() {
     let p = dir.join("a.png");
     crate::test_support::write_solid_png(&p, 24, 16, [1, 2, 3]);
     let url = p.to_string_lossy().to_string();
-    app.md_frame = 7;
+    app.md_images.frame = 7;
     app.ensure_md_image(&url, 10, 4, 0, 4);
     assert_eq!(
-        app.md_image_cache[&p].last_used, 7,
+        app.md_images.cache[&p].last_used, 7,
         "the call that starts the decode"
     );
-    app.md_frame = 12;
+    app.md_images.frame = 12;
     app.ensure_md_image(&url, 10, 4, 0, 4);
-    assert_eq!(app.md_image_cache[&p].last_used, 12, "a later call");
+    assert_eq!(app.md_images.cache[&p].last_used, 12, "a later call");
 }
 
 /// Asking again while a rebuild is running does not start a second one.
@@ -794,16 +808,17 @@ fn a_rebuild_in_flight_is_not_started_twice() {
     let (mut app, dir, img_rx, _enc_rx) = setup("konoma_raster_one_rebuild");
     let p = dir.join("a.png");
     crate::test_support::write_solid_png(&p, 24, 16, [1, 2, 3]);
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(p.clone(), pixels_entry(24, 16, 1));
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
     let url = p.to_string_lossy().to_string();
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     app.ensure_md_image(&url, 10, 4, 0, 4);
     assert!(app.md_images_loading(), "waiting for the pixels");
     assert_eq!(app.md_rebuilds_running(), 1);
-    app.md_frame = 7;
+    app.md_images.frame = 7;
     app.ensure_md_image(&url, 10, 4, 0, 4);
     app.ensure_md_image(&url, 10, 4, 0, 4);
     let res = img_rx.recv_timeout(WAIT).expect("one rebuild");
@@ -814,8 +829,8 @@ fn a_rebuild_in_flight_is_not_started_twice() {
             .is_err(),
         "a second rebuild was started"
     );
-    assert!(!app.md_image_cache[&p].evicted && app.md_image_cache[&p].decoded.is_some());
-    assert!(!app.md_images_loading() || app.md_image_cache.values().any(|e| e.enc_inflight));
+    assert!(!app.md_images.cache[&p].evicted && app.md_images.cache[&p].decoded.is_some());
+    assert!(!app.md_images_loading() || app.md_images.cache.values().any(|e| e.enc_inflight));
 }
 
 /// Without a loader nothing can be rebuilt, and nothing is left looking busy.
@@ -826,10 +841,10 @@ fn without_a_loader_an_evicted_picture_is_left_alone() {
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     let (url, key) = evicted_fence(&mut app);
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     assert!(!app.ensure_md_pixels(&key));
     app.ensure_md_image(&url, 10, 4, 0, 4);
-    let e = &app.md_image_cache[&key];
+    let e = &app.md_images.cache[&key];
     assert!(
         e.evicted && !e.rebuilding && !e.reraster_inflight,
         "nothing latched"
@@ -847,7 +862,7 @@ fn rebuilds_use_the_raster_size_of_their_kind() {
         "graph TD\nA-->B",
     ));
     for k in [&math, &fence] {
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             k.clone(),
             MdImgEntry {
                 svg: Some(Arc::new(SVG.to_vec())),
@@ -855,9 +870,9 @@ fn rebuilds_use_the_raster_size_of_their_kind() {
             },
         );
     }
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     for k in [&math, &fence] {
         assert!(!app.ensure_md_pixels(k));
     }
@@ -893,11 +908,14 @@ fn evicting_a_diagram_does_not_change_the_page_layout() {
     let before = app.md_images();
     assert_eq!(before.len(), 1, "the diagram is a placement");
     let key = PathBuf::from(&before[0].url);
-    assert!(app.md_image_cache[&key].decoded.is_some());
+    assert!(app.md_images.cache[&key].decoded.is_some());
 
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&key].decoded.is_none(), "pixels dropped");
+    assert!(
+        app.md_images.cache[&key].decoded.is_none(),
+        "pixels dropped"
+    );
     app.md_cache = None;
     let after_lines = text_of(&app.decorated_lines(100));
     let after = app.md_images();
@@ -946,13 +964,22 @@ fn a_still_image_is_decoded_on_the_worker_not_on_the_ui_thread() {
     let (media_tx, media_rx) = std::sync::mpsc::channel();
     app.attach_media_loader(media_tx);
     open_first_entry(&mut app);
-    assert!(matches!(app.tab.preview_kind, Some(PreviewKind::Image(_))));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(|k| k.is_plugin("image")));
     assert!(app.is_media_loading(), "the load runs on the worker");
     assert!(
         app.image_src.is_none(),
         "nothing was decoded on the UI thread"
     );
-    let res = media_rx.recv_timeout(WAIT).expect("the worker's result");
+    let res = crate::test_support::recv_media_final(
+        &mut app,
+        &media_rx,
+        WAIT,
+        "still image: decode after layout",
+    );
     assert!(app.apply_media(res));
     assert!(app.image_src.is_some() && !app.is_media_loading());
 }
@@ -1025,7 +1052,7 @@ fn a_rebuild_wish_that_nobody_renews_lapses_and_the_loop_goes_idle() {
     for i in 0..(MD_MAX_REBUILDS + 3) {
         let p = dir.join(format!("w{i}.png"));
         crate::test_support::write_solid_png(&p, 24, 16, [i as u8, 2, 3]);
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             p.clone(),
             MdImgEntry {
                 decoded: Some(frame_img(24, 16, 1)),
@@ -1035,11 +1062,11 @@ fn a_rebuild_wish_that_nobody_renews_lapses_and_the_loop_goes_idle() {
         );
         urls.push(p.to_string_lossy().to_string());
     }
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
     // One frame that wants them all: the limit lets some start and makes the rest wait.
     app.begin_frame();
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     for u in &urls {
         app.ensure_md_image(u, 10, 4, 0, 4);
     }
@@ -1065,7 +1092,7 @@ fn a_rebuild_wish_that_nobody_renews_lapses_and_the_loop_goes_idle() {
     );
     // A frame that does still show them renews the wish.
     app.begin_frame();
-    app.md_frame = 7;
+    app.md_images.frame = 7;
     for u in &urls {
         app.ensure_md_image(u, 10, 4, 0, 4);
     }
@@ -1139,7 +1166,7 @@ fn a_file_picture_failing_after_the_preview_moved_on_is_reported_cancelled() {
         Some(ImageFailure::Corrupt.code())
     );
     app.apply_md_image(res);
-    app.md_image_cache.clear();
+    app.md_images.cache.clear();
     // The preview moves on while it is being drawn: the same failure is a cancellation.
     app.media_gen_shared.store(
         app.media_gen.wrapping_add(1000),
@@ -1154,7 +1181,7 @@ fn a_file_picture_failing_after_the_preview_moved_on_is_reported_cancelled() {
     let key = res.path.clone();
     app.apply_md_image(res);
     assert!(
-        !app.md_image_cache.contains_key(&key),
+        !app.md_images.cache.contains_key(&key),
         "forgotten, asked for again"
     );
 }
@@ -1175,12 +1202,13 @@ fn a_file_picture_cancelled_by_a_generation_bump_is_forgotten_and_asked_for_agai
     let (mut app, dir, img_rx, _enc_rx) = setup_with("konoma_raster_gen_bump", &[("a.png", png)]);
     app.tab.preview_path = Some(dir.join("doc.md"));
     let key = dir.join("a.png");
-    app.md_image_cache
+    app.md_images
+        .cache
         .insert(key.clone(), MdImgEntry::default());
     assert!(app.md_images_loading(), "premise: waiting for the decode");
     // The decode's ticket goes stale (the preview moved on, e.g. another tab or file started a
     // media load) while the entry stays in the cache: the decode ends cancelled.
-    app.md_image_cache[&key].wish.cancel_now();
+    app.md_images.cache[&key].wish.cancel_now();
     assert!(app.spawn_md_decode(key.clone()));
     let res = img_rx
         .recv_timeout(WAIT)
@@ -1191,11 +1219,11 @@ fn a_file_picture_cancelled_by_a_generation_bump_is_forgotten_and_asked_for_agai
     );
     assert_eq!(res.path, key);
     app.apply_md_image(res);
-    assert!(!app.md_image_cache.contains_key(&key), "forgotten");
+    assert!(!app.md_images.cache.contains_key(&key), "forgotten");
     assert!(!app.md_images_loading(), "no longer waiting");
     // Drawn again later: the picture is asked for again.
     app.ensure_md_image("a.png", 10, 4, 0, 4);
-    assert!(app.md_image_cache.contains_key(&key), "asked for again");
+    assert!(app.md_images.cache.contains_key(&key), "asked for again");
     let res = img_rx.recv_timeout(WAIT).expect("the second decode runs");
     assert!(res.image.is_ok(), "{:?}", res.image.err());
 }
@@ -1210,13 +1238,12 @@ fn a_cancelled_file_picture_result_for_a_removed_entry_is_ignored() {
             .code()
             .to_string()),
         svg: None,
-        svg_trust: Default::default(),
         reraster: false,
         frames: None,
         request: app.md_request_for_test(&PathBuf::from("/nonexistent/a.png")),
     });
     assert!(!redraw);
-    assert!(app.md_image_cache.is_empty());
+    assert!(app.md_images.cache.is_empty());
 }
 
 // ---- decodes in flight versus pictures whose pixels were dropped ------------------------------
@@ -1233,17 +1260,17 @@ fn pictures_with_dropped_pixels_are_not_decodes_in_flight() {
         ..Default::default()
     };
     for i in 0..40 {
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             PathBuf::from(crate::preview::markdown::math_url(&format!("x^{i}"), false)),
             dropped(),
         );
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             PathBuf::from(crate::preview::markdown::mermaid_fence_url(&format!(
                 "graph TD; A{i}-->B"
             ))),
             dropped(),
         );
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             PathBuf::from(format!("office-img://abc/p{i}.png")),
             dropped(),
         );
@@ -1251,18 +1278,18 @@ fn pictures_with_dropped_pixels_are_not_decodes_in_flight() {
     assert_eq!(app.synthetic_renders_in_flight(), 0);
     assert_eq!(app.office_pictures_in_flight(), 0);
     // A first decode that is really running still counts.
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         PathBuf::from("office-img://abc/new.png"),
         MdImgEntry::default(),
     );
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         PathBuf::from(crate::preview::markdown::math_url("new", false)),
         MdImgEntry::default(),
     );
     assert_eq!(app.office_pictures_in_flight(), 1);
     assert_eq!(app.synthetic_renders_in_flight(), 1);
     // And one that failed does not.
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         PathBuf::from("office-img://abc/bad.png"),
         MdImgEntry {
             failed: true,
@@ -1420,7 +1447,7 @@ mod smaller_retry {
     /// too generous).
     #[test]
     fn a_real_slide_refused_at_a_big_raster_is_drawn_smaller() {
-        use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+        use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
         let drawn = crate::preview::office::slide_draw::render_svg_cancellable(
             &shadowed_slide(2),
             &|_| None,
@@ -1443,8 +1470,6 @@ mod smaller_retry {
     }
 }
 
-use crate::preview::svg::SvgTrust;
-
 // ---- a kept SVG is redrawn on the path its origin demands ---------------------------------
 
 /// A file/git-object SVG kept in the cache, with unique bytes so the observation is parallel-safe.
@@ -1456,7 +1481,7 @@ fn unique_svg(tag: &str) -> Vec<u8> {
 }
 
 fn evicted_with_svg(app: &mut App, key: PathBuf, svg: &[u8], trust: SvgTrust) {
-    app.md_image_cache.insert(
+    app.md_images.cache.insert(
         key.clone(),
         MdImgEntry {
             decoded: Some(frame_img(80, 40, 9)),
@@ -1466,26 +1491,25 @@ fn evicted_with_svg(app: &mut App, key: PathBuf, svg: &[u8], trust: SvgTrust) {
             ..Default::default()
         },
     );
-    app.md_frame = 5;
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&key].evicted, "setup: evicted");
+    assert!(app.md_images.cache[&key].evicted, "setup: evicted");
 }
 
-/// **The bug.** Rebuilding the pixels of an evicted, untrusted SVG (the old side of an image diff)
-/// drew it in the app's own process, outside the child's guard.
+/// Rebuilding the pixels of an evicted, untrusted SVG (the old side of an image diff) must draw it
+/// through the supervised path, never in the app's own process.
 #[test]
 fn an_evicted_untrusted_svg_is_rebuilt_in_the_child_process_path() {
-    use crate::preview::svg::seen_for_tests::count;
+    use crate::preview::svg::seen_for_tests::untrusted_count;
     let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_untrusted_rebuild");
     let svg = unique_svg("untrusted-rebuild");
     let key = PathBuf::from("media-diff://old/1234/0");
     evicted_with_svg(&mut app, key.clone(), &svg, SvgTrust::Embedded);
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
     let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
     assert!(res.reraster && res.image.is_ok());
-    assert_eq!(count(&svg, true), 1, "drawn on the untrusted (child) path");
-    assert_eq!(count(&svg, false), 0, "never drawn in this process");
+    assert_eq!(untrusted_count(&svg), 1, "drawn on the supervised path");
 }
 
 /// An entry whose origin was never recorded is untrusted (the default).
@@ -1494,10 +1518,10 @@ fn a_kept_svg_of_unknown_origin_is_untrusted() {
     assert_eq!(MdImgEntry::default().svg_trust, SvgTrust::Embedded);
 }
 
-/// Mermaid and math are konoma's own output: they stay in-process, on rebuild and on sharpening.
+/// konoma's own SVG stays in-process on rebuild.
 #[test]
 fn an_evicted_trusted_svg_is_rebuilt_in_process() {
-    use crate::preview::svg::seen_for_tests::count;
+    use crate::preview::svg::seen_for_tests::untrusted_count;
     let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_trusted_rebuild");
     let svg = unique_svg("trusted-rebuild");
     let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(
@@ -1509,25 +1533,24 @@ fn an_evicted_trusted_svg_is_rebuilt_in_process() {
         &svg,
         SvgTrust::Trusted(PathBuf::from("mermaid.svg")),
     );
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
     let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
     assert!(res.reraster && res.image.is_ok());
-    assert_eq!(count(&svg, false), 1, "drawn in this process");
-    assert_eq!(count(&svg, true), 0, "no child for konoma's own SVG");
+    assert_eq!(untrusted_count(&svg), 0, "no child for konoma's own SVG");
 }
 
 /// The sharpening redraw of a kept SVG follows the same rule.
 #[test]
 fn sharpening_a_kept_svg_follows_its_origin() {
-    use crate::preview::svg::seen_for_tests::count;
+    use crate::preview::svg::seen_for_tests::untrusted_count;
     for trusted in [false, true] {
         let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_sharpen_origin");
         let svg = unique_svg(if trusted { "sharp-t" } else { "sharp-u" });
         let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(
             "graph TD\nS-->H",
         ));
-        app.md_image_cache.insert(
+        app.md_images.cache.insert(
             key.clone(),
             MdImgEntry {
                 decoded: Some(frame_img(80, 40, 9)),
@@ -1541,7 +1564,7 @@ fn sharpening_a_kept_svg_follows_its_origin() {
                 ..Default::default()
             },
         );
-        app.md_frame = 6;
+        app.md_images.frame = 6;
         app.ensure_md_fence_density(
             &crate::preview::markdown::mermaid_fence_url("graph TD\nS-->H"),
             400,
@@ -1551,13 +1574,12 @@ fn sharpening_a_kept_svg_follows_its_origin() {
             .recv_timeout(WAIT)
             .expect("the sharpening must answer");
         assert!(res.reraster && res.image.is_ok());
-        assert_eq!(count(&svg, true), usize::from(!trusted));
-        assert_eq!(count(&svg, false), usize::from(trusted));
+        assert_eq!(untrusted_count(&svg), usize::from(!trusted));
     }
 }
 
 /// A redraw paints exactly what the first draw did: a `File` SVG keeps resolving its relative
-/// `<image href>` against its own directory after eviction, and an `Embedded` one reads no file.
+/// `<image href>` against its own directory after eviction.
 #[test]
 fn a_file_svg_redraws_with_its_relative_image_after_eviction() {
     let (mut app, dir, img_rx, _enc_rx) = setup("konoma_raster_file_base");
@@ -1581,20 +1603,19 @@ fn a_file_svg_redraws_with_its_relative_image_after_eviction() {
 
     let key = PathBuf::from("media-diff://new/1/0");
     evicted_with_svg(&mut app, key.clone(), &svg, SvgTrust::File(path));
-    app.md_frame = 6;
+    app.md_images.frame = 6;
     assert!(!app.ensure_md_pixels(&key));
     let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
     let rebuilt = res.image.expect("rebuilt");
     assert_eq!(first.to_rgba8().as_raw(), rebuilt.to_rgba8().as_raw());
 }
 
-/// The mermaid fence goes through the real `ensure_mermaid_fence_render`; its result must carry
+/// The mermaid fence goes through the real `ensure_mermaid_fence_render`; its entry must record
 /// `Trusted`, so that after eviction the rebuild still draws in this process (and never asks the
-/// child). Without `entry.svg_trust = res.svg_trust` in `apply_md_image` the entry would fall back
-/// to the untrusted default and this fails.
+/// child). Without `svg_trust` on the entry made there it would fall back to the untrusted default.
 #[test]
 fn a_mermaid_fence_stays_trusted_through_eviction_and_rebuild() {
-    use crate::preview::svg::seen_for_tests::count;
+    use crate::preview::svg::seen_for_tests::untrusted_count;
     let (mut app, _dir, img_rx, _enc_rx) = setup("konoma_raster_fence_trust_real");
     let code = "graph TD\nTrust-->Real";
     let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
@@ -1602,22 +1623,21 @@ fn a_mermaid_fence_stays_trusted_through_eviction_and_rebuild() {
     let first = img_rx.recv_timeout(WAIT).expect("the first render answers");
     assert!(first.image.is_ok());
     app.apply_md_image(first);
-    let svg = app.md_image_cache[&key]
+    let svg = app.md_images.cache[&key]
         .svg
         .clone()
         .expect("the fence keeps its SVG");
     assert!(
-        matches!(app.md_image_cache[&key].svg_trust, SvgTrust::Trusted(_)),
+        matches!(app.md_images.cache[&key].svg_trust, SvgTrust::Trusted(_)),
         "the entry records that konoma made this SVG"
     );
-    let (trusted0, untrusted0) = (count(&svg, false), count(&svg, true));
-    app.md_frame = 5;
+    let untrusted0 = untrusted_count(&svg);
+    app.md_images.frame = 5;
     app.evict_md_images_to(0);
-    assert!(app.md_image_cache[&key].evicted, "setup: evicted");
-    app.md_frame = 6;
+    assert!(app.md_images.cache[&key].evicted, "setup: evicted");
+    app.md_images.frame = 6;
     assert!(!app.ensure_md_pixels(&key), "pixels are asked for");
     let res = img_rx.recv_timeout(WAIT).expect("the rebuild must answer");
     assert!(res.reraster && res.image.is_ok());
-    assert_eq!(count(&svg, false), trusted0 + 1, "rebuilt in this process");
-    assert_eq!(count(&svg, true), untrusted0, "never through the child");
+    assert_eq!(untrusted_count(&svg), untrusted0, "never through the child");
 }

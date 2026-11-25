@@ -1,0 +1,589 @@
+//! Drawing a frame with ratatui.
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static LAST_FRAME: std::cell::RefCell<Option<ratatui::buffer::Buffer>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub(in crate::app) fn record_test_frame(buffer: &ratatui::buffer::Buffer) {
+    LAST_FRAME.with(|frame| *frame.borrow_mut() = Some(buffer.clone()));
+}
+
+/// The last thing a frame callback does, after every widget has drawn. The buffer diff relies on
+/// the cells behind a wide character being blank, which `Paragraph` does not keep, so they are
+/// blanked here. With the test hooks the frame is recorded too, so a loop that skips this call
+/// leaves no frame for the tests to read.
+pub(in crate::app) fn finish_frame(buffer: &mut ratatui::buffer::Buffer) {
+    ratatui_draw::clear_cells_hidden_by_wide_symbols(buffer);
+    #[cfg(any(test, feature = "test-hooks"))]
+    record_test_frame(buffer);
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub(in crate::app) fn test_frame() -> ratatui::buffer::Buffer {
+    LAST_FRAME.with(|frame| frame.borrow().as_ref().expect("a frame was drawn").clone())
+}
+
+/// The project canvas as drawn alone (before the header, footer and overlays), recorded with each
+/// project frame so a test can tell the overlay from the canvas by what differs.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Clone, Debug)]
+pub struct TestCanvas {
+    /// The canvas rectangle of the frame.
+    pub area: ratatui::layout::Rect,
+    /// The content is drawn inside the outer frame (a list or a diff).
+    pub framed: bool,
+    /// The screen right after the canvas was drawn.
+    pub alone: ratatui::buffer::Buffer,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static LAST_CANVAS: std::cell::RefCell<Option<TestCanvas>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub(in crate::app) fn record_test_canvas(
+    area: ratatui::layout::Rect,
+    framed: bool,
+    buffer: &ratatui::buffer::Buffer,
+) {
+    LAST_CANVAS.with(|canvas| {
+        *canvas.borrow_mut() = Some(TestCanvas {
+            area,
+            framed,
+            alone: buffer.clone(),
+        })
+    });
+}
+
+/// The canvas of the last project frame (see [`TestCanvas`]).
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn test_canvas() -> TestCanvas {
+    LAST_CANVAS.with(|canvas| {
+        canvas
+            .borrow()
+            .as_ref()
+            .expect("a project frame was drawn")
+            .clone()
+    })
+}
+
+use ratatui::layout::Rect;
+use ratatui::style::Style as RStyle;
+use ratatui::text::Line as RLine;
+use ratatui::widgets::{Block, Paragraph, Widget};
+
+use std::sync::Arc;
+
+use konoma_host_core::help_msg::CoreMsg;
+use konoma_host_core::lang::Lang;
+use konoma_widgets::table::{
+    render_cell_popup, render_table, CellPopup, TableOptions, TableViewState,
+};
+
+use crate::ratatui_draw;
+use crate::style::Line;
+use crate::table_ui::{cell_view, GridSource};
+use crate::view::{CanvasView, Grid};
+
+/// The text of a file: lines that wrap, or scroll sideways.
+pub struct TextFrame {
+    /// The lines as drawn: tabs already expanded (the host's mark and tab stops).
+    pub lines: Vec<RLine<'static>>,
+    /// Wrap at the edge of the body (`[ui] wrap`). Off, the lines are cut at it.
+    pub wrap: bool,
+    /// Cells scrolled off the left edge (0 while wrapping).
+    pub hscroll: u16,
+    /// Rows scrolled off the top, counted in drawn rows (wrapped rows while wrapping). 0 for the
+    /// text whose lines are already the window.
+    pub vscroll: u16,
+    /// The bordered frame of the host's windowed text (the path, the position label and the
+    /// scrollbar). `None`: the lines are drawn bare (the file shown as text after a page failed).
+    pub border: Option<TextBorder>,
+}
+
+impl TextFrame {
+    pub(in crate::app) fn draw(&self, buf: &mut ratatui::buffer::Buffer, body: Rect) {
+        let mut para = Paragraph::new(self.lines.clone());
+        if let Some(b) = &self.border {
+            let mut block = Block::bordered().title(super::document::path_title(&b.name));
+            if let Some(e) = b.extent {
+                block = block.title(konoma_widgets::scroll::scroll_title(
+                    e,
+                    super::document::scroll_words(b.lang),
+                ));
+            }
+            para = para.block(block);
+        }
+        if self.wrap {
+            para = para.wrap(ratatui::widgets::Wrap { trim: false });
+        }
+        para.scroll((self.vscroll, self.hscroll)).render(body, buf);
+        if let Some(e) = self.border.as_ref().and_then(|b| b.extent) {
+            konoma_widgets::scroll::render_scrollbar(buf, body, e);
+        }
+    }
+}
+
+/// What the frame of a text carries.
+pub struct TextBorder {
+    /// The path as the host titles it (or the file name).
+    pub name: String,
+    pub lang: Lang,
+    /// Where the window is in the file, in bytes (the unit the host's reader scrolls in). `None`
+    /// for the text of a page that failed to draw: the host frames it with the path alone (no
+    /// position label, no scrollbar) and it has no caret.
+    pub extent: Option<konoma_widgets::scroll::ScrollExtent>,
+}
+
+/// What is drawn in the body.
+pub enum Frame<'a> {
+    /// Borrow the persistent file-diff state for this draw only.
+    Diff(&'a mut super::diff_screen::DiffScreenState),
+    /// Lines from the top of the body.
+    Lines(Vec<Line>),
+    /// The lines of a file's text: wrapped at the edge (`ui.wrap`), or cut `hscroll` cells from
+    /// the left.
+    Text(TextFrame),
+    /// Cells copied one to one.
+    Canvas(CanvasView),
+    /// A table with its cursor (and the full-cell popup while it is open).
+    Table(Box<TableFrame>),
+    /// A still picture in a bordered frame. The border is drawn here; what is inside (the
+    /// spinner, the failure line or the picture) is drawn by the pictures
+    /// ([`crate::app::Pictures::draw_still`]), or, with no pictures, the line that says the
+    /// terminal cannot show it.
+    Image(ImageFrame),
+    /// The same frame for a picture that could not be asked for (the session's `view` failed):
+    /// the reason is drawn inside it ([`crate::app::failure_line`]).
+    ImageFailed(FailedImage),
+    /// A Markdown document in a bordered frame.
+    Document(super::document::DocFrame),
+}
+
+/// The picture of a `View::Image` on screen.
+#[derive(Clone, Debug)]
+pub struct ImageFrame {
+    pub view: crate::view::ImageView,
+    /// The file name, in the frame title.
+    pub name: String,
+    pub lang: Lang,
+}
+
+/// The frame of a picture whose `view` failed, with the reason inside.
+#[derive(Clone, Debug)]
+pub struct FailedImage {
+    /// The file name, in the frame title.
+    pub name: String,
+    pub lang: Lang,
+    /// Why, when the plugin's failure maps to a reason of a picture.
+    pub why: Option<konoma_svg::image::ImageFailure>,
+    /// The plugin whose settings the reason may name.
+    pub plugin_id: String,
+}
+
+/// The frame title: the file name between spaces (konoma's shape), or ` image ` with none.
+fn frame_title(name: &str) -> String {
+    if name.is_empty() {
+        " image ".to_string()
+    } else {
+        format!(" {name} ")
+    }
+}
+
+impl ImageFrame {
+    /// The frame title: the file name between spaces (konoma's shape), or ` image ` with none.
+    pub fn title(&self) -> String {
+        frame_title(&self.name)
+    }
+}
+
+/// The inside of the border of an image frame drawn in `body`.
+pub fn image_inner(body: Rect) -> Rect {
+    Block::bordered().inner(body)
+}
+
+/// The full-cell popup while it is open.
+#[derive(Clone, Debug, Default)]
+pub struct PopupState {
+    /// Wrapped rows scrolled off the top.
+    pub scroll: u16,
+    /// Rows the popup showed at the last draw (the step of `PageUp` / `PageDown`).
+    pub viewport: u16,
+    /// The keys that act in it, as the footer line on its border.
+    pub footer: String,
+}
+
+/// A table on screen: the grid and everything the widget needs to draw it, plus the state a draw
+/// settles (the scroll offsets and the page size, the popup's clamped scroll).
+pub struct TableFrame {
+    pub grid: Arc<dyn Grid>,
+    /// The file name, first in the frame title.
+    pub name: String,
+    /// What the plugin put after the name (a sheet's name and position).
+    pub note: Option<String>,
+    pub rainbow: bool,
+    pub addressed: bool,
+    pub lang: Lang,
+    /// The language code the plugin's own texts are read in.
+    pub lang_code: String,
+    pub state: TableViewState,
+    pub popup: Option<PopupState>,
+}
+
+impl TableFrame {
+    /// Keep the cursor inside the grid (a grid read again may be smaller).
+    pub fn clamp_cursor(&mut self) {
+        let (nr, nc) = (self.grid.nrows(), self.grid.ncols());
+        self.state.cursor_row = self.state.cursor_row.min(nr.saturating_sub(1));
+        self.state.cursor_col = self.state.cursor_col.min(nc.saturating_sub(1));
+    }
+
+    /// The popup's content for the cursor cell.
+    pub fn cell(&self) -> Option<crate::table_ui::TableCellView> {
+        cell_view(
+            &*self.grid,
+            self.addressed,
+            (self.state.cursor_row, self.state.cursor_col),
+            &self.lang_code,
+        )
+    }
+
+    /// The frame title: the same words as the konoma host's.
+    fn title(&self) -> String {
+        let capped = self
+            .grid
+            .truncated()
+            .then(|| CoreMsg::SheetCappedWord.tr(self.lang));
+        let sheet = self
+            .addressed
+            .then(|| self.note.clone().unwrap_or_default());
+        konoma_widgets::table::table_title(
+            &self.name,
+            (self.grid.nrows(), self.grid.ncols()),
+            (self.state.cursor_row, self.state.cursor_col),
+            sheet.as_deref(),
+            capped,
+        )
+    }
+
+    /// Draw the table (and the popup over it) into `area`. The offsets and the page size the
+    /// widget settled are kept only when it laid the grid out (a collapsed area must not clobber
+    /// the last real page size).
+    ///
+    /// `screen` is the whole terminal: the popup is centred in it (as the host does), not in the
+    /// table's area, so both size and place it the same.
+    pub fn draw(&mut self, buf: &mut ratatui::buffer::Buffer, area: Rect, screen: Rect) {
+        let src = GridSource(&*self.grid);
+        let opts = TableOptions {
+            title: self.title(),
+            empty_label: CoreMsg::SheetEmptyWord.tr(self.lang).to_string(),
+            rainbow: self.rainbow,
+            gutter: self.addressed,
+            is_hit: &|_, _| false,
+        };
+        let mut state = self.state;
+        if render_table(buf, area, &src, &mut state, &opts) {
+            self.state = state;
+        }
+        let Some(view) = self.popup.is_some().then(|| self.cell()).flatten() else {
+            self.popup = None;
+            return;
+        };
+        let Some(p) = self.popup.as_mut() else {
+            return;
+        };
+        let title = konoma_widgets::table::cell_popup_title(
+            CoreMsg::TableCellTitle.tr(self.lang),
+            &view.header,
+            (view.row, view.col),
+            (view.nrows, view.ncols),
+        );
+        let (scroll, viewport) = render_cell_popup(
+            buf,
+            screen,
+            CellPopup {
+                title,
+                footer: p.footer.clone(),
+                text: view.text,
+                scroll: p.scroll,
+            },
+        );
+        p.scroll = scroll;
+        p.viewport = viewport;
+    }
+}
+
+/// The footer row: the key hints as the host fits them (no leading space, an ellipsis when some
+/// are cut), then what the app alone says. `state` (the zoom, the page, where a bare text is)
+/// has its room kept, so a narrow terminal cuts hints and not it; `title` follows only when it
+/// fits whole after them.
+pub fn footer_row(hints: &[String], state: &str, title: &str, width: u16) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let state = state.trim_end();
+    let keep = u16::try_from(state.width()).unwrap_or(u16::MAX);
+    let mut row = konoma_widgets::help_panel::fit_tokens(hints, width.saturating_sub(keep));
+    row.push_str(state);
+    let title = title.trim_end();
+    if !title.is_empty()
+        && !row.ends_with('…')
+        && row.width() + title.width() + 2 <= usize::from(width)
+    {
+        row.push_str("  ");
+        row.push_str(title);
+    }
+    row
+}
+
+/// The footer of a text or a document: the keys (the host's fit), where the text is (only for a
+/// frame that scrolls: `scrolls`), the title.
+pub fn footer(
+    hints: &[String],
+    title: &str,
+    frame: &Frame,
+    scroll: usize,
+    scrolls: bool,
+    width: u16,
+) -> String {
+    let pos = match frame {
+        Frame::Lines(l) if scrolls && !l.is_empty() => format!("  line {}", scroll + 1),
+        // A framed text says where it is on its frame (the scroll label), as the host does.
+        Frame::Text(t) if scrolls && t.border.is_none() && !t.lines.is_empty() => {
+            format!("  line {}", scroll + 1)
+        }
+        // A document says where it is on its frame (the scroll label), as the host does.
+        _ => String::new(),
+    };
+    footer_row(hints, &pos, title, width)
+}
+
+/// The part of `area` the body is drawn in: all of it but the footer row.
+pub fn body_of(area: Rect) -> Rect {
+    Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1))
+}
+
+/// The project-owned Preview reserves the same two status rows as its source diff.
+pub(in crate::app) fn project_preview_body(area: Rect, combined: bool) -> Rect {
+    Rect::new(
+        area.x,
+        area.y.saturating_add(u16::from(!combined)),
+        area.width,
+        area.height.saturating_sub(if combined { 1 } else { 2 }),
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::app) struct ProjectPreviewChrome {
+    pub lang: Lang,
+    pub style: konoma_host_core::view_options::PathStyle,
+    pub combined: bool,
+    pub context: konoma_host_core::keymap::CoreContext,
+    pub help: bool,
+    pub image_zoom: Option<f64>,
+    pub image_page: Option<(u32, u32)>,
+}
+
+pub(in crate::app) fn preview_context(
+    chrome: ProjectPreviewChrome,
+) -> Vec<ratatui::text::Span<'static>> {
+    use konoma_host_core::view_options::PathStyle;
+    use ratatui::{
+        style::{Color, Stylize},
+        text::Span,
+    };
+    let word = |en, ja| if chrome.lang == Lang::Jp { ja } else { en };
+    let path = match chrome.style {
+        PathStyle::Relative => word("rel", "相対"),
+        PathStyle::Full => word("abs", "絶対"),
+        _ => "~",
+    };
+    let (name, fg, bg) = match chrome.context {
+        konoma_host_core::keymap::CoreContext::Image => {
+            (word("IMAGE", "画像"), Color::Black, Color::LightBlue)
+        }
+        konoma_host_core::keymap::CoreContext::Table => {
+            (word("TABLE", "テーブル"), Color::White, Color::Cyan)
+        }
+        _ => (word("PREVIEW", "プレビュー"), Color::White, Color::Blue),
+    };
+    let mut spans = vec![Span::styled(
+        format!(" {name} "),
+        RStyle::new().fg(fg).bg(bg).bold(),
+    )];
+    if chrome.help {
+        spans.extend([
+            Span::raw(" "),
+            Span::styled(
+                format!(" {} ", word("HELP", "ヘルプ")),
+                RStyle::new().fg(Color::White).bg(Color::DarkGray).bold(),
+            ),
+        ]);
+    }
+    if let Some(zoom) = chrome.image_zoom {
+        spans.push(Span::raw(format!("  x{zoom:.2}")).bold());
+    }
+    if let Some((page, count)) = chrome.image_page.filter(|(_, count)| *count > 1) {
+        spans.push(Span::raw(format!("  {page}/{count}")).bold());
+    }
+    spans.push(Span::raw(format!("  {}{path}", word("path:", "パス:"))).dim());
+    spans
+}
+
+pub(in crate::app) fn status_footer_width(
+    width: u16,
+    combined: bool,
+    context: &[ratatui::text::Span<'_>],
+) -> u16 {
+    if combined {
+        width.saturating_sub(
+            context
+                .iter()
+                .map(|s| s.width() as u16)
+                .sum::<u16>()
+                .saturating_add(2),
+        )
+    } else {
+        width
+    }
+}
+
+pub(in crate::app) fn draw_project_status(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    combined: bool,
+    mut context: Vec<ratatui::text::Span<'static>>,
+    footer: &[ratatui::text::Span<'static>],
+) {
+    use ratatui::text::{Line, Span};
+    if area.height == 0 {
+        return;
+    }
+    if combined {
+        context.push(Span::raw("  "));
+        context.extend_from_slice(footer);
+        Paragraph::new(Line::from(context))
+            .render(Rect::new(area.x, area.bottom() - 1, area.width, 1), buf);
+    } else {
+        draw_project_header(buf, area, context);
+        Paragraph::new(Line::from(footer.to_vec()))
+            .render(Rect::new(area.x, area.bottom() - 1, area.width, 1), buf);
+    }
+}
+
+pub(in crate::app) fn draw_project_header(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    context: Vec<ratatui::text::Span<'static>>,
+) {
+    use ratatui::{layout::Alignment, text::Line};
+    if area.height > 0 {
+        Paragraph::new(Line::from(context))
+            .alignment(Alignment::Right)
+            .render(Rect::new(area.x, area.y, area.width, 1), buf);
+    }
+}
+
+/// `bg` is `[ui.theme] bg`: painted under everything first, as the host does (a span without a
+/// background keeps it; `None` leaves the terminal's own).
+pub fn draw(
+    f: &mut ratatui::Frame,
+    frame: &mut Frame,
+    footer: &[ratatui::text::Span<'static>],
+    bg: Option<ratatui::style::Color>,
+) {
+    let body = body_of(f.area());
+    draw_in(f, frame, footer, bg, body);
+}
+
+/// Project file diffs reserve the host's header as well as its footer.
+pub(super) fn draw_in(
+    f: &mut ratatui::Frame,
+    frame: &mut Frame,
+    footer: &[ratatui::text::Span<'static>],
+    bg: Option<ratatui::style::Color>,
+    body: Rect,
+) {
+    let area = f.area();
+    if let Some(bg) = bg {
+        f.buffer_mut().set_style(area, RStyle::default().bg(bg));
+    }
+    if area.height == 0 {
+        return;
+    }
+    match frame {
+        Frame::Diff(state) => state.draw(f.buffer_mut(), body),
+        Frame::Lines(lines) => {
+            let text: Vec<RLine> = lines.iter().map(ratatui_draw::line).collect();
+            Paragraph::new(text).render(body, f.buffer_mut());
+        }
+        Frame::Text(t) => t.draw(f.buffer_mut(), body),
+        Frame::Canvas(c) => ratatui_draw::paint_canvas(f.buffer_mut(), body, c),
+        Frame::Document(d) => d.draw(f.buffer_mut(), body),
+        Frame::Image(i) => Block::bordered()
+            .title(i.title())
+            .render(body, f.buffer_mut()),
+        Frame::ImageFailed(i) => {
+            let block = Block::bordered().title(frame_title(&i.name));
+            let inner = block.inner(body);
+            block.render(body, f.buffer_mut());
+            Paragraph::new(super::still::failure_line(
+                i.why.as_ref(),
+                i.lang,
+                &i.plugin_id,
+            ))
+            .render(inner, f.buffer_mut());
+        }
+        Frame::Table(t) => {
+            let screen = f.area();
+            t.draw(f.buffer_mut(), body, screen)
+        }
+    }
+    let foot = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
+    // The row is plain: the spans carry the style (the host's footer is dim hints, a bold notice).
+    Paragraph::new(RLine::from(footer.to_vec())).render(foot, f.buffer_mut());
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::buffer::Buffer;
+
+    use super::*;
+    use crate::style::Style;
+
+    #[test]
+    fn finish_frame_blanks_the_cells_behind_a_wide_character_and_records_that_frame() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+        Paragraph::new("--------").render(Rect::new(0, 0, 8, 1), &mut buf);
+        Paragraph::new("変更").render(Rect::new(1, 0, 4, 1), &mut buf);
+        // `Paragraph` leaves the border dashes behind the wide characters.
+        assert_eq!(buf[(2, 0)].symbol(), "-");
+        finish_frame(&mut buf);
+        assert_eq!(buf[(1, 0)].symbol(), "変");
+        assert_eq!(buf[(2, 0)].symbol(), " ");
+        assert_eq!(buf[(3, 0)].symbol(), "更");
+        assert_eq!(buf[(4, 0)].symbol(), " ");
+        // The recorded frame is the blanked one, not the one before.
+        assert_eq!(test_frame(), buf);
+    }
+
+    #[test]
+    fn a_canvas_is_clipped_to_its_area_and_touches_nothing_outside_it() {
+        let mut c = CanvasView::new(6, 5);
+        for y in 0..5 {
+            c.set_string(0, y, "xxxxxx", Style::new());
+        }
+        // The area is smaller than the canvas and sits inside a bigger buffer, so a cell that
+        // is not clipped would land on the buffer (the rows and columns around the area).
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 8));
+        ratatui_draw::paint_canvas(&mut buf, Rect::new(1, 1, 3, 2), &c);
+        for y in 0..8u16 {
+            for x in 0..8u16 {
+                let inside = (1..4).contains(&x) && (1..3).contains(&y);
+                let want = if inside { "x" } else { " " };
+                assert_eq!(buf[(x, y)].symbol(), want, "cell {x},{y}");
+            }
+        }
+    }
+}

@@ -1,0 +1,1377 @@
+// The `?` help: which operations a context lists, with the key notation generated from the keymap.
+//
+// The sections follow the layers of the key design: the operations of this screen (the context's own
+// table and the table of its view type), movement (layer 1), what launches something outside konoma
+// (layer 3: `e`), the menus behind `y` and `Space`, and last what is true everywhere (layer 0: tabs,
+// help, quit). The screen's own operations come first because that is what the help is opened
+// for. A row lands in its section by *where its key is defined*, so the help follows a key that
+// moves from one layer to another.
+//
+// A row is shown only while its operation acts (`ops::gate`), exactly like a footer token. The few
+// rows that explain how to use a feature rather than a key that acts right now (the keys of the
+// focused Markdown item) are marked `ungated`: they are the reference that says "press `Tab`, then
+// ...".
+
+use crate::app::App;
+use crate::i18n::{tr, Msg};
+use crate::keymap::{Action, Context, KeyLayer, KeyPress, LeaderId, Motion};
+#[cfg(feature = "git")]
+use crate::keymap::{Backend, Screen};
+use crate::ops::core_help::{self, core_ctx};
+use crate::ops::decl::{decl, text};
+use crate::ops::gate::action_enabled;
+use crate::ops::keys::{columns, help_key};
+use crate::ui::help::HelpSection;
+use konoma_host_core::help::{CoreRow, CoreSec, HelpFacts};
+
+/// Where a row is listed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sec {
+    Tabs,
+    Global,
+    Move,
+    View,
+    Launch,
+    Custom(Msg),
+}
+
+/// One help row: the keys of one or more operations and what they do.
+#[derive(Clone)]
+struct Row {
+    groups: Vec<Vec<Action>>,
+    resolved: Option<Option<RowOut>>,
+    lit: Option<&'static str>,
+    /// Keys written out by hand (not rebindable and not an operation: `1 - 9`, the drop of a file).
+    lit_only: Option<&'static str>,
+    /// The same, but a word that is translated (`drag & drop`).
+    lit_msg: Option<Msg>,
+    desc: Option<Msg>,
+    ungated: bool,
+    sec: Option<Sec>,
+    /// The row of the shared layers this is: in a context the standalone app also shows, the
+    /// shared builder (`konoma_host_core::help`) writes it, so both hosts print the same line.
+    core: Option<CoreRow>,
+}
+
+fn r(acts: &'static [Action]) -> Row {
+    Row {
+        groups: vec![acts.to_vec()],
+        resolved: None,
+        lit: None,
+        lit_only: None,
+        lit_msg: None,
+        desc: None,
+        ungated: false,
+        sec: None,
+        core: None,
+    }
+}
+
+fn lit_row(keys: &'static str, desc: Msg, sec: Sec) -> Row {
+    Row {
+        groups: Vec::new(),
+        resolved: None,
+        lit: None,
+        lit_only: Some(keys),
+        lit_msg: None,
+        desc: Some(desc),
+        ungated: true,
+        sec: Some(sec),
+        core: None,
+    }
+}
+
+fn lit_msg_row(keys: Msg, desc: Msg, sec: Sec) -> Row {
+    Row {
+        lit_msg: Some(keys),
+        lit_only: Some(""),
+        ..lit_row("", desc, sec)
+    }
+}
+
+impl Row {
+    /// A second group of operations, written after the first (`/  n / N`).
+    fn then(mut self, acts: &'static [Action]) -> Row {
+        self.groups.push(acts.to_vec());
+        self
+    }
+    /// Keys that cannot be rebound, written after the generated ones (`↑ ↓`).
+    fn lit(mut self, s: &'static str) -> Row {
+        self.lit = Some(s);
+        self
+    }
+    fn d(mut self, m: Msg) -> Row {
+        self.desc = Some(m);
+        self
+    }
+    fn ungated(mut self) -> Row {
+        self.ungated = true;
+        self
+    }
+    fn core(mut self, c: CoreRow) -> Row {
+        self.core = Some(c);
+        self
+    }
+    fn sec(mut self, s: Sec) -> Row {
+        self.sec = Some(s);
+        self
+    }
+}
+
+const SCROLL: &[Action] = &[Action::Navigate(Motion::Down), Action::Navigate(Motion::Up)];
+const ENDS: &[Action] = &[
+    Action::Navigate(Motion::Top),
+    Action::Navigate(Motion::Bottom),
+];
+const HSCROLL: &[Action] = &[
+    Action::Navigate(Motion::Left),
+    Action::Navigate(Motion::Right),
+];
+const LINE_ENDS: &[Action] = &[
+    Action::Navigate(Motion::LineHome),
+    Action::Navigate(Motion::LineEnd),
+];
+const HJKL: &[Action] = &[
+    Action::Navigate(Motion::Left),
+    Action::Navigate(Motion::Down),
+    Action::Navigate(Motion::Up),
+    Action::Navigate(Motion::Right),
+];
+const PAGE_KEYS: &[Action] = &[
+    Action::Navigate(Motion::PageDown),
+    Action::Navigate(Motion::PageUp),
+];
+const HALF_KEYS: &[Action] = &[
+    Action::Navigate(Motion::HalfDown),
+    Action::Navigate(Motion::HalfUp),
+];
+const TABS: &[Action] = &[Action::TabPrev, Action::TabNext];
+const FILE_JUMP: &[Action] = &[Action::PreviewFileNext, Action::PreviewFilePrev];
+const BOOKMARKS: &[Action] = &[Action::MarkSet, Action::MarkJump];
+const ZOOM: &[Action] = &[Action::ImageZoomIn, Action::ImageZoomOut];
+const ZOOM_ALL: &[Action] = &[
+    Action::ImageZoomIn,
+    Action::ImageZoomOut,
+    Action::ImageZoomReset,
+];
+const PAGE_TURN: &[Action] = &[Action::PageNext, Action::PagePrev];
+#[cfg(feature = "git")]
+const SCREENS: &[Action] = &[Action::GitScreenNext, Action::GitScreenPrev];
+const CHANGES: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
+const SEARCH: &[Action] = &[Action::SearchStart];
+const SEARCH_MATCH: &[Action] = &[Action::SearchNext, Action::SearchPrev];
+const SELECT: &[Action] = &[Action::PreviewEnterVisual, Action::PreviewEnterVisualLine];
+const FOCUS: &[Action] = &[Action::LinkFocusNext, Action::LinkFocusPrev];
+const BACK_PREVIEW: &[Action] = &[Action::PreviewBack, Action::Cancel];
+const TOGGLE_ITEM: &[Action] = &[Action::ToggleFocusedItem, Action::LinkOpen];
+#[cfg(feature = "git")]
+const BACK_GIT: &[Action] = &[Action::GitClose, Action::Cancel];
+#[cfg(feature = "git")]
+const BACK_WT: &[Action] = &[Action::WorktreeClose, Action::Cancel];
+#[cfg(feature = "git")]
+const STAGE: &[Action] = &[Action::GitStage, Action::GitStageAll];
+#[cfg(feature = "git")]
+const UNSTAGE: &[Action] = &[Action::GitUnstage, Action::GitUnstageAll];
+#[cfg(feature = "git")]
+const LOG_GRAPH: &[Action] = &[Action::GitOpenLog, Action::GitOpenGraph];
+
+/// The context the help describes: the screen the help was opened over.
+pub fn help_context(app: &App) -> Context {
+    if app.project_active() {
+        return Context::Canvas;
+    }
+    if app.tab.mode == crate::app::Mode::Preview && app.is_git_diff_preview() {
+        return Context::Diff;
+    }
+    match app.tab.mode {
+        crate::app::Mode::Tree => Context::Tree,
+        crate::app::Mode::Preview => {
+            if app.is_table_preview() {
+                Context::Table
+            } else if app.is_canvas_preview() {
+                Context::Canvas
+            } else if app.document_text_missing() {
+                Context::Text
+            } else if app.is_image_preview() {
+                Context::Image
+            } else if app.shows_document() {
+                Context::Document
+            } else {
+                Context::Text
+            }
+        }
+    }
+}
+
+/// The rows every screen lists (layer 0).
+fn global_rows() -> Vec<Row> {
+    vec![
+        r(&[Action::TabNew]).sec(Sec::Tabs),
+        r(&[Action::TabNewAfter]).sec(Sec::Tabs),
+        r(TABS).sec(Sec::Tabs),
+        lit_row("1 - 9", Msg::HelpJumpTab, Sec::Tabs),
+        r(&[Action::ToggleTabList]).sec(Sec::Tabs),
+        r(&[Action::PasteJump]).sec(Sec::Global),
+        r(&[Action::ToggleHelp])
+            .sec(Sec::Global)
+            .core(CoreRow::Help),
+        r(&[Action::ToggleFollow]).sec(Sec::Global),
+        r(&[Action::Quit]).sec(Sec::Global).core(CoreRow::Quit),
+    ]
+}
+
+/// The title of the section of this screen's own operations and its rows.
+fn view_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
+    match ctx {
+        Context::Tree => (Msg::TreeSection, tree_rows()),
+        Context::Text | Context::Document => text_rows(app, ctx),
+        Context::Image => (Msg::PreviewImage, image_rows()),
+        Context::Table => (Msg::PreviewTable, table_rows()),
+        Context::Canvas => (Msg::PreviewCanvas, canvas_rows()),
+        Context::Diff => (Msg::PreviewGitDiff, diff_rows(app)),
+        #[cfg(feature = "git")]
+        Context::Screen(b, s) => screen_rows(b, s),
+        // The overlays are never what the help is opened over (`help_context`), but a plan for
+        // each keeps the function total.
+        Context::TreeVisual => (
+            Msg::TreeSection,
+            vec![
+                r(SCROLL).lit("↑ ↓").d(Msg::TreeMoveUpDown),
+                r(&[Action::VisualSelectSiblings]),
+                r(&[Action::VisualSelectAll]),
+                r(&[Action::VisualCommit]),
+            ],
+        ),
+        Context::TextVisual
+        | Context::TableCell
+        | Context::Bookmarks
+        | Context::Tabs
+        | Context::Outline
+        | Context::Info
+        | Context::Help => (Msg::TreeSection, Vec::new()),
+    }
+}
+
+fn tree_rows() -> Vec<Row> {
+    vec![
+        r(SCROLL).lit("↑ ↓").d(Msg::TreeMoveUpDown),
+        r(ENDS).d(Msg::TopBottom),
+        r(&[Action::TreeDescend]),
+        r(&[Action::TreeActivate]),
+        r(&[Action::OpenInNewTab]),
+        r(&[Action::TreeLeave]),
+        r(&[Action::SetAnchor]),
+        r(&[Action::ResetAnchor]),
+        r(&[Action::OpenGitDiffCursor]),
+        r(&[Action::FilterStart]),
+        r(&[Action::ToggleHidden]),
+        r(&[Action::ToggleInfo]),
+        r(&[Action::RequestEdit]),
+        r(&[Action::OpenExternal]),
+        r(&[Action::OpenGitView]),
+        #[cfg(feature = "git")]
+        r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
+        r(&[Action::ToggleChangedFilter]),
+        r(CHANGES),
+        r(&[Action::Refresh]),
+        r(&[Action::OpenSortMenu]),
+        r(BOOKMARKS).d(Msg::TreeBookmarkHint),
+        r(PAGE_KEYS),
+        r(HALF_KEYS),
+        r(&[Action::CyclePathStyle]),
+        r(&[Action::CloseTabOrQuit]),
+        // The range selection and the status legend are sections of their own.
+        r(&[Action::EnterVisual]).sec(Sec::Custom(Msg::TreeSelection)),
+        r(&[Action::ToggleSelect]).sec(Sec::Custom(Msg::TreeSelection)),
+        lit_msg_row(
+            Msg::TreeDragDrop,
+            Msg::TreeDropFiles,
+            Sec::Custom(Msg::TreeSelection),
+        ),
+        lit_row("M", Msg::TreeModified, Sec::Custom(Msg::TreeGitStatus)),
+        lit_row("A", Msg::TreeAddedStaged, Sec::Custom(Msg::TreeGitStatus)),
+        lit_row("U", Msg::Untracked, Sec::Custom(Msg::TreeGitStatus)),
+        lit_row("D", Msg::TreeDeleted, Sec::Custom(Msg::TreeGitStatus)),
+        lit_row(
+            "R / T / !",
+            Msg::TreeStatusRenamed,
+            Sec::Custom(Msg::TreeGitStatus),
+        ),
+    ]
+}
+
+fn text_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
+    // A Word/OpenDocument file that is still converting or failed has no text: only the keys the
+    // footer lists act.
+    if app.document_text_missing() {
+        return (
+            Msg::PreviewTextMarkdown,
+            vec![
+                r(FILE_JUMP),
+                r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
+                r(&[Action::RequestEdit]).core(CoreRow::Edit),
+                r(&[Action::OpenExternal]).core(CoreRow::Open),
+                r(BACK_PREVIEW).core(CoreRow::Back),
+            ],
+        );
+    }
+    let mut v = vec![
+        r(SCROLL).core(CoreRow::Scroll),
+        r(ENDS).core(CoreRow::Ends),
+        r(HSCROLL).core(CoreRow::HScroll),
+        r(LINE_ENDS).core(CoreRow::LineEnds),
+        r(SEARCH).then(SEARCH_MATCH).d(Msg::SearchHint),
+    ];
+    // Range selection is windowed (raw source / plain code or text): `preview_enter_visual`
+    // requires it. The decorated view still has `Y`, which copies the whole-file `@path` there.
+    v.push(r(SELECT));
+    v.push(r(&[Action::PreviewCopySelectionRef]));
+    v.push(r(PAGE_TURN).core(CoreRow::PageTurn));
+    v.push(r(&[Action::CycleRepresentation]));
+    v.push(r(&[Action::ToggleOutline]).core(CoreRow::Outline));
+    // The keys of the focused Markdown item are the reference for "press Tab, then ...": listed
+    // for every decorated document, whether or not an item is focused right now.
+    if ctx == Context::Document {
+        v.push(r(FOCUS));
+        v.push(r(&[Action::LinkOpen]).ungated());
+        v.push(r(&[Action::OpenLinkNewTab]).ungated());
+        // A Word document has no diagrams, checkboxes or `<details>`.
+        if !app.is_document() {
+            v.push(r(ZOOM_ALL).d(Msg::MermaidZoomHelp).ungated());
+            v.push(r(TOGGLE_ITEM).d(Msg::MdTaskToggleHelp).ungated());
+            v.push(r(TOGGLE_ITEM).d(Msg::HintDetailsToggle).ungated());
+        }
+    }
+    v.push(r(FILE_JUMP));
+    v.push(r(BOOKMARKS).d(Msg::PreviewBookmarkHint));
+    v.push(r(&[Action::RequestEdit]).core(CoreRow::Edit));
+    v.push(r(&[Action::OpenExternal]).core(CoreRow::Open));
+    v.push(r(&[Action::OpenGitView]));
+    #[cfg(feature = "git")]
+    v.push(r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool));
+    v.push(r(&[Action::Refresh]));
+    v.push(r(PAGE_KEYS).core(CoreRow::PageKeys));
+    v.push(r(HALF_KEYS).core(CoreRow::HalfKeys));
+    v.push(r(&[Action::CyclePathStyle]));
+    v.push(r(BACK_PREVIEW).core(CoreRow::Back));
+    (Msg::PreviewTextMarkdown, v)
+}
+
+fn image_rows() -> Vec<Row> {
+    vec![
+        r(ZOOM).core(CoreRow::Zoom),
+        r(&[Action::ImageZoomReset]).core(CoreRow::ZoomReset),
+        r(HJKL).core(CoreRow::Pan),
+        r(PAGE_TURN).core(CoreRow::PageTurn),
+        r(&[Action::ToggleOutline]).core(CoreRow::Outline),
+        r(&[Action::ImageReturnToDiff]),
+        r(FILE_JUMP),
+        r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
+        r(&[Action::RequestEdit]).core(CoreRow::Edit),
+        r(&[Action::OpenExternal]).core(CoreRow::Open),
+        r(&[Action::OpenGitView]),
+        #[cfg(feature = "git")]
+        r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
+        r(&[Action::Refresh]),
+        r(&[Action::CyclePathStyle]),
+        r(BACK_PREVIEW).core(CoreRow::Back),
+    ]
+}
+
+/// The keys the host keeps in a canvas; the plugin's own are the plugin's section.
+fn canvas_rows() -> Vec<Row> {
+    vec![
+        r(PAGE_TURN).core(CoreRow::PageTurn),
+        r(&[Action::ToggleOutline]).core(CoreRow::Outline),
+        r(&[Action::CycleRepresentation]),
+        r(FILE_JUMP),
+        r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
+        r(&[Action::RequestEdit]).core(CoreRow::Edit),
+        r(&[Action::OpenExternal]).core(CoreRow::Open),
+        r(&[Action::OpenGitView]),
+        #[cfg(feature = "git")]
+        r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
+        r(&[Action::Refresh]),
+        r(&[Action::PreviewCopySelectionRef]),
+        r(BACK_PREVIEW).core(CoreRow::Back),
+    ]
+}
+
+fn table_rows() -> Vec<Row> {
+    vec![
+        r(HJKL).core(CoreRow::TableMove),
+        r(ENDS).core(CoreRow::Ends),
+        r(LINE_ENDS).core(CoreRow::TableCols),
+        r(PAGE_TURN).core(CoreRow::PageTurn),
+        r(&[Action::ToggleOutline]).core(CoreRow::Outline),
+        r(&[Action::CycleRepresentation]),
+        r(SEARCH).then(SEARCH_MATCH).d(Msg::TableSearchHelp),
+        r(&[Action::ToggleTableCell]),
+        r(PAGE_KEYS).core(CoreRow::PageKeys),
+        r(HALF_KEYS).core(CoreRow::HalfKeys),
+        r(FILE_JUMP),
+        r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
+        r(&[Action::RequestEdit]).core(CoreRow::Edit),
+        r(&[Action::OpenExternal]).core(CoreRow::Open),
+        r(&[Action::OpenGitView]),
+        #[cfg(feature = "git")]
+        r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
+        r(&[Action::Refresh]),
+        r(&[Action::CyclePathStyle]),
+        r(BACK_PREVIEW).core(CoreRow::Back),
+    ]
+}
+
+fn diff_rows(app: &App) -> Vec<Row> {
+    diff_rows_with(&app.diff_presentation())
+}
+
+fn diff_rows_with(
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> Vec<Row> {
+    use konoma_plugin::host::project::diff_presentation::DiffHelpSection as S;
+    p.row_declarations()
+        .iter()
+        .zip(p.resolved_rows())
+        .map(|(decl, output)| {
+            let mut row = r(&[]);
+            row.groups = decl
+                .groups
+                .iter()
+                .map(|group| {
+                    group
+                        .iter()
+                        .filter_map(|op| crate::ops::decl::diff_action(*op))
+                        .collect()
+                })
+                .collect();
+            row.resolved = Some(output.as_ref().map(|o| {
+                RowOut {
+                    keys_text: o.keys_text.clone(),
+                    desc: o.description.clone(),
+                    keys: o.keys.clone(),
+                    actions: o
+                        .ops
+                        .iter()
+                        .filter_map(|op| crate::ops::decl::diff_action(*op))
+                        .collect(),
+                    ungated: o.ungated,
+                    sec: match o.section {
+                        S::View => Sec::View,
+                        S::Move => Sec::Move,
+                        S::Launch => Sec::Launch,
+                        S::Tabs => Sec::Tabs,
+                        S::Global => Sec::Global,
+                    },
+                }
+            }));
+            row
+        })
+        .collect()
+}
+
+pub(crate) fn diff_declared_groups(
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> (Vec<Action>, Vec<Action>) {
+    let own = p
+        .row_declarations()
+        .iter()
+        .flat_map(|r| r.groups.iter().flatten())
+        .filter_map(|op| crate::ops::decl::diff_action(*op))
+        .collect();
+    let global = global_rows()
+        .into_iter()
+        .flat_map(|r| r.groups.into_iter().flatten())
+        .collect();
+    (own, global)
+}
+
+pub(crate) fn diff_help_parts(
+    app: &App,
+    p: &konoma_plugin::host::project::diff_presentation::DiffPresentation,
+) -> (
+    Vec<konoma_plugin::host::project::diff_presentation::DiffHelpRow>,
+    Vec<konoma_plugin::host::project::diff_presentation::DiffHelpMenu>,
+) {
+    use konoma_plugin::host::project::diff_presentation::{
+        DiffHelpMenu, DiffHelpRow, DiffHelpSection as S, DiffUiOp,
+    };
+    let facts = core_help::facts_for(app, Context::Diff);
+    let extra = global_rows()
+        .iter()
+        .filter_map(|r| render_row(app, Context::Diff, r, &facts))
+        .map(|r| DiffHelpRow {
+            keys_text: r.keys_text,
+            description: r.desc,
+            keys: r.keys,
+            ops: r
+                .actions
+                .iter()
+                .filter_map(|a| crate::ops::decl::diff_op(*a))
+                .collect(),
+            section: match r.sec {
+                Sec::Tabs => S::Tabs,
+                Sec::Global => S::Global,
+                Sec::Move => S::Move,
+                Sec::Launch => S::Launch,
+                _ => S::View,
+            },
+            ungated: r.ungated,
+        })
+        .collect();
+    let mut menus = Vec::new();
+    let mut seen = Vec::new();
+    for (key, id) in app.keymaps.leader_keys_of(Context::Diff) {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        if let Some(menu) =
+            crate::ops::menu::menu_with_diff(app, id, crate::ops::menu::View::Help, p)
+        {
+            menus.push(DiffHelpMenu {
+                title: menu.title,
+                prefix: help_key(key),
+                items: menu
+                    .items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, i)| konoma_host_core::menu::Item {
+                        key: i.key,
+                        action: crate::ops::decl::diff_op(i.action)
+                            .unwrap_or(DiffUiOp::Host(index)),
+                        label: i.label,
+                    })
+                    .collect(),
+            });
+        }
+    }
+    (extra, menus)
+}
+
+#[cfg(feature = "git")]
+fn screen_rows(b: Backend, s: Screen) -> (Msg, Vec<Row>) {
+    let jj = b == Backend::Jj;
+    match s {
+        Screen::Detail => (
+            Msg::GitCommitWorktreeDetail,
+            vec![
+                r(SCROLL).lit("↑ ↓"),
+                r(HSCROLL).then(LINE_ENDS).d(Msg::GitHScrollEnds),
+                r(PAGE_KEYS),
+                r(HALF_KEYS).d(Msg::Scroll10Lines),
+                r(&[Action::CycleDiffLayout]),
+                r(ENDS),
+                r(BACK_GIT).d(Msg::GitBack),
+            ],
+        ),
+        Screen::Log => (
+            Msg::GitLogLabel,
+            vec![
+                r(SCROLL).d(Msg::GitMove),
+                r(ENDS),
+                r(&[Action::GitOpenDetail]).d(Msg::GitCommitDetail),
+                r(&[Action::ListFilterStart]),
+                r(&[Action::Refresh]),
+                r(SCREENS).d(if jj {
+                    Msg::JjScreensHelp
+                } else {
+                    Msg::GitScreensHelp
+                }),
+                r(BACK_GIT).d(Msg::BackToChanges),
+            ],
+        ),
+        Screen::Graph => {
+            let mut v = vec![
+                r(SCROLL).d(Msg::GitMoveCommit),
+                r(ENDS),
+                r(&[Action::GitOpenDetail]),
+            ];
+            if jj {
+                v.push(r(&[Action::GitGraphToggleAll]));
+                v.push(r(&[Action::GitGraphOpenPicker]).d(Msg::JjBookmarksRow));
+            } else {
+                v.push(r(&[Action::GitGraphSetBase]));
+                v.push(r(&[Action::GitGraphClearBase]));
+                v.push(r(&[Action::GitGraphOpenPicker]));
+            }
+            v.push(r(&[Action::ListFilterStart]));
+            v.push(r(&[Action::Refresh]));
+            v.push(r(SCREENS).d(if jj {
+                Msg::JjScreensHelp
+            } else {
+                Msg::GitScreensHelp
+            }));
+            v.push(r(BACK_GIT).d(Msg::BackToChanges));
+            (
+                if jj {
+                    Msg::JjGraphLabel
+                } else {
+                    Msg::GitGraphLabel
+                },
+                v,
+            )
+        }
+        Screen::GraphPicker => (
+            Msg::GraphPickerTitle,
+            vec![
+                r(SCROLL).d(Msg::GitMove),
+                r(ENDS),
+                r(&[Action::GitGraphPickerToggle]).d(Msg::HintToggle),
+                r(&[Action::GitGraphPickerMoveDown, Action::GitGraphPickerMoveUp])
+                    .d(Msg::FtReorder),
+                r(&[Action::GitGraphPickerAll]).d(Msg::FtAll),
+                r(&[Action::GitGraphPickerCurrentOnly]).d(Msg::FtCurrentOnly),
+                r(&[Action::GitGraphPickerApply]).d(Msg::FtApply),
+                r(BACK_GIT).d(Msg::FtCancel),
+            ],
+        ),
+        Screen::Branches => (
+            Msg::GitBranchesLabel,
+            vec![
+                r(SCROLL).d(Msg::GitMove),
+                r(ENDS),
+                r(&[Action::BranchCheckout]),
+                r(&[Action::BranchCreate]),
+                r(&[Action::BranchDelete]),
+                r(&[Action::BranchFilterStart]),
+                r(&[Action::Refresh]),
+                r(SCREENS).d(if jj {
+                    Msg::JjScreensHelp
+                } else {
+                    Msg::GitScreensHelp
+                }),
+                r(BACK_GIT).d(Msg::BackToChanges),
+            ],
+        ),
+        Screen::Worktrees => (
+            Msg::GitWorktreesLabel,
+            vec![
+                r(SCROLL).d(Msg::GitMove),
+                r(ENDS),
+                r(&[Action::WorktreeGoto]),
+                r(&[Action::WorktreeCreate]),
+                r(&[Action::WorktreeGotoNewTab]),
+                r(&[Action::WorktreeShowChanges]),
+                r(&[Action::WorktreeFilterStart]),
+                r(&[Action::Refresh]),
+                r(SCREENS).d(if jj {
+                    Msg::JjScreensHelp
+                } else {
+                    Msg::GitScreensHelp
+                }),
+                r(BACK_WT).d(Msg::BackToChanges),
+            ],
+        ),
+        Screen::Changes => {
+            // Staging, committing and the worktree list are git's alone: a backend that only
+            // reads refuses them (`ops::gate`), so they are simply not listed for jj.
+            let v = vec![
+                r(SCROLL).d(Msg::GitMove),
+                r(ENDS),
+                r(STAGE).d(Msg::StageHint),
+                r(UNSTAGE).d(Msg::UnstageHint),
+                r(&[Action::GitDiscard]),
+                r(&[Action::GitCommit]),
+                r(&[Action::GitOpenSelectedDiff]),
+                r(&[Action::GitWorktreeDiff]).d(if jj { Msg::JjDiffAll } else { Msg::GitDiffAll }),
+                r(LOG_GRAPH).d(Msg::GitLogGraph),
+                r(&[Action::GitOpenBranches]).d(if jj {
+                    Msg::JjBookmarksRow
+                } else {
+                    Msg::GitBranches
+                }),
+                r(&[Action::GitOpenWorktrees]),
+                r(&[Action::JjSync]),
+                r(&[Action::RequestEdit]),
+                r(&[Action::OpenExternal]),
+                r(&[Action::OpenInNewTab]).d(Msg::OpenInNewTabHelp),
+                r(&[Action::ListFilterStart]),
+                r(&[Action::Refresh]),
+                r(SCREENS).d(if jj {
+                    Msg::JjScreensHelp
+                } else {
+                    Msg::GitScreensHelp
+                }),
+                r(&[Action::GitLaunchTool]).d(if jj {
+                    Msg::JjExternalTool
+                } else {
+                    Msg::GitExternalTool
+                }),
+                r(BACK_GIT).d(if jj {
+                    Msg::JjCloseView
+                } else {
+                    Msg::GitCloseView
+                }),
+            ];
+            (
+                if jj {
+                    Msg::JjChangesLabel
+                } else {
+                    Msg::GitChangesLabel
+                },
+                v,
+            )
+        }
+    }
+}
+
+/// One rendered help row, with the keys and operations it was made from (for the tests that check
+/// the notation against the keymap).
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // `keys`/`actions` are read by the tests
+pub struct RowOut {
+    pub keys_text: String,
+    pub desc: String,
+    pub keys: Vec<KeyPress>,
+    pub actions: Vec<Action>,
+    /// A reference row that is listed whether or not its key acts right now.
+    pub ungated: bool,
+    sec: Sec,
+}
+
+impl std::fmt::Debug for Sec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Sec::Tabs => write!(f, "Tabs"),
+            Sec::Global => write!(f, "Global"),
+            Sec::Move => write!(f, "Move"),
+            Sec::View => write!(f, "View"),
+            Sec::Launch => write!(f, "Launch"),
+            Sec::Custom(_) => write!(f, "Custom"),
+        }
+    }
+}
+
+/// The keys of a row as the help writes them, and the description. `None` = nothing to list.
+fn render_row(app: &App, ctx: Context, row: &Row, facts: &HelpFacts) -> Option<RowOut> {
+    if let Some(output) = &row.resolved {
+        return output.clone();
+    }
+    if let (Some(core), Some(cctx)) = (row.core, core_ctx(ctx)) {
+        let lookup = core_help::HostLookup { app, ctx };
+        let o = konoma_host_core::help::render_row(core, cctx, facts, &lookup, app.lang)?;
+        return Some(RowOut {
+            keys_text: o.keys_text,
+            desc: o.desc,
+            keys: o.keys,
+            actions: o
+                .ops
+                .iter()
+                .filter_map(|o| core_help::action_of(*o))
+                .collect(),
+            ungated: false,
+            sec: match o.sec {
+                CoreSec::View => Sec::View,
+                CoreSec::Move => Sec::Move,
+                CoreSec::Launch => Sec::Launch,
+                CoreSec::Global => Sec::Global,
+            },
+        });
+    }
+    if let Some(keys) = row.lit_only {
+        let desc = tr(app.lang, row.desc?).to_string();
+        let keys = match row.lit_msg {
+            Some(m) => tr(app.lang, m).to_string(),
+            None => keys.to_string(),
+        };
+        return Some(RowOut {
+            keys_text: keys,
+            desc,
+            keys: Vec::new(),
+            actions: Vec::new(),
+            ungated: true,
+            sec: row.sec.unwrap_or(Sec::View),
+        });
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut all_keys: Vec<KeyPress> = Vec::new();
+    let mut all_acts: Vec<Action> = Vec::new();
+    let mut lead: Option<Action> = None;
+    let mut first_key = None;
+    for group in &row.groups {
+        let acts: Vec<Action> = group
+            .iter()
+            .copied()
+            .filter(|a| row.ungated || action_enabled(app, ctx, *a))
+            .collect();
+        if acts.is_empty() {
+            continue;
+        }
+        let (cols, zipped) = columns(app, ctx, &acts);
+        if cols.is_empty() {
+            continue;
+        }
+        if lead.is_none() {
+            lead = acts.first().copied();
+            first_key = cols.first().and_then(|c| c.first()).copied();
+        }
+        all_acts.extend(acts.iter().copied());
+        all_keys.extend(cols.iter().flatten().copied());
+        parts.push(write_columns(&cols, zipped));
+    }
+    let lead = lead?;
+    let mut keys = parts.join("  ");
+    if let Some(l) = row.lit {
+        keys = format!("{keys} / {l}");
+    }
+    let desc = match row.desc {
+        Some(m) => tr(app.lang, m).to_string(),
+        // `R` on a plugin's own list of representations is named by the plugin.
+        None => match crate::ops::decl::repr_label(app, lead) {
+            Some(label) => label,
+            None => tr(app.lang, text(app, ctx, lead).help?).to_string(),
+        },
+    };
+    let sec = row.sec.unwrap_or_else(|| {
+        if decl(lead).launch {
+            Sec::Launch
+        } else {
+            match first_key.and_then(|k| {
+                app.keymaps
+                    .layer_of_key_on(ctx, app.screen_keys_for(ctx), k)
+            }) {
+                Some(KeyLayer::Global) => Sec::Global,
+                Some(KeyLayer::Basic) => Sec::Move,
+                _ => Sec::View,
+            }
+        }
+    });
+    Some(RowOut {
+        keys_text: keys,
+        desc,
+        keys: all_keys,
+        actions: all_acts,
+        ungated: row.ungated,
+        sec,
+    })
+}
+
+fn write_columns(cols: &[Vec<KeyPress>], zipped: bool) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    let rendered: Vec<String> = cols
+        .iter()
+        .map(|c| {
+            let mut one: Vec<String> = Vec::new();
+            for k in c {
+                let s = help_key(*k);
+                if !seen.contains(&s) {
+                    seen.push(s.clone());
+                    one.push(s);
+                }
+            }
+            one.join(" / ")
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    rendered.join(if zipped { "  ·  " } else { " / " })
+}
+
+/// The section of the open plugin's keys (`None` when there is none to list).
+fn plugin_section(app: &App, ctx: Context) -> Option<HelpSection> {
+    plugin_section_with_keys(app, ctx).map(|(section, _)| section)
+}
+
+fn plugin_section_with_keys(app: &App, ctx: Context) -> Option<(HelpSection, Vec<KeyPress>)> {
+    let lang = app.plugin_lang();
+    let bindings = app.plugin_context_bindings(ctx);
+    let rows =
+        konoma_plugin::host::acts::help_rows(&bindings.iter().collect::<Vec<_>>(), lang, |b| {
+            action_enabled(app, ctx, Action::Plugin(b.act))
+        });
+    let plugin = rows.first().map(|(_, _, b)| b.act.plugin())?;
+    let mut sec = HelpSection::new(
+        app.plugin_keys
+            .name_of(plugin)
+            .map(|n| n.get(lang).to_string())
+            .unwrap_or_default(),
+    );
+    let mut covered = Vec::new();
+    for (keys, desc, _) in rows {
+        covered.extend(keys.iter().copied());
+        let (cols, zipped) = konoma_host_core::help::zip_columns(&keys, |k| vec![k]);
+        sec.rows
+            .push((write_columns(&cols, zipped), desc.to_string()));
+    }
+    Some((sec, covered))
+}
+
+#[cfg(test)]
+use konoma_plugin::host::project::presentation::remaining_project_open_control;
+
+/// Every row of `ctx`'s help (before it is grouped into sections), for tests.
+#[cfg(test)]
+pub fn rows_for(app: &App, ctx: Context) -> Vec<RowOut> {
+    let (_, mut rows) = view_rows(app, ctx);
+    rows.extend(global_rows());
+    let facts = core_help::facts_for(app, ctx);
+    rows.iter()
+        .filter_map(|r| render_row(app, ctx, r, &facts))
+        .collect()
+}
+
+/// The sections of the `?` help for the screen the help was opened over.
+pub fn sections(app: &App) -> Vec<HelpSection> {
+    sections_for(app, help_context(app))
+}
+
+fn project_sections(app: &App) -> Vec<HelpSection> {
+    use konoma_plugin::host::project::presentation::ProjectHelpWords;
+    let Some((presentation, actions)) = app.project_presentation() else {
+        return vec![];
+    };
+    let plugin = actions
+        .first()
+        .and_then(|a| app.plugin_keys.name_of(a.plugin()))
+        .map(|name| name.get(app.plugin_lang()))
+        .unwrap_or_default();
+    let jj = app.project_vcs_jj() == Some(true);
+    let (screen_title, screen_filter, copy_title) = vcs_screen_words(app, jj);
+    let jumps = [
+        (
+            "branches",
+            tr(
+                app.lang,
+                if jj {
+                    Msg::JjBookmarksRow
+                } else {
+                    Msg::GitBranches
+                },
+            ),
+        ),
+        ("worktrees", tr(app.lang, Msg::GitWorktreesRow)),
+        // The log and graph jumps have no default key: a row shows only once the user binds one.
+        ("log", tr(app.lang, Msg::FtLog)),
+        ("graph", tr(app.lang, Msg::FtGraph)),
+    ];
+    let words = ProjectHelpWords {
+        screen_title: tr(app.lang, screen_title),
+        screen_filter: tr(app.lang, screen_filter),
+        close_view: tr(
+            app.lang,
+            if jj {
+                Msg::JjCloseView
+            } else {
+                Msg::GitCloseView
+            },
+        ),
+        tool: tr(
+            app.lang,
+            if jj {
+                Msg::JjExternalTool
+            } else {
+                Msg::GitExternalTool
+            },
+        ),
+        jumps: &jumps,
+        movement: tr(app.lang, Msg::HelpMove),
+        plugin,
+        project: tr(app.lang, Msg::ProjectTitle),
+        picker: tr(app.lang, Msg::GraphPickerTitle),
+        graph: tr(
+            app.lang,
+            if jj {
+                Msg::JjGraphLabel
+            } else {
+                Msg::GitGraphLabel
+            },
+        ),
+        new_tab: tr(app.lang, Msg::OpenInNewTabHelp),
+        move_list: tr(app.lang, Msg::GitMove),
+        move_commit: tr(app.lang, Msg::GitMoveCommit),
+        ends: tr(app.lang, Msg::TopBottom),
+        apply: tr(app.lang, Msg::FtApply),
+        cancel: tr(app.lang, Msg::FtCancel),
+        filter: tr(app.lang, Msg::GitFilterByName),
+        mark: tr(app.lang, Msg::ProjectMark),
+        search: tr(app.lang, Msg::ListFilterHelp),
+        refresh: tr(app.lang, Msg::Refresh),
+        screens: tr(
+            app.lang,
+            if jj {
+                Msg::JjScreensHelp
+            } else {
+                Msg::GitScreensHelp
+            },
+        ),
+        back_to_changes: tr(app.lang, Msg::BackToChanges),
+        cycle: tr(app.lang, Msg::ProjectCycle),
+        back: tr(app.lang, Msg::ProjectBack),
+        scroll: tr(app.lang, Msg::Scroll),
+        copy: tr(app.lang, copy_title),
+        actions: tr(app.lang, Msg::WkActionsTitle),
+        detail_hscroll: tr(app.lang, Msg::GitHScrollEnds),
+        detail_page: tr(app.lang, Msg::HintPage),
+        detail_half_page: tr(app.lang, Msg::Scroll10Lines),
+        detail_layout: tr(app.lang, Msg::GitLayout),
+        detail_back: tr(app.lang, Msg::GitBack),
+    };
+    let screens = app
+        .tab
+        .project_navigation
+        .as_ref()
+        .and_then(|nav| Some((nav, app.project_runtimes.get(&nav.project)?)))
+        .map(|(nav, runtime)| {
+            konoma_plugin::host::project::presentation::screen_help_rows(
+                &runtime.project.declaration.screens,
+                app.plugin_keys.jumps_of(&nav.project.plugin),
+                app.plugin_lang(),
+            )
+        })
+        .unwrap_or_default();
+    let mut sections: Vec<HelpSection> = presentation
+        .help_sections(&words, &screens)
+        .into_iter()
+        .map(|section| HelpSection {
+            title: section.title,
+            rows: section.rows,
+        })
+        .collect();
+    // The Tabs and Global rows (`t`, `[`, `]`, `1 - 9`, `T`, `?`, `Q`, `P`, `F`) act on every
+    // project screen, the graph's branch picker included, so every screen lists them; the launch
+    // verbs (`e`, `o`) are gated by the selected row's target.
+    add_host_rows(app, &mut sections);
+    sections
+}
+
+/// The words of a version-control screen that differ per screen, read from the old hub's
+/// catalog: the main section's title, the filter row's wording and the title of the `y` menu.
+#[cfg(feature = "git")]
+fn vcs_screen_words(app: &App, jj: bool) -> (Msg, Msg, Msg) {
+    use crate::keymap::{Context, Screen};
+    let Some(Context::Screen(_, screen)) = app.canvas_screen() else {
+        return (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint);
+    };
+    match screen {
+        Screen::Changes => (
+            if jj {
+                Msg::JjChangesLabel
+            } else {
+                Msg::GitChangesLabel
+            },
+            Msg::ListFilterHelp,
+            Msg::WkCopyPathTitle,
+        ),
+        Screen::Log => (Msg::GitLogLabel, Msg::ListFilterHelp, Msg::WkGitCopyTitle),
+        Screen::Graph => (
+            if jj {
+                Msg::JjGraphLabel
+            } else {
+                Msg::GitGraphLabel
+            },
+            Msg::ListFilterHelp,
+            Msg::WkGitCopyTitle,
+        ),
+        Screen::Branches => (
+            Msg::GitBranchesLabel,
+            Msg::GitFilterByName,
+            Msg::WkBranchCopyTitle,
+        ),
+        Screen::Worktrees => (Msg::GitWorktreesLabel, Msg::GitFilterByName, Msg::CopyHint),
+        // The old hub's `Screen::Detail` heading; the pushed detail lists no filter row, and its
+        // `y` menu is titled as the log's (the commit it shows).
+        Screen::Detail => (
+            Msg::GitCommitWorktreeDetail,
+            Msg::GitFilterByName,
+            Msg::WkGitCopyTitle,
+        ),
+        Screen::GraphPicker => (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint),
+    }
+}
+
+#[cfg(not(feature = "git"))]
+fn vcs_screen_words(_: &App, _: bool) -> (Msg, Msg, Msg) {
+    (Msg::ProjectTitle, Msg::GitFilterByName, Msg::CopyHint)
+}
+
+/// The rows the host adds to a project canvas's help. Every project screen lists the Tabs and
+/// Global rows at the end: those keys sit in the core Global layer, which a project screen hands
+/// back to the host (the graph's branch picker included). The launch verbs (`e`, `o`) are listed
+/// too: they act on any project screen whose selected row has a launchable target (`verb_target`),
+/// so `gate_edit` / `gate_open_external` decide, per screen and per row, like every other row.
+/// They sit after the movement section as the old hub listed them; a screen without one (another
+/// provider's) puts them where every canvas does, before the menus behind `Space` / `y`.
+fn add_host_rows(app: &App, sections: &mut Vec<HelpSection>) {
+    // The screen's own context: its rows are worded and gated as the old hub's were.
+    let ctx = app.canvas_screen().unwrap_or(Context::Canvas);
+    let facts = core_help::facts_for(app, ctx);
+    let mut rows = vec![r(&[Action::RequestEdit]), r(&[Action::OpenExternal])];
+    rows.extend(global_rows());
+    let mut by: Vec<(Sec, Vec<(String, String)>)> = Vec::new();
+    for row in &rows {
+        let Some(out) = render_row(app, ctx, row, &facts) else {
+            continue;
+        };
+        let pair = (out.keys_text, out.desc);
+        match by.iter_mut().find(|(s, _)| *s == out.sec) {
+            Some((_, v)) => v.push(pair),
+            None => by.push((out.sec, vec![pair])),
+        }
+    }
+    let mut take = |sec: Sec, title: Msg| -> Option<HelpSection> {
+        let i = by.iter().position(|(s, _)| *s == sec)?;
+        Some(HelpSection {
+            title: tr(app.lang, title).to_string(),
+            rows: by.remove(i).1,
+        })
+    };
+    let launch = take(Sec::Launch, Msg::HelpLaunch);
+    let tabs = take(Sec::Tabs, Msg::HelpTabs);
+    let global = take(Sec::Global, Msg::HelpGlobal);
+    if let Some(launch) = launch {
+        let movement = tr(app.lang, Msg::HelpMove);
+        let menus = tr(app.lang, Msg::WkActionsTitle);
+        let at = sections
+            .iter()
+            .position(|s| s.title == movement)
+            .map(|i| i + 1)
+            .or_else(|| sections.iter().position(|s| s.title == menus))
+            .unwrap_or(sections.len());
+        sections.insert(at, launch);
+    }
+    sections.extend(tabs);
+    sections.extend(global);
+}
+
+pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
+    if app.project_active() {
+        return project_sections(app);
+    }
+    {
+        if let Some(values) = crate::ops::preview_plan::front_values(app, ctx) {
+            use konoma_plugin::host::project::preview_presentation::{
+                PreviewHelpRow, PreviewSection,
+            };
+            let extra = global_rows()
+                .iter()
+                .filter_map(|r| render_row(app, ctx, r, &values.core))
+                .map(|r| PreviewHelpRow {
+                    keys_text: r.keys_text,
+                    description: r.desc,
+                    section: match r.sec {
+                        Sec::Tabs => PreviewSection::Tabs,
+                        Sec::Global => PreviewSection::Global,
+                        Sec::Move => PreviewSection::Move,
+                        Sec::Launch => PreviewSection::Launch,
+                        _ => PreviewSection::View,
+                    },
+                })
+                .collect();
+            let plugin = plugin_section(app, ctx)
+                .into_iter()
+                .map(|s| konoma_host_core::help::CoreSection {
+                    title: s.title,
+                    rows: s.rows,
+                })
+                .collect();
+            let mut seen = Vec::new();
+            let menus = app
+                .keymaps
+                .leader_keys_of(ctx)
+                .into_iter()
+                .filter_map(|(key, id)| {
+                    if seen.contains(&id) {
+                        return None;
+                    }
+                    seen.push(id);
+                    let section = crate::ui::help::leader_section(app, ctx, id, &help_key(key))?;
+                    Some(konoma_host_core::help::CoreSection {
+                        title: section.title,
+                        rows: section.rows,
+                    })
+                })
+                .collect();
+            return values
+                .help_sections(
+                    &crate::ops::preview_plan::help_words(app),
+                    &core_help::HostLookup { app, ctx },
+                    app.lang,
+                    extra,
+                    plugin,
+                    menus,
+                )
+                .into_iter()
+                .map(|s| HelpSection {
+                    title: s.title,
+                    rows: s.rows,
+                })
+                .collect();
+        }
+    }
+    if ctx == Context::Diff {
+        let p = app.diff_presentation();
+        let (extra, menus) = diff_help_parts(app, &p);
+        let mut sections: Vec<_> = p
+            .help_sections(&extra, &menus)
+            .into_iter()
+            .map(|s| HelpSection {
+                title: s.title,
+                rows: s.rows,
+            })
+            .collect();
+        if let Some(plugin) = plugin_section(app, ctx) {
+            let at = usize::from(
+                sections
+                    .first()
+                    .is_some_and(|s| s.title == tr(app.lang, Msg::PreviewGitDiff)),
+            );
+            sections.insert(at, plugin);
+        }
+        return sections;
+    }
+    generic_sections_for(app, ctx)
+}
+
+#[cfg(all(test, feature = "git"))]
+pub(crate) fn project_sections_legacy_for_test(app: &App) -> Vec<HelpSection> {
+    project_sections(app)
+}
+
+#[cfg(all(test, feature = "git"))]
+pub(crate) fn preview_sections_legacy_for_test(app: &App, ctx: Context) -> Vec<HelpSection> {
+    generic_sections_for(app, ctx)
+}
+
+fn generic_sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
+    let (view_title, mut rows) = view_rows(app, ctx);
+    rows.extend(global_rows());
+    let facts = core_help::facts_for(app, ctx);
+    let mut by: Vec<(Sec, Vec<(String, String)>)> = Vec::new();
+    for row in &rows {
+        let Some(out) = render_row(app, ctx, row, &facts) else {
+            continue;
+        };
+        let (sec, pair) = (out.sec, (out.keys_text, out.desc));
+        match by.iter_mut().find(|(s, _)| *s == sec) {
+            Some((_, v)) => v.push(pair),
+            None => by.push((sec, vec![pair])),
+        }
+    }
+    let take =
+        |by: &mut Vec<(Sec, Vec<(String, String)>)>, sec: Sec| -> Option<Vec<(String, String)>> {
+            let i = by.iter().position(|(s, _)| *s == sec)?;
+            Some(by.remove(i).1)
+        };
+    let lang = app.lang;
+    let mut out: Vec<HelpSection> = Vec::new();
+    let push = |out: &mut Vec<HelpSection>, title: Msg, rows: Option<Vec<(String, String)>>| {
+        if let Some(rows) = rows.filter(|r| !r.is_empty()) {
+            out.push(HelpSection {
+                title: tr(lang, title).to_string(),
+                rows,
+            });
+        }
+    };
+    // This screen's own operations come first (that is what the help is opened for), then movement
+    // and the launch verbs; what is true everywhere (layer 0) closes the list.
+    push(&mut out, view_title, take(&mut by, Sec::View));
+    // The open plugin's own keys: one section under the plugin's name, from its declarations. A
+    // row is there only while the session says the action works (the gate), like every other row.
+    out.extend(plugin_section(app, ctx));
+    push(&mut out, Msg::HelpMove, take(&mut by, Sec::Move));
+    push(&mut out, Msg::HelpLaunch, take(&mut by, Sec::Launch));
+    // The menus behind `y` and `Space`: every leader this screen opens.
+    let mut seen: Vec<LeaderId> = Vec::new();
+    for (k, id) in app.keymaps.leader_keys_of_on(ctx, app.screen_keys_for(ctx)) {
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        if let Some(sec) = crate::ui::help::leader_section(app, ctx, id, &help_key(k)) {
+            out.push(sec);
+        }
+    }
+    push(&mut out, Msg::HelpTabs, take(&mut by, Sec::Tabs));
+    push(&mut out, Msg::HelpGlobal, take(&mut by, Sec::Global));
+    // Sections of their own (the tree's selection and status legend), in the order they appear.
+    let customs: Vec<Sec> = by.iter().map(|(s, _)| *s).collect();
+    for sec in customs {
+        if let Sec::Custom(title) = sec {
+            push(&mut out, title, take(&mut by, sec));
+        }
+    }
+    out
+}
+
+/// Every operation a context's help lists, whether or not it acts right now (for the test that
+/// every key binding is documented).
+#[cfg(test)]
+pub fn listed_actions(app: &App, ctx: Context) -> Vec<Action> {
+    let (mut view, global) = declared_groups(app, ctx);
+    view.extend(global);
+    view
+}
+
+/// The operations the help of `ctx` lists, in the order it declares them: those of the screen
+/// itself, and those of the rows every screen lists (layer 0: tabs, help, quit). The `Space` menu
+/// lists the operations that are not in the footer in this order.
+pub fn declared_groups_by_rows(app: &App, ctx: Context) -> (Vec<Action>, Vec<Action>) {
+    let flat = |rows: Vec<Row>| -> Vec<Action> {
+        rows.iter()
+            .flat_map(|r| r.groups.iter().flat_map(|g| g.iter().copied()))
+            .collect()
+    };
+    (flat(view_rows(app, ctx).1), flat(global_rows()))
+}
+
+pub fn declared_groups(app: &App, ctx: Context) -> (Vec<Action>, Vec<Action>) {
+    // The preview screens: the description in `konoma_host_core::preview_plan`, which the
+    // standalone app's menu is built from too.
+    if let Some(d) = crate::ops::preview_plan::declared(app, ctx) {
+        return d;
+    }
+    declared_groups_by_rows(app, ctx)
+}
+
+#[cfg(test)]
+mod project_open_tests {
+    use super::*;
+    use crate::app::project_screens::{ProjectControl, ProjectControlId};
+    use crossterm::event::KeyCode;
+    use konoma_plugin::{
+        host::acts::{help_rows, ActBinding},
+        HintGroup, Tr,
+    };
+
+    #[test]
+    fn project_open_help_subtracts_plugin_enter_and_enter_l_key_sets() {
+        let enter = KeyPress::key(KeyCode::Enter);
+        let right = KeyPress::key(KeyCode::Right);
+        for keys in [vec![enter], vec![enter, KeyPress::ch('l')]] {
+            let bindings: Vec<_> = keys
+                .iter()
+                .enumerate()
+                .map(|(act, key)| ActBinding {
+                    act,
+                    key: Some(*key),
+                    copy_key: None,
+                    context: None,
+                    hint_group: Some(("test".into(), HintGroup::new("open", "open"))),
+                    label: Tr::new("open"),
+                    help: Tr::new("open"),
+                    footer: None,
+                    writes: false,
+                })
+                .collect();
+            let refs: Vec<_> = bindings.iter().collect();
+            let rows = help_rows(&refs, "en", |_| true);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0, keys);
+            let control = ProjectControl::new(
+                ProjectControlId::Open,
+                vec![enter, KeyPress::ch('l'), right],
+                "open",
+            );
+            let remaining = remaining_project_open_control(control, &rows[0].0).unwrap();
+            assert_eq!(
+                remaining.keys,
+                if keys.len() == 1 {
+                    vec![KeyPress::ch('l'), right]
+                } else {
+                    vec![right]
+                }
+            );
+            assert_eq!(remaining.label, "open");
+        }
+    }
+}

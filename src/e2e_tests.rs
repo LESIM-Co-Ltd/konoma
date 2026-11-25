@@ -24,6 +24,33 @@ use crate::test_support::{build_minimal_one_page_pdf, init_git_repo, run_git};
 use crate::test_support::{sample_path_or_skip, unique_tmp, write_solid_png};
 use crate::{handle_key, ui};
 
+/// The follow scope of a follow-opened diff (`toggle_follow_diff_scope`) has no default key (it
+/// moves into the `,` menu); the tests of the scope itself bind `f` in `[keys]`.
+#[cfg(feature = "git")]
+const FOLLOW_SCOPE_KEY: &[(&str, &[(&str, &str)])] =
+    &[("diff", &[("f", "toggle_follow_diff_scope")])];
+
+/// The tree's sort menu (`open_sort_menu`) has no default key (it moves into the `,` menu); the
+/// tests of the menu itself bind `s` in `[keys.tree]`.
+const SORT_MENU_KEY: &[(&str, &[(&str, &str)])] = &[("tree", &[("s", "open_sort_menu")])];
+
+/// Binds the hub's `g` and `l` to the graph and the log in `cfg` (see `Sim::with_hub_screen_keys`).
+#[cfg(feature = "git")]
+fn hub_screen_keys(cfg: &mut Config) {
+    for ctx in ["git.changes", "jj.changes"] {
+        let table = cfg.keys.surfaces.entry(ctx.to_string()).or_default();
+        table.insert("g".into(), "git_open_graph".into());
+        table.insert("l".into(), "git_open_log".into());
+    }
+}
+
+/// How long a `Sim::drain_*` helper waits for a result the worker owes. It is a bound that turns a
+/// worker that never answers into a failure instead of a hang, not a measurement: a result that is
+/// owed arrives however slowly a loaded machine runs it (an encode of a big picture took 1.5 s on
+/// an idle test run and over 10 s beside five other full runs), so the bound is far above that.
+/// Waiting is free when the result is there; only a worker that is really stuck costs this long.
+const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// One simulated konoma session: an App plus a terminal, with a draw after every key
 /// (mirroring the run loop's key→redraw cycle).
 struct Sim {
@@ -41,6 +68,8 @@ struct Sim {
     gitop_rx: Option<std::sync::mpsc::Receiver<crate::app::GitOpResult>>,
     /// Receiver for background inline-Markdown-image decodes (`with_media`). Drained by `drain_md_images`.
     md_img_rx: Option<std::sync::mpsc::Receiver<crate::app::MdImageResult>>,
+    /// The full-screen picture's resize requests, answered by `answer_image_resizes`.
+    resize_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ratatui_image::thread::ResizeRequest>>,
     /// Receiver for the background inline-image encode worker (`with_media`). Drained by `drain_md_encodes`.
     md_enc_rx: Option<std::sync::mpsc::Receiver<crate::app::MdEncodeResult>>,
     /// Receiver for full-screen media loads — SVG/GIF/PDF/video/standalone-mermaid/fullscreen-fence
@@ -68,6 +97,35 @@ impl Sim {
         Sim::with_config_sized(root, cfg, 90, 26)
     }
 
+    /// A session whose `[keys]` bind the given keys (`(context, [(key, action)])`), for the tests
+    /// that need an operation whose default key was taken away. They use the keys the user would
+    /// write in the settings.
+    fn with_keys(root: &std::path::Path, keys: &[(&str, &[(&str, &str)])]) -> Sim {
+        let mut cfg = Config::default();
+        for (ctx, entries) in keys {
+            let table = cfg.keys.surfaces.entry((*ctx).to_string()).or_default();
+            for (k, a) in *entries {
+                table.insert((*k).to_string(), (*a).to_string());
+            }
+        }
+        Sim::with_config(root, cfg)
+    }
+
+    /// A session whose host keymap holds `cfg`'s `[keys]` exactly as written. With the plugins on,
+    /// an old per-screen entry (`git_open_log`, `git_stage`, ...) is read as the plugins' operation
+    /// and leaves the host's table (`plugins::old_screens`); the host's own hub reads its tables as
+    /// written, so the tests of that hub put them into its keymap directly.
+    fn with_host_keys_as_written(root: &std::path::Path, cfg: Config, w: u16, h: u16) -> Sim {
+        let mut plain = cfg.clone();
+        plain.keys = Config::default().keys;
+        let mut sim = Sim::with_config_sized(root, plain, w, h);
+        sim.app.keymaps = crate::keymap::KeyMap::from_config(
+            crate::keymap::scheme_from_str(&cfg.ui.keys),
+            &cfg.keys.to_keymap_config(),
+        );
+        sim
+    }
+
     /// Same as `with_config`, but with an explicit terminal size instead of the standard 90x26.
     /// Needed by tests that must clear `mermaid_fit_rows`'s viewport clamp (`preview_viewport - 2`)
     /// to observe a **large** `ui.mermaid_rows` actually growing the diagram — at 90x26 the
@@ -85,6 +143,7 @@ impl Sim {
             #[cfg(feature = "git")]
             gitop_rx: None,
             md_img_rx: None,
+            resize_rx: None,
             md_enc_rx: None,
             media_rx: None,
             md_remote_rx: None,
@@ -93,6 +152,32 @@ impl Sim {
         };
         sim.draw();
         sim
+    }
+
+    /// Opt in to the **real background path** for plugins (the one worker channel,
+    /// `App::attach_media_loader`, as `main` does): a plugin's `open` runs on a worker and the first
+    /// frame waits only its budget. Results that miss it are applied by `drain_plugin`.
+    fn with_async_plugins(mut self) -> Sim {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.app.attach_media_loader(tx);
+        self.media_rx = Some(rx);
+        self
+    }
+
+    /// Wait for the next plugin result and apply it (the run loop's `rx.plugin.try_recv()` step),
+    /// then redraw. Returns whether it applied.
+    #[track_caller]
+    fn drain_plugin(&mut self) -> bool {
+        let rx = self
+            .media_rx
+            .as_ref()
+            .expect("with_async_plugins() を呼んでいない");
+        let res = rx
+            .recv_timeout(DRAIN_WAIT)
+            .expect("plugin worker が結果を返す");
+        let applied = self.app.apply_media(res);
+        self.draw();
+        applied
     }
 
     /// Opt in to the **real background path** for file operations (copy/move/duplicate/delete):
@@ -171,12 +256,30 @@ impl Sim {
         self.with_media_on(picker)
     }
 
-    fn with_media_on(mut self, picker: ratatui_image::picker::Picker) -> Sim {
+    /// `with_media` plus the preview resolution worker on the same mailbox, as `main` attaches
+    /// them (`attach_preview_resolution_worker(media_tx.clone())` first): the kind of a file is
+    /// decided on a worker and the reply lands through `apply_media`.
+    fn with_media_and_preview_worker(self) -> Sim {
+        self.with_media_worker_on(ratatui_image::picker::Picker::halfblocks(), true)
+    }
+
+    fn with_media_on(self, picker: ratatui_image::picker::Picker) -> Sim {
+        self.with_media_worker_on(picker, false)
+    }
+
+    fn with_media_worker_on(
+        mut self,
+        picker: ratatui_image::picker::Picker,
+        preview_worker: bool,
+    ) -> Sim {
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
-        std::mem::forget(resize_rx); // the kitty zoom/pan resize path isn't exercised here
+        self.resize_rx = Some(resize_rx);
         self.app.attach_image_backend(picker.clone(), resize_tx);
 
         let (media_tx, media_rx) = std::sync::mpsc::channel();
+        if preview_worker {
+            self.app.attach_preview_resolution_worker(media_tx.clone());
+        }
         self.app.attach_media_loader(media_tx);
         self.media_rx = Some(media_rx);
 
@@ -209,11 +312,12 @@ impl Sim {
     /// came back) is stale by design and is skipped, exactly as the run loop ignores it.
     #[track_caller]
     fn drain_md_images(&mut self) {
+        self.await_media("inline decode: open the document before awaiting its picture");
         let rx = self
             .md_img_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + DRAIN_WAIT;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             let res = rx
@@ -230,11 +334,12 @@ impl Sim {
     /// `rx.md_enc.try_recv()` step), then redraw. Results for a dropped entry are skipped.
     #[track_caller]
     fn drain_md_encodes(&mut self) {
+        self.await_media("inline encode: finish the document's media work");
         let rx = self
             .md_enc_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + DRAIN_WAIT;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             let res = rx
@@ -247,34 +352,131 @@ impl Sim {
         self.draw();
     }
 
-    /// Non-blocking sibling of `drain_md_encodes`: apply **one** encode result if the worker has
-    /// produced one within a short grace period, redraw, and say whether anything was applied.
-    /// `false` therefore means "the pipeline has gone quiet" — the renderer asked for nothing more.
+    /// Apply one owed encode and redraw. Return false only when no request is outstanding.
     /// This is what lets a test assert **convergence** (no key pressed, so the only thing that can
     /// keep the loop alive is the renderer re-requesting an encode it should already have).
     #[track_caller]
     fn drain_md_encode_if_any(&mut self) -> bool {
+        self.await_media("inline encode convergence: finish the document's media work");
+        if !self.app.md_encode_in_flight() {
+            return false;
+        }
         let rx = self
             .md_enc_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        // Quiescence is read off the App, not off the clock: while a request is in flight the
-        // worker owes a result and this waits however long a loaded test runner needs, and only
-        // when nothing is in flight does a miss actually mean "the renderer has stopped asking".
-        // A pure timeout here was flaky under `cargo test`'s full parallel load — it reported
-        // convergence while an encode was still on its way, and the *next* assertion (the placement
-        // that never got its picture) is what failed.
-        let wait = if self.app.md_encode_in_flight() {
-            std::time::Duration::from_secs(10)
-        } else {
-            std::time::Duration::from_millis(50)
-        };
-        let Ok(res) = rx.recv_timeout(wait) else {
-            return false;
-        };
+        let res = rx
+            .recv_timeout(DRAIN_WAIT)
+            .expect("inline encode convergence: the outstanding encode must answer");
         self.app.apply_md_encode(res);
         self.draw();
         true
+    }
+
+    /// Order document readiness before any placement check or inline decode/encode wait.
+    #[track_caller]
+    fn await_media(&mut self, step: &str) {
+        let deadline = std::time::Instant::now() + DRAIN_WAIT;
+        while self.app.is_media_loading() {
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| panic!("{step}: media work did not finish"));
+            let res = self
+                .media_rx
+                .as_ref()
+                .expect("with_media")
+                .recv_timeout(left)
+                .unwrap_or_else(|e| panic!("{step}: media worker did not answer: {e:?}"));
+            self.app.apply_media(res);
+            self.draw();
+        }
+    }
+
+    /// An intentionally cancelled job still owes its final answer even when loading is clear.
+    #[track_caller]
+    fn await_media_generation(
+        &mut self,
+        generation: u64,
+        step: &str,
+        timeout: std::time::Duration,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| panic!("{step}: cancelled media job did not finish"));
+            let res = self
+                .media_rx
+                .as_ref()
+                .expect("with_async_plugins")
+                .recv_timeout(left)
+                .unwrap_or_else(|e| panic!("{step}: cancelled media job did not answer: {e:?}"));
+            let done = res.generation_for_test() == generation && !res.is_layout_only();
+            let applied = self.app.apply_media(res);
+            self.draw();
+            if done {
+                return applied;
+            }
+        }
+    }
+
+    /// Answers every resize the full-screen picture asked for, drawing again after each, so the
+    /// picture is in the drawn cells (a test that never calls this leaves the requests unanswered).
+    fn answer_image_resizes(&mut self) {
+        loop {
+            let Some(req) = self.resize_rx.as_mut().and_then(|rx| rx.try_recv().ok()) else {
+                return;
+            };
+            self.app.apply_image_resize(req.resize_encode());
+            self.draw();
+        }
+    }
+
+    /// Settle the document and all inline picture channels, including jobs started by a draw.
+    #[track_caller]
+    fn settle_inline_images(&mut self, step: &str, timeout: std::time::Duration) {
+        self.await_media(step);
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            self.draw();
+            if !self.app.md_pixels_pending() {
+                return;
+            }
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| panic!("{step}: inline pictures did not finish"));
+            if self.app.remote_images_pending_for_test() {
+                let res = self
+                    .md_remote_rx
+                    .as_ref()
+                    .expect("with_media")
+                    .recv_timeout(left)
+                    .unwrap_or_else(|e| {
+                        panic!("{step}: remote image worker did not answer: {e:?}")
+                    });
+                self.app.apply_remote_fetch(res);
+            } else if self.app.md_encode_in_flight() {
+                let res = self
+                    .md_enc_rx
+                    .as_ref()
+                    .expect("with_media")
+                    .recv_timeout(left)
+                    .unwrap_or_else(|e| {
+                        panic!("{step}: inline encode worker did not answer: {e:?}")
+                    });
+                self.app.apply_md_encode(res);
+            } else {
+                let res = self
+                    .md_img_rx
+                    .as_ref()
+                    .expect("with_media")
+                    .recv_timeout(left)
+                    .unwrap_or_else(|e| {
+                        panic!("{step}: inline decode worker did not answer: {e:?}")
+                    });
+                self.app.apply_md_image(res);
+            }
+        }
     }
 
     /// Wait for the next full-screen media-load result (SVG/GIF/PDF/video/standalone-mermaid/
@@ -282,23 +484,33 @@ impl Sim {
     #[track_caller]
     fn drain_media(&mut self) {
         let rx = self.media_rx.as_ref().expect("with_media() を呼んでいない");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("media loader が結果を返す");
-        assert!(self.app.apply_media(res), "現世代の結果は適用される");
+        loop {
+            let res = rx
+                .recv_timeout(DRAIN_WAIT)
+                .expect("media loader が結果を返す");
+            // A plugin's page count sent ahead of its picture (the UI stopped waiting for it) is
+            // not the result being drained: apply it and wait for the picture.
+            let layout_only = res.is_layout_only();
+            assert!(self.app.apply_media(res), "現世代の結果は適用される");
+            if !layout_only {
+                break;
+            }
+        }
         self.draw();
+        self.await_media("media load: finish jobs started by the answer or its draw");
     }
 
     /// Wait for the next remote (http/https) Markdown image fetch's completion and apply it (the
     /// run loop's `rx.md_remote.try_recv()` step), then redraw.
     #[track_caller]
     fn drain_remote(&mut self) {
+        self.await_media("remote image: open the document before awaiting its download");
         let rx = self
             .md_remote_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
         let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(DRAIN_WAIT)
             .expect("remote fetch worker が結果を返す");
         assert!(self.app.apply_remote_fetch(res), "常に再描画を要求する");
         self.draw();
@@ -312,9 +524,7 @@ impl Sim {
             .fileop_rx
             .as_ref()
             .expect("with_async_file_ops() を呼んでいない");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("ワーカーが結果を返す");
+        let res = rx.recv_timeout(DRAIN_WAIT).expect("ワーカーが結果を返す");
         assert!(self.app.apply_file_op(res), "現世代の結果は適用される");
         self.draw();
     }
@@ -386,6 +596,19 @@ impl Sim {
 
     fn key(&mut self, c: char) {
         self.press(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+
+    /// Wait until the tab's project detection worker has answered the scan it started when the
+    /// `Sim` was built, and apply that answer. A test that deletes or renames the root (or a
+    /// watched project directory) calls this first: otherwise the worker's first scan can run
+    /// after the deletion under load, and its failure answer ("could not detect or watch
+    /// projects") arrives during the test's key loop. The wait is on the worker's own signal
+    /// (no sleep); with injected events no later native event can change the answer.
+    fn settle_projects(&mut self) {
+        if self.app.tab.projects.pending() {
+            self.app.tab.projects.wait_for_result();
+        }
+        self.app.poll_projects();
     }
 
     /// Type a sequence of plain character keys.
@@ -869,11 +1092,12 @@ fn e2e_sort_menu_switches_order() {
     let dir = sandbox("sort");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('s');
-    s.see("sort"); // the sort menu's footer/display
+    s.key(',');
+    s.see("Sort & display"); // the `,` menu's which-key line
     s.key('s'); // by size
                 // The menu closes and the order has changed (directories still stay first).
-    assert!(!s.app.is_sort_menu());
+    assert_eq!(s.app.pending_leader, None);
+    assert_eq!(s.app.sort.key, crate::app::SortKey::Size);
 }
 
 // =============================================================================
@@ -1129,7 +1353,7 @@ fn e2e_markdown_link_follow_and_back() {
 }
 
 #[test]
-fn e2e_markdown_checkbox_space_toggles_file() {
+fn e2e_markdown_checkbox_enter_toggles_file() {
     let dir = sandbox("md_checkbox");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
@@ -1137,11 +1361,11 @@ fn e2e_markdown_checkbox_space_toggles_file() {
     s.enter();
     s.tab(); // link
     s.tab(); // checkbox
-    s.key(' ');
+    s.enter();
     let src = std::fs::read_to_string(dir.join("readme.md")).unwrap();
     assert!(
         src.contains("- [x] task one"),
-        "Space でファイルに書き戻る: {src}"
+        "Enter でファイルに書き戻る: {src}"
     );
 }
 
@@ -1443,9 +1667,9 @@ fn e2e_ctrl_t_opens_selected_in_new_tab() {
 }
 
 #[test]
-fn e2e_shift_i_inserts_tab_right_of_current_and_shifts_the_rest() {
-    // `I` (tab_new_after) inserts immediately to the right of the active tab, unlike `t`
-    // (tab_new) which always appends at the end. Tabs are told apart here by which file each
+fn e2e_t_inserts_tab_right_of_current_and_shifts_the_rest() {
+    // `t` (tab_new_after) inserts immediately to the right of the active tab (it was `I`; `t`
+    // used to append at the end). Tabs are told apart here by which file each
     // one is left previewing (tab_label reflects the preview target's file name in Preview mode).
     let dir = sandbox("shift_i_insert");
     std::fs::write(dir.join("a.txt"), "AAA\n").unwrap();
@@ -1455,19 +1679,19 @@ fn e2e_shift_i_inserts_tab_right_of_current_and_shifts_the_rest() {
 
     s.select("a.txt");
     s.enter(); // tab0 previews a.txt
-    s.key('t'); // t always appends: tab1
+    s.key('t'); // tab1 (right of tab0, which is the end)
     s.select("b.txt");
     s.enter(); // tab1 previews b.txt
-    s.key('t'); // appends again: tab2
+    s.key('t'); // tab2 (right of tab1, which is the end)
     s.select("c.txt");
     s.enter(); // tab2 previews c.txt
     assert_eq!(s.app.tab_count(), 3, "前提: 3タブ");
 
-    // Back to the first tab, then I inserts right next to it (not at the end).
+    // Back to the first tab, then t inserts right next to it (not at the end).
     s.key('1');
     assert_eq!(s.app.active_tab_index(), 0);
-    s.key('I');
-    assert_eq!(s.app.tab_count(), 4, "I でタブが増える");
+    s.key('t');
+    assert_eq!(s.app.tab_count(), 4, "t でタブが増える");
     assert_eq!(s.app.active_tab_index(), 1, "挿入した新規タブがアクティブ");
     assert_eq!(s.app.tab_label(0), "a.txt", "元 tab0 はそのまま");
     assert_eq!(s.app.tab.mode, Mode::Tree, "挿入直後は素の Tree");
@@ -1497,26 +1721,26 @@ fn e2e_plain_t_still_appends_from_the_first_tab() {
 }
 
 #[test]
-fn e2e_shift_i_on_the_last_tab_appends_like_t() {
-    // On the last tab, "right of current" and "the end" are the same slot: I behaves like t.
+fn e2e_t_on_the_last_tab_appends() {
+    // On the last tab, "right of current" and "the end" are the same slot.
     let dir = sandbox("shift_i_last_tab");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('t');
     assert_eq!(s.app.tab_count(), 2);
     assert_eq!(s.app.active_tab_index(), 1, "前提: 最後のタブがアクティブ");
-    s.key('I');
+    s.key('t');
     assert_eq!(s.app.tab_count(), 3);
     assert_eq!(
         s.app.active_tab_index(),
         2,
-        "最後のタブからの I は末尾に追加(t と同じ)"
+        "最後のタブからの t は末尾に追加"
     );
 }
 
 #[test]
-fn e2e_shift_i_works_from_preview_and_preserves_the_original_tab() {
-    // I works while the active tab is showing Preview, not just Tree. The new tab starts in
+fn e2e_t_works_from_preview_and_preserves_the_original_tab() {
+    // t works while the active tab is showing Preview, not just Tree. The new tab starts in
     // Tree at the same root; the original tab's preview survives the round trip via ]/[.
     let dir = sandbox("shift_i_from_preview");
     std::fs::write(dir.join("note.txt"), "HELLO_FROM_I\n").unwrap();
@@ -1526,7 +1750,7 @@ fn e2e_shift_i_works_from_preview_and_preserves_the_original_tab() {
     assert_eq!(s.app.tab.mode, Mode::Preview, "前提: プレビュー中");
     s.see("HELLO_FROM_I");
 
-    s.key('I');
+    s.key('t');
     assert_eq!(s.app.tab_count(), 2);
     assert_eq!(s.app.active_tab_index(), 1, "挿入した新規タブがアクティブ");
     assert_eq!(s.app.tab.mode, Mode::Tree, "新規タブは Tree から始まる");
@@ -1582,9 +1806,10 @@ fn e2e_bookmarks_set_list_jump() {
     let before =
         s.app.bookmarks.get('b').is_some() as u8 + s.app.bookmarks.get('z').is_some() as u8;
     assert_eq!(before, 2, "削除前は b/z の2件");
-    s.ctrl('d');
+    s.key(' '); // the list's operation menu: `d` deletes the selected bookmark
+    s.key('d');
     let after = s.app.bookmarks.get('b').is_some() as u8 + s.app.bookmarks.get('z').is_some() as u8;
-    assert_eq!(after, 1, "Ctrl-d で選択中の1件が削除される");
+    assert_eq!(after, 1, "Space → d で選択中の1件が削除される");
 }
 
 #[test]
@@ -1707,35 +1932,6 @@ fn seed_repo(dir: &std::path::Path) {
 
 #[cfg(feature = "git")]
 #[test]
-fn e2e_git_hub_stage_and_diff() {
-    let dir = sandbox("git_hub");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.see("a.rs");
-    s.see("new.txt");
-    // stage → the display changes (a staged mark). unstage reverts it.
-    s.key('s');
-    s.key('u');
-    // Enter opens the diff; q returns to the hub. `s.see("diff")` alone has no detection power
-    // here: the hub's own footer legend (`StGitHubKeys`) always contains the literal substring
-    // "diff" (the "Enter:diff" hint), so it would still pass even if `Enter` were a complete
-    // no-op that left the hub showing. Assert the actual state transition via `is_git_diff_preview`
-    // instead — the same accessor used elsewhere in this file for the same purpose.
-    s.enter();
-    assert!(
-        s.app.is_git_diff_preview(),
-        "Enter で全画面 diff プレビューに入る"
-    );
-    s.see("diff");
-    s.key('q');
-    assert!(s.app.is_git_view(), "diff の q でハブへ戻る");
-    s.key('q');
-    assert_eq!(s.app.tab.mode, Mode::Tree);
-}
-
-#[cfg(feature = "git")]
-#[test]
 fn e2e_git_diff_from_tree_and_cycle_files() {
     let dir = sandbox("git_diff_cycle");
     seed_repo(&dir);
@@ -1744,10 +1940,10 @@ fn e2e_git_diff_from_tree_and_cycle_files() {
     s.key('d');
     s.see("diff");
     s.see("(");
-    // n moves to the next changed file (wraps).
+    // Ctrl-n moves to the next changed file (wraps).
     let before = s.screen();
-    s.key('n');
-    assert_ne!(before, s.screen(), "n で別ファイルの diff へ");
+    s.ctrl('n');
+    assert_ne!(before, s.screen(), "Ctrl-n で別ファイルの diff へ");
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree);
 }
@@ -1994,7 +2190,7 @@ fn e2e_diff_view_n_next_file_preserves_presentation() {
     s.key('d');
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
 
-    s.key('n'); // sorted change set: doc.md -> new.md -> plain.txt
+    s.ctrl('n'); // sorted change set: doc.md -> new.md -> plain.txt
     assert!(s
         .app
         .tab
@@ -2007,7 +2203,7 @@ fn e2e_diff_view_n_next_file_preserves_presentation() {
         "markdown 同士なら n で表現を維持"
     );
 
-    s.key('n');
+    s.ctrl('n');
     assert!(s
         .app
         .tab
@@ -2056,7 +2252,7 @@ fn e2e_diff_view_choice_survives_code_and_text_detours() {
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
     assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Rendered);
 
-    s.key('n'); // sorted change set: a_doc.md -> b_code.rs -> c_doc2.md -> d_plain.txt
+    s.ctrl('n'); // sorted change set: a_doc.md -> b_code.rs -> c_doc2.md -> d_plain.txt
     assert!(s
         .app
         .tab
@@ -2074,7 +2270,7 @@ fn e2e_diff_view_choice_survives_code_and_text_detours() {
         "選んだ表現(choice)は code ファイルで丸められても消えないはず"
     );
 
-    s.key('n'); // -> c_doc2.md, markdown again
+    s.ctrl('n'); // -> c_doc2.md, markdown again
     assert!(s
         .app
         .tab
@@ -2087,7 +2283,7 @@ fn e2e_diff_view_choice_survives_code_and_text_detours() {
         "code ファイルを経由しても次の markdown では rendered に戻るはず(このバグの中核)"
     );
 
-    s.key('n'); // -> d_plain.txt, source/preview only
+    s.ctrl('n'); // -> d_plain.txt, source/preview only
     assert!(s
         .app
         .tab
@@ -2097,7 +2293,7 @@ fn e2e_diff_view_choice_survives_code_and_text_detours() {
     assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
     assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Rendered);
 
-    s.key('n'); // wraps back to a_doc.md
+    s.ctrl('n'); // wraps back to a_doc.md
     assert!(s
         .app
         .tab
@@ -2147,7 +2343,7 @@ fn e2e_diff_view_choice_survives_binary_source_only_detour_into_svg() {
         "実際に選んだ表現は config の既定(rendered)のまま — この1ファイルが source しか出せなかっただけ"
     );
 
-    s.key('n'); // -> b_icon.svg
+    s.ctrl('n'); // -> b_icon.svg
     assert!(s
         .app
         .tab
@@ -2203,7 +2399,7 @@ fn e2e_diff_view_choice_source_via_r_cycle_survives_image_and_code_detours() {
         "R でのプレビュー往復も選択(choice)を更新するはず"
     );
 
-    s.key('n'); // -> b_pic.png, no Source of its own
+    s.ctrl('n'); // -> b_pic.png, no Source of its own
     assert!(s
         .app
         .tab
@@ -2213,7 +2409,7 @@ fn e2e_diff_view_choice_source_via_r_cycle_survives_image_and_code_detours() {
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
     assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Source);
 
-    s.key('n'); // -> c_code.rs
+    s.ctrl('n'); // -> c_code.rs
     assert!(s
         .app
         .tab
@@ -2222,7 +2418,7 @@ fn e2e_diff_view_choice_source_via_r_cycle_survives_image_and_code_detours() {
         .is_some_and(|p| p.ends_with("c_code.rs")));
     assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
 
-    s.key('n'); // -> d_doc2.md, back to markdown
+    s.ctrl('n'); // -> d_doc2.md, back to markdown
     assert!(s
         .app
         .tab
@@ -2263,7 +2459,7 @@ fn e2e_diff_view_choice_unaffected_by_rendered_unavailable_fallback() {
         "サイズ超過による丸めは choice を書き換えてはいけない"
     );
 
-    s.key('n'); // -> b_doc.md, well under the cap
+    s.ctrl('n'); // -> b_doc.md, well under the cap
     assert!(s
         .app
         .tab
@@ -2310,7 +2506,7 @@ fn e2e_diff_view_choice_follow_scoped_n_preserves_presentation() {
     assert!(s.app.is_git_diff_preview());
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
 
-    s.key('n'); // follow session order: doc.md -> code.rs
+    s.ctrl('n'); // follow session order: doc.md -> code.rs
     assert!(s
         .app
         .tab
@@ -2319,7 +2515,7 @@ fn e2e_diff_view_choice_follow_scoped_n_preserves_presentation() {
         .is_some_and(|p| p.ends_with("code.rs")));
     assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
 
-    s.key('n'); // -> doc2.md
+    s.ctrl('n'); // -> doc2.md
     assert!(s
         .app
         .tab
@@ -2430,27 +2626,6 @@ fn e2e_diff_view_preview_representation_q_returns_to_tree() {
         s.app.tab.mode,
         Mode::Tree,
         "ツリーから開いた diff の Preview 表現は q でツリーへ"
-    );
-}
-
-/// The hub-opened counterpart of the test above: `q` from the `Preview` representation returns to
-/// the Git changes hub, matching `close_git_diff`'s own `came_from_git_view` behavior.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_diff_view_preview_representation_q_returns_to_hub() {
-    let dir = sandbox("diff_view_preview_q_hub");
-    seed_repo_markdown(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.see("doc.md");
-    s.enter(); // opens the diff of whichever entry the hub's cursor is on
-    assert!(s.app.is_git_diff_preview());
-    s.key('R');
-    assert!(s.app.preview_from_diff_for_test());
-    s.key('q');
-    assert!(
-        s.app.is_git_view(),
-        "ハブから開いた diff の Preview 表現は q でハブへ"
     );
 }
 
@@ -2905,7 +3080,7 @@ fn e2e_follow_diff_rendered_f_toggle_switches_marks_between_scopes() {
     // Dirty *before* F: paragraph 1 changes (AAA -> XXX). This becomes the follow baseline.
     std::fs::write(&doc, "# Title\n\nXXX paragraph.\n\nBBB paragraph.\n").unwrap();
 
-    let mut s = Sim::new(&canon(&dir));
+    let mut s = Sim::with_keys(&canon(&dir), FOLLOW_SCOPE_KEY);
     s.key('F');
     assert!(s.app.follow_enabled());
 
@@ -2950,10 +3125,12 @@ fn e2e_md_preview_gutter_marks_changed_blocks() {
     let mut s = Sim::new(&canon(&dir));
     s.select("doc.md");
     s.enter();
-    assert!(matches!(
-        s.app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Markdown(_))
-    ));
+    assert!(s
+        .app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(crate::preview::PreviewKind::is_markdown));
     let marks = s
         .app
         .md_diff_marks_for_test()
@@ -2979,10 +3156,12 @@ fn e2e_md_preview_gutter_build_calls_base_contents_once() {
     let mut s = Sim::new(&canon(&dir));
     s.select("doc.md");
     let (_, calls) = crate::test_support::count_base_contents_calls(|| s.enter());
-    assert!(matches!(
-        s.app.tab.preview_kind,
-        Some(crate::preview::PreviewKind::Markdown(_))
-    ));
+    assert!(s
+        .app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(crate::preview::PreviewKind::is_markdown));
     // Sanity: the gutter really did build (there is something to compute a baseline for) — a
     // vacuous "0 calls because nothing happened" pass would prove nothing.
     let marks = s
@@ -3671,10 +3850,11 @@ fn e2e_standalone_mmd_preview_never_gets_a_gutter() {
     s.select("a.mmd");
     s.enter();
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Mermaid(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(crate::preview::PreviewKind::is_mermaid_file),
         "前提: .mmd は Mermaid kind のはず"
     );
     let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
@@ -3682,6 +3862,43 @@ fn e2e_standalone_mmd_preview_never_gets_a_gutter() {
         marks.is_empty(),
         "単体 .mmd の通常プレビューには印が付いてはいけない: {marks:?}"
     );
+}
+
+/// A `.mmd` file that cannot be read, shown as text (no picker, so `build_decorated_file`'s
+/// non-document road): the reason follows `[ui] lang` instead of a fixed Japanese string.
+#[cfg(unix)]
+fn unreadable_mmd_screen(lang: &str) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = sandbox(&format!("mmd_unreadable_{lang}"));
+    let f = dir.join("locked.mmd");
+    std::fs::write(&f, "flowchart TD\nA-->B\n").unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&f).is_ok() {
+        // Running as root: permission bits do not apply, the file cannot be made unreadable.
+        return None;
+    }
+    let mut cfg = Config::default();
+    cfg.ui.lang = lang.into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("locked.mmd");
+    s.enter();
+    let screen = s.screen();
+    let _ = std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644));
+    Some(screen)
+}
+
+#[cfg(unix)]
+#[test]
+fn e2e_unreadable_text_drawn_mmd_reason_follows_ui_lang() {
+    if let Some(en) = unreadable_mmd_screen("en") {
+        assert!(en.contains("[can not preview: could not read it]"), "{en}");
+        assert!(!en.contains("読み込み失敗"), "{en}");
+    }
+    if let Some(jp) = unreadable_mmd_screen("jp") {
+        // The dump pads wide characters with spaces, so compare without them.
+        let squeezed: String = jp.chars().filter(|c| *c != ' ').collect();
+        assert!(squeezed.contains("[cannotpreview:読み込み失敗]"), "{jp}");
+    }
 }
 
 /// A follow-opened diff's `Rendered` presentation compares against the **follow-start baseline**,
@@ -3934,10 +4151,11 @@ fn e2e_follow_jump_into_decorated_file_scrolls_to_first_change_below_the_fold() 
         "follow_view=\"file\" は通常プレビューのはず"
     );
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Markdown(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(crate::preview::PreviewKind::is_markdown),
         "装飾 Markdown のはず"
     );
     assert!(
@@ -4388,7 +4606,7 @@ fn e2e_help_draws_over_outline() {
     s.term
         .resize(ratatui::layout::Rect::new(0, 0, 100, 70))
         .unwrap();
-    s.key('o');
+    s.key('O');
     assert_help_over_overlay(&mut s, |a| a.is_outline(), "outline");
 }
 
@@ -4429,7 +4647,7 @@ fn e2e_help_draws_over_bookmark_list() {
 
 #[test]
 fn e2e_markdown_task_cycles_custom_states() {
-    // Setting ui.md_task_states to [" ", "!", "x"] makes Space cycle through 3 states,
+    // Setting ui.md_task_states to [" ", "!", "x"] makes Enter cycle through 3 states,
     // writing just 1 character back to the file at each step (v0.6.0's variable checkbox).
     let dir = sandbox("md_task_cycle");
     seed_files(&dir);
@@ -4441,19 +4659,19 @@ fn e2e_markdown_task_cycles_custom_states() {
     s.tab(); // link
     s.tab(); // checkbox
     let read = || std::fs::read_to_string(dir.join("readme.md")).unwrap();
-    s.key(' ');
+    s.enter();
     assert!(
         read().contains("- [!] task one"),
         "1回目: [ ]→[!]: {}",
         read()
     );
-    s.key(' ');
+    s.enter();
     assert!(
         read().contains("- [x] task one"),
         "2回目: [!]→[x]: {}",
         read()
     );
-    s.key(' ');
+    s.enter();
     assert!(
         read().contains("- [ ] task one"),
         "3回目: [x]→[ ] へ巡回: {}",
@@ -4583,18 +4801,24 @@ fn e2e_sort_reverse_flips_order() {
     // s→r reverses the order (directories still stay first, but the files' order reverses).
     let dir = sandbox("sort_rev");
     seed_files(&dir);
-    let mut s = Sim::new(&canon(&dir));
+    let mut s = Sim::with_keys(&canon(&dir), SORT_MENU_KEY);
     let before: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
-    s.key('s');
-    s.key('r'); // reverse toggle (toggle-type items keep the menu open so several can be switched — as designed)
-    assert!(
-        s.app.is_sort_menu(),
-        "r/. はトグルなのでメニューは開いたまま"
+    s.key('s'); // `open_sort_menu` opens the `,` menu
+    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::Options));
+    s.key('r'); // reverse toggle (the `,` menu closes after the one operation)
+    assert_eq!(
+        s.app.pending_leader, None,
+        "the `,` menu is one-shot: r closes it (the old overlay stayed open for toggles)"
     );
     let after: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_ne!(before, after, "反転で並びが変わる");
-    s.esc(); // close the menu
-    assert!(!s.app.is_sort_menu(), "Esc でメニューが閉じる");
+    // And Esc closes an open menu without sorting.
+    s.key('s');
+    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::Options));
+    s.esc();
+    assert_eq!(s.app.pending_leader, None, "Esc でメニューが閉じる");
+    let again: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(after, again, "Esc sorts nothing");
 }
 
 #[test]
@@ -4623,553 +4847,8 @@ fn e2e_anchor_reanchor_and_reset() {
 // git: log / graph / branches / commit detail / base pin
 // =============================================================================
 
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_hub_to_log_shows_commit_subject() {
-    // Changes hub (o) → log (l). seed_repo's subject "init" shows up in the list.
-    let dir = sandbox("git_log_view");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    assert!(s.app.is_git_view(), "o で変更ハブが開く");
-    s.key('l'); // in the hub, l = log
-    assert!(s.app.is_git_log(), "l で log ビューへ");
-    s.see("Git log"); // render_log's literal title
-    s.see("init"); // the commit subject (summary)
-    s.key('q'); // log's q returns to the hub
-    assert!(s.app.is_git_view(), "log の q でハブへ戻る");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_graph_shows_commit_nodes() {
-    // Changes hub (o) → graph (g). The angular-line renderer's node ● shows up.
-    let dir = sandbox("git_graph_view");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('g'); // in the hub, g = graph
-    assert!(s.app.is_git_graph(), "g でグラフへ");
-    s.see("Git graph"); // render_graph's literal title
-    s.see("●"); // the commit/working-tree node glyph
-    s.key('q');
-    assert!(s.app.is_git_view(), "グラフの q でハブへ戻る");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_graph_set_and_clear_base() {
-    // In the graph, s = pin the base / x = clear it. `⌖ base:` appears/disappears in the title.
-    let dir = sandbox("git_graph_base");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('g');
-    s.dont_see("⌖ base:"); // default config has graph_base_branches=[] → no base initially
-    s.key('G'); // to the bottom row = the oldest commit line (avoids s being unusable on the working-tree row at the top)
-    s.key('s'); // pin the selected commit as base
-    s.see("⌖ base:"); // base appended in the title
-    s.key('x'); // clear the base
-    s.dont_see("⌖ base:");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_branches_view_lists_branches() {
-    // Changes hub (o) → branches (b). Branch names and the current-branch marker * show up.
-    let dir = sandbox("git_branches_view");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('b'); // in the hub, b = branches
-    assert!(s.app.is_git_branches(), "b でブランチ一覧へ");
-    s.see("Git branches"); // render_branches's literal title
-    s.see("feature-x"); // the non-current branch that seed_repo creates
-    s.see("*"); // the current-branch marker
-    s.key('q');
-    assert!(s.app.is_git_view(), "branches の q でハブへ戻る");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktrees_view_lists_and_enter_switches_root() {
-    // Changes hub (o) → worktrees (w). Both the main and a linked worktree show up; `Enter` on the
-    // linked one switches this tab's root **and** open_dir (so `y @`/`Y` references anchor to the
-    // new location, not the one the tab launched from).
-    let dir = sandbox("git_worktrees_view");
-    seed_repo(&dir);
-    let root = canon(&dir);
-    let linked = unique_tmp("konoma_e2e_git_worktrees_view_linked");
-    let _ = std::fs::remove_dir_all(&linked);
-    let out = std::process::Command::new("git")
-        .current_dir(&root)
-        .args([
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "wt-feature",
-            linked.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "git worktree add: {out:?}");
-    let linked = linked.canonicalize().unwrap();
-
-    let mut s = Sim::new(&root);
-    s.key('o');
-    s.key('w'); // in the hub, w = worktrees
-    assert!(s.app.is_git_worktrees(), "w でワークツリー一覧へ");
-    // The outer mode chip must promote to GIT here, same as the hub/log/graph/branches/detail
-    // views (`in_git_view()` — regression coverage for a spot where the worktree list was missing
-    // from that predicate and the chip stayed on TREE).
-    s.see("GIT");
-    s.see("WORKTREES");
-    s.see("Git worktrees");
-    s.see("wt-feature");
-    s.see("*"); // current-worktree marker
-    assert_eq!(
-        s.app.git_worktree_sel(),
-        0,
-        "cursor はカレント(main)から始まる"
-    );
-
-    s.key('j'); // move onto the linked worktree
-    s.enter();
-    assert!(!s.app.is_git_worktrees(), "Enter で一覧が閉じる");
-    assert!(!s.app.is_git_view(), "ハブへも戻らず Tree に着地する");
-    assert_eq!(s.app.tab.root, linked, "root が切り替わる");
-    assert_eq!(s.app.tab.open_dir, linked, "open_dir も切り替わる");
-    assert!(matches!(s.app.tab.mode, Mode::Tree), "切替後は Tree 表示");
-
-    std::fs::remove_dir_all(&linked).ok();
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched() {
-    let dir = sandbox("git_worktrees_new_tab");
-    seed_repo(&dir);
-    let root = canon(&dir);
-    let linked = unique_tmp("konoma_e2e_git_worktrees_new_tab_linked");
-    let _ = std::fs::remove_dir_all(&linked);
-    let out = std::process::Command::new("git")
-        .current_dir(&root)
-        .args([
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "wt-feature",
-            linked.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "git worktree add: {out:?}");
-    let linked = linked.canonicalize().unwrap();
-
-    let mut s = Sim::new(&root);
-    s.key('o');
-    s.key('w');
-    s.key('j'); // move onto the linked worktree
-    s.ctrl('t');
-    assert_eq!(s.app.tab_count(), 2, "新規タブが開く");
-    assert_eq!(s.app.tab.root, linked, "新タブの root が対象ワークツリー");
-    assert_eq!(s.app.tab.open_dir, linked);
-    assert!(matches!(s.app.tab.mode, Mode::Tree));
-    assert!(
-        !s.app.is_git_worktrees(),
-        "新タブは素の Tree（一覧を引き継がない）"
-    );
-
-    // The original tab's own worktree list is left open (this action doesn't own it).
-    s.key('[');
-    assert_eq!(s.app.tab.root, root, "元タブの root は不変");
-    assert!(
-        s.app.is_git_worktrees(),
-        "元タブのワークツリー一覧は開いたまま"
-    );
-
-    std::fs::remove_dir_all(&linked).ok();
-}
-
-/// `o` `w` `n`: type a branch name into the input dialog, submit → `git worktree add` creates it
-/// next to the main worktree (default `[git] worktree_dir = "../"`) and this tab switches into it
-/// (both `root` and `open_dir`, mirroring `worktree_goto`'s `Enter`).
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktree_create_switches_into_it() {
-    let dir = sandbox("git_worktree_create");
-    seed_repo(&dir);
-    let root = canon(&dir);
-    // The default worktree_dir ("../") places the new worktree as a **sibling of the sandbox
-    // dir** (`worktree_create_target`: `main.join(worktree_dir).join(branch_name)`) — and
-    // `sandbox()` puts `dir` directly under the shared OS temp dir, so that sibling also lands
-    // directly under the shared temp dir with the *branch name* as its only unique component.
-    // A literal branch name here would therefore collide with a concurrently-running instance of
-    // this very test even though `dir` itself is `unique_tmp`-safe — so the branch name itself
-    // must be the unique part; `expected` is then derived from the real placement formula
-    // (`root`'s parent + that branch name), matching `worktree_create_target`.
-    let branch_name = unique_tmp("e2e-wt-branch")
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let expected = root.parent().unwrap().join(&branch_name);
-    let _ = std::fs::remove_dir_all(&expected);
-
-    let mut s = Sim::new(&root);
-    s.key('o');
-    s.key('w');
-    assert!(s.app.is_git_worktrees());
-    s.key('n');
-    assert!(s.app.is_dialog(), "n で入力面に入る");
-    s.keys(&branch_name);
-    s.enter();
-
-    assert!(!s.app.is_git_worktrees(), "作成後は一覧を閉じる");
-    let new_root = s.app.tab.root.clone();
-    assert_ne!(new_root, root, "root が新しいワークツリーへ切替わる");
-    assert_eq!(s.app.tab.open_dir, new_root, "open_dir も切り替わる");
-    assert_eq!(new_root, expected.canonicalize().unwrap());
-    assert!(matches!(s.app.tab.mode, Mode::Tree), "切替後は Tree 表示");
-    assert!(
-        crate::git::branch_tip(&root, &branch_name).is_some(),
-        "新規ブランチが作られる"
-    );
-
-    std::fs::remove_dir_all(&expected).ok();
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub() {
-    // The safety guard for "already here": Enter on the currently-active worktree must not touch
-    // root, and must close back to the changes hub (not silently land in Tree) — a regression here
-    // (guard removed) would instead re-run jump_to_dir on the same path and skip open_git_view.
-    let dir = sandbox("git_worktrees_already_current");
-    seed_repo(&dir);
-    let root = canon(&dir);
-    let mut s = Sim::new(&root);
-    s.key('o');
-    s.key('w');
-    assert!(s.app.is_git_worktrees());
-    s.enter(); // cursor starts on the current (main) worktree
-    s.see("already in this worktree");
-    assert!(!s.app.is_git_worktrees(), "閉じる");
-    assert!(
-        s.app.is_git_view(),
-        "ハブへ戻る（root は動かないので Tree ではない）"
-    );
-    assert_eq!(s.app.tab.root, root, "root は不変");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktrees_refuses_bare_and_prunable_targets() {
-    // Safety guards: a bare main worktree (no checkout) and a prunable/missing one both refuse with
-    // a flash, and the list stays open (unlike a successful switch, which closes it).
-    let src = sandbox("git_worktrees_refuse_src");
-    seed_repo(&src);
-    let src = canon(&src);
-    let bare = unique_tmp("konoma_e2e_git_worktrees_refuse_bare.git");
-    let wt = unique_tmp("konoma_e2e_git_worktrees_refuse_wt");
-    let gone = unique_tmp("konoma_e2e_git_worktrees_refuse_gone");
-    for p in [&bare, &wt, &gone] {
-        let _ = std::fs::remove_dir_all(p);
-    }
-    let sh = |cwd: &std::path::Path, args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    };
-    sh(
-        &std::env::temp_dir(),
-        &[
-            "clone",
-            "-q",
-            "--bare",
-            src.to_str().unwrap(),
-            bare.to_str().unwrap(),
-        ],
-    );
-    sh(
-        &bare,
-        &["worktree", "add", "-q", wt.to_str().unwrap(), "master"],
-    );
-    sh(
-        &bare,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "gone-branch",
-            gone.to_str().unwrap(),
-        ],
-    );
-    let wt = wt.canonicalize().unwrap();
-    std::fs::remove_dir_all(&gone).unwrap(); // now prunable (checkout gone, entry still listed)
-
-    let mut s = Sim::new(&wt);
-    s.key('o');
-    s.key('w');
-    assert!(s.app.is_git_worktrees());
-    s.see("bare");
-
-    // Locate rows by content rather than assuming a fixed order: git's listing order for
-    // non-main entries is not creation order (confirmed empirically), only "main is always
-    // first" is guaranteed.
-    let view = s.app.git_worktree_view();
-    let cur_idx = view.iter().position(|w| w.is_current).expect("current");
-    let bare_idx = view.iter().position(|w| w.is_bare).expect("bare");
-    let gone_idx = view.iter().position(|w| w.prunable).expect("prunable");
-    assert_eq!(
-        s.app.git_worktree_sel(),
-        cur_idx,
-        "cursor はカレント(wt)から始まる"
-    );
-
-    // Move onto the bare main worktree's row: refused.
-    let step = |s: &mut Sim, from: usize, to: usize| {
-        let delta = to as i32 - from as i32;
-        for _ in 0..delta.unsigned_abs() {
-            s.key(if delta > 0 { 'j' } else { 'k' });
-        }
-    };
-    step(&mut s, cur_idx, bare_idx);
-    s.enter();
-    assert!(s.app.is_git_worktrees(), "bare は拒否されて一覧のまま");
-    assert_eq!(s.app.tab.root, wt, "root は不変");
-    s.see("bare repository");
-
-    // Move onto the removed/prunable worktree's row: also refused.
-    step(&mut s, bare_idx, gone_idx);
-    s.enter();
-    assert!(s.app.is_git_worktrees(), "prunable は拒否されて一覧のまま");
-    assert_eq!(s.app.tab.root, wt, "root は不変");
-    s.see("missing");
-
-    std::fs::remove_dir_all(&wt).ok();
-    std::fs::remove_dir_all(&src).ok();
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktree_show_changes_opens_detail_with_title_and_returns_to_list() {
-    // o → w → d on a **linked** worktree that has both committed and uncommitted work on top of
-    // the base: the detail shows both (committed+uncommitted, not just one), the title names the
-    // worktree's branch and the base it's diffed against, and q returns to the worktree list
-    // (not the hub, not the tree) — the list is still open underneath, never closed by this action.
-    let dir = sandbox("git_worktree_show_changes");
-    seed_repo(&dir);
-    let root = canon(&dir);
-    let base = crate::git::branch(&root).expect("sanity: has a branch after seed_repo's commit");
-
-    let linked = unique_tmp("konoma_e2e_git_worktree_show_changes_linked");
-    let _ = std::fs::remove_dir_all(&linked);
-    let sh = |cwd: &std::path::Path, args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    };
-    sh(
-        &root,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "wt-since-feature",
-            linked.to_str().unwrap(),
-        ],
-    );
-    let linked = linked.canonicalize().unwrap();
-
-    // ① Something committed *inside the worktree* (what an agent typically does mid-task).
-    std::fs::write(linked.join("agent_landed.txt"), "AGENT_LANDED_MARKER\n").unwrap();
-    sh(&linked, &["add", "-A"]);
-    sh(&linked, &["commit", "-q", "-m", "agent commit"]);
-    // ② Something still uncommitted on top of that.
-    std::fs::write(linked.join("agent_pending.txt"), "AGENT_PENDING_MARKER\n").unwrap();
-
-    let mut cfg = Config::default();
-    cfg.ui.graph_base_branches = vec![base.clone()];
-    let mut s = Sim::with_config(&root, cfg);
-    s.key('o');
-    s.key('w');
-    assert!(s.app.is_git_worktrees());
-
-    // Move the cursor onto the linked worktree's row (position by content, not assumed order —
-    // git's non-main listing order isn't creation order, confirmed empirically elsewhere in this
-    // file).
-    let view = s.app.git_worktree_view();
-    let cur = s.app.git_worktree_sel();
-    let target = view
-        .iter()
-        .position(|w| w.path == linked)
-        .expect("linked worktree row");
-    for _ in 0..target.abs_diff(cur) {
-        s.key(if target > cur { 'j' } else { 'k' });
-    }
-
-    s.key('d');
-    assert!(
-        s.app.is_git_detail(),
-        "d でこのワークツリーの diff が detail として開く"
-    );
-    s.see(&format!("wt-since-feature ← {base}"));
-    s.see("agent_landed.txt");
-    s.see("AGENT_LANDED_MARKER");
-    s.see("agent_pending.txt");
-    s.see("AGENT_PENDING_MARKER");
-
-    s.key('q');
-    assert!(!s.app.is_git_detail(), "q で detail のみ閉じる");
-    assert!(
-        s.app.is_git_worktrees(),
-        "detail の裏にあったワークツリー一覧へ戻る（ハブでもツリーでもない）"
-    );
-    assert!(!s.app.is_git_view());
-
-    std::fs::remove_dir_all(&linked).ok();
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktree_show_changes_works_on_the_currently_active_worktree() {
-    // Unlike `worktree_goto`'s "already here" guard, `d` does NOT refuse the worktree the tab is
-    // presently inside — viewing its own diff is perfectly legitimate. The cursor starts there
-    // (per the worktree list's documented behavior), so pressing `d` immediately exercises this.
-    let dir = sandbox("git_worktree_show_changes_current");
-    seed_repo(&dir); // leaves uncommitted changes on a.rs + an untracked new.txt
-    let root = canon(&dir);
-    let mut s = Sim::new(&root); // default config: graph_base_branches = [] → falls back to the
-                                 // main worktree's own branch, which is exactly the one it's on
-    s.key('o');
-    s.key('w');
-    assert_eq!(
-        s.app.git_worktree_sel(),
-        s.app
-            .git_worktree_view()
-            .iter()
-            .position(|w| w.is_current)
-            .unwrap(),
-        "cursor はカレントから始まる"
-    );
-    s.key('d');
-    assert!(
-        s.app.is_git_detail(),
-        "現在地のワークツリーでも d は拒否されない（AlreadyCurrent は worktree_goto 専用のガード）"
-    );
-    s.see("new.txt"); // the uncommitted untracked file from seed_repo
-    s.see("_x = 1"); // the uncommitted edit to a.rs from seed_repo
-
-    s.key('q');
-    assert!(s.app.is_git_worktrees(), "一覧へ戻る");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktree_show_changes_refuses_bare_worktree() {
-    // Same guard `worktree_goto` uses for a bare main worktree (no checkout to diff at all): `d`
-    // refuses with a flash and leaves the list open, rather than crashing or showing nothing.
-    let src = sandbox("git_worktree_show_changes_refuse_bare_src");
-    seed_repo(&src);
-    let src = canon(&src);
-    let bare = unique_tmp("konoma_e2e_git_worktree_show_changes_refuse_bare.git");
-    let wt = unique_tmp("konoma_e2e_git_worktree_show_changes_refuse_wt");
-    for p in [&bare, &wt] {
-        let _ = std::fs::remove_dir_all(p);
-    }
-    let sh = |cwd: &std::path::Path, args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    };
-    sh(
-        &std::env::temp_dir(),
-        &[
-            "clone",
-            "-q",
-            "--bare",
-            src.to_str().unwrap(),
-            bare.to_str().unwrap(),
-        ],
-    );
-    sh(
-        &bare,
-        &["worktree", "add", "-q", wt.to_str().unwrap(), "master"],
-    );
-    let wt = wt.canonicalize().unwrap();
-
-    let mut s = Sim::new(&wt);
-    s.key('o');
-    s.key('w');
-    let view = s.app.git_worktree_view();
-    let cur = s.app.git_worktree_sel();
-    let bare_idx = view.iter().position(|w| w.is_bare).expect("bare row");
-    for _ in 0..bare_idx.abs_diff(cur) {
-        s.key(if bare_idx > cur { 'j' } else { 'k' });
-    }
-
-    s.key('d');
-    assert!(
-        !s.app.is_git_detail(),
-        "bare は拒否されて detail は開かない"
-    );
-    assert!(s.app.is_git_worktrees(), "一覧は開いたまま");
-    s.see("bare repository");
-
-    std::fs::remove_dir_all(&wt).ok();
-    std::fs::remove_dir_all(&src).ok();
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_commit_detail_shows_full_message() {
-    // log → Enter opens commit detail. The full message (body newlines preserved) shows up in the header.
-    let dir = sandbox("git_commit_detail");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('l');
-    s.enter(); // detail of the selected commit (init)
-    assert!(s.app.is_git_detail(), "Enter で詳細へ");
-    s.see("First body paragraph."); // body paragraph 1 (newlines preserved)
-    s.see("Second body paragraph."); // body paragraph 2
-    s.key('q'); // detail's q returns to the log behind it (the log isn't closed)
-    assert!(s.app.is_git_log(), "詳細の q で log へ戻る");
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_graph_branch_picker_toggles() {
-    // b in the graph opens the branch-display panel, listing branch names. q cancels and closes it.
-    let dir = sandbox("git_graph_picker");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('g');
-    s.key('b'); // in the graph, b = the branch-display panel
-    assert!(s.app.is_git_graph_picker(), "b でパネルが開く");
-    s.see("feature-x"); // the branch name in a panel row
-    s.key('q'); // cancel (git_graph_picker_cancel)
-    assert!(!s.app.is_git_graph_picker(), "q でパネルを閉じる");
-    assert!(s.app.is_git_graph(), "パネルを閉じるとグラフへ戻る");
-}
-
 // =============================================================================
-// jj: the read-only gate (`Action::writes_repository()` + `dispatch_action`'s check in
+// jj: the read-only gate (`ops::decl` write metadata + `dispatch_action`'s check in
 // src/main.rs), and jj-specific key behavior (R sync, w worktrees, a graph range).
 //
 // konoma never writes to a jj repository (see `crate::vcs::jj`'s module docs): every write-shaped
@@ -5265,398 +4944,6 @@ fn jj_colocated_seed_repo(name: &str) -> Option<crate::test_support::TmpDir> {
     // the only source of "before" state the test needs).
     std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
     Some(dir)
-}
-
-/// Walks every key that reaches a write-shaped `Action` (`Action::writes_repository()` in
-/// `src/keymap.rs`) in a jj repository, and confirms each one is refused — the `VcsReadOnly` flash,
-/// no dialog opened, no navigation away from wherever the key was pressed. `writes_repository()`
-/// has no enumerable list of variants to iterate (`Action` derives no `EnumIter`-style trait, unlike
-/// `i18n::Msg`'s `ALL_MSGS`), so the (surface, key) pairs below are transcribed by hand from
-/// `src/keymap.rs`'s per-surface maps rather than generated — see this test's sibling
-/// `writes_repository_set_is_pinned...` (`app/tests.rs`) for the trip-wire that catches this list
-/// (and `writes_repository()` itself) drifting apart.
-///
-/// `WorktreeCreate` is deliberately not exercised here: `w` never reaches `Surface::GitWorktrees` in
-/// a jj repository at all (`open_git_worktrees` redirects to the `JjWorkspacesUnlisted` flash
-/// first — see `e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list` below), so the key
-/// that would fire it cannot be pressed through real navigation. It is covered separately in
-/// `app/tests.rs`, by forcing the surface open directly.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_jj_write_actions_are_gated_by_the_read_only_backend() {
-    let Some(dir) = jj_seed_repo("jj_write_gate") else {
-        return;
-    };
-    let root = canon(&dir);
-    let mut s = Sim::new(&root);
-    assert!(
-        !crate::vcs::caps(&s.app.tab.root).write,
-        "sanity: this fixture must resolve to the read-only jj backend, or the test proves nothing"
-    );
-
-    fn refused(s: &Sim, key: char) {
-        assert!(
-            s.app.flash.as_deref().is_some_and(
-                |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
-            ),
-            "key {key:?}: expected the VcsReadOnly flash, got {:?}",
-            s.app.flash
-        );
-        assert!(
-            !s.app.is_dialog(),
-            "key {key:?}: a refused write must not open a dialog"
-        );
-    }
-
-    // --- The changes hub: stage / unstage / stage_all / unstage_all / discard / commit ---
-    s.key('o');
-    assert!(s.app.is_git_view(), "o must still open the (read-only) hub");
-    for key in ['s', 'u', 'S', 'U', 'x', 'c'] {
-        s.key(key);
-        refused(&s, key);
-        assert!(
-            s.app.is_git_view(),
-            "key {key:?}: a refused write must not leave the hub"
-        );
-    }
-
-    // --- The branch list: checkout / create / delete ---
-    s.key('b');
-    assert!(
-        s.app.is_git_branches(),
-        "the bookmark fixture must open the branch list"
-    );
-    for key in ['l', 'n', 'd'] {
-        s.key(key);
-        refused(&s, key);
-        assert!(
-            s.app.is_git_branches(),
-            "key {key:?}: a refused write must not leave the branch list"
-        );
-    }
-    s.key('q'); // branches -> hub
-    s.key('q'); // hub -> tree
-    assert_eq!(
-        s.app.tab.mode,
-        Mode::Tree,
-        "both q's must have returned to the tree"
-    );
-
-    // --- The full-screen diff: discard-from-diff ---
-    s.select("a.txt");
-    s.key('d');
-    assert!(
-        s.app.is_git_diff_preview(),
-        "d must still open the (read-only) diff"
-    );
-    s.key('x');
-    refused(&s, 'x');
-    assert!(
-        s.app.is_git_diff_preview(),
-        "a refused GitDiffDiscard must not leave the diff view"
-    );
-}
-
-/// `Enter` on the branch list is a fixed key (not in the keymap), so it used to reach the checkout
-/// without passing `dispatch_action`'s read-only gate. It must be refused in a jj repository exactly
-/// like `l` (`BranchCheckout`), and must still check out in a git repository.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_jj_enter_on_the_bookmark_list_is_refused_like_other_writes() {
-    let Some(dir) = jj_seed_repo("jj_enter_branches") else {
-        return;
-    };
-    let mut s = Sim::new(&canon(&dir));
-    assert!(
-        !crate::vcs::caps(&s.app.tab.root).write,
-        "sanity: read-only jj backend"
-    );
-    s.key('o');
-    s.key('b');
-    assert!(
-        s.app.is_git_branches(),
-        "the bookmark fixture must open the list"
-    );
-    s.enter();
-    assert!(
-        s.app.flash.as_deref().is_some_and(
-            |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
-        ),
-        "Enter on a bookmark: expected the VcsReadOnly flash, got {:?}",
-        s.app.flash
-    );
-    assert!(
-        s.app.is_git_branches(),
-        "a refused checkout must not leave the list"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_enter_on_the_branch_list_still_checks_out() {
-    let dir = sandbox("git_enter_branches");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('b');
-    s.key('g');
-    assert_eq!(
-        s.app.git_branch_view()[s.app.git_branch_sel()].name,
-        "feature-x"
-    );
-    s.enter();
-    assert!(
-        crate::git::branches(&s.app.tab.root)
-            .iter()
-            .any(|b| b.name == "feature-x" && b.is_current),
-        "Enter must check out the selected branch in a git repository"
-    );
-}
-
-/// Pins `[external] vcs = "jj"` for **this thread only**.
-///
-/// The real preference is process-wide, because the background status scan has to detect the same
-/// backend the UI thread does. That makes it useless to a test: every `App::new` in this binary
-/// writes it, so a parallel test starting up flips it back mid-run -- observed directly, as a
-/// colocated fixture reading back `caps().write == true` right after being pinned to jj. Writing
-/// the global from here would leak the pin into those tests in return. `set_preference_for_test`
-/// is the thread-local override that avoids both directions; reset it with `unpin_vcs`.
-#[cfg(feature = "git")]
-fn pin_vcs_to_jj() {
-    crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::Jj));
-}
-
-/// Hands the thread back to the process-wide preference. Paired with [`pin_vcs_to_jj`].
-#[cfg(feature = "git")]
-fn unpin_vcs() {
-    crate::vcs::set_preference_for_test(None);
-}
-
-/// The worst case the jj write-safety audit (2026-08) flagged: a **colocated** repository (both
-/// `.git` and `.jj`) with `[external] vcs = "jj"` set explicitly, so a real, writable `.git` sits
-/// right there while konoma is pinned to read jj instead. If the gate in `dispatch_action` ever
-/// regressed to asking the wrong backend, konoma would run `git add`/`git commit`/`git switch`
-/// against a repository the user explicitly chose to only read through jj. Checking the flash alone
-/// would not catch a gate that *looked* closed but let the write through anyway, so this reads
-/// `git status --porcelain` before and after every key and requires it to be byte-for-byte
-/// identical.
-///
-/// The preference is pinned for this thread only; see [`pin_vcs_to_jj`].
-#[cfg(feature = "git")]
-#[test]
-fn e2e_jj_write_gate_holds_in_a_colocated_repository_pinned_to_jj() {
-    let Some(dir) = jj_colocated_seed_repo("jj_colocated_gate") else {
-        return;
-    };
-    let root = canon(&dir);
-    let git_status = || -> String {
-        let out = std::process::Command::new("git")
-            .current_dir(&root)
-            .args(["status", "--porcelain"])
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git status --porcelain: {out:?}");
-        String::from_utf8(out.stdout).unwrap()
-    };
-    let before = git_status();
-    assert!(
-        !before.is_empty(),
-        "the fixture must leave real uncommitted git state, or a broken gate has nothing to prove itself against"
-    );
-
-    let mut cfg = Config::default();
-    cfg.external.vcs = "jj".into();
-    pin_vcs_to_jj();
-    let mut s = Sim::with_config(&root, cfg);
-    assert!(
-        !crate::vcs::caps(&s.app.tab.root).write,
-        "sanity: [external] vcs = \"jj\" must resolve this colocated repo to the read-only jj backend"
-    );
-
-    s.key('o');
-    assert!(s.app.is_git_view(), "o must still open the (read-only) hub");
-    for key in ['s', 'u', 'S', 'U', 'x', 'c'] {
-        s.key(key);
-        assert!(
-            s.app.flash.as_deref().is_some_and(
-                |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
-            ),
-            "key {key:?}: expected the VcsReadOnly flash, got {:?}",
-            s.app.flash
-        );
-        assert!(
-            !s.app.is_dialog(),
-            "key {key:?}: a refused write must not open a dialog"
-        );
-    }
-
-    s.key('b');
-    assert!(
-        s.app.is_git_branches(),
-        "the colocated repo's auto-imported bookmark must open the branch list"
-    );
-    for key in ['l', 'n', 'd'] {
-        s.key(key);
-        assert!(
-            s.app.flash.as_deref().is_some_and(
-                |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
-            ),
-            "key {key:?}: expected the VcsReadOnly flash, got {:?}",
-            s.app.flash
-        );
-        assert!(
-            !s.app.is_dialog(),
-            "key {key:?}: a refused write must not open a dialog"
-        );
-    }
-
-    unpin_vcs();
-    let after = git_status();
-    assert_eq!(
-        before, after,
-        "the read-only gate must leave the real .git untouched, byte for byte"
-    );
-}
-
-/// `R` (`jj_start_sync`) on a repository that is not jj — this needs no jj binary at all: the check
-/// that refuses it runs before jj is ever invoked.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing() {
-    let dir = sandbox("jj_sync_not_jj");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('R');
-    assert!(
-        s.app.flash.as_deref().is_some_and(|f| f.contains(
-            crate::i18n::tr(s.app.lang, crate::i18n::Msg::JjSyncNotJj)
-        )),
-        "expected the JjSyncNotJj flash, got {:?}",
-        s.app.flash
-    );
-    assert!(
-        !s.app.is_dialog(),
-        "R on a non-jj repository must not open the sync confirmation"
-    );
-}
-
-/// The full `R` round trip on an actual jj repository: ask (`confirm_jj_sync` defaults on) → `y`
-/// confirms → `jj_run_sync` actually runs → the flash reports what happened. This is the one write
-/// konoma makes to a jj repository, by design (`crate::vcs::jj`'s module docs) — `dialog_confirm`'s
-/// `y`/Enter key is a **fixed key**, resolved before `dispatch_action`'s `Action`-based gate ever
-/// sees it (`Surface::DialogConfirmDelete` in `src/main.rs`'s `handle_key`), so nothing in this path
-/// is `writes_repository()`-gated; it relies entirely on `jj_start_sync`'s own
-/// `detect() != VcsKind::Jj` check having already been true when the dialog was opened.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_jj_sync_full_round_trip_confirms_and_reports_completion() {
-    let Some(dir) = jj_seed_repo("jj_sync_round_trip") else {
-        return;
-    };
-    let mut s = Sim::new(&canon(&dir)); // confirm_jj_sync defaults on
-    s.key('o');
-    s.key('R');
-    assert!(s.app.is_dialog(), "R must ask before letting jj snapshot");
-    s.key('y');
-    assert!(!s.app.is_dialog(), "confirming must close the dialog");
-    assert!(
-        s.app.flash.as_deref().is_some_and(|f| {
-            f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::JjSyncDone))
-                || f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::JjSyncFailed))
-        }),
-        "the confirmed sync must report completion or failure, got {:?}",
-        s.app.flash
-    );
-}
-
-/// `w` (worktree list) in a jj repository: konoma does not list jj workspaces yet, and a colocated
-/// repository's git worktree list would describe a checkout the user is not working in — so it
-/// flashes an explanation instead of opening the (git-only) list.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list() {
-    let Some(dir) = jj_seed_repo("jj_worktrees_unlisted") else {
-        return;
-    };
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    assert!(s.app.is_git_view());
-    s.key('w');
-    assert!(
-        s.app
-            .flash
-            .as_deref()
-            .is_some_and(|f| f.contains(crate::i18n::tr(
-                s.app.lang,
-                crate::i18n::Msg::JjWorkspacesUnlisted
-            ))),
-        "expected the JjWorkspacesUnlisted flash, got {:?}",
-        s.app.flash
-    );
-    assert!(
-        !s.app.is_git_worktrees(),
-        "the git worktree list must not open for a jj repository"
-    );
-}
-
-/// `a` (`GitGraphToggleAll`) means different things per backend: git's graph is already every
-/// reachable commit, so it just says so; jj's graph defaults to a narrower range (it rewrites
-/// commits as you work), so `a` really does widen/narrow it.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_graph_toggle_all_differs_between_git_and_jj() {
-    let git_dir = sandbox("graph_toggle_git");
-    seed_repo(&git_dir);
-    let mut sg = Sim::new(&canon(&git_dir));
-    sg.key('o');
-    sg.key('g');
-    assert!(sg.app.is_git_graph(), "g must open the graph");
-    sg.key('a');
-    assert!(
-        sg.app
-            .flash
-            .as_deref()
-            .is_some_and(|f| f.contains(crate::i18n::tr(
-                sg.app.lang,
-                crate::i18n::Msg::GraphAlreadyAll
-            ))),
-        "git's graph must say it already shows everything rather than toggle a range, got {:?}",
-        sg.app.flash
-    );
-    std::fs::remove_dir_all(&git_dir).ok();
-
-    let Some(jj_dir) = jj_seed_repo("graph_toggle_jj") else {
-        return;
-    };
-    let mut sj = Sim::new(&canon(&jj_dir));
-    sj.key('o');
-    sj.key('g');
-    assert!(sj.app.is_git_graph(), "g must open the graph");
-    sj.key('a');
-    assert!(
-        sj.app
-            .flash
-            .as_deref()
-            .is_some_and(|f| f.contains(crate::i18n::tr(
-                sj.app.lang,
-                crate::i18n::Msg::GraphShowingAll
-            ))),
-        "jj's graph must widen to every revision, got {:?}",
-        sj.app.flash
-    );
-    sj.key('a');
-    assert!(
-        sj.app
-            .flash
-            .as_deref()
-            .is_some_and(|f| f.contains(crate::i18n::tr(
-                sj.app.lang,
-                crate::i18n::Msg::GraphShowingDefault
-            ))),
-        "pressing a again must narrow back to the default range, got {:?}",
-        sj.app.flash
-    );
 }
 
 // =============================================================================
@@ -5817,6 +5104,116 @@ fn e2e_jj_follow_opens_full_screen_diff() {
         Some((1, 1)),
         "セッションに 1 ファイル → (1/1)"
     );
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_follow_diff_since_start_survives_a_commit() {
+    if !crate::vcs::jj::available() {
+        eprintln!("skipping: no working jj binary");
+        return;
+    }
+    let dir = jj_seed_repo("jj_follow_since_start").expect("jj fixture");
+    let root = canon(&dir);
+    let jj = |args: &[&str]| {
+        let out = std::process::Command::new("jj")
+            .current_dir(&root)
+            .env("JJ_CONFIG", "")
+            .env("JJ_USER", "fixture")
+            .env("JJ_EMAIL", "fixture@example.invalid")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "jj fixture command failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    // a.txt is clean at F, so only the capability's pinned point can provide its baseline.
+    let a = root.join("a.txt");
+    std::fs::write(&a, "one\n").unwrap();
+    let dirty = root.join("dirty.txt");
+    std::fs::write(&dirty, "dirty-before\n").unwrap();
+    jj(&["status"]);
+    let mut s = Sim::new(&root);
+    s.key('F');
+    assert!(s.app.follow_enabled());
+    std::fs::write(&a, "committed-during-follow\n").unwrap();
+    jj(&["commit", "-m", "during follow"]);
+    std::fs::write(&a, "after\n").unwrap();
+    std::fs::write(&dirty, "dirty-after\n").unwrap();
+    let fresh = root.join("fresh.txt");
+    std::fs::write(&fresh, "new-after\n").unwrap();
+    for (path, before, after) in [
+        (&a, Some("one"), "after"),
+        (&dirty, Some("dirty-before"), "dirty-after"),
+        (&fresh, None, "new-after"),
+    ] {
+        assert!(s.app.follow_note_change(path));
+        // The real event loop refreshes the listing before jumping to the pending follow target.
+        s.app
+            .refresh_fs_changed(false, std::slice::from_ref(path))
+            .unwrap();
+        s.app.follow_jump(path);
+        s.draw();
+        assert!(s.app.is_git_diff_preview());
+        assert_eq!(s.app.tab.preview_path.as_deref(), Some(path.as_path()));
+        let lines = s.app.git_diff_lines();
+        let removed: Vec<_> = lines
+            .iter()
+            .filter(|l| l.kind == crate::git::DiffLineKind::Removed)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(removed, before.into_iter().collect::<Vec<_>>());
+        assert!(lines
+            .iter()
+            .any(|l| l.kind == crate::git::DiffLineKind::Added && l.text == after));
+        s.see(after);
+    }
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_project_vcs_colocated_git_off_chip_matches_worker() {
+    if !crate::vcs::jj::available() || !crate::vcs::Git::git_binary_available() {
+        eprintln!("skipping: git and jj binaries required");
+        return;
+    }
+    let dir = jj_colocated_seed_repo("project_vcs_git_off").expect("colocated fixture");
+    let root = canon(&dir);
+    for (pref, expected) in [
+        ("auto", crate::vcs::VcsKind::Jj),
+        ("jj", crate::vcs::VcsKind::Jj),
+        ("git", crate::vcs::VcsKind::Git),
+    ] {
+        let cfg: Config = toml::from_str(&format!(
+            "[external]\ngit = false\n[project]\nvcs = '{pref}'"
+        ))
+        .unwrap();
+        // Pin only this test's thread; the production worker must carry this setting itself.
+        crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::parse(pref)));
+        let mut s = Sim::with_config(&root, cfg);
+        assert_eq!(s.app.git_vcs, expected, "{pref}");
+        if expected == crate::vcs::VcsKind::Jj {
+            s.see("@ ");
+            let (tx, rx) = std::sync::mpsc::channel();
+            s.app.attach_status_loader(tx);
+            s.app.refresh().unwrap();
+            // Refresh invalidates status; rendering dispatches the pending worker request.
+            s.draw();
+            let res = rx.recv_timeout(DRAIN_WAIT).expect("status worker result");
+            assert!(s.app.apply_statuses(res));
+            assert_eq!(s.app.git_vcs, expected, "worker: {pref}");
+            s.draw();
+            s.see("@ ");
+        } else {
+            assert!(s.app.git_branch().is_none(), "explicit Git stays disabled");
+            s.dont_see("@ ");
+        }
+    }
+    crate::vcs::set_preference_for_test(None);
+    crate::vcs::Git::set_external_git_enabled(true);
 }
 
 /// The full-screen diff's `Rendered` presentation on the jj backend (`docs/FEATURE-MD-RENDERED-DIFF.md`
@@ -6154,44 +5551,6 @@ fn e2e_preview_at_ref_line_reference() {
     assert!(!s.app.is_preview_visual(), "Y で参照コピー後に選択解除");
 }
 
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_commit_copy_values() {
-    // In git log, y→'s commit-info copy (short/full hash, subject, full text, author, date).
-    // git_copy(kind) just copies current_commit_meta into each field. In GitLog,
-    // current_commit_meta = commit_meta(root, git_log_selected_id()), so verify by reproducing the
-    // same meta via a pub path (no getter needed).
-    let dir = sandbox("git_commit_copy");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o'); // changes hub
-    s.key('l'); // → log (synchronous load)
-    s.see("init");
-    assert_eq!(s.app.surface(), crate::keymap::Surface::GitLog);
-
-    let id = s.app.git_log_selected_id().expect("選択コミットの id");
-    let meta = crate::git::commit_meta(&s.app.tab.root, &id).expect("commit_meta");
-    assert_eq!(meta.message.lines().next(), Some("init"), "Subject=件名");
-    assert_eq!(meta.author, "t", "Author=user.name");
-    assert_eq!(meta.short.len(), 7, "ShortHash=7桁");
-    assert_eq!(meta.id.len(), 40, "FullHash=40桁");
-    assert!(
-        meta.id.starts_with(&meta.short),
-        "短ハッシュは完全ハッシュの接頭辞"
-    );
-    assert!(!meta.date.is_empty(), "Date は非空");
-
-    // y→ wiring: the GitCopy leader opens and is consumed by t (subject).
-    s.key('y');
-    assert_eq!(
-        s.app.pending_leader,
-        Some(crate::keymap::LeaderId::GitCopy),
-        "log の y は GitCopy リーダー(パスコピーの Copy ではない)"
-    );
-    s.key('t');
-    assert_eq!(s.app.pending_leader, None, "y→t でリーダー消費");
-}
-
 // =============================================================================
 // Follow mode's diff display and n/N cycling
 // [Note] Since Sim doesn't run the run loop/notify, what the run loop does on an FS event —
@@ -6261,7 +5620,7 @@ fn e2e_follow_diff_cycles_session_files() {
 
     // n = to the next changed file's diff (session-scoped only). Maximally sticky (2026-07-23) = n
     // doesn't resolve to PreviewBack, so it cycles while follow stays on (diff_follow_scope + follow_session).
-    s.key('n');
+    s.ctrl('n');
     assert!(
         s.app.follow_enabled(),
         "n(変更ファイル回遊)でもフォロー維持(最大粘着)"
@@ -6271,7 +5630,7 @@ fn e2e_follow_diff_cycles_session_files() {
         Some((2, 2)),
         "n で 2 番目(new.txt)へ"
     );
-    s.key('N'); // to the previous (wraps)
+    s.ctrl('p'); // to the previous (wraps)
     assert_eq!(
         s.app.diff_change_position(),
         Some((1, 2)),
@@ -6287,7 +5646,7 @@ fn e2e_f_toggles_follow_diff_scope_without_breaking_follow() {
     // Before the fix, the "anything but F is follow_break" check didn't include f, so pressing it turned FOLLOW OFF.
     let dir = sandbox("follow_f_scope");
     seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
+    let mut s = Sim::with_keys(&canon(&dir), FOLLOW_SCOPE_KEY);
     s.key('F');
 
     let a = s.app.tab.root.join("a.rs");
@@ -6446,7 +5805,7 @@ fn e2e_md_table_cell_link_shows_label_hides_url() {
 #[test]
 fn e2e_md_html_details_collapse_and_toggle() {
     // <details> (without open) is collapsed by default: summary shows but the body is hidden. Tab
-    // focuses summary → Space/Enter expands it, revealing the body. The tags are stripped.
+    // focuses summary → Enter expands it, revealing the body. The tags are stripped.
     let dir = sandbox("md_html_details");
     seed_files(&dir);
     std::fs::write(
@@ -6461,10 +5820,10 @@ fn e2e_md_html_details_collapse_and_toggle() {
     s.dont_see("hidden body line"); // default is collapsed = the body is hidden
     s.dont_see("<summary>"); // the tag is stripped
     s.dont_see("<details>");
-    // Tab focuses summary → Space expands it.
+    // Tab focuses summary → Enter expands it.
     s.tab();
     assert_eq!(s.app.focused_item(), Some(0), "summary が Tab アイテム");
-    s.key(' ');
+    s.enter();
     s.see("hidden body line"); // expanded, the body shows
                                // Toggling again collapses it.
     s.enter();
@@ -6964,7 +6323,7 @@ fn e2e_outline_lists_headings_and_jumps() {
     body.push_str("## Deep Section\n\ndeep body text\n");
     let (mut s, _dir) = md_preview(Config::default(), "outline_jump", &body);
     assert_eq!(s.app.tab.preview_scroll, 0);
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline(), "o opens the outline");
     s.see("Top Heading");
     s.see("Deep Section");
@@ -6988,11 +6347,11 @@ fn e2e_outline_toggle_and_esc_close() {
         "outline_toggle",
         "# A\n\nx\n\n## B\n\ny\n",
     );
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
-    s.key('o'); // o again closes
+    s.key('O'); // O again closes
     assert!(!s.app.is_outline());
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     s.esc(); // Esc also closes
     assert!(!s.app.is_outline());
@@ -7007,7 +6366,7 @@ fn e2e_outline_closes_on_new_tab() {
         "outline_newtab",
         "# A\n\nx\n\n## B\n\ny\n",
     );
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     s.key('t'); // global new tab
     assert!(!s.app.is_outline(), "a new tab closes the outline overlay");
@@ -7022,7 +6381,7 @@ fn e2e_outline_empty_flashes_on_plain_text() {
     let mut s = Sim::new(&canon(&dir));
     s.select("f.txt");
     s.enter();
-    s.key('o');
+    s.key('O');
     assert!(
         !s.app.is_outline(),
         "no overlay opens for a non-Markdown preview"
@@ -7271,6 +6630,54 @@ fn e2e_markdown_edit_lands_on_tab_focused_item() {
         Some(link_line),
         "Tab フォーカスのリンク行 {link_line}"
     );
+}
+
+/// The help's copy menu lists `y c` (copy the code block) only while it acts: a hint is shown only
+/// when its key does what the label says. Not for a document with no code block, not for a plain
+/// text file, and (as with the footer and the menu) not before a code block is focused.
+#[test]
+fn e2e_help_lists_copy_code_only_while_a_code_block_is_focused() {
+    // The row of the Copy path section (not the Tab row, which always names `y c` in its text).
+    fn help(s: &Sim) -> String {
+        crate::ui::help::help_lines(&s.app)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|x| x.content.as_ref())
+                    .collect::<String>()
+            })
+            .filter(|l| l.trim_start().starts_with("y c "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let dir = sandbox("help_copy_code");
+    seed_files(&dir);
+    std::fs::write(dir.join("code.md"), "# t\n\n```rust\nfn main() {}\n```\n").unwrap();
+    std::fs::write(dir.join("plain.md"), "# t\n\njust words\n").unwrap();
+    std::fs::write(dir.join("a.txt"), "just text\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+
+    // A document with a code block, before the block is focused: the key does not act yet.
+    s.select("code.md");
+    s.enter();
+    s.see("rust");
+    assert!(help(&s).is_empty(), "{}", help(&s));
+    // Focused: the key acts, so the help lists it (and the menu it opens agrees).
+    s.tab();
+    assert!(s.app.md_focused_code());
+    assert!(help(&s).contains("code block"), "{}", help(&s));
+    s.key('q');
+
+    // A document with no code block, and a plain text file: never.
+    s.select("plain.md");
+    s.enter();
+    s.tab();
+    assert!(help(&s).is_empty(), "{}", help(&s));
+    s.key('q');
+    s.select("a.txt");
+    s.enter();
+    assert!(help(&s).is_empty(), "{}", help(&s));
 }
 
 #[test]
@@ -8036,11 +7443,11 @@ fn e2e_returning_from_a_preview_keeps_the_active_filter() {
 
 #[test]
 fn e2e_path_style_cycles() {
-    // p=CyclePathStyle cycles Relative→Home→Full→Relative. The path: display at the top follows along too.
+    // p=CyclePathStyle (bound in `[keys.tree]`; the `,` menu will hold it) cycles Relative→Home→Full→Relative. The path: display at the top follows along too.
     use crate::app::PathStyle;
     let dir = sandbox("path_style");
     seed_files(&dir);
-    let mut s = Sim::new(&canon(&dir));
+    let mut s = Sim::with_keys(&canon(&dir), &[("tree", &[("p", "cycle_path_style")])]);
 
     assert_eq!(s.app.path_style, PathStyle::Relative, "既定は relative");
     s.see("path:rel"); // status's path label (assumes the English locale = same as existing tests)
@@ -8165,6 +7572,8 @@ fn e2e_stale_listing_chip_stays_up_until_the_listing_recovers() {
 
     // The root disappears out from under us (an agent removing a directory konoma happens to be
     // showing). This is the fs-watch path the run loop drives, which cannot propagate a failure.
+    // The project detection must have answered the healthy root first (ordering, not timing).
+    s.settle_projects();
     std::fs::remove_dir_all(&root).unwrap();
     s.app.refresh_fs_watched(false, &[]);
     s.draw();
@@ -8261,6 +7670,7 @@ fn e2e_stale_listing_chip_shows_in_tree_and_preview() {
     assert!(matches!(s.app.tab.mode, Mode::Preview));
     s.dont_see("STALE");
 
+    s.settle_projects();
     std::fs::remove_dir_all(&root).unwrap();
     s.app.refresh_fs_watched(false, &[]);
     s.draw();
@@ -8291,6 +7701,7 @@ fn e2e_stale_listing_chip_does_not_break_the_tab_bar() {
     s.key('5');
     assert_eq!(s.app.active_tab_index(), 4);
 
+    s.settle_projects();
     std::fs::remove_dir_all(&root).unwrap();
     s.app.refresh_fs_watched(false, &[]);
     s.draw();
@@ -9200,12 +8611,15 @@ fn e2e_preview_page_less_scheme_first_page_up_after_paging_down_moves_the_window
     assert!(s.app.is_windowed());
     let page = (s.app.tab.preview_viewport as i64 - 1).max(1);
 
-    // less: Space also pages down (in addition to `f`) — exercise both.
+    // less: `f` pages down. `Space` does not (it is the operation menu, not a page key).
     s.key(' ');
+    assert_eq!(s.app.preview_top_line(), 0, "Space はページ送りではない");
+    s.esc(); // it opened the operation menu
+    s.key('f');
     s.key('f');
     s.key('f');
     let top_after_downs = s.app.preview_top_line();
-    assert_eq!(top_after_downs as i64, 3 * page, "Space,f,f 後の窓位置");
+    assert_eq!(top_after_downs as i64, 3 * page, "f,f,f 後の窓位置");
 
     s.key('b');
     assert_ne!(
@@ -9784,47 +9198,6 @@ fn seed_repo_history(dir: &std::path::Path) {
     run(&["branch", "feature-x"]);
 }
 
-#[cfg(feature = "git")]
-fn staged_of(app: &App, name: &str) -> Option<bool> {
-    app.git_view_entries()
-        .iter()
-        .find(|e| e.path.ends_with(name))
-        .map(|e| e.staged)
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_stage_then_commit_appears_in_log() {
-    let dir = sandbox("git_commit_flow");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    assert!(s.app.is_git_view());
-    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
-    s.key('s');
-    assert_eq!(staged_of(&s.app, "a.rs"), Some(true));
-    s.key('c');
-    assert!(s.app.is_dialog());
-    s.keys("ZZCOMMITSUBJECT");
-    s.enter();
-    let commits = crate::git::log(&s.app.tab.root, 200);
-    assert!(
-        commits.iter().any(|c| c.summary == "ZZCOMMITSUBJECT"),
-        "commit in log: {:?}",
-        commits
-            .iter()
-            .map(|c| c.summary.clone())
-            .collect::<Vec<_>>()
-    );
-    assert!(s.app.is_git_view());
-    assert_eq!(staged_of(&s.app, "a.rs"), None);
-    assert!(staged_of(&s.app, "new.txt").is_some());
-    s.key('l');
-    assert!(s.app.is_git_log());
-    s.see("ZZCOMMITSUBJECT");
-    s.see("init");
-}
-
 // --- Background git writes through real key input (design principle #4) -----------------------
 
 /// Install a `pre-commit` hook that parks until the test removes `$GIT_DIR/BLOCK`, so a commit's
@@ -9841,198 +9214,8 @@ fn install_blocking_pre_commit_hook(dir: &std::path::Path) {
     // Git execs this hook; see `write_executable` for why it is not `fs::write` + chmod.
     crate::test_support::write_executable(
         &hook,
-        "#!/bin/sh\nn=0\nwhile [ -f \"$(git rev-parse --git-dir)/BLOCK\" ] && [ $n -lt 1000 ]; do\n  sleep 0.02\n  n=$((n+1))\ndone\nexit 0\n",
+        "#!/bin/sh\n: > \"$(git rev-parse --git-dir)/HOOK_ENTERED\"\nn=0\nwhile [ -f \"$(git rev-parse --git-dir)/BLOCK\" ] && [ $n -lt 1000 ]; do\n  sleep 0.02\n  n=$((n+1))\ndone\nexit 0\n",
     );
-}
-
-/// Stage and commit through the real key path with the background runner attached: `o` `s` `c`
-/// <message> Enter, then the run loop's drain step. The keys are identical to the synchronous
-/// version (`e2e_git_stage_then_commit_appears_in_log`) — moving the write off-thread must not
-/// change what the user types or sees afterwards.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_stage_and_commit_through_the_background_runner() {
-    let dir = sandbox("git_async_commit");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir)).with_async_git_ops();
-    s.key('o');
-    assert!(s.app.is_git_view());
-    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
-
-    s.key('s');
-    assert!(s.app.git_op_running(), "ステージは裏で走る");
-    s.drain_git_ops();
-    assert_eq!(
-        staged_of(&s.app, "a.rs"),
-        Some(true),
-        "適用後に staged になる"
-    );
-
-    s.key('c');
-    assert!(s.app.is_dialog());
-    s.keys("ASYNCCOMMITSUBJECT");
-    s.enter();
-    assert!(s.app.git_op_running(), "コミットも裏で走る");
-    s.drain_git_ops();
-
-    let commits = crate::git::log(&s.app.tab.root, 200);
-    assert!(
-        commits.iter().any(|c| c.summary == "ASYNCCOMMITSUBJECT"),
-        "コミットが log に載る: {:?}",
-        commits
-            .iter()
-            .map(|c| c.summary.clone())
-            .collect::<Vec<_>>()
-    );
-    assert!(s.app.is_git_view(), "完了後も Git ビューに居る");
-    assert_eq!(
-        staged_of(&s.app, "a.rs"),
-        None,
-        "コミット済みは一覧から消える"
-    );
-    s.key('l');
-    assert!(s.app.is_git_log());
-    s.see("ASYNCCOMMITSUBJECT");
-}
-
-/// **The point of D3, verified structurally rather than by a clock.** While `git commit` is parked
-/// inside a `pre-commit` hook, konoma must keep handling keys and drawing.
-///
-/// No wall-clock assertion is involved: the hook holds until this test deletes `BLOCK`, so
-/// "`git log` still has only the seed commits" is a fact the test controls, not a race. The
-/// combination of "the commit has demonstrably not finished" and "these keys were processed and
-/// these frames rendered" is what proves the write is not on the UI thread. Before the fix,
-/// `s.enter()` never returned until the hook gave up, so the first assertion below would fail.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_ui_keeps_responding_while_a_git_commit_is_blocked() {
-    let dir = sandbox("git_blocked_commit");
-    seed_repo(&dir);
-    install_blocking_pre_commit_hook(&dir);
-    let root = canon(&dir);
-    let git_dir = root.join(".git");
-    std::fs::write(git_dir.join("BLOCK"), b"").unwrap();
-
-    // Stage outside the harness, so the commit is the *only* git op this test dispatches and the
-    // "still running" assertion below is the first thing a regression trips over.
-    crate::git::stage_all(&root).unwrap();
-    let before = crate::git::log(&root, 200).len();
-    let mut s = Sim::new(&root).with_async_git_ops();
-    s.key('o');
-    s.key('c');
-    s.keys("BLOCKEDCOMMIT");
-    s.enter(); // dispatches the commit; the hook is parked
-
-    assert!(
-        s.app.git_op_running(),
-        "コミットは実行中(まだ完了していない)"
-    );
-    assert_eq!(
-        crate::git::log(&root, 200).len(),
-        before,
-        "フックが握っている間はコミットが作られていない"
-    );
-
-    // Keys keep working, and every one of them redraws (Sim::press draws after each key, exactly
-    // like the run loop) — so this also proves rendering isn't stuck behind the write.
-    s.key('q'); // leave the Git view
-    assert!(!s.app.is_git_view(), "git 実行中でも Git ビューを出られる");
-    let start = s.app.tab.selected;
-    for _ in 0..3 {
-        s.key('j');
-    }
-    assert!(
-        s.app.tab.selected > start,
-        "git 実行中でもツリーのカーソルが動く"
-    );
-    s.key('k');
-    s.see("a.rs"); // a frame really was produced
-                   // Still blocked, and still nothing committed: the keys above did not secretly wait for git.
-    assert!(s.app.git_op_running(), "ここまでキーを叩いてもまだ実行中");
-    assert_eq!(
-        crate::git::log(&root, 200).len(),
-        before,
-        "キー処理の間もコミットは作られていない"
-    );
-
-    // Release the hook and let the result land.
-    std::fs::remove_file(git_dir.join("BLOCK")).unwrap();
-    s.drain_git_ops();
-    assert!(!s.app.git_op_running(), "適用で実行中フラグが解ける");
-    let commits = crate::git::log(&root, 200);
-    assert!(
-        commits.iter().any(|c| c.summary == "BLOCKEDCOMMIT"),
-        "解放後にコミットが完了する: {:?}",
-        commits
-            .iter()
-            .map(|c| c.summary.clone())
-            .collect::<Vec<_>>()
-    );
-}
-
-/// `Q` while a git write is in flight must warn before quitting, even with `confirm_quit = false`:
-/// leaving mid-`commit` orphans a `git` that is still holding `.git/index.lock`.
-#[cfg(feature = "git")]
-#[test]
-fn e2e_quit_during_a_git_write_asks_for_confirmation() {
-    let dir = sandbox("git_quit_during_write");
-    seed_repo(&dir);
-    install_blocking_pre_commit_hook(&dir);
-    let root = canon(&dir);
-    std::fs::write(root.join(".git").join("BLOCK"), b"").unwrap();
-
-    let mut cfg = Config::default();
-    cfg.ui.confirm_quit = false;
-    crate::git::stage_all(&root).unwrap();
-    let mut s = Sim::with_config(&root, cfg).with_async_git_ops();
-    s.key('o');
-    s.key('c');
-    s.keys("WILLQUIT");
-    s.enter();
-    assert!(s.app.git_op_running(), "コミットは裏で実行中");
-
-    s.key('Q');
-    assert!(!s.quit, "確認を出すのでこの時点では終了しない");
-    assert!(s.app.is_dialog(), "確認ダイアログが出る");
-    s.see(crate::i18n::tr(
-        s.app.lang,
-        crate::i18n::Msg::QuitWhileGitOp,
-    ));
-
-    // The warning only warns: `y` still leaves.
-    s.key('y');
-    assert!(s.quit, "y なら終了できる(引き止めない)");
-
-    std::fs::remove_file(root.join(".git").join("BLOCK")).ok();
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_stage_unstage_roundtrip() {
-    let dir = sandbox("git_stage_unstage");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
-    s.key('s');
-    assert_eq!(staged_of(&s.app, "a.rs"), Some(true));
-    s.key('u');
-    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_stage_all_then_unstage_all() {
-    let dir = sandbox("git_stage_all");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    assert!(!s.app.git_view_entries().is_empty());
-    assert!(s.app.git_view_entries().iter().any(|e| !e.staged));
-    s.key('S');
-    assert!(s.app.git_view_entries().iter().all(|e| e.staged));
-    s.key('U');
-    assert!(s.app.git_view_entries().iter().all(|e| !e.staged));
 }
 
 #[cfg(feature = "git")]
@@ -10126,9 +9309,9 @@ fn e2e_gitdiff_unified_render_highlights_only_the_visible_rows() {
     // `s.select`/`s.key('d')` above already triggered draws while the highlight counter was
     // running (it's already been counting since Sim::new's very first draw) — reset it and take
     // exactly one more render pass to measure, mirroring the unit tests in gitdiff.rs.
-    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    konoma_widgets::gitdiff::reset_highlight_calls_for_test();
     s.draw();
-    let calls = crate::preview::gitdiff::highlight_calls_for_test();
+    let calls = konoma_widgets::gitdiff::highlight_calls_for_test();
     let vh = s.app.tab.preview_viewport as usize;
     assert!(vh > 0, "diff プレビューの高さが描画で設定されているはず");
     assert!(
@@ -10140,9 +9323,9 @@ fn e2e_gitdiff_unified_render_highlights_only_the_visible_rows() {
     // Scrolling must not break the windowing: after `G` (to the very end), the count must stay in
     // the same order of magnitude, not jump toward `total_rows`.
     s.key('G');
-    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    konoma_widgets::gitdiff::reset_highlight_calls_for_test();
     s.draw();
-    let calls_at_bottom = crate::preview::gitdiff::highlight_calls_for_test();
+    let calls_at_bottom = konoma_widgets::gitdiff::highlight_calls_for_test();
     assert!(
         calls_at_bottom > 0 && calls_at_bottom <= vh * 3,
         "末尾(G)へスクロールしても画面オーダーのはず(全{total_rows}行中{calls_at_bottom}回)"
@@ -10166,7 +9349,7 @@ fn e2e_gitdiff_side_by_side_render_highlights_only_the_visible_rows() {
 
     let diff = s.app.git_diff_lines();
     let ext = s.app.current_preview_ext().to_string();
-    let total_rows = crate::preview::gitdiff::side_by_side_row_count(&diff, &ext);
+    let total_rows = konoma_widgets::gitdiff::side_by_side_row_count(&diff, &ext);
     assert!(
         total_rows > 1000,
         "side-by-side の行数も画面よりずっと大きいはず(実際 {total_rows})"
@@ -10174,9 +9357,9 @@ fn e2e_gitdiff_side_by_side_render_highlights_only_the_visible_rows() {
 
     // Each side-by-side row can highlight up to two halves (old + new) — same 2x headroom the
     // unit tests in gitdiff.rs use.
-    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    konoma_widgets::gitdiff::reset_highlight_calls_for_test();
     s.draw();
-    let calls = crate::preview::gitdiff::highlight_calls_for_test();
+    let calls = konoma_widgets::gitdiff::highlight_calls_for_test();
     let vh = s.app.tab.preview_viewport as usize;
     assert!(vh > 0);
     assert!(
@@ -10186,278 +9369,13 @@ fn e2e_gitdiff_side_by_side_render_highlights_only_the_visible_rows() {
 
     // Scrolling in side-by-side layout must not break the windowing either.
     s.key('G');
-    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    konoma_widgets::gitdiff::reset_highlight_calls_for_test();
     s.draw();
-    let calls_at_bottom = crate::preview::gitdiff::highlight_calls_for_test();
+    let calls_at_bottom = konoma_widgets::gitdiff::highlight_calls_for_test();
     assert!(
         calls_at_bottom > 0 && calls_at_bottom <= vh * 6,
         "side-by-side で末尾(G)へスクロールしても画面オーダーのはず(全{total_rows}行中{calls_at_bottom}回)"
     );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_worktree_diff_toggle_layout_and_back() {
-    let dir = sandbox("git_worktree_detail");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('d');
-    assert!(s.app.is_git_detail());
-    s.see("Uncommitted changes");
-    s.dont_see("⇆");
-    s.key('s');
-    s.see("side-by-side");
-    s.see("⇆");
-    s.key('q');
-    assert!(!s.app.is_git_detail());
-    assert!(s.app.is_git_view());
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_log_navigate_open_detail_and_back() {
-    let dir = sandbox("git_log_nav");
-    seed_repo_history(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('l');
-    assert!(s.app.is_git_log());
-    s.see("gammacommit");
-    s.see("betacommit");
-    s.see("alphacommit");
-    let top = s.app.git_log_selected_id().expect("top id");
-    s.key('j');
-    let second = s.app.git_log_selected_id().expect("second id");
-    assert_ne!(top, second);
-    // Derive the selected commit's subject rather than assuming a specific ordering.
-    let second_subj = crate::git::commit_meta(&s.app.tab.root, &second)
-        .and_then(|m| m.message.lines().next().map(str::to_string))
-        .expect("second subject");
-    s.enter();
-    assert!(s.app.is_git_detail());
-    s.see(&second_subj); // Enter opens the selected commit's detail
-    s.key('q');
-    assert!(s.app.is_git_log());
-    assert_eq!(
-        s.app.git_log_selected_id().as_deref(),
-        Some(second.as_str())
-    );
-    s.key('l');
-    assert!(s.app.is_git_detail());
-    s.see(&second_subj); // `l` also opens the same commit's detail
-    s.key('q');
-    assert!(s.app.is_git_log());
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_graph_navigates_commit_rows() {
-    let dir = sandbox("git_graph_nav");
-    seed_repo_history(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('g');
-    assert!(s.app.is_git_graph());
-    s.see("●");
-    s.key('g');
-    let top = s
-        .app
-        .git_graph_selected_row()
-        .and_then(|r| r.commit.clone())
-        .expect("top commit");
-    s.key('G');
-    let bottom = s
-        .app
-        .git_graph_selected_row()
-        .and_then(|r| r.commit.clone())
-        .expect("bottom commit");
-    assert_ne!(top, bottom);
-    s.key('g');
-    s.key('j');
-    let after_j = s
-        .app
-        .git_graph_selected_row()
-        .and_then(|r| r.commit.clone());
-    assert!(
-        after_j.is_some() && after_j.as_deref() != Some(top.as_str()),
-        "j: {after_j:?}"
-    );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_graph_set_base_keeps_selection_then_clear() {
-    let dir = sandbox("git_graph_base2");
-    seed_repo_history(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('g');
-    s.dont_see("⌖ base:");
-    assert!(s.app.git_graph_base_label().is_none());
-    s.key('g');
-    let sel_before = s
-        .app
-        .git_graph_selected_row()
-        .and_then(|r| r.commit.clone())
-        .expect("commit");
-    s.key('s');
-    s.see("⌖ base:");
-    assert!(s.app.git_graph_base_label().is_some());
-    assert_eq!(
-        s.app
-            .git_graph_selected_row()
-            .and_then(|r| r.commit.clone()),
-        Some(sel_before)
-    );
-    s.key('x');
-    s.dont_see("⌖ base:");
-    assert!(s.app.git_graph_base_label().is_none());
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_graph_picker_current_only_then_all() {
-    let dir = sandbox("git_graph_picker2");
-    seed_repo_history(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('g');
-    s.key('b');
-    assert!(s.app.is_git_graph_picker());
-    let feature_on = |app: &App| -> Option<bool> {
-        app.git_graph_picker_items()
-            .into_iter()
-            .find(|(name, _, _)| name == "feature-x")
-            .map(|(_, _, on)| on)
-    };
-    assert_eq!(feature_on(&s.app), Some(true));
-    s.key('n');
-    assert_eq!(feature_on(&s.app), Some(false));
-    s.key('a');
-    assert_eq!(feature_on(&s.app), Some(true));
-    s.key('q');
-    assert!(!s.app.is_git_graph_picker());
-    assert!(s.app.is_git_graph());
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_branches_filter_narrows_and_clears() {
-    let dir = sandbox("git_branches_filter");
-    seed_repo_history(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('b');
-    assert!(s.app.is_git_branches());
-    assert_eq!(s.app.git_branch_view().len(), 2);
-    s.key('/');
-    assert!(s.app.git_branch_filtering());
-    s.keys("feature");
-    let view = s.app.git_branch_view();
-    assert_eq!(view.len(), 1);
-    assert_eq!(view[0].name, "feature-x");
-    s.see("feature-x");
-    s.esc();
-    assert!(!s.app.git_branch_filtering());
-    assert_eq!(s.app.git_branch_view().len(), 2);
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_branch_create_switches_to_it() {
-    let dir = sandbox("git_branch_create");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('b');
-    s.key('n');
-    assert!(s.app.is_dialog());
-    s.keys("createdbr");
-    s.enter();
-    let branches = crate::git::branches(&s.app.tab.root);
-    let created = branches.iter().find(|b| b.name == "createdbr");
-    assert!(created.is_some());
-    assert!(created.unwrap().is_current);
-    assert!(s.app.is_git_view());
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_branch_delete_removes_feature_branch() {
-    let dir = sandbox("git_branch_delete");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('b');
-    s.key('g');
-    assert_eq!(
-        s.app.git_branch_view()[s.app.git_branch_sel()].name,
-        "feature-x"
-    );
-    s.key('d');
-    assert!(s.app.is_dialog());
-    s.key('y');
-    assert!(!crate::git::branches(&s.app.tab.root)
-        .iter()
-        .any(|b| b.name == "feature-x"));
-    assert!(!s
-        .app
-        .git_branch_view()
-        .iter()
-        .any(|b| b.name == "feature-x"));
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_copy_leader_all_subkeys_consume_from_log() {
-    let dir = sandbox("git_copy_subkeys");
-    seed_repo(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('l');
-    assert_eq!(s.app.surface(), crate::keymap::Surface::GitLog);
-    s.see("init");
-    let id = s.app.git_log_selected_id().expect("selected id");
-    let meta = crate::git::commit_meta(&s.app.tab.root, &id).expect("commit_meta");
-    assert_eq!(meta.message.lines().next(), Some("init"));
-    assert_eq!(meta.author, "t");
-    assert_eq!(meta.short.len(), 7);
-    assert_eq!(meta.id.len(), 40);
-    assert!(meta.id.starts_with(&meta.short));
-    assert!(!meta.date.is_empty());
-    for sub in ['s', 'h', 't', 'm', 'a', 'd'] {
-        s.key('y');
-        assert_eq!(
-            s.app.pending_leader,
-            Some(crate::keymap::LeaderId::GitCopy),
-            "sub={sub}"
-        );
-        s.key(sub);
-        assert_eq!(s.app.pending_leader, None, "y->{sub}");
-    }
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_git_copy_leader_opens_in_graph_and_detail() {
-    let dir = sandbox("git_copy_surfaces");
-    seed_repo_history(&dir);
-    let mut s = Sim::new(&canon(&dir));
-    s.key('o');
-    s.key('g');
-    s.key('g');
-    assert_eq!(s.app.surface(), crate::keymap::Surface::GitGraph);
-    s.key('y');
-    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::GitCopy));
-    s.esc();
-    assert_eq!(s.app.pending_leader, None);
-    s.enter();
-    assert_eq!(s.app.surface(), crate::keymap::Surface::GitDetail);
-    s.key('y');
-    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::GitCopy));
-    s.esc();
-    assert_eq!(s.app.pending_leader, None);
 }
 
 #[cfg(feature = "git")]
@@ -10494,7 +9412,7 @@ fn e2e_sort_by_size_orders_ascending() {
     std::fs::write(dir.join("aaa.txt"), vec![b'a'; 300]).unwrap();
     std::fs::write(dir.join("bbb.txt"), vec![b'b'; 30]).unwrap();
     std::fs::write(dir.join("ccc.txt"), vec![b'c'; 150]).unwrap();
-    let mut s = Sim::new(&canon(&dir));
+    let mut s = Sim::with_keys(&canon(&dir), SORT_MENU_KEY);
     let names: Vec<&str> = s
         .app
         .tab
@@ -10505,7 +9423,10 @@ fn e2e_sort_by_size_orders_ascending() {
     assert_eq!(names, vec!["aaa.txt", "bbb.txt", "ccc.txt"]);
     s.key('s');
     s.key('s');
-    assert!(!s.app.is_sort_menu());
+    assert_eq!(
+        s.app.pending_leader, None,
+        "the `,` menu closed after the choice"
+    );
     let names: Vec<&str> = s
         .app
         .tab
@@ -10528,10 +9449,13 @@ fn e2e_sort_by_modified_orders_ascending() {
     set_mtime(&dir.join("m_a.txt"), 2_000_000_000);
     set_mtime(&dir.join("m_b.txt"), 1_000_000_000);
     set_mtime(&dir.join("m_c.txt"), 1_500_000_000);
-    let mut s = Sim::new(&canon(&dir));
+    let mut s = Sim::with_keys(&canon(&dir), SORT_MENU_KEY);
     s.key('s');
     s.key('m');
-    assert!(!s.app.is_sort_menu());
+    assert_eq!(
+        s.app.pending_leader, None,
+        "the `,` menu closed after the choice"
+    );
     let names: Vec<&str> = s
         .app
         .tab
@@ -10548,7 +9472,7 @@ fn e2e_sort_by_ext_orders_ascending() {
     std::fs::write(dir.join("zzz.aaa"), b"1\n").unwrap();
     std::fs::write(dir.join("aaa.zzz"), b"2\n").unwrap();
     std::fs::write(dir.join("mmm.mmm"), b"3\n").unwrap();
-    let mut s = Sim::new(&canon(&dir));
+    let mut s = Sim::with_keys(&canon(&dir), SORT_MENU_KEY);
     let names: Vec<&str> = s
         .app
         .tab
@@ -10559,7 +9483,10 @@ fn e2e_sort_by_ext_orders_ascending() {
     assert_eq!(names, vec!["aaa.zzz", "mmm.mmm", "zzz.aaa"]);
     s.key('s');
     s.key('e');
-    assert!(!s.app.is_sort_menu());
+    assert_eq!(
+        s.app.pending_leader, None,
+        "the `,` menu closed after the choice"
+    );
     let names: Vec<&str> = s
         .app
         .tab
@@ -10667,6 +9594,156 @@ fn e2e_table_copy_full_path_value() {
     );
     s.key('f');
     assert_eq!(s.app.pending_leader, None);
+}
+
+// ---- Path copy (y→n/r/f/p/@): the clipboard's content and the notice, per preview kind ----
+
+/// What `y` + `sub` must leave on the (test) clipboard, with the notice that follows.
+#[track_caller]
+fn assert_path_copy(s: &mut Sim, sub: char, want: &str) {
+    crate::test_support::clear_test_clipboard();
+    s.app.flash = None;
+    s.key('y');
+    s.key(sub);
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some(want),
+        "y{sub}: clipboard"
+    );
+    assert_eq!(
+        s.app.flash.as_deref(),
+        Some(
+            format!(
+                "{}{want}",
+                konoma_host_core::help_msg::CoreMsg::CopiedPrefix.tr(s.app.lang)
+            )
+            .as_str()
+        ),
+        "y{sub}: notice"
+    );
+}
+
+/// All five kinds on a text file under a sub directory, with a full-width name, from the preview
+/// and from the tree (both copy the same file).
+#[test]
+fn e2e_path_copy_text_all_five_kinds_preview_and_tree() {
+    let dir = sandbox("path_copy_text");
+    let root = canon(&dir);
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub").join("メモ.txt"), "hello\n").unwrap();
+    let top = root.file_name().unwrap().to_string_lossy().into_owned();
+    let file = root.join("sub").join("メモ.txt");
+    let mut s = Sim::new(&root);
+    s.keys("l"); // open sub/ in the tree (enter would also do); then select the file
+    s.select("メモ.txt");
+    let cases = [
+        ('n', "メモ.txt".to_string()),
+        ('r', format!("{top}/sub/メモ.txt")),
+        ('f', file.display().to_string()),
+        ('p', root.join("sub").display().to_string()),
+        ('@', "@sub/メモ.txt".to_string()),
+    ];
+    for (sub, want) in &cases {
+        assert_path_copy(&mut s, *sub, want); // from the tree
+    }
+    s.enter();
+    s.see("hello");
+    for (sub, want) in &cases {
+        assert_path_copy(&mut s, *sub, want); // from the preview
+    }
+}
+
+/// A file directly under the root: Relative keeps the root's name, AtRef does not.
+#[test]
+fn e2e_path_copy_text_root_level_relative_vs_at_ref() {
+    let dir = sandbox("path_copy_root_level");
+    let root = canon(&dir);
+    std::fs::write(root.join("a.txt"), "x\n").unwrap();
+    let top = root.file_name().unwrap().to_string_lossy().into_owned();
+    let mut s = Sim::new(&root);
+    s.select("a.txt");
+    s.enter();
+    assert_path_copy(&mut s, 'r', &format!("{top}/a.txt"));
+    assert_path_copy(&mut s, '@', "@a.txt");
+    assert_path_copy(&mut s, 'p', &root.display().to_string());
+}
+
+/// A directory selected in the tree copies like a file: its own name, path and parent.
+#[test]
+fn e2e_path_copy_directory_in_tree() {
+    let dir = sandbox("path_copy_dir");
+    let root = canon(&dir);
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    let top = root.file_name().unwrap().to_string_lossy().into_owned();
+    let mut s = Sim::new(&root);
+    s.select("docs");
+    assert_path_copy(&mut s, 'n', "docs");
+    assert_path_copy(&mut s, 'r', &format!("{top}/docs"));
+    assert_path_copy(&mut s, '@', "@docs");
+    assert_path_copy(&mut s, 'p', &root.display().to_string());
+    assert_path_copy(&mut s, 'f', &root.join("docs").display().to_string());
+}
+
+/// The document, image, table and canvas previews copy the previewed file's path too (at least
+/// one kind each; Full and AtRef here so both the absolute and the relative form are covered).
+#[test]
+fn e2e_path_copy_from_document_image_table_canvas_previews() {
+    let dir = sandbox("path_copy_kinds");
+    let root = canon(&dir);
+    std::fs::write(root.join("doc.md"), "# Title\n\ntext\n").unwrap();
+    write_solid_png(&root.join("pic.png"), 8, 8, [10, 200, 10]);
+    std::fs::write(root.join("data.csv"), "a,b\n1,2\n").unwrap();
+    std::fs::write(root.join("g.mmd"), "flowchart TD\nA-->B\n").unwrap();
+    for (name, kind) in [
+        ("doc.md", "document"),
+        ("pic.png", "image"),
+        ("data.csv", "table"),
+        ("g.mmd", "canvas"),
+    ] {
+        let mut s = Sim::new(&root);
+        s.select(name);
+        s.enter();
+        assert!(s.app.tab.preview_path.is_some(), "{kind}: previewing");
+        assert_path_copy(&mut s, 'f', &root.join(name).display().to_string());
+        if kind == "table" {
+            // The table's `y` menu is the cell/row/column one (`f` = the file's full path).
+            continue;
+        }
+        assert_path_copy(&mut s, '@', &format!("@{name}"));
+        assert_path_copy(&mut s, 'n', name);
+    }
+}
+
+/// The table's cell / row / column copy reaches the clipboard, with an empty cell and a ragged
+/// row (the row stops at its last cell), for a CSV (comma) and a TSV (tab).
+#[test]
+fn e2e_table_copy_clipboard_content_csv_and_tsv() {
+    let dir = sandbox("table_copy_clip");
+    let root = canon(&dir);
+    std::fs::write(root.join("d.csv"), "n,q,z\napple,,x\nkiwi,7\n").unwrap();
+    std::fs::write(root.join("d.tsv"), "n\tq\napple\t3\n").unwrap();
+    let mut s = Sim::new(&root);
+    s.select("d.csv");
+    s.enter();
+    s.see("TABLE");
+    let copied = |s: &mut Sim, sub: char| {
+        crate::test_support::clear_test_clipboard();
+        s.key('y');
+        s.key(sub);
+        crate::test_support::get_test_clipboard()
+    };
+    assert_eq!(copied(&mut s, 'c').as_deref(), Some("apple"));
+    assert_eq!(copied(&mut s, 'r').as_deref(), Some("apple,,x"));
+    assert_eq!(copied(&mut s, 'C').as_deref(), Some("n\napple\nkiwi"));
+    s.keys("jl"); // kiwi,7 (a ragged row)
+    assert_eq!(copied(&mut s, 'r').as_deref(), Some("kiwi,7"));
+    s.keys("l"); // the third column of the ragged row: no cell
+    assert_eq!(copied(&mut s, 'c').as_deref(), Some(""));
+    s.esc();
+    s.select("d.tsv");
+    s.enter();
+    s.see("TABLE");
+    assert_eq!(copied(&mut s, 'r').as_deref(), Some("apple\t3"));
 }
 
 // ---- Bookmarking from the preview (m / ') ----
@@ -10941,20 +10018,20 @@ fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
 
     // The 1st (outside the alert).
     s.tab();
-    s.key(' ');
+    s.enter();
     assert!(read().contains("- [x] plain one"), "外側1: {}", read());
     s.dont_see("couldn't toggle checkbox");
 
     // The 2nd and 3rd (inside the alert) — this used to not work at all.
     s.tab();
-    s.key(' ');
+    s.enter();
     assert!(
         read().contains("> - [x] inside alert"),
         "アラート内1: {}",
         read()
     );
     s.tab();
-    s.key(' ');
+    s.enter();
     assert!(
         read().contains("> - [x] second in alert"),
         "アラート内2: {}",
@@ -10963,7 +10040,7 @@ fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
 
     // The 4th (after the alert) — the ordinal doesn't drift crossing the alert.
     s.tab();
-    s.key(' ');
+    s.enter();
     assert!(read().contains("- [x] after alert"), "外側2: {}", read());
     s.dont_see("couldn't toggle checkbox");
 
@@ -10989,7 +10066,7 @@ fn e2e_task_custom_states_cycle_inside_an_alert() {
     let read = || std::fs::read_to_string(dir.join("todo.md")).unwrap();
     s.tab();
     for want in ["> - [/] cycle me", "> - [x] cycle me", "> - [ ] cycle me"] {
-        s.key(' ');
+        s.enter();
         assert!(read().contains(want), "期待 {want}: {}", read());
     }
 }
@@ -11030,7 +10107,7 @@ fn e2e_task_toggle_works_with_a_collapsed_details_block() {
         s.app.md_focused_details()
     );
 
-    s.key(' ');
+    s.enter();
     let out = read();
     // Both assertions matter: the visible task must actually flip (not "either this or that stayed
     // the same" — that OR let a no-op write-back pass), and the hidden one must be left alone (it's
@@ -11279,10 +10356,17 @@ fn e2e_ui_keys_less_scheme_uses_plain_letters_not_ctrl() {
     let top1 = s.app.preview_top_line();
     assert!(top1 > top0, "less: 素の f がページ送りになるはず");
 
-    // Space also pages down (less has both).
+    // `f` keeps paging; Space does not (it is the operation menu, not a page key).
     s.key(' ');
+    assert_eq!(
+        s.app.preview_top_line(),
+        top1,
+        "less: Space はページ送りではない"
+    );
+    s.esc(); // it opened the operation menu
+    s.key('f');
     let top2 = s.app.preview_top_line();
-    assert!(top2 > top1, "less: Space もページ送りになるはず");
+    assert!(top2 > top1, "less: f は続けてページ送りになるはず");
 
     // Plain `b` pages back up.
     s.key('b');
@@ -11313,8 +10397,9 @@ fn e2e_ui_keys_vim_scheme_uses_ctrl_not_plain_letters() {
     assert_eq!(
         s.app.preview_top_line(),
         top0,
-        "vim スキームでは Space もバインドされていないはず"
+        "vim スキームでは Space もページ送りではないはず"
     );
+    s.esc(); // it opened the operation menu
 
     // Ctrl-f/Ctrl-b (vim's own keys) work.
     s.ctrl('f');
@@ -11485,6 +10570,55 @@ fn e2e_csv_rainbow_columns_use_distinct_foreground_colors() {
         "4列のヘッダ行は3色以上の前景色が混在するはず(レインボー)"
     );
     s.key('q');
+}
+
+/// The rainbow columns can be switched off by the plugin's own setting (`[plugins.csv] rainbow`) or
+/// by the old `[ui] csv_rainbow`; both end as the same uncolored table on the screen.
+#[test]
+fn e2e_csv_rainbow_off_by_either_setting_draws_one_color() {
+    for (label, toml_text) in [
+        ("plugin table", "[plugins.csv]\nrainbow = false\n"),
+        ("old ui name", "[ui]\ncsv_rainbow = false\n"),
+    ] {
+        let dir = sandbox("csv_rainbow_off_either");
+        std::fs::write(dir.join("wide.csv"), "colA,colB,colC,colD\n1,2,3,4\n").unwrap();
+        let cfg: Config = toml::from_str(toml_text).unwrap();
+        let mut s = Sim::with_config(&canon(&dir), cfg);
+        s.select("wide.csv");
+        s.enter();
+        s.see("TABLE");
+        let (header_row, _) = s.find_text("colA").expect("header row is drawn");
+        assert_eq!(
+            s.distinct_fg_in_row(header_row),
+            1,
+            "{label}: no rainbow = one foreground color on the header row"
+        );
+        s.key('q');
+    }
+}
+
+/// With the plugin's work on a worker (as in `main`), a CSV still opens through real keystrokes: the
+/// table is there for the first frame or lands when the worker's result is applied, and the cursor
+/// the user had saved is clamped to what was read.
+#[test]
+fn e2e_csv_opens_through_the_plugin_worker() {
+    let dir = sandbox("csv_plugin_worker");
+    std::fs::write(dir.join("t.csv"), "h1,h2\na,b\nc,d\n").unwrap();
+    let mut s = Sim::new(&canon(&dir)).with_async_plugins();
+    s.select("t.csv");
+    s.enter();
+    while s.app.is_plugin_loading() {
+        assert!(s.drain_plugin());
+    }
+    s.see("TABLE");
+    s.see("h1");
+    s.see("c");
+    s.key('j');
+    assert_eq!(s.app.table_cursor(), (1, 0));
+    s.key('l');
+    assert_eq!(s.app.table_cursor(), (1, 1));
+    s.key('q');
+    assert!(!s.app.is_table_preview());
 }
 
 // =============================================================================
@@ -12173,7 +11307,7 @@ fn e2e_ui_preview_loading_indicator_vs_progressive_for_cold_language() {
     // and false-positive the `dont_see("loading")` check below.
     let dir = sandbox("ui_cold_lang_cfg");
     // A fabricated extension registered as `code` via a custom rule, so it is both (a) guaranteed
-    // never warmed by any other test in this binary and (b) still classified as `PreviewKind::Code`
+    // never warmed by any other test in this binary and (b) still shown by the `code` plugin
     // (an unrecognized extension with no custom rule would fall through to Text, where
     // syntax-highlight warm-up — and so `preview_loading` — never applies).
     std::fs::write(dir.join("f.zzzcoldlang"), "UNIQUEBODYTEXT123\n").unwrap();
@@ -12395,109 +11529,10 @@ fn e2e_ui_sort_config_sets_initial_order_without_pressing_s() {
         vec!["bbb.txt", "ccc.txt", "aaa.txt"],
         "sort.key=\"size\" は起動時からサイズ順のはず(sメニュー不要)"
     );
-    assert!(
-        !s_cfg.app.is_sort_menu(),
+    assert_eq!(
+        s_cfg.app.pending_leader, None,
         "メニューを開かず既に反映済みのはず"
     );
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_ui_graph_max_branches_caps_legend_entries() {
-    let dir = sandbox("ui_graph_max_branches_cfg");
-    seed_repo_history(&dir); // main + feature-x = 2 branches already
-    let dir = canon(&dir);
-    let run = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    };
-    run(&["branch", "b1"]);
-    run(&["branch", "b2"]);
-    run(&["branch", "b3"]); // now 5 branches total
-
-    let mut cfg = Config::default();
-    cfg.ui.graph_max_branches = 2;
-    let mut s = Sim::with_config(&dir, cfg);
-    s.key('o');
-    s.key('g');
-    s.see("hidden)");
-
-    let mut cfg2 = Config::default();
-    cfg2.ui.graph_max_branches = 0; // 0 = unlimited
-    let mut s2 = Sim::with_config(&dir, cfg2);
-    s2.key('o');
-    s2.key('g');
-    s2.dont_see("hidden)");
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_ui_graph_base_branches_config_auto_selects_base() {
-    let dir = sandbox("ui_graph_base_branches_cfg");
-    seed_repo(&dir);
-    let root = canon(&dir);
-    let base = crate::git::branch(&root).expect("has a branch after seed_repo's commit");
-
-    let mut s_default = Sim::new(&root); // default graph_base_branches=[]: no auto base
-    s_default.key('o');
-    s_default.key('g');
-    s_default.dont_see("⌖ base:");
-
-    let mut cfg = Config::default();
-    cfg.ui.graph_base_branches = vec![base];
-    let mut s_cfg = Sim::with_config(&root, cfg);
-    s_cfg.key('o');
-    s_cfg.key('g');
-    s_cfg.see("⌖ base:"); // auto-pinned without pressing `s`
-}
-
-#[cfg(feature = "git")]
-#[test]
-fn e2e_ui_commit_meta_align_right_vs_inline_moves_author_column() {
-    let dir = sandbox("ui_commit_meta_align_cfg");
-    std::fs::create_dir_all(&dir).unwrap();
-    let run = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    };
-    run(&["init", "-q", "."]);
-    run(&["config", "user.email", "t@t"]);
-    run(&["config", "user.name", "AuthorZZZ"]);
-    std::fs::write(dir.join("a.rs"), "fn a(){}\n").unwrap();
-    run(&["add", "-A"]);
-    run(&["commit", "-q", "-m", "shortsubj"]);
-    let dir = canon(&dir);
-
-    let mut s_right = Sim::new(&dir); // default "right": a padded column near the right edge
-    s_right.key('o');
-    s_right.key('l');
-    let (_, col_right) = s_right
-        .find_text("AuthorZZZ")
-        .expect("author shown in the log row");
-
-    let mut cfg = Config::default();
-    cfg.ui.commit_meta_align = "inline".into();
-    let mut s_inline = Sim::with_config(&dir, cfg); // right after the (short) subject
-    s_inline.key('o');
-    s_inline.key('l');
-    let (_, col_inline) = s_inline
-        .find_text("AuthorZZZ")
-        .expect("author shown in the log row");
-
-    assert!(
-        col_right > col_inline,
-        "right は列揃え(右寄り)/inline は subject 直後(左寄り)のはず: right_col={col_right} inline_col={col_inline}"
-    );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -13279,8 +12314,8 @@ fn drawn_rgb_fgs(term: &Terminal<TestBackend>) -> Vec<(u8, u8, u8)> {
 }
 
 /// A **local** inline Markdown image, decoded and encoded through the real background threads.
-/// The placement (cols/rows) is available immediately after `enter()` (it's sized straight off the
-/// file's on-disk dimensions, synchronously — no worker needed for that part), but the raster only
+/// Once the document's media answer has landed, the placement (cols/rows) is sized straight off
+/// the file's on-disk dimensions, synchronously — no image worker needed for that part. The raster only
 /// exists once `ensure_md_image`'s real decode thread reports back through `md_img_rx`, and a
 /// drawable protocol only exists once the real `md_encode_worker` thread reports back through
 /// `md_enc_rx`. Confirms both by reading real pixel colors off the drawn buffer, not just "a
@@ -13308,6 +12343,7 @@ fn e2e_ui_inline_local_image_decodes_and_encodes_through_real_worker_threads() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("inline local image: open d.md before checking placements");
     let placements = s.app.md_images();
     assert_eq!(
         placements.len(),
@@ -13591,6 +12627,7 @@ fn e2e_ui_rewritten_offscreen_inline_image_still_relays_out() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("offscreen image: open d.md before checking placements");
     let (_, cols0, rows0) = only_placement(&s.app);
     assert_eq!(
         s.app.md_image_cache_len(),
@@ -14152,6 +13189,7 @@ fn e2e_ui_mermaid_fence_tab_enter_opens_correct_ordinal_fullscreen_q_returns() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter(); // both fences kick off a real decode thread (Loading — no image placement yet)
+    s.await_media("mermaid focus: open d.md before checking pending fences");
     assert!(
         s.app.md_images().is_empty(),
         "デコード前はまだ画像プレースメント無し"
@@ -14197,10 +13235,11 @@ fn e2e_ui_mermaid_fence_tab_enter_opens_correct_ordinal_fullscreen_q_returns() {
 
     s.key('q');
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Markdown(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(crate::preview::PreviewKind::is_markdown),
         "q でMarkdownへ戻るはず: {:?}",
         s.app.tab.preview_kind
     );
@@ -14256,6 +13295,7 @@ fn e2e_ui_math_expression_decodes_through_real_worker_and_reserves_image_row() {
     s.enter();
     // While loading: no placement yet, and the literal LaTeX is not shown as plain text (it's on
     // its own reserved "loading" row, not inline with "before"/"after").
+    s.await_media("math placement: open d.md before checking the decode placeholder");
     assert!(s.app.md_images().is_empty());
     s.dont_see("E=mc^2");
     s.see("loading");
@@ -14368,6 +13408,7 @@ fn e2e_ui_mermaid_and_math_render_failure_degrades_safely_to_raw_source() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("failed inline renders: open d.md before checking placeholders");
     s.see("loading"); // both start out as loading placeholders
 
     // Both async renders finish (with failures). Each `drain_md_images` also redraws, which is
@@ -14420,6 +13461,7 @@ fn e2e_ui_inline_gif_animates_through_real_decode_worker() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("inline GIF: open d.md before checking placements");
     let placements = s.app.md_images();
     assert_eq!(placements.len(), 1);
     let (url, cols, rows) = (
@@ -14536,6 +13578,7 @@ fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
+    s.await_media("remote image failure: open d.md before checking its placeholder");
     s.see("loading");
     assert!(s.app.md_images().is_empty());
 
@@ -14725,7 +13768,7 @@ fn e2e_ui_inline_gif_stops_polling_after_leaving_preview() {
 }
 
 /// Report 1, tab-switch companion: switching to a *different* file within the same tab already goes
-/// through `enter_preview`'s `if !same_file { self.md_image_cache.clear() }`, which is the one place
+/// through `enter_preview`'s `if !same_file { self.md_images.cache.clear() }`, which is the one place
 /// that genuinely empties the cache. Pins that this path keeps working once `back_to_tree`/mode
 /// gating is added elsewhere — a change scoped to `md_gif_poll_timeout`/`advance_md_gifs_if_due`
 /// alone must not weaken this existing behavior.
@@ -14791,6 +13834,7 @@ fn e2e_ui_math_render_requests_are_bounded_not_all_at_once() {
     s.select("d.md");
     s.enter(); // the very first ensure_md_cache pass — exactly where an unbounded implementation
                // calls std::thread::spawn 80 times in a row before this line returns
+    s.await_media("math render cap: open d.md before counting started renders");
     let inserted = s.app.md_image_cache_len();
     assert!(
         inserted < 80,
@@ -15207,12 +14251,12 @@ fn e2e_task_toggle_works_in_a_loose_list() {
     let read = || std::fs::read_to_string(dir.join("d.md")).unwrap();
 
     s.tab();
-    s.key(' ');
+    s.enter();
     assert!(read().contains("- [x] one"), "1番目: {}", read());
     s.dont_see("couldn't toggle checkbox");
 
     s.tab();
-    s.key(' ');
+    s.enter();
     assert!(read().contains("- [x] two"), "2番目: {}", read());
     assert!(
         read().contains("- [x] one"),
@@ -15221,7 +14265,7 @@ fn e2e_task_toggle_works_in_a_loose_list() {
     );
 
     s.tab();
-    s.key(' ');
+    s.enter();
     assert!(read().contains("- [x] three"), "3番目: {}", read());
     s.dont_see("couldn't toggle checkbox");
 }
@@ -15251,7 +14295,7 @@ fn e2e_task_toggle_works_on_checkbox_inside_an_open_details_block() {
         s.app.md_focused_task(),
         "2番目=開いた details 内の可視タスクのはず"
     );
-    s.key(' ');
+    s.enter();
     assert!(
         read().contains("- [x] inside open details"),
         "開いた details 内のタスクがトグルされるはず: {}",
@@ -15279,7 +14323,7 @@ fn e2e_task_toggle_works_inside_a_plain_blockquote() {
         s.app.md_focused_task(),
         "引用内のタスクにフォーカスできるはず"
     );
-    s.key(' ');
+    s.enter();
     assert!(
         read().contains("> - [x] quoted task"),
         "引用内のタスクがトグルされるはず: {}",
@@ -15333,12 +14377,12 @@ fn e2e_ordered_list_ghost_task_does_not_steal_the_visible_checkboxs_toggle() {
         s.app.md_focused_task(),
         "Tab は唯一の可視チェックボックス(visible bullet)にフォーカスするはず"
     );
-    s.key(' ');
+    s.enter();
 
     let src = std::fs::read_to_string(dir.join("mix.md")).unwrap();
     assert!(
         src.contains("- [x] visible bullet"),
-        "Space はフォーカスした可視チェックボックス(4行目)をトグルするはず: {src}"
+        "Enter はフォーカスした可視チェックボックス(4行目)をトグルするはず: {src}"
     );
     assert!(
         src.contains("1. [ ] ordered invisible\n"),
@@ -15378,7 +14422,7 @@ fn e2e_two_sibling_details_blocks_toggle_independently() {
         s.app.md_focused_details().is_some(),
         "1つ目は details のはず"
     );
-    s.key(' '); // open ordinal 0
+    s.enter(); // open ordinal 0
     s.see("BODY-ONE");
     s.dont_see("BODY-TWO");
 
@@ -15388,7 +14432,7 @@ fn e2e_two_sibling_details_blocks_toggle_independently() {
         s.app.md_focused_details().is_some(),
         "2つ目も details のはず"
     );
-    s.key(' '); // open ordinal 1
+    s.enter(); // open ordinal 1
     s.see("BODY-ONE"); // unaffected by opening the second block
     s.see("BODY-TWO");
 }
@@ -15822,6 +14866,7 @@ fn e2e_ui_a_pane_with_no_room_for_a_column_draws_no_inline_image() {
     let mut s = Sim::with_config_sized(&root, Config::default(), 2, 12).with_media_kitty();
     s.select("d.md");
     s.enter();
+    s.await_media("narrow pane: open d.md before checking its image reservation");
     // Vacuity guard: the renderer really did reserve a rectangle for this image, so "nothing was
     // drawn" is the clamp's doing and not simply "there was no image".
     let placements = s.app.md_images();
@@ -16324,17 +15369,11 @@ fn e2e_media_diff_r_round_trip_redraws_both_pictures() {
     // enter_preview` only clears it on a *different* file — same path here, so it may not have,
     // making a *fresh* `a=T` unreliable to wait for: if nothing was evicted, no new encode is ever
     // requested and `drain_md_encodes`'s blocking wait would time out on a false alarm). Drain
-    // **non-blockingly** for a few frames either way, then assert what actually matters: both
+    // until every outstanding encode has answered, then assert what actually matters: both
     // sides' cache entries are present again and a protocol renders for each — proving the stale-
     // cache-key re-kick works when eviction *does* happen, without assuming it always does here.
-    for _ in 0..10 {
-        if let Some(rx) = s.md_enc_rx.as_ref() {
-            if let Ok(res) = rx.try_recv() {
-                s.app.apply_md_encode(res);
-            }
-        }
-        s.draw();
-    }
+    s.await_media("media diff round trip: apply the preview's answer before checking the diff");
+    settle_md_encodes(&mut s, 16);
     let outcome = s
         .app
         .poll_media_diff(&png, s.app.diff_media_page(), (800, 600))
@@ -16558,29 +15597,95 @@ fn e2e_pdf_preview_paints_non_uniform_halfblocks_cells_not_a_blank_field() {
     );
 }
 
-/// Returning to a tab that showed page 3 of a PDF must rasterize page 3, not page 1 under a "3/3"
-/// chip: `load_active`'s `clear_image` resets the live page to 1 and the PDF job reads the live
-/// page when it starts, so the saved page has to be put back before the load starts. Another tab
-/// showing an image takes the one-slot tab media cache, so the PDF is really reloaded.
+/// An answer for a crop that is no longer on screen must not land on the picture now shown: the
+/// host shares `ImageViewer`, whose protocol used to restart its answer ids at every new picture,
+/// so a late answer carried the id the new protocol was waiting for. Uses a hand-fed request
+/// channel (no worker) so the order of the answers is the test's, not a thread's.
+#[test]
+fn e2e_a_late_resize_answer_for_an_old_crop_or_picture_is_dropped() {
+    let dir = sandbox("image_stale_resize_answer");
+    let mut png = image::RgbaImage::from_pixel(800, 800, image::Rgba([200, 30, 30, 255]));
+    png.put_pixel(3, 3, image::Rgba([0, 0, 0, 255]));
+    png.save(dir.join("a.png")).unwrap();
+    png.save(dir.join("b.png")).unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
+    s.app
+        .attach_image_backend(ratatui_image::picker::Picker::halfblocks(), req_tx);
+
+    s.select("a.png");
+    s.enter();
+    s.drain_media();
+    s.draw();
+    let first = req_rx.try_recv().expect("the first draw asked the worker");
+    // Zoom: a new crop, a new protocol, a new request.
+    s.keys("++");
+    s.draw();
+    let zoomed = req_rx.try_recv().expect("the zoomed draw asked the worker");
+    assert!(
+        !s.app.apply_image_resize(first.resize_encode()),
+        "the answer for the fit crop must not land on the zoomed one"
+    );
+
+    // Another picture: back to the tree, open the next file.
+    s.esc();
+    s.select("b.png");
+    s.enter();
+    s.drain_media();
+    s.draw();
+    // Requests of the previous picture may still be queued; the last one is the new picture's.
+    let mut queued = Vec::new();
+    while let Ok(r) = req_rx.try_recv() {
+        queued.push(r);
+    }
+    let other = queued.pop().expect("the next picture asked the worker");
+    for old in queued {
+        assert!(!s.app.apply_image_resize(old.resize_encode()));
+    }
+    assert!(
+        !s.app.apply_image_resize(zoomed.resize_encode()),
+        "an answer for the previous picture must not land on the next one"
+    );
+    assert!(s.app.apply_image_resize(other.resize_encode()));
+}
+
+/// The RGBA pixels the `pdf` plugin draws for page `index` (counted from 0) of `path`.
+fn pdf_page_rgba(path: &std::path::Path, index: usize) -> (u32, u32, Vec<u8>) {
+    use konoma_plugin::view::{ImageData, View, ViewReq};
+    let mut session = konoma_plugin::testing::open_file(&konoma_media::PdfPlugin, path).unwrap();
+    let req = ViewReq::default().page(index);
+    match session.view(&req, &konoma_plugin::ViewCx::bare()).unwrap() {
+        View::Image(iv) => match iv.data {
+            ImageData::Rgba {
+                width,
+                height,
+                pixels,
+            } => (width, height, (*pixels).clone()),
+            other => panic!("{other:?}"),
+        },
+        _ => panic!("a picture was expected"),
+    }
+}
+
+/// Going back to a tab that showed page 3 of a PDF shows page 3 again, not page 1 under a `3/3`
+/// indicator. The tab restore reloaded with the page reset to 1 by `clear_image` and put the saved
+/// page back only afterwards, so the picture and the indicator disagreed whenever the one-slot
+/// decoded-picture cache did not hold the page (another tab's picture had taken the slot).
 #[test]
 fn e2e_returning_to_a_tab_on_pdf_page_3_draws_page_3_not_page_1() {
     let Some(pdf) = sample_path_or_skip("sample.pdf") else {
         return;
     };
-    let dir = sandbox("tab_return_pdf_page3");
-    std::fs::copy(&pdf, dir.join("doc.pdf")).unwrap();
-    crate::test_support::write_solid_png(&dir.join("pic.png"), 8, 8, [10, 200, 30]);
-    let root = canon(&dir);
+    let dir = sandbox("pdf_tab_roundtrip_page");
+    let doc = dir.join("doc.pdf");
+    std::fs::copy(&pdf, &doc).unwrap();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 30, 30, 255]))
+        .save(dir.join("pic.png"))
+        .unwrap();
+    let mut s = Sim::new(&canon(&dir)).with_media();
 
-    let p1 = crate::preview::pdf::render_page(&root.join("doc.pdf"), 1, false).expect("page 1");
-    let p3 = crate::preview::pdf::render_page(&root.join("doc.pdf"), 3, false).expect("page 3");
-    assert_ne!(
-        p1.to_rgba8().as_raw(),
-        p3.to_rgba8().as_raw(),
-        "premise: page 1 and page 3 rasterize differently"
-    );
-
-    let mut s = Sim::new(&root).with_media();
     s.select("doc.pdf");
     s.enter();
     s.drain_media();
@@ -16588,45 +15693,51 @@ fn e2e_returning_to_a_tab_on_pdf_page_3_draws_page_3_not_page_1() {
     s.drain_media();
     s.key('J');
     s.drain_media();
-    assert_eq!(
-        s.app.pdf_page_indicator(),
-        Some((3, 3)),
-        "premise: on page 3"
+    assert_eq!(s.app.page_indicator(), Some((3, 3)), "前提: 3/3");
+    let page3 = pdf_page_rgba(&doc, 2);
+    assert_ne!(
+        pdf_page_rgba(&doc, 0),
+        page3,
+        "前提: 1 ページ目と 3 ページ目は別の絵"
     );
+    assert_eq!(s.app.shown_picture_rgba(), Some(page3.clone()), "前提");
 
-    s.key('t'); // second tab
+    // Another tab shows another picture, which takes the one slot of the picture cache.
+    s.key('t');
     s.select("pic.png");
     s.enter();
-    s.drain_media(); // the image takes the tab media cache slot
-    s.key('1'); // back to the PDF tab
-    assert_eq!(s.app.active_tab_index(), 0);
-    assert_eq!(s.app.pdf_page_indicator(), Some((3, 3)));
     s.drain_media();
-    let shown = s.app.image_src_for_test().expect("a page is loaded");
+    assert!(s.app.shown_picture_rgba().is_some());
+
+    // Back: the PDF is loaded again (the cache no longer holds it) and must be asked for page 3.
+    s.key('[');
+    assert_eq!(s.app.active_tab_index(), 0);
+    s.drain_media();
+    assert_eq!(s.app.page_indicator(), Some((3, 3)));
     assert_eq!(
-        shown.to_rgba8().as_raw(),
-        p3.to_rgba8().as_raw(),
-        "the loaded raster must be page 3"
+        s.app.shown_picture_rgba(),
+        Some(page3),
+        "表示は 3/3 なのに絵が 1 ページ目になっていた"
     );
-    assert_eq!(s.app.pdf_page_indicator(), Some((3, 3)));
 }
 
 /// A tab on page 3 of a PDF, left while the file is rewritten to a single page: coming back must
 /// clamp the page to the last page of the file as it is now (and refresh the page count), then draw
-/// that page. Otherwise the render of page 3 fails (out of range), nothing is shown, and the chip
-/// keeps saying 3/3 because the mtime was already recorded and no reload follows.
+/// that page. Otherwise the saved page is out of range, nothing is shown, and the indicator keeps
+/// saying 3/3 because the mtime was already recorded and no reload follows.
 #[test]
 fn e2e_returning_to_a_pdf_tab_whose_file_lost_pages_clamps_the_page() {
     let Some(pdf) = sample_path_or_skip("sample.pdf") else {
         return;
     };
-    let dir = sandbox("tab_return_pdf_shrunk");
+    let dir = sandbox("pdf_tab_return_shrunk");
     let doc = dir.join("doc.pdf");
     std::fs::copy(&pdf, &doc).unwrap();
-    crate::test_support::write_solid_png(&dir.join("pic.png"), 8, 8, [10, 200, 30]);
-    let root = canon(&dir);
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 30, 30, 255]))
+        .save(dir.join("pic.png"))
+        .unwrap();
+    let mut s = Sim::new(&canon(&dir)).with_media();
 
-    let mut s = Sim::new(&root).with_media();
     s.select("doc.pdf");
     s.enter();
     s.drain_media();
@@ -16634,34 +15745,29 @@ fn e2e_returning_to_a_pdf_tab_whose_file_lost_pages_clamps_the_page() {
     s.drain_media();
     s.key('J');
     s.drain_media();
-    assert_eq!(
-        s.app.pdf_page_indicator(),
-        Some((3, 3)),
-        "premise: on page 3"
-    );
+    assert_eq!(s.app.page_indicator(), Some((3, 3)), "premise: 3/3");
 
+    // Another tab shows a picture, which takes the one slot of the picture cache.
     s.key('t');
     s.select("pic.png");
     s.enter();
-    s.drain_media(); // the image takes the tab media cache slot
+    s.drain_media();
 
-    // Rewritten externally to one page while this tab is in the background.
+    // Rewritten to one page while this tab is in the background.
     let one =
-        crate::test_support::build_minimal_one_page_pdf(200, 200, b"0 0 0 rg 20 20 100 100 re f");
-    std::fs::write(root.join("doc.pdf"), &one).unwrap();
-    let expect = crate::preview::pdf::render_page(&root.join("doc.pdf"), 1, false)
-        .expect("the one-page PDF renders");
+        konoma_test_support::build_minimal_one_page_pdf(200, 200, b"0 0 0 rg 20 20 100 100 re f");
+    std::fs::write(&doc, &one).unwrap();
+    let expect = pdf_page_rgba(&doc, 0);
 
-    s.key('1'); // back to the PDF tab
+    s.key('[');
     assert_eq!(s.app.active_tab_index(), 0);
     s.drain_media();
     assert_eq!(
-        s.app.pdf_page_indicator(),
+        s.app.page_indicator(),
         Some((1, 1)),
         "the page is clamped to the file as it is now"
     );
-    let shown = s.app.image_src_for_test().expect("a page is loaded");
-    assert_eq!(shown.to_rgba8().as_raw(), expect.to_rgba8().as_raw());
+    assert_eq!(s.app.shown_picture_rgba(), Some(expect));
 }
 
 /// PDF paging: `J`/`K` turn both sides' page together, only while the media diff is showing a
@@ -17003,7 +16109,7 @@ fn e2e_media_diff_page_missing_placeholder_draws() {
 
 /// `R` on `Surface::PreviewImage` is a no-op while this preview is **not** the diff's own
 /// `Preview` representation (`App::image_return_to_diff`) — a real bug had it bound to
-/// `Action::ToggleMarkdownRaw`, whose non-diff fallthrough (`toggle_md_raw`) silently flips
+/// `Action::CycleRepresentation`, whose non-diff fallthrough (`toggle_md_raw`) silently flips
 /// `md_raw` for a standalone `.mmd` file's full-screen image preview (`[ui] mermaid = "image"`),
 /// even though no hint on that surface ever advertised `R` doing anything there
 /// ([[hint-shown-iff-key-acts]]). Checked for both a `.mmd` preview (the kind that actually
@@ -17450,10 +16556,11 @@ fn e2e_follow_jump_into_changed_video_still_opens_ordinary_preview() {
         "動画は今までどおり通常プレビューへ(diff は開かない)"
     );
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Video(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("video")),
         "通常のビデオプレビューのはず: {:?}",
         s.app.tab.preview_kind
     );
@@ -17525,10 +16632,11 @@ fn e2e_follow_view_file_still_opens_ordinary_preview_for_image() {
         "follow_view=\"file\" は画像でも常に通常プレビューのはず"
     );
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Image(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("image")),
         "通常の画像プレビューのはず: {:?}",
         s.app.tab.preview_kind
     );
@@ -17802,58 +16910,10 @@ fn e2e_follow_jump_from_tree_or_plain_preview_does_not_carry_an_earlier_choice()
 // Spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods through the table grid)
 // ---------------------------------------------------------------------------------------------
 
-/// Write a minimal xlsx: `(name, state, <sheetData> rows, extra xml after sheetData)` per sheet.
-pub(crate) fn build_xlsx(path: &std::path::Path, sheets: &[(&str, &str, &str, &str)]) {
-    build_xlsx_with_styles(path, sheets, None);
-}
-
-/// [`build_xlsx`] plus an optional `xl/styles.xml` (the cells' `s="N"` pick `cellXfs` entry N).
-fn build_xlsx_with_styles(
-    path: &std::path::Path,
-    sheets: &[(&str, &str, &str, &str)],
-    styles: Option<&str>,
-) {
-    use std::io::Write as _;
-    const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-    const RNS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-    let mut wb = format!(r#"<?xml version="1.0"?><workbook xmlns="{NS}" xmlns:r="{RNS}"><sheets>"#);
-    let mut rels = String::from(
-        r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
-    );
-    for (i, (name, state, _, _)) in sheets.iter().enumerate() {
-        let n = i + 1;
-        wb += &format!(r#"<sheet name="{name}" sheetId="{n}" state="{state}" r:id="rId{n}"/>"#);
-        rels += &format!(
-            r#"<Relationship Id="rId{n}" Type="x/worksheet" Target="worksheets/sheet{n}.xml"/>"#
-        );
-    }
-    wb += "</sheets></workbook>";
-    rels += "</Relationships>";
-    let root_rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
-    let f = std::fs::File::create(path).unwrap();
-    let mut zw = zip::ZipWriter::new(f);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    let mut put = |name: &str, body: &str| {
-        zw.start_file(name, opts).unwrap();
-        zw.write_all(body.as_bytes()).unwrap();
-    };
-    put("_rels/.rels", root_rels);
-    put("xl/workbook.xml", &wb);
-    put("xl/_rels/workbook.xml.rels", &rels);
-    if let Some(styles) = styles {
-        put("xl/styles.xml", styles);
-    }
-    for (i, (_, _, rows, after)) in sheets.iter().enumerate() {
-        put(
-            &format!("xl/worksheets/sheet{}.xml", i + 1),
-            &format!(
-                r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData>{rows}</sheetData>{after}</worksheet>"#
-            ),
-        );
-    }
-    zw.finish().unwrap();
-}
+// `build_xlsx` / `build_xlsx_with_styles` live in `konoma-test-support` (the Office readers' own
+// tests use them too).
+pub(crate) use konoma_test_support::build_xlsx;
+use konoma_test_support::build_xlsx_with_styles;
 
 /// An inline-string cell.
 pub(crate) fn x_str(r: &str, text: &str) -> String {
@@ -18046,6 +17106,43 @@ fn cfg_keys(surface: &str, entries: &[(&str, &str)]) -> Config {
     cfg
 }
 
+/// `R` is `cycle_representation`; the old name `toggle_markdown_raw` is still read, behaves the
+/// same, and the startup notice says to write the new name. A rebound key works under both.
+#[test]
+fn e2e_keys_old_and_new_name_of_the_representation_key() {
+    for (name, notice) in [
+        ("toggle_markdown_raw", true),
+        ("cycle_representation", false),
+    ] {
+        let dir = sandbox("repr_alias");
+        seed_files(&dir);
+        std::fs::write(dir.join("guide.md"), "# Heading\n\nsome **bold** text\n").unwrap();
+        // `R` is dropped and `W` takes the operation: only the name decides what `W` does.
+        // The raw source is a `text` view, so both tables carry it.
+        let mut cfg = cfg_keys("document", &[("W", name), ("R", "noop")]);
+        let text = cfg.keys.surfaces["document"].clone();
+        cfg.keys.surfaces.insert("text".to_string(), text);
+        let mut s = Sim::with_config(&canon(&dir), cfg);
+        let report = s.app.keymap_report().unwrap_or_default();
+        assert_eq!(
+            report.contains(
+                "toggle_markdown_raw is an old name — write cycle_representation instead"
+            ),
+            notice,
+            "{name}: {report}"
+        );
+        s.select("guide.md");
+        s.enter();
+        assert!(!s.app.is_raw_source());
+        s.key('R'); // unbound by the config
+        assert!(!s.app.is_raw_source(), "{name}");
+        s.key('W');
+        assert!(s.app.is_raw_source(), "{name}: W cycles to the raw source");
+        s.key('W');
+        assert!(!s.app.is_raw_source(), "{name}: and back");
+    }
+}
+
 /// `[keys]` written with the pre-`page_next` names (`sheet_next` / `sheet_prev`) still rebinds the
 /// spreadsheet's sheet switch, and the new names do the same.
 #[test]
@@ -18087,15 +17184,15 @@ fn e2e_keys_old_and_new_page_names_rebind_pdf_paging() {
         s.select("doc.pdf");
         s.enter();
         s.drain_media();
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
         s.key('L');
-        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((2, 3)), "{next}");
         s.key('H');
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
         s.key('J'); // the default still works
-        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((2, 3)), "{next}");
         s.key('K');
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
     }
 }
 
@@ -18789,7 +17886,7 @@ fn e2e_sheet_worker_result_lands_in_the_table() {
 
 #[test]
 fn e2e_sheet_a_late_workbook_result_is_not_adopted_by_another_preview() {
-    // Open a workbook, leave before the worker answers, open a CSV: the (still current-generation)
+    // Open a workbook, retain its answer without applying it, then open a CSV: the old
     // workbook result must not turn the CSV preview into a sheet.
     let Some((dir, root)) = sheet_sandbox("sheet_late", "xlsx") else {
         return;
@@ -18798,18 +17895,19 @@ fn e2e_sheet_a_late_workbook_result_is_not_adopted_by_another_preview() {
     let mut s = Sim::with_config(&root, cfg_en()).with_media();
     s.select("book.xlsx");
     s.enter();
+    let res = crate::test_support::recv_media_final(
+        &mut s.app,
+        s.media_rx.as_ref().unwrap(),
+        std::time::Duration::from_secs(5),
+        "late workbook: retain its final answer before opening CSV",
+    );
     s.key('q');
     s.select("t.csv");
     s.enter();
+    s.await_media("late workbook: finish opening CSV before applying the old answer");
     s.see("row-one");
-    // The workbook result arrives now (a newer preview has superseded it, so it may be dropped by
+    // Apply the retained workbook result now (a newer preview has superseded it, so it may be dropped by
     // generation — and if it is not, the kind check must still refuse it).
-    let res = s
-        .media_rx
-        .as_ref()
-        .unwrap()
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("media loader が結果を返す");
     s.app.apply_media(res);
     s.draw();
     s.see("row-one");
@@ -18824,7 +17922,8 @@ fn e2e_sheet_bookmarks_and_path_style_keys_still_work_in_a_sheet() {
         return;
     };
     let before = s.screen();
-    s.key('p'); // cycle the path style: the title changes, the grid stays
+    s.key(','); // the options menu: `p` cycles the path style, the title changes, the grid stays
+    s.key('p');
     assert_ne!(before.lines().nth(1), s.screen().lines().nth(1));
     see_cjk(&mut s, "¥1,500");
     s.key('q');
@@ -19034,6 +18133,7 @@ fn e2e_sheet_workbook_is_released_whenever_the_preview_stops_being_a_sheet() {
 
     // Back to the tree, and a sheet again.
     s.key('q');
+    assert_eq!(s.app.surface(), crate::keymap::Surface::Tree);
     assert!(s.app.workbook_matches_preview(), "after q");
     open_sheet(&mut s);
 
@@ -19072,7 +18172,9 @@ fn e2e_office_help_row_for_e_matches_what_e_does() {
         );
         std::fs::write(dir.join("c.csv"), "a,b\n1,2\n").unwrap();
         let root = canon(&dir);
-        let mut s = Sim::with_config(&root, cfg);
+        // Tall enough for the whole help: the `e` row sits in the launch section, below the
+        // screen's own operations.
+        let mut s = Sim::with_config_sized(&root, cfg, 100, 60);
         s.select(if open { "b.xlsx" } else { "c.csv" });
         if open {
             s.enter();
@@ -19850,12 +18952,12 @@ fn three_sheet_book(path: &std::path::Path, tag: &str) {
 #[track_caller]
 fn drain_all_media(s: &mut Sim, n: usize) {
     for _ in 0..n {
-        let res = s
-            .media_rx
-            .as_ref()
-            .expect("with_media() を呼んでいない")
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("media loader が結果を返す");
+        let res = crate::test_support::recv_media_final(
+            &mut s.app,
+            s.media_rx.as_ref().expect("with_media"),
+            DRAIN_WAIT,
+            "drain all media: one final answer per dispatched job",
+        );
         s.app.apply_media(res);
     }
     s.draw();
@@ -20143,10 +19245,11 @@ fn drain_media_until_current(s: &mut Sim) -> usize {
             .media_rx
             .as_ref()
             .expect("with_media() を呼んでいない")
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(DRAIN_WAIT)
             .expect("workbook worker が結果を返す");
         arrived += 1;
-        if s.app.apply_media(res) {
+        let final_answer = !res.is_layout_only();
+        if s.app.apply_media(res) && final_answer && !s.app.is_media_loading() {
             s.draw();
             return arrived;
         }
@@ -20195,6 +19298,38 @@ fn e2e_sheet_holding_j_runs_one_load_at_a_time_and_ends_on_the_last_sheet() {
     s.see("S5 (5/6)");
 }
 
+/// The key held down for twenty repeats on a big workbook: one read runs (the first press), the
+/// other nineteen wait as one request, and the sheet that ends up on screen is the last one asked
+/// for. The reads are never started side by side (the most a held `J` may start is two: the first
+/// press and the last).
+#[test]
+fn e2e_sheet_twenty_presses_of_j_start_two_reads_and_end_on_the_last_sheet() {
+    let dir = sandbox("sheet_hold_j20");
+    let book = canon(&dir).join("h.xlsx");
+    numbered_book(&book, 25, |_| String::new());
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("h.xlsx");
+    s.enter();
+    s.drain_media();
+    assert_eq!(s.app.workbook_loads_started(), 1);
+    for _ in 0..20 {
+        s.key('J');
+    }
+    assert_eq!(
+        s.app.workbook_loads_started(),
+        2,
+        "twenty presses started ONE read; the other nineteen wait as one request"
+    );
+    assert!(s.app.is_sheet_loading());
+    let arrived = drain_media_until_current(&mut s);
+    assert_eq!(arrived, 2, "the stale answer, then the last request's");
+    assert_eq!(s.app.workbook_loads_started(), 3);
+    s.see("S21 (21/25)");
+    s.see("sheet 21");
+    assert!(!s.app.is_sheet_loading());
+    assert_eq!(s.app.loaded_sheet_count(), Some(1));
+}
+
 /// Moving on to another file while a load runs drops the waiting request too.
 #[test]
 fn e2e_sheet_leaving_the_book_drops_the_waiting_load() {
@@ -20207,23 +19342,27 @@ fn e2e_sheet_leaving_the_book_drops_the_waiting_load() {
     s.enter();
     s.drain_media();
     s.key('J');
+    let cancelled = s.app.media_generation_for_test();
     s.key('J'); // waits behind the first
     assert_eq!(s.app.workbook_loads_started(), 2);
     s.esc();
     s.select("z.txt");
     s.enter();
     // Both answers are stale; the waiting request must not start a third load.
-    let rx = s.media_rx.as_ref().unwrap();
-    let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
-    assert!(!s.app.apply_media(first));
+    assert!(!s.await_media_generation(
+        cancelled,
+        "leave workbook: the running sheet's stale answer",
+        std::time::Duration::from_secs(10),
+    ));
     assert_eq!(
         s.app.workbook_loads_started(),
         2,
         "the request made under a generation that is gone is not started"
     );
+    s.await_media("leave workbook: finish opening z.txt");
     s.draw();
     s.see("plain");
-    assert!(s.app.workbook_for_test().is_none());
+    assert!(s.app.loaded_sheet_count().is_none());
 }
 
 /// A search confirmed while the sheet is being loaded is run when it arrives, and the cursor goes
@@ -20616,6 +19755,28 @@ fn e2e_complex_many_sheets_navigate_to_the_end_and_back() {
 mod survivors;
 
 #[cfg(test)]
+mod key_context;
+
+#[cfg(test)]
+mod default_keys;
+
+#[cfg(test)]
+mod ops_keys;
+
+#[cfg(test)]
+mod hexdump;
+
+#[cfg(test)]
+mod menus;
+
+#[cfg(test)]
+mod overlay_lists;
+mod overlay_wide;
+
+#[cfg(test)]
+mod newkeys;
+
+#[cfg(test)]
 mod word;
 
 #[cfg(test)]
@@ -20625,7 +19786,38 @@ mod slides;
 mod deck_view;
 
 #[cfg(test)]
+mod pagelist;
+
+#[cfg(test)]
 mod math_ctx;
+
+#[cfg(test)]
+mod startup_file;
+
+#[cfg(test)]
+mod replacement;
+
+#[cfg(test)]
+mod repr_cycle;
+
+#[cfg(test)]
+mod canvas;
+
+#[cfg(test)]
+mod canvas_input;
+
+#[cfg(test)]
+mod canvas_images;
+
+#[cfg(test)]
+mod part2_host;
+
+#[cfg(test)]
+mod external;
+
+// The clock demo, a plugin program of its own (`crates/konoma-demo-clock`) run as a child process.
+#[cfg(test)]
+mod demo_clock;
 
 // ---- SVG files that cannot be drawn say why ---------------------------------------------------
 
@@ -20691,3 +19883,73 @@ fn e2e_markdown_inline_svg_refused_shows_the_reason_under_its_fallback() {
     s.see("before");
     s.see("after");
 }
+
+mod survivors_f7;
+
+mod survivors_f8b;
+
+#[cfg(test)]
+mod help_agreement;
+mod help_footer_snapshot;
+
+#[cfg(test)]
+mod render_snapshot;
+
+mod canvas_keys_parity;
+mod copy_parity;
+mod document_parity;
+mod image_gif_parity;
+mod image_pages_parity;
+mod image_parity;
+mod launch_parity;
+mod options_parity;
+mod plugin_act_parity;
+#[cfg(feature = "git")]
+mod preview_failure_choice;
+#[cfg(feature = "git")]
+mod preview_gutter_parity;
+mod preview_plan_parity;
+mod preview_worker_parity;
+mod project_frames;
+mod project_host;
+#[cfg(feature = "git")]
+mod project_launch_bridge;
+#[cfg(feature = "git")]
+mod project_return_parity;
+#[path = "e2e_tests/project_screens.rs"]
+mod project_screens;
+#[cfg(feature = "git")]
+mod project_wide_gap;
+#[cfg(feature = "git")]
+mod representation_cycles;
+#[cfg(feature = "git")]
+mod selected_backend;
+mod space_menu_parity;
+#[cfg(feature = "git")]
+mod standalone_preview_gutter;
+#[cfg(feature = "git")]
+mod standalone_preview_gutter_config;
+mod standard_vcs;
+mod table_parity;
+mod text_parity;
+#[cfg(feature = "git")]
+mod vcs_app_parity;
+#[cfg(feature = "git")]
+mod vcs_changes;
+#[cfg(feature = "git")]
+mod vcs_frozen_cases;
+#[cfg(feature = "git")]
+mod vcs_host_only;
+#[cfg(feature = "git")]
+mod vcs_log;
+#[cfg(feature = "git")]
+mod vcs_old_names_outside_project;
+mod vcs_port_map;
+#[cfg(feature = "git")]
+mod vcs_project_port;
+#[cfg(feature = "git")]
+mod vcs_standalone_tool;
+#[cfg(feature = "git")]
+mod vcs_worktrees_port;
+#[cfg(feature = "git")]
+mod vcs_write_port;

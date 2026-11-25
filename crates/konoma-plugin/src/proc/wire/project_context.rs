@@ -1,0 +1,258 @@
+//! Protocol 2 project requests, action selections and refresh declarations.
+
+use super::*;
+use crate::project::{ProjectAct, ProjectRow, ProjectView, RefreshTarget};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct WProjectView {
+    #[serde(default, skip_serializing_if = "is_zero_tab")]
+    pub tab: u64,
+    #[serde(
+        default = "super::is_true_default",
+        skip_serializing_if = "super::is_true"
+    )]
+    pub icons: bool,
+    pub screen: String,
+    pub selection: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_root: Option<WPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_dir: Option<WPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_dir: Option<WPath>,
+}
+impl WProjectView {
+    pub fn new(screen: impl Into<String>) -> Self {
+        Self {
+            screen: screen.into(),
+            tab: 0,
+            icons: true,
+            selection: None,
+            tree_root: None,
+            open_dir: None,
+            home_dir: None,
+        }
+    }
+    pub fn selection(mut self, selection: impl Into<String>) -> Self {
+        self.selection = Some(selection.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct WProjectRow {
+    pub kind: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+impl WProjectRow {
+    pub fn new(kind: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            value: value.into(),
+            name: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct WProjectAct {
+    #[serde(default, skip_serializing_if = "is_zero_tab")]
+    pub tab: u64,
+    pub screen: Option<String>,
+    pub selected: Option<WProjectRow>,
+    pub marked: Vec<WProjectRow>,
+    pub confirmation: Option<String>,
+    pub text: Option<String>,
+    pub choice: Option<String>,
+}
+impl WProjectAct {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn screen(mut self, screen: impl Into<String>) -> Self {
+        self.screen = Some(screen.into());
+        self
+    }
+    pub fn selected(mut self, row: WProjectRow) -> Self {
+        self.selected = Some(row);
+        self
+    }
+    pub fn marked(mut self, rows: impl IntoIterator<Item = WProjectRow>) -> Self {
+        self.marked = rows.into_iter().collect();
+        self
+    }
+    pub fn confirmation(mut self, value: impl Into<String>) -> Self {
+        self.confirmation = Some(value.into());
+        self
+    }
+    pub fn text(mut self, value: impl Into<String>) -> Self {
+        self.text = Some(value.into());
+        self
+    }
+    pub fn choice(mut self, value: impl Into<String>) -> Self {
+        self.choice = Some(value.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum WRefreshTarget {
+    CurrentScreen,
+    Screen { screen: String },
+    AllScreens,
+    TreeStatus,
+    Chip,
+}
+impl WRefreshTarget {
+    pub fn screen(screen: impl Into<String>) -> Self {
+        Self::Screen {
+            screen: screen.into(),
+        }
+    }
+}
+
+pub fn project_view_to_wire(p: &ProjectView) -> WProjectView {
+    WProjectView {
+        tab: p.tab,
+        icons: p.icons,
+        screen: p.screen.clone(),
+        selection: p.selection.clone(),
+        tree_root: p.tree_root.as_deref().map(path_to_wire),
+        open_dir: p.open_dir.as_deref().map(path_to_wire),
+        home_dir: p.home_dir.as_deref().map(path_to_wire),
+    }
+}
+pub fn project_view_from_wire(p: WProjectView) -> Result<ProjectView, WireError> {
+    Ok(ProjectView {
+        tab: p.tab,
+        icons: p.icons,
+        screen: p.screen,
+        selection: p.selection,
+        tree_root: p
+            .tree_root
+            .map(|p| abs_path_from_wire(p, "tree root"))
+            .transpose()?,
+        open_dir: p
+            .open_dir
+            .map(|p| abs_path_from_wire(p, "open directory"))
+            .transpose()?,
+        home_dir: p
+            .home_dir
+            .map(|p| abs_path_from_wire(p, "home directory"))
+            .transpose()?,
+    })
+}
+pub fn project_row_to_wire(p: &ProjectRow) -> WProjectRow {
+    WProjectRow {
+        name: p.name.clone(),
+        kind: p.kind.clone(),
+        value: p.value.clone(),
+    }
+}
+pub fn project_row_from_wire(p: WProjectRow) -> ProjectRow {
+    ProjectRow {
+        name: p.name,
+        kind: p.kind,
+        value: p.value,
+    }
+}
+pub fn project_act_to_wire(p: &ProjectAct) -> WProjectAct {
+    WProjectAct {
+        tab: p.tab,
+        screen: p.screen.clone(),
+        selected: p.selected.as_ref().map(project_row_to_wire),
+        marked: p.marked.iter().map(project_row_to_wire).collect(),
+        confirmation: p.confirmation.clone(),
+        text: p.text.clone(),
+        choice: p.choice.clone(),
+    }
+}
+pub fn project_act_from_wire(p: WProjectAct) -> ProjectAct {
+    ProjectAct {
+        tab: p.tab,
+        screen: p.screen,
+        selected: p.selected.map(project_row_from_wire),
+        marked: p.marked.into_iter().map(project_row_from_wire).collect(),
+        confirmation: p.confirmation,
+        text: p.text,
+        choice: p.choice,
+    }
+}
+
+fn is_zero_tab(tab: &u64) -> bool {
+    *tab == 0
+}
+pub fn refresh_target_to_wire(t: &RefreshTarget) -> WRefreshTarget {
+    match t {
+        RefreshTarget::CurrentScreen => WRefreshTarget::CurrentScreen,
+        RefreshTarget::Screen { screen } => WRefreshTarget::Screen {
+            screen: screen.clone(),
+        },
+        RefreshTarget::AllScreens => WRefreshTarget::AllScreens,
+        RefreshTarget::TreeStatus => WRefreshTarget::TreeStatus,
+        RefreshTarget::Chip => WRefreshTarget::Chip,
+    }
+}
+pub fn refresh_target_from_wire(t: WRefreshTarget) -> RefreshTarget {
+    match t {
+        WRefreshTarget::CurrentScreen => RefreshTarget::CurrentScreen,
+        WRefreshTarget::Screen { screen } => RefreshTarget::Screen { screen },
+        WRefreshTarget::AllScreens => RefreshTarget::AllScreens,
+        WRefreshTarget::TreeStatus => RefreshTarget::TreeStatus,
+        WRefreshTarget::Chip => RefreshTarget::Chip,
+    }
+}
+
+pub fn act_cx_to_wire(cx: &crate::ActCx<'_>) -> Result<WCx, WireError> {
+    let mut out = cx_to_wire(&CxSource {
+        settings: cx.settings,
+        lang: cx.lang,
+        term: cx.term,
+        external: cx.external,
+        read_scope: &cx.read_scope,
+    })?;
+    out.project = cx.project.as_ref().map(project_act_to_wire);
+    Ok(out)
+}
+
+pub fn req_protocol(req: &WViewReq) -> u32 {
+    if req.project.is_some() {
+        2
+    } else {
+        1
+    }
+}
+pub fn cx_protocol(cx: &WCx) -> u32 {
+    if cx.project.is_some() {
+        2
+    } else {
+        1
+    }
+}
+
+/// A styled project summary. `None` in the reply means use the declaration.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct WChip {
+    pub text: super::WLine,
+}
+
+impl WChip {
+    pub fn new(text: super::WLine) -> Self {
+        Self { text }
+    }
+}
+
+pub fn chip_to_wire(chip: &crate::Chip) -> WChip {
+    WChip::new(super::line_to_wire(&chip.clipped().text))
+}
+
+pub fn chip_from_wire(chip: WChip) -> crate::Chip {
+    crate::Chip::new(super::line_from_wire(chip.text)).clipped()
+}

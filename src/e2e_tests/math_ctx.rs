@@ -208,7 +208,7 @@ fn heading_outline_lists_the_source_and_jumps_to_it() {
     let items = s.app.md_outline();
     assert_eq!(items.len(), 1, "{items:?}");
     assert_eq!(items[0].1, "Late $E=mc^2$ heading");
-    s.key('o');
+    s.key('O');
     s.see("Late $E=mc^2$ heading");
     s.enter();
     // Jumped: the heading is on screen now (the blank cells + its words), the filler is not.

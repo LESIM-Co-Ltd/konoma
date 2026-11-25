@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    # `plugins` is the integration branch for the plugin architecture: stage PRs merge there, and it
+    # merges into `main` when it is ready to release, so its tip needs the same checks as `main`.
+    branches: [main, master, plugins]
   pull_request:
 
 env:
@@ -21,12 +23,23 @@ jobs:
     # One leg per feature set. The two sets build and test separately anyway, and a single job
     # running both took 12-19 minutes and hit the 20-minute limit whenever runners were busy
     # (three cancelled runs on 2026-10-21). Each leg does about half; the limit stays at 20.
-    name: fmt / clippy / test (macOS Apple Silicon, ${{ matrix.features }})
+    #
+    # Each feature set is then split three ways by nextest's `--partition count:<part>/3`: every
+    # part builds the same test binaries and runs a third of the tests, so every test still runs
+    # exactly once per feature set. The suite outgrew one job per feature set (the plugin parity
+    # tests took a no-default-features leg past 20 minutes, 90% through, while `main` took about
+    # 8). The checks that do not depend on the partition (fmt, clippy, doctests, the SDK-only
+    # checks) run once, in a job of their own (part 0): carried by part 1 they added about five
+    # minutes and took it to 19:59. Part 0 has its own cache key, so its clippy-only build does not
+    # become the cache the test parts restore.
+    name: ${{ matrix.part == 0 && 'checks' || 'test' }} (macOS Apple Silicon, ${{ matrix.features }}, ${{ matrix.part == 0 && 'not partitioned' || format('part {0}/3', matrix.part) }})
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
+        features: [default features, no default features]
+        part: [0, 1, 2, 3]
         include:
           - { features: default features, flags: "" }
           - { features: no default features, flags: "--no-default-features" }
@@ -39,7 +52,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: macos-${{ matrix.flags }}
+          key: macos-${{ matrix.flags }}-${{ matrix.part == 0 && 'checks' || 'tests' }}
+
+      # nextest runs the unit and integration tests (about half the wall time of `cargo test`);
+      # it does not run doctests, so those are a separate step.
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: cargo-nextest
 
       # jj (Jujutsu) for the jj backend's tests. Installed here as well as on Linux because macOS is
       # the platform konoma is developed on: without it the jj tests skip silently, and the suite
@@ -56,27 +75,53 @@ jobs:
 
       # Formatting does not depend on features; one leg checks it.
       - name: Format
-        if: matrix.flags == ''
+        if: matrix.flags == '' && matrix.part == 0
         run: cargo fmt --all --check
 
       # Default features include `git`. Warnings are denied (the project's DoD is zero warnings).
       - name: Clippy (${{ matrix.features }})
-        run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
+        if: matrix.part == 0
+        run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
-      - name: Test (${{ matrix.features }})
-        run: cargo test ${{ matrix.flags }}
+      # The e2e tests start the plugin program `konoma-demo-clock` as a child process; nextest
+      # does not build another package's binary, and a missing one fails the tests on purpose.
+      - name: Build the demo plugin program
+        if: matrix.part != 0
+        run: cargo build -p konoma-demo-clock
+
+      - name: Test (${{ matrix.features }}, part ${{ matrix.part }}/3)
+        if: matrix.part != 0
+        run: cargo nextest run --workspace ${{ matrix.flags }} --partition count:${{ matrix.part }}/3
+
+      - name: Doctests (${{ matrix.features }})
+        if: matrix.part == 0
+        run: cargo test --workspace --doc ${{ matrix.flags }}
+
+      # The standard plugin crates turn on `konoma-plugin/app` by default (their standalone
+      # programs), so `--workspace` lints and tests the standalone app. These cover `konoma-plugin`
+      # alone: `pictures` without `app`, and the tests that only build without `app` (a file is
+      # refused when the app is not compiled in).
+      - name: Plugin SDK without the standalone app
+        if: matrix.flags == '' && matrix.part == 0
+        run: |
+          cargo clippy -p konoma-plugin --all-targets --features pictures -- -D warnings
+          cargo nextest run -p konoma-plugin
 
   # Full clippy + test suite on Linux (x86_64). konoma is cross-platform Unix code, so the same
   # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
   # one live-OS-trash test is macOS-gated (freedesktop trash is environment-dependent on Linux).
   check-linux:
-    # Split by feature set like the macOS job: one job running both took 16-19 minutes.
-    name: clippy / test (Linux x86_64, ${{ matrix.features }})
+    # Split by feature set and into three partitions like the macOS job: one job running both
+    # feature sets took 16-19 minutes, and one job per feature set later took up to 20. As there,
+    # part 0 runs the checks that do not depend on the partition and not the partitioned suite.
+    name: ${{ matrix.part == 0 && 'checks' || 'test' }} (Linux x86_64, ${{ matrix.features }}, ${{ matrix.part == 0 && 'not partitioned' || format('part {0}/3', matrix.part) }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
+        features: [default features, no default features]
+        part: [0, 1, 2, 3]
         include:
           - { features: default features, flags: "" }
           - { features: no default features, flags: "--no-default-features" }
@@ -89,7 +134,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: linux-check-${{ matrix.flags }}
+          key: linux-check-${{ matrix.flags }}-${{ matrix.part == 0 && 'checks' || 'tests' }}
 
       # System libraries for the C-backed dependencies (libgit2 / arboard / trash), plus fonts.
       # Each attempt is bounded: on 2026-08-19 this step hung on a mirror for 90 minutes, having
@@ -143,6 +188,12 @@ jobs:
           echo "apt failed three times" >&2
           exit 1
 
+      # nextest runs the unit and integration tests (about half the wall time of `cargo test`);
+      # it does not run doctests, so those are a separate step.
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: cargo-nextest
+
       # jj (Jujutsu) for the jj backend's tests. Pinned rather than tracking latest: jj is pre-1.0
       # and ships breaking changes monthly, and a CI run should fail because konoma changed, not
       # because jj released that morning. The suite is written to stay green without jj — konoma
@@ -159,11 +210,50 @@ jobs:
           sudo install -m 0755 "$tmp/jj" /usr/local/bin/jj
           jj --version
 
-      - name: Clippy (${{ matrix.features }})
-        run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
+      # The extras below are spread over the two legs so that each runs exactly once overall.
+      # The per-crate builds do not depend on the host's default features, so they go in the
+      # `--no-default-features` leg.
+      #
+      # Each crate under `crates/` must build on its own (not only as part of the whole workspace,
+      # where another member's features can switch on what this one forgot to declare).
+      - name: Each crate builds on its own
+        if: matrix.flags != '' && matrix.part == 0
+        run: |
+          for d in crates/*/; do
+            cargo check -p "$(basename "$d")" || exit 1
+          done
+          cargo check -p konoma-vcs-core --features git
+          # Alone, so that the host's ratatui features do not hide what the crate itself needs
+          # (it is the one crate plugin authors depend on).
+          cargo check -p konoma-plugin-ratatui
 
-      - name: Test (${{ matrix.features }})
-        run: cargo test ${{ matrix.flags }}
+      - name: Clippy (${{ matrix.features }})
+        if: matrix.part == 0
+        run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
+
+      # The e2e tests start the plugin program `konoma-demo-clock` as a child process; nextest
+      # does not build another package's binary, and a missing one fails the tests on purpose.
+      - name: Build the demo plugin program
+        if: matrix.part != 0
+        run: cargo build -p konoma-demo-clock
+
+      - name: Test (${{ matrix.features }}, part ${{ matrix.part }}/3)
+        if: matrix.part != 0
+        run: cargo nextest run --workspace ${{ matrix.flags }} --partition count:${{ matrix.part }}/3
+
+      - name: Doctests (${{ matrix.features }})
+        if: matrix.part == 0
+        run: cargo test --workspace --doc ${{ matrix.flags }}
+
+      # The standard plugin crates turn on `konoma-plugin/app` by default (their standalone
+      # programs), so `--workspace` lints and tests the standalone app. These cover `konoma-plugin`
+      # alone: `pictures` without `app`, and the tests that only build without `app` (a file is
+      # refused when the app is not compiled in).
+      - name: Plugin SDK without the standalone app
+        if: matrix.flags == '' && matrix.part == 0
+        run: |
+          cargo clippy -p konoma-plugin --all-targets --features pictures -- -D warnings
+          cargo nextest run -p konoma-plugin
 
       # Checks that the font install above actually worked, rather than assuming it. konoma falls
       # back to an embedded face when the machine resolves no sans-serif, so a botched font list
@@ -173,8 +263,8 @@ jobs:
       # here it is run by name, on a host whose fonts we just chose. It reuses the binary the step
       # above built, so it costs seconds.
       - name: Check the runner really has a usable sans-serif
-        if: matrix.flags == ''
-        run: cargo test -- --ignored --exact preview::svg::tests::the_system_resolves_sans_serif_without_the_fallback
+        if: matrix.flags == '' && matrix.part == 0
+        run: cargo nextest run -p konoma-svg --run-ignored only -E 'test(=svg::tests::the_system_resolves_sans_serif_without_the_fallback)'
 
   # Cross-compile check for macOS x86_64 (the arm64 host covers aarch64 above; Linux is fully
   # covered by check-linux). Windows (x86_64-pc-windows-msvc) is intentionally excluded: konoma
@@ -232,7 +322,7 @@ jobs:
 
       # Prebuilt binary rather than `cargo install cargo-audit`, which compiles for minutes. Same
       # publisher as the release workflow's `taiki-e/upload-rust-binary-action`.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-audit
 

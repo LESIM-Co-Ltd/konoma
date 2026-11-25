@@ -1,0 +1,24 @@
+[package]
+name = "konoma-base"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Process-wide basics of konoma: silent panic catching for workers and private temp directories"
+
+[dependencies]
+
+# `libc` is used by the private temp directories (`geteuid`, `O_NOFOLLOW`) and by the
+# exit-time cleanup that the test process registers with `libc::atexit`.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+
+[features]
+# Keeps the `cfg(test)` seams active when another package's tests call into this crate (a
+# `cfg(test)` is only true while this crate's own tests build). Enabled by the root package's
+# `[dev-dependencies]` only.
+test-hooks = []
