@@ -133,6 +133,7 @@ fn build(meta: Option<CommitMeta>, lines: Vec<CoreLine>, jj: bool) -> DiffView {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "git")]
     fn git(root: &Path, args: &[&str]) {
         let out = std::process::Command::new("git")
             .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
@@ -143,6 +144,7 @@ mod tests {
         assert!(out.status.success(), "git {args:?}: {out:?}");
     }
 
+    #[cfg(feature = "git")]
     #[test]
     fn the_uncommitted_selection_is_titled_in_both_languages_and_a_commit_is_not() {
         let dir = konoma_test_support::unique_tmp("vcs_detail_title");

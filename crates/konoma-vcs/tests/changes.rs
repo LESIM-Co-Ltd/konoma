@@ -371,7 +371,8 @@ fn vcs_changes_write_contracts_and_enabled_follow_backend_and_available_rows() {
             .find(|a| a.id == "diff_all")
             .unwrap();
         assert!(!diff_all.writes && !diff_all.destructive);
-        assert!(session.enabled("diff_all"));
+        // Without the `git` feature the plugin reads nothing, so every action is off.
+        assert_eq!(session.enabled("diff_all"), cfg!(feature = "git"));
         assert!(manifest.actions.iter().all(|a| a.id != "tool"));
         for a in writes {
             assert!(a.writes);
