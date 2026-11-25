@@ -6,6 +6,13 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-11-25
+
+- Plugin architecture, stage 5: the standard feature crates are published on crates.io (`konoma-base`, `konoma-svg`, `konoma-plugin`, `konoma-widgets` and the `*-core` / plugin crates). Eight of them (table, code, markdown, mermaid, math, media, office, vcs) also live in their own repositories under LESIM-Co-Ltd, split with their history.
+- `mermaid-text` moves to upstream 0.58 and the vendored fork is removed (the CJK class-diagram guard is now upstream).
+- `konoma-test-support` resolves sample files and the repository root from the run-time package directory, so tests in a split repository no longer skip silently.
+- `THIRD-PARTY-LICENSES.md` is regenerated and now lists `rmp-serde`, `semver` and `toml_edit`.
+
 - Host VCS features now use the version-control capability; Agent Watch also pins Jj follow baselines through read-only CLI queries. Git-screen operations are grouped behind the Git backend.
 - `[project] vcs` replaces `[external] vcs` (still accepted with a rename notice); the new setting wins when both are present. With Git disabled, colocated repositories use Jj only under `auto` or `jj`, as identified by the tree chip.
 - Internal: move the Git/jj log and detail commit-copy menus into `konoma-vcs` alongside the legacy hub; plugins declare copy-menu actions and return exact text through `Outcome::Copy`, with host clipboard notices and localized menu/help hints.
@@ -3050,7 +3057,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.2...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.2...v0.32.0
 [0.31.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.1...v0.31.2
 [0.31.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...v0.31.1
 [0.31.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...v0.31.0
