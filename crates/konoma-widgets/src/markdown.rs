@@ -6764,8 +6764,8 @@ mod tests {
     fn cjk_sequence_diagram_renders_not_fallback() {
         // upstream mermaid-text 0.56 used to panic internally on CJK participants/messages
         // (strip_keyword_prefix slicing without regard for byte boundaries). Resolved by the
-        // is_char_boundary guard in vendor/mermaid-text → it's "actually drawn" as a box-drawing
-        // diagram. This is the regression guard: if the patch is dropped, it panics → falls back to raw, the box-drawing disappears, and this test fails.
+        // is_char_boundary guard in upstream mermaid-text (0.58) → it's "actually drawn" as a box-drawing
+        // diagram. This is the regression guard: if the guard regresses, it panics → falls back to raw, the box-drawing disappears, and this test fails.
         let src = "sequenceDiagram\n  U->>K: ツリーで .mmd を選ぶ\n  K-->>U: 全画面プレビュー";
         let lines = render_mermaid_file(src, 70);
         assert!(!lines.is_empty(), "CJK 入力でも行を返すこと");

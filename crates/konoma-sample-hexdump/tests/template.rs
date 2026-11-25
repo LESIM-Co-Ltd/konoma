@@ -54,9 +54,8 @@ fn template_builds_offline_and_declares_the_rendered_id() {
     let manifest = generated.join("Cargo.toml");
     let mut text = std::fs::read_to_string(&manifest).unwrap();
     text.push_str(&format!(
-        "\n[patch.crates-io]\nkonoma-plugin = {{ path = {:?} }}\nmermaid-text = {{ path = {:?} }}\n",
-        workspace.join("crates/konoma-plugin"),
-        workspace.join("vendor/mermaid-text")
+        "\n[patch.crates-io]\nkonoma-plugin = {{ path = {:?} }}\n",
+        workspace.join("crates/konoma-plugin")
     ));
     std::fs::write(&manifest, text).unwrap();
     // Reuse cached, resolved dependency versions, including yanked versions already locked.
