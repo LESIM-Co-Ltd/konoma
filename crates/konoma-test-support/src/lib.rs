@@ -182,10 +182,19 @@ impl Drop for RestoreMode {
 /// The repository root (`crates/konoma-test-support/../..`), for tests of the crates under
 /// `crates/` that read `samples/` or write under `docs/` / `site/`: their working directory is
 /// the crate's own directory, not the repository root.
+///
+/// The root is found from the package under test (`CARGO_MANIFEST_DIR` at run time): the nearest
+/// ancestor whose `Cargo.toml` declares a `[workspace]`. This crate's own location is no guide,
+/// because in a plugin repository split out of konoma it comes from the registry.
 pub fn repo_root() -> PathBuf {
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    here.parent()
-        .and_then(std::path::Path::parent)
+    let here = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    here.ancestors()
+        .find(|dir| {
+            std::fs::read_to_string(dir.join("Cargo.toml"))
+                .is_ok_and(|t| t.lines().any(|l| l.trim() == "[workspace]"))
+        })
         .map(std::path::Path::to_path_buf)
         .unwrap_or(here)
 }
@@ -292,6 +301,14 @@ mod samples_root_tests {
     fn a_package_below_the_repo_root_finds_the_repo_samples() {
         assert!(sample_path_or_skip("sample.pdf").is_some());
         assert!(samples_root().join("samples").is_dir());
+    }
+
+    #[test]
+    fn the_repo_root_is_the_workspace_above_the_package_under_test() {
+        let root = repo_root();
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(manifest.lines().any(|l| l.trim() == "[workspace]"));
+        assert!(root.join("crates").join("konoma-test-support").is_dir());
     }
 
     #[test]
