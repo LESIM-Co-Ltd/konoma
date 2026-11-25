@@ -2636,6 +2636,7 @@ fn flush_jobs(session: &mut dyn Session, st: &mut State, cx: &AppCx) -> bool {
                 Ok(
                     Outcome::Copy { .. }
                     | Outcome::PushScreen { .. }
+                    | Outcome::PopScreen
                     | Outcome::OpenFile { .. }
                     | Outcome::OpenDiff { .. }
                     | Outcome::SwitchRoot { .. }
@@ -3377,6 +3378,7 @@ mod reopen_state_tests {
     #[test]
     fn project_navigation_outcomes_report_a_notice() {
         for outcome in [
+            Outcome::PopScreen,
             Outcome::PushScreen {
                 screen: "log".into(),
                 selection: None,

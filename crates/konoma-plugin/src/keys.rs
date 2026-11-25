@@ -628,9 +628,15 @@ fn check_key(
     } else {
         reserved(&ctx)
     };
-    let row_enter = spec == KeySpec::key(KeyName::Enter)
-        && matches!(&act.project_context, Some(crate::project::ActContext::Screen { row_kinds, .. }) if !row_kinds.is_empty());
-    if let Some((_, layer)) = table.iter().find(|(k, _)| *k == spec && !row_enter) {
+    // Project screens have no representation/page cycle. They own Enter and J/K,
+    // including screen-wide Enter actions that also work on an empty list.
+    let project_screen = matches!(
+        &act.project_context,
+        Some(crate::project::ActContext::Screen { .. })
+    );
+    let screen_key_code = matches!(spec.code, KeyName::Enter | KeyName::Char('J' | 'K'));
+    let screen_key = screen_key_code && !spec.ctrl && project_screen;
+    if let Some((_, layer)) = table.iter().find(|(k, _)| *k == spec && !screen_key) {
         let context = if ctx.is_empty() { "any" } else { &ctx };
         return issue(KeyIssueKind::Reserved {
             layer: *layer,

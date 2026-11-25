@@ -848,6 +848,26 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
             Some((section, keys)) => (vec![section], keys),
             None => (vec![], vec![]),
         };
+        if app.project_picker() {
+            let mut picker = sections.pop().unwrap_or_else(|| HelpSection::new(""));
+            picker.title = tr(app.lang, Msg::GraphPickerTitle).into();
+            for (keys, description) in &mut picker.rows {
+                if description == tr(app.lang, Msg::FtApply) {
+                    *keys = "l/Enter".into();
+                }
+            }
+            picker.rows.splice(
+                0..0,
+                [
+                    ("j/k".into(), tr(app.lang, Msg::GitMove).into()),
+                    ("g/G".into(), tr(app.lang, Msg::TopBottom).into()),
+                ],
+            );
+            picker
+                .rows
+                .push(("h/Esc  ·  q".into(), tr(app.lang, Msg::FtCancel).into()));
+            return vec![picker];
+        }
         if let Some(jj) = app.project_graph_jj() {
             let mut graph = sections.pop().unwrap_or_else(|| HelpSection::new(""));
             graph.title = tr(
@@ -936,16 +956,23 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
                 crate::app::project_screens::ProjectContent::List(_)
             )
         }) {
-            navigation
-                .rows
-                .push(("/".into(), tr(app.lang, Msg::GitFilterByName).into()));
+            if app.project_filter_enabled() {
+                navigation
+                    .rows
+                    .push(("/".into(), tr(app.lang, Msg::GitFilterByName).into()));
+            }
             if app.project_marks_enabled() {
                 navigation
                     .rows
                     .push(("V".into(), tr(app.lang, Msg::ProjectMark).into()));
             }
         }
-        if let Some(nav) = &app.tab.project_navigation {
+        if let Some(nav) = app
+            .tab
+            .project_navigation
+            .as_ref()
+            .filter(|_| !app.project_pushed())
+        {
             if let Some(runtime) = app.project_runtimes.get(&nav.project) {
                 for screen in &runtime.project.declaration.screens {
                     if let Some(key) = screen.key {

@@ -635,8 +635,17 @@ impl App {
         if motion == Motion::Right {
             return false;
         }
+        // The legacy branch panel consumes page motions without moving its cursor.
+        if self.project_picker()
+            && matches!(
+                motion,
+                Motion::HalfUp | Motion::HalfDown | Motion::PageUp | Motion::PageDown
+            )
+        {
+            return true;
+        }
         if motion == Motion::Left {
-            if self.project_graph_jj().is_some() {
+            if self.project_graph_jj().is_some() || self.project_pushed() {
                 self.project_back();
                 return true;
             }
@@ -762,6 +771,23 @@ impl App {
     pub(super) fn cancel_project_input(&mut self) {
         self.tab.project_pending_acts.clear();
         if let Some(nav) = &mut self.tab.project_navigation {
+            // Modal pushed screens can opt out of being retained across tab changes.
+            while nav.stack.len() > 1
+                && nav.stack.last().is_some_and(|frame| {
+                    self.project_runtimes
+                        .get(&nav.project)
+                        .is_some_and(|runtime| {
+                            runtime
+                                .project
+                                .declaration
+                                .screens
+                                .iter()
+                                .any(|screen| screen.id == frame.key.screen && screen.transient)
+                        })
+                })
+            {
+                nav.stack.pop();
+            }
             for frame in &mut nav.stack {
                 frame.pending.clear();
             }
@@ -1056,6 +1082,37 @@ impl App {
             .collect()
     }
 
+    /// Screen actions own their keys before the project's shared screen jumps.
+    pub(super) fn project_action_key(
+        &self,
+        ctx: Context,
+        action: PluginAct,
+        key: KeyPress,
+    ) -> Option<KeyPress> {
+        if self.project_active() && ctx == Context::Canvas {
+            let screen_action = matches!(
+                self.plugin_keys.declaration(action)?.project_context,
+                Some(ActContext::Screen { .. })
+            );
+            let nav = self.tab.project_navigation.as_ref()?;
+            let shared = self
+                .project_runtimes
+                .get(&nav.project)
+                .is_some_and(|runtime| {
+                    runtime
+                        .project
+                        .declaration
+                        .screens
+                        .iter()
+                        .any(|screen| screen.key.is_some_and(|c| key == KeyPress::ch(c)))
+                });
+            if shared && !screen_action {
+                return None;
+            }
+        }
+        Some(key)
+    }
+
     pub(crate) fn project_act_enabled(&self, p: PluginAct) -> Option<bool> {
         self.plugin_keys.declaration(p)?.project_context.as_ref()?;
         let key = self.action_project(p)?;
@@ -1209,6 +1266,13 @@ impl App {
             || self.is_info()
         {
             return false;
+        }
+        // The legacy picker binds h/l explicitly; physical horizontal arrows are inert.
+        if self.project_picker()
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+            && key.modifiers.is_empty()
+        {
+            return true;
         }
         let interaction = self.project_pending_interaction();
         let navigation = !interaction
@@ -1397,7 +1461,8 @@ impl App {
             KeyCode::Char('/')
                 if self
                     .project_content()
-                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_))) =>
+                    .is_some_and(|view| matches!(view.as_ref(), ProjectContent::List(_)))
+                    && self.project_filter_enabled() =>
             {
                 let anchor = self.project_filter_anchor();
                 self.tab
@@ -1439,6 +1504,14 @@ impl App {
                 return true;
             }
             KeyCode::Char(c) => {
+                // A screen's own action takes precedence over shared screen jumps.
+                if self
+                    .plugin_action_for_key(Context::Canvas, KeyPress::norm(&key))
+                    .is_some()
+                {
+                    return false;
+                }
+                let pushed = self.project_pushed();
                 let nav = self.tab.project_navigation.as_mut().unwrap();
                 if let Some(screen) = self.project_runtimes[&nav.project]
                     .project
@@ -1447,6 +1520,9 @@ impl App {
                     .iter()
                     .find(|s| s.key == Some(c))
                 {
+                    if pushed {
+                        return true;
+                    }
                     *nav.stack.last_mut().unwrap() =
                         ProjectFrame::new(ScreenKey::new(&screen.id, self.tab.id));
                     self.ensure_project_view();
@@ -1935,11 +2011,17 @@ impl App {
         if effect.tree_status {
             self.git_status_dirty = true;
         }
-        self.flash = Some(effect.label);
+        if !matches!(
+            effect.outcome,
+            Some(Outcome::Redraw | Outcome::PushScreen { .. } | Outcome::PopScreen)
+        ) {
+            self.flash = Some(effect.label);
+        }
         if matches!(
             &effect.outcome,
             Some(
                 Outcome::PushScreen { .. }
+                    | Outcome::PopScreen
                     | Outcome::OpenFile { .. }
                     | Outcome::OpenDiff { .. }
                     | Outcome::SwitchRoot { .. }
@@ -1954,6 +2036,11 @@ impl App {
             return;
         }
         match effect.outcome {
+            Some(Outcome::PopScreen) => {
+                if self.project_pushed() {
+                    self.project_back();
+                }
+            }
             Some(Outcome::Copy { text }) => self.set_clipboard_flash(&text),
             Some(Outcome::Flash(message)) => {
                 self.flash = Some(message.get(self.plugin_lang()).into())
@@ -2060,7 +2147,7 @@ impl App {
                     .shared(),
                 );
             }
-            if list {
+            if list && self.project_filter_enabled() {
                 controls.push(
                     ProjectControl::new(
                         Id::Filter,
@@ -2127,6 +2214,34 @@ impl App {
             );
         }
         Some(controls)
+    }
+
+    /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.
+    pub(crate) fn project_picker(&self) -> bool {
+        self.project_frame()
+            .is_some_and(|frame| frame.key.screen == "graph_picker")
+            && self
+                .tab
+                .project_navigation
+                .as_ref()
+                .is_some_and(|nav| matches!(nav.project.plugin.as_str(), "git" | "jj"))
+    }
+
+    pub(crate) fn project_filter_enabled(&self) -> bool {
+        self.tab
+            .project_navigation
+            .as_ref()
+            .and_then(|nav| {
+                let frame = nav.stack.last()?;
+                self.project_runtimes
+                    .get(&nav.project)?
+                    .project
+                    .declaration
+                    .screens
+                    .iter()
+                    .find(|screen| screen.id == frame.key.screen)
+            })
+            .is_none_or(|screen| screen.filter)
     }
 
     /// Legacy VCS wording during migration; remove this bridge when the old hub is removed.

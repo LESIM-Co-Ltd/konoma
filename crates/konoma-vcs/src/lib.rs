@@ -38,7 +38,9 @@ macro_rules! plugin {
                                 t!(en: "Branches", ja: "ブランチ")
                             } else { t!(en: "Bookmarks", ja: "ブックマーク") })
                                 .key('b').row_kind("branch").row_kind("current").row_kind("empty"))
-                            .screen(ProjectScreen::new("detail", t!(en: "Detail", ja: "詳細")).pushed()),
+                            .screen(ProjectScreen::new("detail", t!(en: "Detail", ja: "詳細")).pushed())
+                            .screen(ProjectScreen::new("graph_picker", t!(en: "Graph branches", ja: "グラフのブランチ")).pushed().filter(false).transient()
+                                .row_kind("branch").row_kind("current").row_kind("empty")),
                     )
                     .shows(ViewKind::List)
                     .setting(SettingDecl::new("path_style", Value::Str("relative".into()),
@@ -181,6 +183,13 @@ impl Session for Changes {
         Ok(Some(paths))
     }
     fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        if let Some(project) = req.project.as_ref().filter(|p| p.screen == "graph_picker") {
+            return Ok(self.graphs.entry(project.tab).or_default().picker_view(
+                &self.root,
+                project.icons,
+                cx.lang,
+            ));
+        }
         if let Some(project) = req.project.as_ref().filter(|p| p.screen == "graph") {
             return Ok(self.graphs.entry(project.tab).or_default().view(
                 &self.backend,
@@ -294,19 +303,36 @@ impl Session for Changes {
     }
 
     fn act(&mut self, action: &str, cx: &ActCx) -> Result<Outcome, Failure> {
+        if self.enabled(action) && action.starts_with("picker_") {
+            return Ok(cx
+                .project
+                .as_ref()
+                .filter(|p| p.screen.as_deref() == Some("graph_picker"))
+                .map(|project| {
+                    self.graphs
+                        .entry(project.tab)
+                        .or_default()
+                        .picker_act(action, project, &self.root)
+                })
+                .unwrap_or(Outcome::Unhandled));
+        }
         if self.enabled(action)
-            && matches!(action, "graph_set_base" | "graph_clear_base" | "graph_all")
+            && matches!(
+                action,
+                "graph_set_base" | "graph_clear_base" | "graph_all" | "graph_picker"
+            )
         {
             if let Some(project) = cx
                 .project
                 .as_ref()
                 .filter(|p| p.screen.as_deref() == Some("graph"))
             {
-                return Ok(self
-                    .graphs
-                    .entry(project.tab)
-                    .or_default()
-                    .act(action, project));
+                return Ok(self.graphs.entry(project.tab).or_default().act(
+                    action,
+                    project,
+                    &self.root,
+                    cx.settings,
+                ));
             }
             return Ok(Outcome::Unhandled);
         }
@@ -484,7 +510,8 @@ impl Session for Changes {
         match action {
             "graph_set_base" | "graph_clear_base" => matches!(self.backend, Backend::Git),
             "graph_all" => matches!(self.backend, Backend::Jj),
-            "detail" | "graph_detail" => true,
+            "detail" | "graph_detail" | "graph_picker" | "picker_toggle" | "picker_down"
+            | "picker_up" | "picker_all" | "picker_current" | "picker_apply" => true,
             "branch_copy_name" => true,
             "checkout"
             | "create_branch"

@@ -65,10 +65,18 @@ fn branches_declaration_titles_order_and_read_only_bookmarks() {
                     "branches",
                     "worktrees",
                     "detail",
+                    "graph_picker",
                     "worktree_diff",
                 ]
             } else {
-                vec!["changes", "log", "graph", "branches", "detail"]
+                vec![
+                    "changes",
+                    "log",
+                    "graph",
+                    "branches",
+                    "detail",
+                    "graph_picker",
+                ]
             }
         );
         let screen = &screens[3];

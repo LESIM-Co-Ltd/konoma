@@ -306,6 +306,8 @@ pub enum Outcome {
         screen: String,
         selection: Option<String>,
     },
+    /// Close the current pushed screen, preserving the underlying frame's cursor.
+    PopScreen,
     /// Open a file in the host preview; line numbers are 1-based.
     OpenFile {
         path: std::path::PathBuf,

@@ -250,7 +250,7 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
         let project = manifest.project.expect("VCS project declaration");
         assert_eq!(project.markers, [DetectionMarker::new(marker, kind)]);
         assert!(project.version_control);
-        assert_eq!(project.screens.len(), if id == "git" { 7 } else { 5 });
+        assert_eq!(project.screens.len(), if id == "git" { 8 } else { 6 });
         assert_eq!(project.screens[0].id, "changes");
         assert_eq!(project.screens[0].key, Some('p'));
         assert!(project.screens[0].row_kinds.contains(&"file".into()));
@@ -258,14 +258,14 @@ fn vcs_changes_declarations_match_existing_markers_and_separate_backend_writes()
             manifest.actions.len(),
             if !cfg!(feature = "git") {
                 if id == "git" {
-                    25
+                    32
                 } else {
-                    23
+                    30
                 }
             } else if id == "git" {
-                37
+                44
             } else {
-                24
+                31
             }
         );
         let action = manifest.actions.iter().find(|a| a.id == "diff").unwrap();

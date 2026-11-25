@@ -109,24 +109,7 @@ impl App {
     /// The key of `p` in `ctx`, if it has one.
     pub fn plugin_key_of(&self, ctx: Context, p: PluginAct) -> Option<KeyPress> {
         let key = self.plugin_binding_in(ctx, p)?.key?;
-        if self.project_active() && ctx == Context::Canvas {
-            let nav = self.tab.project_navigation.as_ref()?;
-            if self
-                .project_runtimes
-                .get(&nav.project)
-                .is_some_and(|runtime| {
-                    runtime
-                        .project
-                        .declaration
-                        .screens
-                        .iter()
-                        .any(|screen| screen.key.is_some_and(|c| key == KeyPress::ch(c)))
-                })
-            {
-                return None;
-            }
-        }
-        Some(key)
+        self.project_action_key(ctx, p, key)
     }
 
     pub(crate) fn plugin_context_bindings(&self, ctx: Context) -> Vec<ActBinding> {

@@ -25,7 +25,11 @@ fn graph_declarations_respect_layers_backend_and_copy_contexts() {
             !issues.iter().any(|i| i.act.starts_with("graph")),
             "{issues:?}"
         );
-        for (key, expected) in [("s", !jj), ("x", !jj), ("a", jj), ("b", false)] {
+        assert!(
+            !issues.iter().any(|i| i.act.starts_with("picker_")),
+            "{issues:?}"
+        );
+        for (key, expected) in [("s", !jj), ("x", !jj), ("a", jj), ("b", true)] {
             assert_eq!(
                 acts.iter()
                     .any(|a| !a.copy && a.key.as_deref() == Some(key)),
