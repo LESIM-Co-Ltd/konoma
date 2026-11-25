@@ -323,3 +323,26 @@ mod plugins_fn_tests {
         assert_eq!(ids(super::plugins()), program);
     }
 }
+
+#[cfg(test)]
+mod cjk_class_diagram_tests {
+    /// The published `mermaid-text` (not a local fork) has to draw a class diagram whose lines start
+    /// with full-width characters. Its 0.56/0.57 parsers sliced such a line at a keyword's byte
+    /// length inside a character and panicked, which `text_diagram` turned into the raw-source
+    /// fallback.
+    #[test]
+    fn a_class_diagram_with_cjk_names_is_drawn_not_replaced_by_the_raw_source() {
+        for src in [
+            "classDiagram\n    class 日本語クラス {\n    }\n    class 日本 {\n      +名前 x\n    }\n    日本 --> 語 : 関係\n",
+            "classDiagram\n    クラスA <|-- 継承B\n",
+            "classDiagram\n  class 犬 {\n    +String\u{3000}吠える()\n  }\n",
+        ] {
+            let text: String = super::text_diagram(src, 80)
+                .iter()
+                .map(konoma_plugin::style::Line::plain)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(!text.contains("cannot render mermaid"), "{src:?}\n{text}");
+        }
+    }
+}
