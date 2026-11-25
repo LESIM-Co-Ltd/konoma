@@ -687,7 +687,13 @@ fn project_dialog_cells_match_all_stages() {
     // The project list shows each root relative to the open directory, and the frozen fixture
     // holds six `..` steps. Build that depth under the temp dir instead of inheriting the depth of
     // whatever `TMPDIR` the machine has (a shallow `/tmp/x` on Linux CI shows fewer steps).
-    let deep = dir.join("a").join("b").join("c").join("d").join("e").join("f");
+    let deep = dir
+        .join("a")
+        .join("b")
+        .join("c")
+        .join("d")
+        .join("e")
+        .join("f");
     std::fs::create_dir_all(&deep).unwrap();
     app.tab.open_dir = deep;
     let project_root = dir.join("project");

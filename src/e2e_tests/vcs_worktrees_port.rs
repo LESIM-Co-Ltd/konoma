@@ -648,7 +648,15 @@ fn vcs_port_worktree_diff_title_body_layout_motion_and_back() {
                         // The layout key adds the side-by-side mark after the title.
                         assert_eq!(now, format!("{head}⇆ "), "{k}");
                     } else if k == 's' {
-                        assert!(full.starts_with(&now), "{k}");
+                        // The mark is added only where it fits. With a clipped title the head
+                        // stays a prefix of the title; a short temp path leaves room for the mark
+                        // (or part of it) right after the whole title.
+                        let marked = format!("{full}⇆ ");
+                        assert!(
+                            full.starts_with(&now)
+                                || (now.starts_with(&full) && marked.starts_with(&now)),
+                            "{k}: {now:?} vs {full:?}"
+                        );
                     } else {
                         assert_eq!(now, head, "{k}");
                     }
