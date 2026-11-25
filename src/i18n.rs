@@ -554,12 +554,6 @@ pub enum Msg {
     /// Flash on `w` in a jj repository: konoma does not list jj workspaces yet.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     JjWorkspacesUnlisted,
-    /// Confirmation before letting jj take a snapshot.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    /// Flash after a successful snapshot.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    /// Flash when the snapshot could not be taken.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     /// Flash on `R` outside a jj repository.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     JjSyncNotJj,
