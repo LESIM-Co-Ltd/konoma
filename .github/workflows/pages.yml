@@ -133,7 +133,7 @@ jobs:
       - name: Generate the mermaid catalog
         env:
           CARGO_TERM_COLOR: always
-        run: cargo test -p konoma-mermaid-core -- --ignored site_mermaid_catalog_dump
+        run: bash site/scripts/gen-catalog.sh
 
       # A silent partial dump would publish a page full of broken images, so the catalog is checked
       # before the site is built rather than after it is live. Nothing here is a hard-coded count:
