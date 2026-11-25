@@ -495,13 +495,24 @@ fn gate_open_external(app: &App) -> Gate {
 
 /// `p` offers only enabled projects; pending discovery can queue entry without blocking.
 fn gate_open_git_view(app: &App) -> Gate {
-    if app
-        .tab
-        .projects
-        .projects
-        .iter()
-        .any(|p| !p.declaration.screens.is_empty() && app.project_is_enabled(&p.plugin))
-    {
+    // A discovered version-control project is offered only while its backend can answer. Git
+    // answers through the `git` executable and `[external] git`; asked on this thread, so the
+    // refusal does not depend on whether the discovery worker finished before the key.
+    let git_off = !cfg!(feature = "git")
+        || (app.git_vcs == crate::vcs::VcsKind::Git && !app.cfg.external.git)
+        || {
+            #[cfg(feature = "git")]
+            let missing =
+                app.git_vcs == crate::vcs::VcsKind::Git && !crate::vcs::Git::git_binary_available();
+            #[cfg(not(feature = "git"))]
+            let missing = false;
+            missing
+        };
+    if app.tab.projects.projects.iter().any(|p| {
+        !p.declaration.screens.is_empty()
+            && app.project_is_enabled(&p.plugin)
+            && (!p.declaration.version_control || !git_off)
+    }) {
         return Gate::On;
     }
     let (pending, independent) = if app.tab.projects.pending() {

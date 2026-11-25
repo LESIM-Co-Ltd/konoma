@@ -1239,6 +1239,10 @@ fn vcs_hub_e2e_p_on_a_git_repo_flashes_the_distinct_reason_when_git_is_off_or_mi
     cfg.ui.tabbar = "hidden".into();
     cfg.ui.statusbar = "split".into();
     let mut sim = Sim::with_config_sized(&root, cfg, 200, 24);
+    // The project is discovered before `p` is pressed, as on a fast machine; the gate must refuse
+    // it by the reason, not by the discovery still being pending.
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
     assert!(crate::git::statuses(&root).is_empty(), "statuses");
     assert!(crate::git::branch(&root).is_none(), "branch");
     assert!(crate::git::workdir(&root).is_none(), "workdir");
@@ -1246,6 +1250,8 @@ fn vcs_hub_e2e_p_on_a_git_repo_flashes_the_distinct_reason_when_git_is_off_or_mi
     // No git executable with the default config.
     crate::git::set_git_binary_available_for_test(Some(false));
     let mut sim = Sim::with_config_sized(&root, Config::default(), 200, 24);
+    sim.app.tab.projects.wait_for_result();
+    sim.app.poll_projects();
     refused(&mut sim, Msg::GitNotInstalled, "no git binary");
     // Sanity (old tests' second half): with git available and enabled, `p` opens the project.
     crate::git::set_git_binary_available_for_test(None);
