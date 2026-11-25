@@ -2,7 +2,7 @@
 //! workbook) read through the same [`Grid`].
 //!
 //! The CSV/TSV and archive files are read by the `csv` and `archive` plugins
-//! (`crates/konoma-table`), the workbooks by the `spreadsheet` plugin (`crates/konoma-office`);
+//! (the `konoma-table` crate), the workbooks by the `spreadsheet` plugin (the `konoma-office` crate);
 //! this module only re-exports what the host's tests share, and holds the borrowed view over the
 //! table a plugin returned.
 

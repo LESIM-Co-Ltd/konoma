@@ -1,6 +1,6 @@
 //! The document container and the Office documents: a Markdown file (the `markdown` plugin), a
 //! Word document and a presentation (the `document` and `presentation` plugins in
-//! `crates/konoma-office`, which convert the file to Markdown with its pictures) are all drawn by
+//! the `konoma-office` crate, which convert the file to Markdown with its pictures) are all drawn by
 //! the host with the ordinary Markdown pipeline, from the document the plugin returned. Nothing is
 //! written back to a converted file; a Markdown file's checkboxes are (`markdown_plugin.rs` holds
 //! the options and the representations).

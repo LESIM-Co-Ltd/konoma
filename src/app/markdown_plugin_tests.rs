@@ -1,7 +1,7 @@
 //! The `markdown` plugin on the host's plugin road: a Markdown file and a converted Word document
 //! are both shown by the host's document widget from the plugin's `DocumentView`, drawn with the
 //! plugin's options, and `R` is a request for the plugin's other representation. The plugin's own
-//! behavior is tested in `crates/konoma-markdown`; the keys over real files in
+//! behavior is tested in the `konoma-markdown` crate; the keys over real files in
 //! `e2e_tests/{word,deck_view}.rs` and the many Markdown tests that never changed.
 
 use std::sync::atomic::{AtomicUsize, Ordering};

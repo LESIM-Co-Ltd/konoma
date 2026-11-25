@@ -1788,19 +1788,21 @@ dependencies = [
 [[package]]
 name = "konoma-code"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f791338817aedc861ec8f397d4bc4d626336d1361624e6f86c7eb582b23fca7"
 dependencies = [
  "konoma-code-core",
  "konoma-plugin",
- "konoma-test-support",
  "ratatui",
 ]
 
 [[package]]
 name = "konoma-code-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea1dfd0dbee4ab69073006860bddc4a246523548552b2b325572ab3b7c9f61d0"
 dependencies = [
  "konoma-base",
- "konoma-test-support",
  "ratatui",
  "syntect",
  "two-face",
@@ -1852,20 +1854,18 @@ dependencies = [
 [[package]]
 name = "konoma-markdown"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b3dab730d6d9d96ab07051878f6439d6b23bfb1a5ff26a935fcbc02c30fcf0a"
 dependencies = [
- "konoma-math",
- "konoma-mermaid",
  "konoma-plugin",
- "konoma-test-support",
- "ratatui",
 ]
 
 [[package]]
 name = "konoma-markdown-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b396da5a2854e04fa5bd079f5dab45311962a9fb6905bd5f8958b5ada017ac71"
 dependencies = [
- "konoma-base",
- "konoma-test-support",
  "pulldown-cmark",
  "similar",
 ]
@@ -1873,20 +1873,21 @@ dependencies = [
 [[package]]
 name = "konoma-math"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6852de18a27fe01fbaf0742ee2dddd9efc722dafc4b039dd11e63139c393be10"
 dependencies = [
  "konoma-math-core",
  "konoma-plugin",
- "konoma-test-support",
  "svgtypes",
 ]
 
 [[package]]
 name = "konoma-math-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a25db55552e2e618aed41c3dcd829581c05965e4bf50ad5945e03b0cdfd25f3"
 dependencies = [
- "image",
  "konoma-svg",
- "konoma-test-support",
  "ratex-layout",
  "ratex-parser",
  "ratex-svg",
@@ -1897,24 +1898,26 @@ dependencies = [
 [[package]]
 name = "konoma-media"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04a3f0da68190f0c3b96d4ccdae0cbe1d52513a341a4018c2873a91adbd15918"
 dependencies = [
  "image",
  "konoma-media-core",
  "konoma-plugin",
  "konoma-svg",
- "konoma-test-support",
 ]
 
 [[package]]
 name = "konoma-media-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ac233385beb637b516f98c65c243520f1154d582d7c0210339d8e7a75605ace"
 dependencies = [
  "hayro",
  "hayro-syntax",
  "image",
  "konoma-base",
  "konoma-svg",
- "konoma-test-support",
  "re_mp4",
  "resvg",
  "rust_h264",
@@ -1926,46 +1929,43 @@ dependencies = [
 [[package]]
 name = "konoma-mermaid"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00c0725995636a551fc4616564dbd6d992377838124d88a4737bf9c3014972b2"
 dependencies = [
  "konoma-base",
  "konoma-mermaid-core",
  "konoma-plugin",
- "konoma-test-support",
  "mermaid-text",
 ]
 
 [[package]]
 name = "konoma-mermaid-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bf424b731fff168e46fcf36089d38ecff853ab49cfa6418ab99c80b8b76b90a"
 dependencies = [
  "konoma-base",
  "konoma-svg",
- "konoma-test-support",
  "log",
- "mermaid-text",
- "resvg",
- "serde",
- "serde_json",
  "svgtypes",
 ]
 
 [[package]]
 name = "konoma-office"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "228285e2cc31a21daad4982eaea4551418701656b007c3259ffe1b58ab12ea7d"
 dependencies = [
  "konoma-base",
- "konoma-markdown",
- "konoma-math",
- "konoma-mermaid",
  "konoma-office-core",
  "konoma-plugin",
- "konoma-test-support",
- "ratatui",
 ]
 
 [[package]]
 name = "konoma-office-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11f63e541857f5cd5c08fdab87b96bfafef6879392822cf0df69fe07e6a870a9"
 dependencies = [
  "base64 0.23.1",
  "calamine",
@@ -1980,7 +1980,6 @@ dependencies = [
  "libc",
  "quick-xml 0.42.0",
  "resvg",
- "serde_json",
  "skrifa 0.44.0",
  "svgtypes",
  "sys-locale",
@@ -2059,13 +2058,14 @@ dependencies = [
 [[package]]
 name = "konoma-table"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e3537e15f9859fa772ff4b614d928054e9c5f810197a0a52ac086bab22b193a"
 dependencies = [
  "anyhow",
  "csv",
  "flate2",
  "konoma-base",
  "konoma-plugin",
- "konoma-test-support",
  "tar",
  "zip",
 ]
@@ -2085,24 +2085,25 @@ dependencies = [
 [[package]]
 name = "konoma-vcs"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfef599365614eb625bc8c8cbd5fcb783beac873d37a64f745791d446e6ff7f3"
 dependencies = [
  "konoma-base",
  "konoma-file-plugins",
  "konoma-plugin",
- "konoma-test-support",
  "konoma-vcs-core",
 ]
 
 [[package]]
 name = "konoma-vcs-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba96028473e5a9a24ec0b0fde6e338164ddf27b4152102ffa873fd575e0731af"
 dependencies = [
  "anyhow",
  "git2",
  "ignore",
  "konoma-base",
- "konoma-test-support",
- "libc",
  "similar",
 ]
 

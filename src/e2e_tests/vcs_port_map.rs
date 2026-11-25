@@ -3667,6 +3667,16 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The `src` directory of the `konoma-vcs` crate this build depends on (a registry download: the
+/// crate no longer lives under `crates/`), at the locked version.
+fn konoma_vcs_src_dir(_root: &Path) -> PathBuf {
+    crate::test_support::package_dirs()
+        .into_iter()
+        .find(|(name, _)| name == "konoma-vcs")
+        .map(|(_, dir)| dir.join("src"))
+        .expect("konoma-vcs is in the dependency graph")
+}
+
 fn names(source: &str) -> BTreeSet<&str> {
     source
         .lines()
@@ -3721,7 +3731,7 @@ fn every_ported_assertion_names_an_existing_new_test() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     sources(&root.join("src"), &mut files);
-    sources(&root.join("crates/konoma-vcs/src"), &mut files);
+    sources(&konoma_vcs_src_dir(root), &mut files);
     let contents: Vec<_> = files
         .iter()
         .map(|p| std::fs::read_to_string(p).unwrap())

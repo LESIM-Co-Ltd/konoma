@@ -1,7 +1,7 @@
 //! The `spreadsheet` plugin on the host's plugin road (and the work group the Word and
 //! presentation plugins share with it): the exclusive work group (one read at a
 //! time, only the newest waiting request kept), the sheets as pages, the settings it receives and
-//! the switch that turns it off. The reading and the words are tested in `crates/konoma-office`;
+//! the switch that turns it off. The reading and the words are tested in the `konoma-office` crate;
 //! the keys, the cursor and the search over real workbooks in `e2e_tests`.
 //!
 //! The work-group tests use a stand-in plugin whose view takes a while, so that "how many ran at
