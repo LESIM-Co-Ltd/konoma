@@ -43,7 +43,11 @@ build)
   cp src/main.rs "$FAKE_DIR/last-main.rs"
   if [ -n "$FAKE_GRANDCHILD" ]; then
     # a process of its own, as rustc is to cargo; its pid goes to the file
-    if [ -n "$FAKE_GC_IGNORE_TERM" ]; then (trap '' TERM; exec sleep 300) & else sleep 300 & fi
+    # An ignored TERM is inherited from before the fork, so it is in place before the pid is
+    # published; a trap set inside the new process could still be pending when the stop comes.
+    if [ -n "$FAKE_GC_IGNORE_TERM" ]; then trap '' TERM; fi
+    sleep 300 &
+    trap - TERM
     gc=$!
     echo $gc > "$FAKE_GRANDCHILD"
     touch "$FAKE_MARK"
