@@ -1740,6 +1740,30 @@ mod tests {
     }
 
     #[test]
+    fn a_gif_frame_holds_for_its_whole_delay_counted_from_the_tick_that_picked_it() {
+        let (d0, d1) = (Duration::from_millis(120), Duration::from_millis(200));
+        let almost = |d: Duration| d - Duration::from_nanos(1);
+        let mut c = InlineImageCache::default();
+        let path = PathBuf::from("/x/a.gif");
+        let e = c.cache.entry(path.clone()).or_default();
+        e.decoded = Some(px());
+        e.frames = vec![(px(), d0), (px(), d1)];
+        let t0 = Instant::now();
+        assert!(!c.advance_gifs_at(t0));
+        assert!(!c.advance_gifs_at(t0 + almost(d0)));
+        assert!(c.advance_gifs_at(t0 + d0));
+        let t1 = t0 + d0;
+        assert!(!c.advance_gifs_at(t1 + almost(d1)));
+        // A late tick: the next frame still gets its whole delay from here.
+        let t2 = t1 + d1 + Duration::from_millis(37);
+        assert!(c.advance_gifs_at(t2));
+        assert!(!c.advance_gifs_at(t2 + almost(d0)));
+        assert_eq!(c.cache[&path].idx, 0);
+        assert!(c.advance_gifs_at(t2 + d0));
+        assert_eq!(c.cache[&path].idx, 1);
+    }
+
+    #[test]
     fn an_encode_result_is_applied_dropped_or_degrades_the_picture() {
         let mut c = InlineImageCache::default();
         let path = PathBuf::from("/x/a.png");

@@ -24,22 +24,22 @@ jobs:
     # running both took 12-19 minutes and hit the 20-minute limit whenever runners were busy
     # (three cancelled runs on 2026-10-21). Each leg does about half; the limit stays at 20.
     #
-    # Each feature set is then split three ways by nextest's `--partition count:<part>/3`: every
-    # part builds the same test binaries and runs a third of the tests, so every test still runs
+    # Each feature set is then split four ways by nextest's `--partition count:<part>/4`: every
+    # part builds the same test binaries and runs a quarter of the tests, so every test still runs
     # exactly once per feature set. The suite outgrew one job per feature set (the plugin parity
     # tests took a no-default-features leg past 20 minutes, 90% through, while `main` took about
     # 8). The checks that do not depend on the partition (fmt, clippy, doctests, the SDK-only
     # checks) run once, in a job of their own (part 0): carried by part 1 they added about five
     # minutes and took it to 19:59. Part 0 has its own cache key, so its clippy-only build does not
     # become the cache the test parts restore.
-    name: ${{ matrix.part == 0 && 'checks' || 'test' }} (macOS Apple Silicon, ${{ matrix.features }}, ${{ matrix.part == 0 && 'not partitioned' || format('part {0}/3', matrix.part) }})
+    name: ${{ matrix.part == 0 && 'checks' || 'test' }} (macOS Apple Silicon, ${{ matrix.features }}, ${{ matrix.part == 0 && 'not partitioned' || format('part {0}/4', matrix.part) }})
     runs-on: macos-15
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         features: [default features, no default features]
-        part: [0, 1, 2, 3]
+        part: [0, 1, 2, 3, 4]
         include:
           - { features: default features, flags: "" }
           - { features: no default features, flags: "--no-default-features" }
@@ -85,13 +85,20 @@ jobs:
 
       # The e2e tests start the plugin program `konoma-demo-clock` as a child process; nextest
       # does not build another package's binary, and a missing one fails the tests on purpose.
+      # Some tests run the package-metadata command offline to find the sources of the split-out
+      # crates, and that needs the whole graph downloaded, including crates only other platforms
+      # build. A warm cache hid this: a change of Cargo.lock then failed those tests.
+      - name: Fetch every dependency
+        if: matrix.part != 0
+        run: cargo fetch --locked
+
       - name: Build the demo plugin program
         if: matrix.part != 0
         run: cargo build -p konoma-demo-clock
 
-      - name: Test (${{ matrix.features }}, part ${{ matrix.part }}/3)
+      - name: Test (${{ matrix.features }}, part ${{ matrix.part }}/4)
         if: matrix.part != 0
-        run: cargo nextest run --workspace ${{ matrix.flags }} --partition count:${{ matrix.part }}/3
+        run: cargo nextest run --workspace ${{ matrix.flags }} --partition count:${{ matrix.part }}/4
 
       - name: Doctests (${{ matrix.features }})
         if: matrix.part == 0
@@ -111,17 +118,17 @@ jobs:
   # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
   # one live-OS-trash test is macOS-gated (freedesktop trash is environment-dependent on Linux).
   check-linux:
-    # Split by feature set and into three partitions like the macOS job: one job running both
+    # Split by feature set and into four partitions like the macOS job: one job running both
     # feature sets took 16-19 minutes, and one job per feature set later took up to 20. As there,
     # part 0 runs the checks that do not depend on the partition and not the partitioned suite.
-    name: ${{ matrix.part == 0 && 'checks' || 'test' }} (Linux x86_64, ${{ matrix.features }}, ${{ matrix.part == 0 && 'not partitioned' || format('part {0}/3', matrix.part) }})
+    name: ${{ matrix.part == 0 && 'checks' || 'test' }} (Linux x86_64, ${{ matrix.features }}, ${{ matrix.part == 0 && 'not partitioned' || format('part {0}/4', matrix.part) }})
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         features: [default features, no default features]
-        part: [0, 1, 2, 3]
+        part: [0, 1, 2, 3, 4]
         include:
           - { features: default features, flags: "" }
           - { features: no default features, flags: "--no-default-features" }
@@ -232,13 +239,20 @@ jobs:
 
       # The e2e tests start the plugin program `konoma-demo-clock` as a child process; nextest
       # does not build another package's binary, and a missing one fails the tests on purpose.
+      # Some tests run the package-metadata command offline to find the sources of the split-out
+      # crates, and that needs the whole graph downloaded, including crates only other platforms
+      # build. A warm cache hid this: a change of Cargo.lock then failed those tests.
+      - name: Fetch every dependency
+        if: matrix.part != 0
+        run: cargo fetch --locked
+
       - name: Build the demo plugin program
         if: matrix.part != 0
         run: cargo build -p konoma-demo-clock
 
-      - name: Test (${{ matrix.features }}, part ${{ matrix.part }}/3)
+      - name: Test (${{ matrix.features }}, part ${{ matrix.part }}/4)
         if: matrix.part != 0
-        run: cargo nextest run --workspace ${{ matrix.flags }} --partition count:${{ matrix.part }}/3
+        run: cargo nextest run --workspace ${{ matrix.flags }} --partition count:${{ matrix.part }}/4
 
       - name: Doctests (${{ matrix.features }})
         if: matrix.part == 0

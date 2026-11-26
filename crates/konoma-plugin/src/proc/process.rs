@@ -789,6 +789,48 @@ mod tests {
         completed.expect("TERM ended the leader; its zombie must not consume the grace");
     }
 
+    const TERM_MEMBER_ENV: &str = "KONOMA_TEST_TERM_MEMBER";
+    static TERM_WAKE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+    extern "C" fn note_term(_: libc::c_int) {
+        // SAFETY: write is async-signal-safe, and the helper never closes this descriptor.
+        unsafe {
+            libc::write(TERM_WAKE.load(Ordering::SeqCst), b"t".as_ptr().cast(), 1);
+        }
+    }
+
+    /// Not a test of its own: the live group member of the test below, run by re-executing this
+    /// test binary. It speaks on stderr (libtest owns stdout). A shell `trap` cannot play this
+    /// part: a TERM that lands after `echo ready` but before `read` blocks stays pending until
+    /// `read` gets a line, so the handler never reports it.
+    #[test]
+    #[ignore = "helper process of a_live_member_holds_the_grace_until_released_then_finishes_promptly"]
+    fn term_member_process() {
+        use std::os::fd::IntoRawFd;
+        if std::env::var_os(TERM_MEMBER_ENV).is_none() {
+            return;
+        }
+        let (mut term, wake) = UnixStream::pair().unwrap();
+        TERM_WAKE.store(wake.into_raw_fd(), Ordering::SeqCst);
+        // Installed before "ready": a TERM from then on waits in the socket until it is read.
+        // SAFETY: the action is initialized, and its handler only loads an atomic and writes.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = note_term as *const () as usize;
+            libc::sigemptyset(&mut action.sa_mask);
+            assert_eq!(
+                libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()),
+                0
+            );
+        }
+        let mut report = std::io::stderr();
+        report.write_all(b"ready\n").unwrap();
+        term.read_exact(&mut [0]).unwrap();
+        report.write_all(b"term\n").unwrap();
+        std::io::stdin().read_line(&mut String::new()).unwrap();
+        std::process::exit(0);
+    }
+
     #[test]
     fn a_live_member_holds_the_grace_until_released_then_finishes_promptly() {
         use std::io::{BufRead, BufReader};
@@ -801,15 +843,19 @@ mod tests {
         output
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        let script =
-            "trap 'echo term; IFS= read -r release; exit 0' TERM; echo ready; IFS= read -r initial";
+        let (_, module) = module_path!().split_once("::").unwrap();
         let mut member = TestChild(
-            Command::new("/bin/sh")
-                .args(["-c", script])
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    &format!("{module}::term_member_process"),
+                    "--exact",
+                    "--ignored",
+                ])
+                .env(TERM_MEMBER_ENV, "1")
                 .process_group(pid as i32)
                 .stdin(Stdio::piped())
-                .stdout(Stdio::from(OwnedFd::from(child_output)))
-                .stderr(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(OwnedFd::from(child_output)))
                 .spawn()
                 .unwrap(),
         );

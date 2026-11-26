@@ -783,8 +783,9 @@ fn host_gone_busy() {
     // A call that never looks at its flag; the answer never comes.
     r.act(1, "hang");
     hang_started(dir.as_path(), "a");
-    drop(r.to.take());
+    // Taken before the EOF that starts the grace: a stall here can only lengthen the measure.
     let t0 = Instant::now();
+    drop(r.to.take());
     let s = wait_exit(&mut r.child, 30);
     assert!(
         t0.elapsed() >= HOST_GONE_GRACE - Duration::from_millis(200),
