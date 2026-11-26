@@ -435,8 +435,10 @@ impl App {
         if let Ok((off, _)) = win.advance(0, top) {
             self.tab.preview_byte_top = off;
             self.tab.preview_top_line = top;
+            self.tab.preview_top_skip = 0;
             self.tab.preview_cursor_line = position.caret;
         }
+        self.wrap_follow_line(position.caret);
     }
 }
 

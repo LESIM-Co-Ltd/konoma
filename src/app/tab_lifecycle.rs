@@ -115,6 +115,7 @@ impl App {
             if self.tab.preview_cols != 0 {
                 t.preview_cols = self.tab.preview_cols;
                 t.preview_viewport = self.tab.preview_viewport;
+                t.preview_viewport_width = self.tab.preview_viewport_width;
             }
         }
         // The whole preview of a tab has one owner at a time (`PerTab::load_id`, the preview group
@@ -173,6 +174,7 @@ impl App {
         if t.preview_cols != 0 {
             self.tab.preview_cols = t.preview_cols;
             self.tab.preview_viewport = t.preview_viewport;
+            self.tab.preview_viewport_width = t.preview_viewport_width;
         }
         // The screen this tab replaces is left: its live work goes (the same drop a project screen
         // that covers a tab's screen makes, `leave_tab_view`).
@@ -474,7 +476,7 @@ impl App {
                 preview_kind, preview_scroll, preview_hscroll, table_cur_row, table_cur_col,
                 table_top_row, table_left_col, diff_view, diff_view_choice, diff_media_page,
                 diff_scroll_pending, diff_answer_awaited, pending, preview_byte_top,
-                preview_top_line, preview_cursor_line, preview_cursor_col, image_view, page,
+                preview_top_line, preview_top_skip, preview_cursor_line, preview_cursor_col, image_view, page,
                 repr, deck_pending_slide, focused_item, fence_zoom, fence_center, fence_return,
                 preview_search, search_input, search_pending, preview_from_diff,
                 diff_read_context,
@@ -493,7 +495,8 @@ impl App {
             // saved anchor.
             tree: [
                 id, root, open_dir, entries, selected, mode, preview_path, load_id,
-                preview_viewport, preview_cols, preview_viewport_drawn, selection,
+                preview_viewport, preview_viewport_width, preview_cols, preview_viewport_drawn,
+                selection,
                 visual_anchor, tree_filter, filter_input, changed_filter, changed_anchor_pending,
                 changed_anchor_row,
             ],
@@ -638,6 +641,7 @@ impl App {
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        self.tab.preview_top_skip = 0;
         // Just a reference reset — the file itself (if any) is still legitimately owned by the
         // *previous* tab's snapshot just taken by save_active() above, so it must not be deleted
         // here (see clear_command_out's doc comment for why this can't just call that).

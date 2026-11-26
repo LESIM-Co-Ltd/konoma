@@ -243,6 +243,7 @@ impl App {
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        self.tab.preview_top_skip = 0;
         // A fresh open: drop any leftover "scroll to first change" reservation before deciding, at
         // the bottom of this fn, whether to arm a new one for `path` — mirrors `App::enter_preview`'s
         // own up-front clear (`diff_scroll_pending`'s own doc comment).

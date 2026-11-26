@@ -106,7 +106,15 @@ pub struct TextFrame {
 
 impl TextFrame {
     pub(in crate::app) fn draw(&self, buf: &mut ratatui::buffer::Buffer, body: Rect) {
-        let mut para = Paragraph::new(self.lines.clone());
+        let mut lines = self.lines.clone();
+        if self.wrap {
+            // As the host: the caret must not split a cluster the rows were counted with.
+            lines = lines
+                .into_iter()
+                .map(konoma_widgets::wrap_view::whole_clusters)
+                .collect();
+        }
+        let mut para = Paragraph::new(lines);
         if let Some(b) = &self.border {
             let mut block = Block::bordered().title(super::document::path_title(&b.name));
             if let Some(e) = b.extent {

@@ -336,15 +336,21 @@ impl App {
         if !self.is_windowed() {
             return;
         }
-        let line0 = line.saturating_sub(1);
+        // A number past the end means the last line: the window and the caret never leave the text.
+        let Some(total) = self.win_total() else {
+            return;
+        };
+        let line0 = line.saturating_sub(1).min(total.saturating_sub(1));
         let top = line0.saturating_sub(3);
         if let Some(win) = self.preview_win.as_mut() {
             if let Ok((off, _)) = win.advance(0, top) {
                 self.tab.preview_byte_top = off;
                 self.tab.preview_top_line = top;
+                self.tab.preview_top_skip = 0;
                 self.tab.preview_cursor_line = line0;
             }
         }
+        self.wrap_follow_line(line0);
     }
 }
 

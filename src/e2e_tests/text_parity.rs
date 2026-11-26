@@ -664,6 +664,7 @@ struct GenText {
     id: String,
     owned: bool,
     file_lines: bool,
+    body: String,
 }
 
 fn gen_body() -> String {
@@ -689,6 +690,7 @@ impl konoma_plugin::Plugin for GenText {
         Ok(Box::new(GenSession {
             owned: self.owned,
             file_lines: self.file_lines,
+            body: self.body.clone(),
         }))
     }
 }
@@ -696,6 +698,7 @@ impl konoma_plugin::Plugin for GenText {
 struct GenSession {
     owned: bool,
     file_lines: bool,
+    body: String,
 }
 
 impl konoma_plugin::Session for GenSession {
@@ -705,7 +708,7 @@ impl konoma_plugin::Session for GenSession {
         _: &konoma_plugin::ViewCx,
     ) -> Result<konoma_plugin::View, konoma_plugin::Failure> {
         use konoma_plugin::view::{TextSource, TextView};
-        let body = gen_body();
+        let body = self.body.clone();
         let source = if self.owned {
             TextSource::Owned(body)
         } else {
@@ -739,6 +742,7 @@ fn the_caret_on_generated_text_agrees_with_the_host() {
                 id: id.clone(),
                 owned,
                 file_lines,
+                body: gen_body(),
             };
             let marker = crate::plugins::test_plugins::register(&name, Arc::new(mk()));
             let root = canon(&dir);
@@ -785,4 +789,395 @@ fn the_caret_on_generated_text_agrees_with_the_host() {
     assert!(checked >= 1700, "{checked}");
     assert!(carets >= 1480, "frames with the caret character: {carets}");
     assert!(some >= 850 && none >= 850, "{some} {none}");
+}
+
+/// Files whose lines wrap into many screen rows: wide chars, tabs, unbroken runs and one line far
+/// taller than the screen. `S07` starts line 7 and `E07` ends it.
+fn tall_fixtures() -> Vec<(&'static str, String)> {
+    let lines = |filler: &str| -> String {
+        (0..40)
+            .map(|i| {
+                let n = if i % 4 == 0 { 1 } else { 3 + i % 5 };
+                format!("S{i:02} {}E{i:02}\n", filler.repeat(n))
+            })
+            .collect()
+    };
+    let huge: String = (0..150).map(|i| format!("w{i:03} ")).collect();
+    vec![
+        ("tall-ascii.sh", lines("alpha bravo charlie delta ")),
+        ("tall-cjk.sh", lines("全角の長い文章がここに続きます。")),
+        ("tall-tabs.sh", lines("\tab\tcdefgh\tijklmnopqrstu\t")),
+        (
+            "tall-unbroken.sh",
+            lines("abcdefghijklmnopqrstuvwxyz0123456789"),
+        ),
+        ("tall-huge.sh", format!("S00 {huge}E00\nS39 last E39\n")),
+    ]
+}
+
+/// A wrapping text moves in screen rows: the end of the file is on the bottom row, the caret stays
+/// on screen, and the app draws what the host draws.
+#[test]
+fn the_wrapped_text_of_long_lines_agrees_with_the_host() {
+    let dir = sandbox("text-parity-tall");
+    for (name, body) in tall_fixtures() {
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+    let root = canon(&dir);
+    let run = |k: &str, n: usize| vec![k; n].join(" ");
+    let specs = [
+        "G".to_string(),
+        "G g".to_string(),
+        "G j <C-f>".to_string(),
+        run("j", 1),
+        run("j", 7),
+        run("j", 23),
+        format!("G {}", run("k", 9)),
+        run("<C-f>", 3),
+        format!("{} <C-b>", run("<C-f>", 4)),
+        run("<C-d>", 5),
+        format!("G {}", run("<C-u>", 3)),
+        "j $".to_string(),
+        "j $ 0".to_string(),
+        format!("j {}", run("l", 90)),
+    ];
+    let (mut checked, mut ends, mut carets) = (0usize, 0usize, 0usize);
+    for (name, _) in tall_fixtures() {
+        for (w, h) in [(60u16, 20u16), (30, 10)] {
+            for spec in &specs {
+                let what = format!("{name} {w}x{h} [{spec}]");
+                let host = host_text(&root, name, true, 4, (w, h), spec);
+                let app = app_text(&root.join(name), true, 4, (w, h - 1), spec);
+                let (hr, ar) = (frame_cells(&host.term), frame_cells(&app));
+                assert_eq!(
+                    hr,
+                    ar,
+                    "{what}: the frame differs\nhost:\n{}\napp:\n{}",
+                    rows_of(&host.term).join("\n"),
+                    rows_of(&app).join("\n")
+                );
+                let (hc, ac) = (caret_cells(&host.term), caret_cells(&app));
+                assert_eq!(hc, ac, "{what}: the caret and its line differ");
+                checked += 1;
+                carets += usize::from(ac.iter().any(|c| c.2 & 1 != 0));
+                if spec == "G" {
+                    // The last row inside the frame ends the last line (the last written row of a
+                    // file the frame holds whole).
+                    let last = ar[1..ar.len() - 1]
+                        .iter()
+                        .map(|r| r.trim_matches(['│', '█', ' ']))
+                        .rfind(|r| !r.is_empty() || !ar[0].contains("[All]"))
+                        .expect("a row");
+                    assert!(
+                        last.ends_with("E39"),
+                        "{what}:\n{}",
+                        rows_of(&app).join("\n")
+                    );
+                    assert!(ac.iter().any(|c| c.2 & 1 != 0), "{what}: no caret");
+                    ends += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 140);
+    assert_eq!(ends, 10);
+    assert!(carets > 115, "frames with the caret: {carets}");
+}
+
+/// The ways a text reaches the screen: a file read in place, and a plugin's own text handed over
+/// as one string or as lines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Handed {
+    File,
+    Owned,
+    Lines,
+}
+
+const HANDED: [Handed; 3] = [Handed::File, Handed::Owned, Handed::Lines];
+
+/// The host and the app showing `body` after `spec`, handed over the way `how` says.
+fn handed_text(
+    tag: &str,
+    how: Handed,
+    body: &str,
+    wrap: bool,
+    (w, h): (u16, u16),
+    spec: &str,
+) -> (Sim, Terminal<TestBackend>) {
+    let dir = sandbox(tag);
+    if how == Handed::File {
+        std::fs::write(dir.join("a.sh"), body).unwrap();
+        let root = canon(&dir);
+        let host = host_text(&root, "a.sh", wrap, 4, (w, h), spec);
+        let app = app_text(&root.join("a.sh"), wrap, 4, (w, h - 1), spec);
+        return (host, app);
+    }
+    std::fs::write(dir.join("a.gen"), "x").unwrap();
+    let id = format!("x-handed-{tag}");
+    let mk = || GenText {
+        id: id.clone(),
+        owned: how == Handed::Owned,
+        file_lines: true,
+        body: body.to_string(),
+    };
+    let marker = crate::plugins::test_plugins::register(tag, Arc::new(mk()));
+    let root = canon(&dir);
+    let mut cfg = crate::plugins::test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    cfg.ui.wrap = wrap;
+    let mut s = Sim::with_config_sized(&root, cfg, w, h);
+    s.select("a.gen");
+    s.enter();
+    s.draw();
+    for (code, mods) in presses(spec) {
+        s.press(code, mods);
+    }
+    s.term.clear().expect("clear");
+    s.draw();
+    let app = app_text_by(
+        Arc::new(mk()),
+        &root.join("a.gen"),
+        wrap,
+        4,
+        (w, h - 1),
+        spec,
+    );
+    (s, app)
+}
+
+/// The last row written inside the frame.
+fn last_row(term: &Terminal<TestBackend>) -> String {
+    let rows = frame_cells(term);
+    rows[1..rows.len() - 1]
+        .iter()
+        .map(|r| r.trim_end_matches(['│', '█', ' ']).trim_start_matches('│'))
+        .rfind(|r| !r.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A line longer than a reader keeps is cut where it is drawn, and counted as it is drawn: `G`
+/// reaches the end of what is shown, on every way a text arrives, in both hosts.
+#[test]
+fn the_end_of_a_very_long_line_is_reached_on_every_path() {
+    for how in HANDED {
+        for len in [12_000usize, 20_000] {
+            let body = format!("a\n{}END", "x".repeat(len));
+            let tag = format!("long-{how:?}-{len}").to_lowercase();
+            let (host, app) = handed_text(&tag, how, &body, true, (80, 20), "G");
+            // The longest line each reader keeps; handed-over text of a plugin is drawn whole
+            // (the app) and, handed as lines, by the host too.
+            let host_cut = match how {
+                Handed::File | Handed::Owned => len > 8 * 1024,
+                Handed::Lines => false,
+            };
+            let app_cut = how == Handed::File && len > 16 * 1024;
+            for (name, term, cut) in [("host", &host.term, host_cut), ("app", &app, app_cut)] {
+                let last = last_row(term);
+                let what = format!("{name} {how:?} {len}: {:#?}", rows_of(term));
+                if cut {
+                    assert!(last.ends_with('x'), "{what}");
+                } else {
+                    assert!(last.ends_with("END"), "{what}");
+                }
+                assert!(caret_cells(term).iter().any(|c| c.2 & 1 != 0), "{what}");
+            }
+            // A cut line ends where the reader cuts it: the bottom row is as full as the cut
+            // leaves it.
+            for (name, term, kept) in [
+                ("host", &host.term, host_cut.then_some(8 * 1024)),
+                ("app", &app, app_cut.then_some(16 * 1024)),
+            ] {
+                if let Some(kept) = kept {
+                    let wide = 80 - 2;
+                    let rest = (kept - 1) % wide + 1;
+                    assert_eq!(last_row(term).len(), rest, "{name} {how:?} {len}");
+                }
+            }
+        }
+    }
+}
+
+/// Cells split by the caret, a selection or a match take the rows the plain line takes.
+#[test]
+fn clusters_at_a_wrap_boundary_do_not_move_the_end() {
+    let clusters = [
+        "e\u{301}",
+        "\u{304b}\u{3099}",
+        "\u{2764}\u{fe0f}",
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+        "\u{1f1ef}\u{1f1f5}",
+    ];
+    let mut checked = 0;
+    for (n, cluster) in clusters.into_iter().enumerate() {
+        let body = format!("{}\nlast", format!("ab{cluster} ").repeat(60));
+        for right in [2usize, 3, 4] {
+            for w in [9u16, 10, 13] {
+                let spec = vec!["l"; right].join(" ");
+                let tag = format!("cluster-{n}-{right}-{w}");
+                let (host, app) = handed_text(&tag, Handed::File, &body, true, (w, 40), &spec);
+                let dir = sandbox(&format!("{tag}-still"));
+                std::fs::write(dir.join("a.sh"), &body).unwrap();
+                let root = canon(&dir);
+                let still = host_text(&root, "a.sh", true, 4, (w, 40), "");
+                for (name, term) in [("host", &host.term), ("app", &app)] {
+                    let rows = frame_cells(term);
+                    let at = |rows: &[String]| rows.iter().position(|r| r.contains("last"));
+                    assert_eq!(
+                        at(&rows),
+                        at(&frame_cells(&still.term)),
+                        "{name} cluster {n} l x{right} width {w}:\n{}",
+                        rows.join("\n")
+                    );
+                }
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 45);
+}
+
+/// Once the app has drawn a wrapping text, drawing it again reads nothing: a key that does
+/// nothing redraws the same frame from what was kept.
+#[test]
+fn the_app_reads_nothing_for_a_second_frame_of_a_wrapping_text() {
+    let dir = sandbox("app-second-frame");
+    let long = format!("a\n{}\nz\n", "x".repeat(3 * 1024 * 1024));
+    std::fs::write(dir.join("long.sh"), &long).unwrap();
+    let tall: String = (0..60)
+        .map(|i| format!("S{i:02} {}\n", "alpha ".repeat(20)))
+        .collect();
+    std::fs::write(dir.join("tall.sh"), tall).unwrap();
+    let root = canon(&dir);
+    let mut checked = 0;
+    for name in ["long.sh", "tall.sh"] {
+        for spec in ["", "j", "G", "G k"] {
+            let reads = |idle: usize| {
+                let spec = format!("{spec}{}", " z".repeat(idle));
+                let before = konoma_widgets::window::disk_reads();
+                let term = app_text(&root.join(name), true, 4, (60, 19), spec.trim());
+                (konoma_widgets::window::disk_reads() - before, term)
+            };
+            let (once, first) = reads(1);
+            let (more, last) = reads(6);
+            assert_eq!(rows_of(&first), rows_of(&last), "{name} [{spec}]");
+            assert!(once > 0, "{name} [{spec}]: the counter counts");
+            assert_eq!(more, once, "{name} [{spec}]: five more frames read");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 8);
+}
+
+/// Empty files, views a few cells wide and selections draw the same in both hosts while wrapping.
+#[test]
+fn empty_and_very_narrow_wrapped_texts_agree() {
+    let long = "word 全角の長い文章\t🙂 ".repeat(12) + "END\nshort\n";
+    let mut checked = 0;
+    for (tag, body) in [("empty", ""), ("newline", "\n"), ("long", long.as_str())] {
+        let dir = sandbox(&format!("narrow-parity-{tag}"));
+        std::fs::write(dir.join("a.sh"), body).unwrap();
+        let root = canon(&dir);
+        for width in [4u16, 7, 13, 40] {
+            for spec in ["", "G", "j", "<C-f> <C-d>", "G g $", "G <C-b> k"] {
+                let host = host_text(&root, "a.sh", true, 4, (width, 12), spec);
+                let app = app_text(&root.join("a.sh"), true, 4, (width, 11), spec);
+                let rows = |term: &Terminal<TestBackend>| {
+                    let all = frame_cells(term);
+                    all[1..all.len() - 1].to_vec()
+                };
+                let what = format!("{tag} {width} {spec:?}");
+                assert_eq!(rows(&host.term), rows(&app), "{what}");
+                assert_eq!(caret_cells(&host.term), caret_cells(&app), "{what}");
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 72);
+}
+
+/// The app, with the file rewritten shorter between two keys: the next frame is inside the new
+/// text, and `G` shows its end.
+#[test]
+fn the_app_stays_inside_a_wrapping_text_that_shrinks_outside() {
+    let text = |n: usize| -> String {
+        (0..n)
+            .map(|i| format!("S{i:02} {}E{i:02}\n", "alpha bravo ".repeat(8)))
+            .collect()
+    };
+    for (kept, spec) in [
+        (20usize, "k"),
+        (20, "G"),
+        (1, "k"),
+        (1, "G"),
+        (0, "k"),
+        (0, "G"),
+    ] {
+        let dir = sandbox(&format!("shrink-app-{kept}-{spec}").to_lowercase());
+        let path = canon(&dir).join("a.sh");
+        std::fs::write(&path, text(60)).unwrap();
+        let mut opened = open_file(
+            vec![Arc::new(konoma_code::CodePlugin) as Arc<dyn konoma_plugin::Plugin>],
+            &path,
+            "en",
+            TermCaps::new(),
+        )
+        .expect("opens");
+        let mut term = Terminal::new(Screen::new(40, 12)).unwrap();
+        let cx = AppCx {
+            lang: "en".into(),
+            term: TermCaps::new(),
+            title: String::new(),
+            shows: opened.shows.clone(),
+            path: opened.path.clone(),
+            open_dir: opened.path.parent().map(|p| p.to_path_buf()),
+            display: Display {
+                wrap: true,
+                ..Display::default()
+            },
+            launch: Some(super::table_parity::default_launch(&opened.manifest)),
+            ..AppCx::default()
+        };
+        let mut step = 0;
+        let mut it = std::iter::from_fn(|| {
+            step += 1;
+            let key = match step {
+                1 => "G",
+                2 => {
+                    std::fs::write(&path, text(kept)).unwrap();
+                    spec
+                }
+                _ => return None,
+            };
+            let (code, mods) = presses(key)[0];
+            let ev = KeyEvent::new(code, mods);
+            Some(AppEvent::Key(
+                konoma_plugin::app::key_from_crossterm(&ev).expect("a key"),
+            ))
+        });
+        run_with(
+            &mut term,
+            &mut *opened.session,
+            &mut it,
+            &cx,
+            &AppKeys::defaults(),
+        )
+        .unwrap();
+        let screen = term.backend().1.clone();
+        let rows: Vec<String> = (0..screen.area.height)
+            .map(|y| {
+                (0..screen.area.width)
+                    .map(|x| screen[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        let what = format!("kept {kept} {spec}: {rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains("E59")), "{what}");
+        if kept > 0 {
+            let last = format!("E{:02}", kept - 1);
+            assert!(rows.iter().any(|r| r.contains(&last)), "{what}");
+        } else {
+            assert!(!rows.iter().any(|r| r.contains('S')), "{what}");
+        }
+    }
 }
