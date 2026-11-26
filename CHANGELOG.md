@@ -6,6 +6,7 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- `THIRD-PARTY-LICENSES.md` now carries the copyright and license notices for the code in `konoma-mermaid-core` that is ported from or reproduces `dagre.js`, `graphlib`, `dagre-d3-es`, `d3-shape`, `mermaid` and `d3-sankey`, and includes the OFL 1.1 text and copyright notice of the embedded KaTeX fonts.
 - konoma now depends on the split plugin and core crates (`konoma-table`, `konoma-code`, `konoma-markdown`, `konoma-mermaid`, `konoma-math`, `konoma-media`, `konoma-office`, `konoma-vcs` and their `*-core` crates) by their crates.io version, and their sources are removed from this repository.
 
 ## [0.32.0] - 2026-11-25
