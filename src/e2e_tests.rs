@@ -19953,3 +19953,6 @@ mod vcs_standalone_tool;
 mod vcs_worktrees_port;
 #[cfg(feature = "git")]
 mod vcs_write_port;
+
+#[cfg(test)]
+mod wrap_scroll;

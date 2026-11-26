@@ -857,7 +857,14 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     // The block's geometry doesn't depend on its title (with a top border, the title sits *on* that
     // border row), so measure the inner rect first: the title needs the scroll label, which needs
     // the viewport height. Same ordering trick `render_gitdiff` already uses for its width.
-    let extent = app.window_scroll_extent(Block::bordered().inner(area).height);
+    // The size goes first: a wrapping text's window and extent are counted in its screen rows.
+    // While only a spinner is drawn there are no rows yet (a width of 0): the first draw of the
+    // text counts them and brings the caret on screen.
+    let size = Block::bordered().inner(area);
+    let waiting = app.is_highlight_pending() && app.loading_is_indicator();
+    app.set_windowed_size(size.height, if waiting { 0 } else { size.width });
+    app.wrap_settle_if_wrapping();
+    let extent = app.window_scroll_extent(size.height);
     let mut title = app
         .tab
         .preview_path
@@ -883,7 +890,6 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
         block = block.title(scroll_title(app.lang, e));
     }
     let inner = block.inner(area);
-    app.tab.preview_viewport = inner.height;
 
     // Indicator style: on a cold language's first time, show a spinner (the classic braille spinner,
     // not an emoji) centered on screen. Compilation runs on a background thread, and the run loop
@@ -904,7 +910,14 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let lines = app.windowed_lines(inner.height, inner.width);
+    let mut lines = app.windowed_lines(inner.height, inner.width);
+    if app.cfg.ui.wrap {
+        // The rows were counted with every cluster whole; a caret or a match must not split one.
+        lines = lines
+            .into_iter()
+            .map(konoma_widgets::wrap_view::whole_clusters)
+            .collect();
+    }
     let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
 
     let wrap = app.cfg.ui.wrap;
@@ -929,8 +942,9 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
         max_line_cols.saturating_sub(inner.width as usize) as u16
     };
     app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-    // Vertical is already cut out by the window, so 0. Only horizontal scrolls.
-    let para = para.scroll((0, app.tab.preview_hscroll));
+    // Vertical is cut out by the window; only the rows of its first line that are scrolled past
+    // (a wrapping text) remain. Horizontal scrolls.
+    let para = para.scroll((app.windowed_row_skip(), app.tab.preview_hscroll));
     frame.render_widget(para, area);
     if let Some(e) = extent {
         render_scrollbar(frame, area, e);

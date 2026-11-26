@@ -325,6 +325,8 @@ impl App {
             _ => {
                 self.tab.preview_byte_top = off;
                 self.tab.preview_top_line = a;
+                self.tab.preview_top_skip = 0;
+                self.wrap_show_match();
             }
         }
     }

@@ -113,6 +113,7 @@ mod table_actions;
 #[cfg(test)]
 pub(crate) use konoma_base::discard::flush_discards;
 mod text_plugin;
+mod wrap_scroll;
 
 use md_text::*;
 // Referenced by `main`'s watcher/run loop as `crate::app::FsBurstKinds` (it builds the value; the
@@ -2009,6 +2010,9 @@ pub(crate) struct PerTab {
     pub(crate) preview_hscroll: u16,
     /// Height (in rows) of the text display area at the last render. Used as the page size for paging.
     pub(crate) preview_viewport: u16,
+    /// The width of the windowed text the last draw gave it (0 before the first one): what the
+    /// screen rows of a wrapping preview are counted at.
+    preview_viewport_width: u16,
     /// Width (in columns) of the preview content area at the last render that measured it
     /// (`ui::preview::render`); 0 until the preview has been drawn. A plugin's `ViewReq::cols`.
     pub(crate) preview_cols: u16,
@@ -2095,6 +2099,9 @@ pub(crate) struct PerTab {
     /// position saved with it is a byte offset only while the file still is that file.
     preview_win_stamp: Option<(u64, Option<std::time::SystemTime>)>,
     preview_top_line: usize,
+    /// The screen rows of the top line already scrolled past: 0 unless the text wraps (see
+    /// `app/wrap_scroll.rs`).
+    preview_top_skip: usize,
     /// Text-mode `PreviewKind::Command`'s generated output (the `{out}` artifact / captured
     /// stdout) — the windowed reader opens **this** instead of `preview_path` (see
     /// `App::windowed_src`), so the temp path never leaks into the title. `None` for every other
@@ -2217,6 +2224,7 @@ impl Default for PerTab {
             preview_scroll: 0,
             preview_hscroll: 0,
             preview_viewport: 0,
+            preview_viewport_width: 0,
             preview_cols: 0,
             table_cur_row: 0,
             table_cur_col: 0,
@@ -2235,6 +2243,7 @@ impl Default for PerTab {
             preview_byte_top: 0,
             preview_win_stamp: None,
             preview_top_line: 0,
+            preview_top_skip: 0,
             command_out: None,
             preview_cursor_line: 0,
             preview_cursor_col: 0,
@@ -3666,6 +3675,7 @@ impl App {
         if total == 0 {
             self.tab.preview_byte_top = 0;
             self.tab.preview_top_line = 0;
+            self.tab.preview_top_skip = 0;
             self.tab.preview_cursor_line = 0;
             self.tab.preview_cursor_col = 0;
             return;
@@ -3681,6 +3691,9 @@ impl App {
         };
         if let Ok((off, reached)) = win.advance(0, top_line) {
             self.tab.preview_byte_top = off;
+            if self.tab.preview_top_line != reached {
+                self.tab.preview_top_skip = 0;
+            }
             self.tab.preview_top_line = reached;
             self.tab.preview_cursor_line = cursor_line.min(total - 1);
             self.tab.preview_cursor_col = cursor_col;
@@ -3832,6 +3845,7 @@ impl App {
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        self.tab.preview_top_skip = 0;
         // A fresh preview entry: drop any leftover "scroll to first change" reservation left behind
         // by whatever this tab was showing before — a stray one from a `Rendered` diff that never
         // got consumed (rounded down to `Source` on `Unavailable`, or simply never rendered before
@@ -4643,6 +4657,7 @@ impl App {
     pub(super) fn reset_view_for_repr_change(&mut self) {
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        self.tab.preview_top_skip = 0;
         self.tab.preview_scroll = 0;
         self.tab.preview_hscroll = 0;
         self.tab.preview_cursor_line = 0;
@@ -4729,6 +4744,7 @@ impl App {
         self.hl_warming = false;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        self.tab.preview_top_skip = 0;
         self.md_items.clear();
         self.tab.focused_item = None;
         self.tab.preview_search = None;
@@ -4999,6 +5015,9 @@ impl App {
     /// caret and the window always move together on a page/half-page step.
     fn windowed_page_scroll(&mut self, delta: i32) {
         // The total is counted (and cached) first so the window stops at the last page.
+        if self.wrap_move(|w, pos, line, col| w.page(pos, line, col, delta)) {
+            return;
+        }
         let total = self.win_total().unwrap_or(usize::MAX);
         let mut c = self.caret();
         c.page(delta, total, self.tab.preview_viewport as usize);
@@ -5019,6 +5038,7 @@ impl App {
     fn apply_caret(&mut self, c: konoma_widgets::caret::Caret) {
         let moved = c.top as i64 - self.tab.preview_top_line as i64;
         if moved != 0 {
+            self.tab.preview_top_skip = 0;
             self.win_scroll_lines(moved.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
         }
         self.tab.preview_cursor_line = c.line;
@@ -5028,9 +5048,16 @@ impl App {
     /// To the top of the preview.
     pub fn preview_to_top(&mut self) {
         if self.is_windowed() {
+            if self.wrap_move(|w, _, _, col| {
+                let (pos, col) = w.to_top(col);
+                (pos, 0, col)
+            }) {
+                return;
+            }
             let mut c = self.caret();
             c.to_top();
             self.tab.preview_byte_top = 0;
+            self.tab.preview_top_skip = 0;
             self.tab.preview_top_line = c.top;
             self.tab.preview_cursor_line = c.line;
         } else {
@@ -5046,6 +5073,10 @@ impl App {
             self.tab.preview_scroll = u16::MAX;
             return;
         }
+        if self.wrap_move(|w, _, _, col| w.to_bottom(col)) {
+            return;
+        }
+        self.tab.preview_top_skip = 0;
         let vh = self.tab.preview_viewport.max(1) as usize;
         // Always fetch the total line count (it's cached) since clamping the line cursor to the end needs it.
         let total = self.win_total();
@@ -5099,6 +5130,9 @@ impl App {
         let total = self.win_total().unwrap_or(usize::MAX);
         let mut c = self.caret();
         c.step(delta, total, self.tab.preview_viewport as usize);
+        if self.wrap_follow_line(c.line) {
+            return;
+        }
         self.apply_caret(c);
     }
 
@@ -5147,9 +5181,16 @@ impl App {
         let h = height.max(1) as usize;
         // If a resize etc. put it past the end, clamp it (also correct the line number from the total line count).
         let top0 = self.tab.preview_byte_top;
+        let wraps = self.windowed_wraps();
+        if wraps {
+            self.wrap_settle();
+        } else {
+            self.tab.preview_top_skip = 0;
+        }
         let maxt = self
             .preview_win
             .as_mut()
+            .filter(|_| !wraps)
             .and_then(|w| w.last_page_top(h).ok());
         if let Some(maxt) = maxt {
             if top0 > maxt {
@@ -5221,7 +5262,7 @@ impl App {
                     let raw = self
                         .preview_win
                         .as_mut()
-                        .and_then(|w| w.read_lines(top, h).ok())
+                        .and_then(|w| w.read_lines_kept(top, h).ok())
                         .unwrap_or_default();
                     let lines = if want_syntax {
                         let src = raw.join("\n");
@@ -5246,7 +5287,7 @@ impl App {
                 let raw = self
                     .preview_win
                     .as_mut()
-                    .and_then(|w| w.read_lines(top, h).ok())
+                    .and_then(|w| w.read_lines_kept(top, h).ok())
                     .unwrap_or_default();
                 raw.into_iter().map(Line::from).collect()
             };
@@ -5354,6 +5395,9 @@ impl App {
         // `last_page_top` is memoized per count on the FileWindow, so this costs nothing per frame
         // after the first (`preview::window::FileWindow::last_page`).
         let count = rows.max(1) as usize;
+        if self.windowed_wraps() {
+            return self.wrap_scroll_extent();
+        }
         let w = self.preview_win.as_mut()?;
         let len = w.len();
         let max = w.last_page_top(count).unwrap_or(0);
@@ -5397,6 +5441,10 @@ impl App {
         self.path_style = o.path_style;
         if effect.relayout {
             self.md_cache = None;
+            // The rows of the lines changed: the top line starts again at its first row, and a
+            // caret that was on screen stays there.
+            self.tab.preview_top_skip = 0;
+            self.wrap_keep_caret();
         }
         if effect.hscroll_home {
             self.tab.preview_hscroll = 0;
@@ -5600,8 +5648,18 @@ fn with_preview_diff_gutter(
 /// Prepend a line-number gutter (right-aligned + a space) to each line. The first line's number is `top_line+1` (1-based).
 /// A dim color (DarkGray) distinguishes it from the body. The original line style (background, etc.) is kept.
 fn with_line_numbers(lines: Vec<Line<'static>>, top_line: usize) -> Vec<Line<'static>> {
-    use ratatui::style::{Color, Style};
     let last = top_line + lines.len().max(1);
+    with_line_numbers_up_to(lines, top_line, last)
+}
+
+/// [`with_line_numbers`] with the gutter as wide as the number `last` (the last line of the
+/// window the lines are part of).
+fn with_line_numbers_up_to(
+    lines: Vec<Line<'static>>,
+    top_line: usize,
+    last: usize,
+) -> Vec<Line<'static>> {
+    use ratatui::style::{Color, Style};
     let width = last.to_string().len().max(3); // guarantee at least 3 digits of width
     lines
         .into_iter()

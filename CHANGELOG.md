@@ -8,6 +8,11 @@ All notable changes to konoma are documented in this file. The format is based o
 
 - konoma now depends on the split plugin and core crates (`konoma-table`, `konoma-code`, `konoma-markdown`, `konoma-mermaid`, `konoma-math`, `konoma-media`, `konoma-office`, `konoma-vcs` and their `*-core` crates) by their crates.io version, and their sources are removed from this repository.
 
+### Fixed
+
+- A wrapped text or code preview with long lines no longer hides the last lines: `G` ends with the end of the last line on the bottom row, in konoma and in the standalone app. The position now counts screen rows, so the window follows the caret through `j`/`k`, the page and half-page keys, column moves, search matches and line jumps, and a line taller than the screen can be read through.
+- A pasted line number past the end of a file (`path:999`) now goes to the last line; before, the line numbers beside the text could stop matching it.
+
 ## [0.32.0] - 2026-11-25
 
 - Plugin architecture, stage 5: the standard feature crates are published on crates.io (`konoma-base`, `konoma-svg`, `konoma-plugin`, `konoma-widgets` and the `*-core` / plugin crates). Eight of them (table, code, markdown, mermaid, math, media, office, vcs) also live in their own repositories under LESIM-Co-Ltd, split with their history.

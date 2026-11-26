@@ -29,6 +29,8 @@ crossterm.workspace = true
 # `ImageViewer` hands resize jobs to the host's worker through ratatui-image's tokio channel.
 tokio.workspace = true
 unicode-width.workspace = true
+# Grapheme clusters, as ratatui segments them.
+unicode-segmentation.workspace = true
 # ```mermaid fences that are not drawn as pictures render as Unicode box-drawing text.
 mermaid-text.workspace = true
 # The Markdown renderer walks the same parser the block model uses.

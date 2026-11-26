@@ -140,6 +140,7 @@ impl App {
             let mut c = self.caret();
             c.col_move(dir);
             self.tab.preview_cursor_col = c.col;
+            self.wrap_follow_column();
         } else {
             self.preview_hscroll(dir * 2);
         }
@@ -151,6 +152,7 @@ impl App {
             let mut c = self.caret();
             c.col_home();
             self.tab.preview_cursor_col = c.col;
+            self.wrap_follow_column();
         } else {
             self.preview_hscroll_home();
         }
@@ -162,6 +164,7 @@ impl App {
             let mut c = self.caret();
             c.col_end();
             self.tab.preview_cursor_col = c.col;
+            self.wrap_follow_column();
         } else {
             self.preview_hscroll_end();
         }

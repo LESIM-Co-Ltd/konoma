@@ -40,6 +40,7 @@ fn read_capped_line<R: BufRead>(r: &mut R, out: &mut Vec<u8>) -> std::io::Result
 
 /// The number of lines of a file (an unterminated last line counts; an empty file has none).
 pub fn count_lines(path: &Path) -> std::io::Result<usize> {
+    konoma_widgets::window::note_disk_read();
     let mut r = BufReader::new(File::open(path)?);
     let mut n = 0;
     let mut line = Vec::new();
@@ -64,6 +65,7 @@ pub fn clean_line(bytes: &[u8]) -> String {
 
 /// The `n` lines from line `start` (0-based), cleaned for drawing.
 pub fn read_window(path: &Path, start: usize, n: usize) -> std::io::Result<Vec<String>> {
+    konoma_widgets::window::note_disk_read();
     let mut r = BufReader::new(File::open(path)?);
     let mut line = Vec::new();
     for _ in 0..start {
@@ -88,10 +90,20 @@ pub fn extent_of_lines(lens: &[u64], scroll: usize, rows: usize) -> ScrollExtent
     ScrollExtent::new(start_of(scroll), max, len.saturating_sub(max))
 }
 
+pub type Stamp = Option<(u64, Option<std::time::SystemTime>)>;
+
+pub fn stamp_of(path: &Path) -> Stamp {
+    std::fs::metadata(path)
+        .map(|m| (m.len(), m.modified().ok()))
+        .ok()
+}
+
 /// A file measured by the reader the host uses, with the byte where the last asked line starts
 /// (a scroll by a line or a page walks on from there).
 pub struct ByteWindow {
     path: std::path::PathBuf,
+    /// The version of the file the reader holds: its length and when it was written.
+    stamp: Stamp,
     reader: FileWindow,
     /// A line, and the byte it starts at.
     anchor: (usize, u64),
@@ -106,18 +118,7 @@ pub fn file_extent(
     scroll: usize,
     rows: usize,
 ) -> ScrollExtent {
-    let len_now = std::fs::metadata(path).map(|m| m.len()).ok();
-    let fresh = slot
-        .as_ref()
-        .is_some_and(|w| w.path == path && Some(w.reader.len()) == len_now);
-    if !fresh {
-        *slot = FileWindow::open(path).ok().map(|reader| ByteWindow {
-            path: path.to_path_buf(),
-            reader,
-            anchor: (0, 0),
-        });
-    }
-    let Some(w) = slot.as_mut() else {
+    let Some(w) = byte_window(slot, path) else {
         return ScrollExtent::default();
     };
     let (from_line, from_byte) = if w.anchor.0 <= scroll {
@@ -132,6 +133,41 @@ pub fn file_extent(
     w.anchor = (scroll, top);
     let max = w.reader.last_page_top(rows.max(1)).unwrap_or(0);
     ScrollExtent::new(top, max, w.reader.len().saturating_sub(max))
+}
+
+/// The reader `slot` keeps between frames, opened again when the file changed. It cuts a line
+/// where [`read_window`] cuts it.
+pub fn byte_window<'a>(
+    slot: &'a mut Option<ByteWindow>,
+    path: &Path,
+) -> Option<&'a mut ByteWindow> {
+    let stamp = stamp_of(path);
+    let fresh = slot
+        .as_ref()
+        .is_some_and(|w| w.path == path && w.stamp == stamp);
+    if !fresh {
+        *slot = FileWindow::open_capped(path, MAX_LINE_BYTES)
+            .ok()
+            .map(|reader| ByteWindow {
+                path: path.to_path_buf(),
+                stamp,
+                reader,
+                anchor: (0, 0),
+            });
+    }
+    slot.as_mut()
+}
+
+impl ByteWindow {
+    /// The reader, and a line whose first byte is known.
+    pub fn parts(&mut self) -> (&mut FileWindow, (usize, u64)) {
+        (&mut self.reader, self.anchor)
+    }
+
+    /// Remember that line `at.0` starts at the byte `at.1`.
+    pub fn set_anchor(&mut self, at: (usize, u64)) {
+        self.anchor = at;
+    }
 }
 
 #[cfg(test)]

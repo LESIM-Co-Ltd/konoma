@@ -76,6 +76,21 @@ fn skip_to_newline<R: BufRead>(reader: &mut R) -> std::io::Result<u64> {
     }
 }
 
+thread_local! {
+    static DISK_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has gone to a file to read lines or to find line starts. A frame
+/// that draws what the frame before drew adds nothing; the tests hold the readers to that.
+pub fn disk_reads() -> u64 {
+    DISK_READS.with(std::cell::Cell::get)
+}
+
+/// Counts one trip to a file (see [`disk_reads`]).
+pub fn note_disk_read() {
+    DISK_READS.with(|n| n.set(n.get() + 1));
+}
+
 /// Reader that windows over a file. Holds a `File` and seeks on each request to read.
 pub struct FileWindow {
     file: File,
@@ -84,17 +99,108 @@ pub struct FileWindow {
     /// reopens the window when the file changes), so the answer varies only with `count` —
     /// without this, every frame paid an EOF seek + backward scan just for the scroll clamp.
     last_page: Option<(usize, u64)>,
+    /// The longest line materialized, in bytes.
+    cap: usize,
+    /// What the `*_kept` readers have answered, the most recently asked last. A draw asks for the
+    /// same few windows on every frame, and a very long line is walked to its end each time it is
+    /// read. As long-lived as this instance, which is one version of the file.
+    kept: Vec<(Asked, Answer)>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    Lines(u64),
+    Advance(u64, usize),
+    Retreat(u64, usize),
+}
+
+enum Answer {
+    /// The lines, and how many were asked for.
+    Lines(usize, Vec<String>),
+    Moved(u64, usize),
+}
+
+/// The most answers kept, and the most bytes of lines among them.
+const KEPT_MOST: usize = 32;
+const KEPT_BYTES: usize = 8 * 1024 * 1024;
 
 impl FileWindow {
     pub fn open(path: &Path) -> std::io::Result<Self> {
+        Self::open_capped(path, MAX_LINE_BYTES)
+    }
+
+    /// [`FileWindow::open`] for a host that keeps `cap` bytes of a line instead of
+    /// [`MAX_LINE_BYTES`]. The lines it counts and the lines it draws both come from here.
+    pub fn open_capped(path: &Path, cap: usize) -> std::io::Result<Self> {
         let file = File::open(path)?;
         let len = file.metadata()?.len();
         Ok(Self {
             file,
             len,
             last_page: None,
+            cap,
+            kept: Vec::new(),
         })
+    }
+
+    /// The answer kept for `asked`, moved to the most recent place.
+    fn kept(&mut self, asked: Asked, count: usize) -> Option<&Answer> {
+        let at = self
+            .kept
+            .iter()
+            .position(|(a, v)| *a == asked && !matches!(v, Answer::Lines(n, _) if *n < count))?;
+        let entry = self.kept.remove(at);
+        self.kept.push(entry);
+        self.kept.last().map(|(_, v)| v)
+    }
+
+    fn keep(&mut self, asked: Asked, answer: Answer) {
+        self.kept.retain(|(a, _)| *a != asked);
+        self.kept.push((asked, answer));
+        let bytes = |v: &Answer| match v {
+            Answer::Lines(_, lines) => lines.iter().map(String::len).sum(),
+            Answer::Moved(..) => 0,
+        };
+        let mut total: usize = self.kept.iter().map(|(_, v)| bytes(v)).sum();
+        while self.kept.len() > 1 && (self.kept.len() > KEPT_MOST || total > KEPT_BYTES) {
+            total -= bytes(&self.kept.remove(0).1);
+        }
+    }
+
+    /// [`FileWindow::read_lines`] for what is drawn: the same question reads the file once.
+    pub fn read_lines_kept(&mut self, top: u64, count: usize) -> std::io::Result<Vec<String>> {
+        if top >= self.len || count == 0 {
+            return Ok(Vec::new());
+        }
+        let asked = Asked::Lines(top);
+        if let Some(Answer::Lines(_, lines)) = self.kept(asked, count) {
+            return Ok(lines.iter().take(count).cloned().collect());
+        }
+        let lines = self.read_lines(top, count)?;
+        self.keep(asked, Answer::Lines(count, lines.clone()));
+        Ok(lines)
+    }
+
+    /// [`FileWindow::advance`], asked of the file once.
+    pub fn advance_kept(&mut self, from: u64, n: usize) -> std::io::Result<(u64, usize)> {
+        let asked = Asked::Advance(from, n);
+        if let Some(&Answer::Moved(at, moved)) = self.kept(asked, 0) {
+            return Ok((at, moved));
+        }
+        let (at, moved) = self.advance(from, n)?;
+        self.keep(asked, Answer::Moved(at, moved));
+        Ok((at, moved))
+    }
+
+    /// [`FileWindow::retreat`], asked of the file once.
+    pub fn retreat_kept(&mut self, from: u64, n: usize) -> std::io::Result<(u64, usize)> {
+        let asked = Asked::Retreat(from, n);
+        if let Some(&Answer::Moved(at, moved)) = self.kept(asked, 0) {
+            return Ok((at, moved));
+        }
+        let (at, moved) = self.retreat(from, n)?;
+        self.keep(asked, Answer::Moved(at, moved));
+        Ok((at, moved))
     }
 
     // The byte length of the file; "is it empty" is never asked of a window.
@@ -113,6 +219,8 @@ impl FileWindow {
         if top >= self.len || count == 0 {
             return Ok(Vec::new());
         }
+        note_disk_read();
+        let cap = self.cap as u64;
         self.file.seek(SeekFrom::Start(top))?;
         let mut reader = BufReader::new(&mut self.file);
         let mut out = Vec::with_capacity(count);
@@ -123,9 +231,7 @@ impl FileWindow {
             buf.clear();
             // `Take` bounds this one line's read; the wrapper is dropped each iteration, so the
             // allowance resets per line.
-            let n = (&mut reader)
-                .take(MAX_LINE_BYTES as u64)
-                .read_until(b'\n', &mut buf)?;
+            let n = (&mut reader).take(cap).read_until(b'\n', &mut buf)?;
             if n == 0 {
                 break; // EOF
             }
@@ -149,6 +255,7 @@ impl FileWindow {
         if n == 0 || from >= self.len {
             return Ok((from.min(self.len), 0));
         }
+        note_disk_read();
         self.file.seek(SeekFrom::Start(from))?;
         let mut pos = from;
         let mut found = 0usize;
@@ -186,6 +293,7 @@ impl FileWindow {
         while end > 0 {
             let chunk_len = (CHUNK as u64).min(end) as usize;
             let start = end - chunk_len as u64;
+            note_disk_read();
             self.file.seek(SeekFrom::Start(start))?;
             let slice = &mut buf[..chunk_len];
             self.file.read_exact(slice)?;
@@ -207,6 +315,7 @@ impl FileWindow {
         if self.len == 0 {
             return Ok(0);
         }
+        note_disk_read();
         self.file.seek(SeekFrom::Start(0))?;
         let mut count = 0usize;
         let mut last = 0u8;
@@ -248,6 +357,7 @@ impl FileWindow {
         if q.is_empty() {
             return Ok(Vec::new());
         }
+        note_disk_read();
         self.file.seek(SeekFrom::Start(0))?;
         let mut reader = BufReader::new(&mut self.file);
         let mut offset = 0u64;
@@ -331,6 +441,7 @@ impl FileWindow {
         while end > 0 {
             let chunk_len = (CHUNK as u64).min(end) as usize;
             let start = end - chunk_len as u64;
+            note_disk_read();
             self.file.seek(SeekFrom::Start(start))?;
             let slice = &mut buf[..chunk_len];
             self.file.read_exact(slice)?;
@@ -345,6 +456,7 @@ impl FileWindow {
     }
 
     fn byte_at(&mut self, pos: u64) -> std::io::Result<u8> {
+        note_disk_read();
         self.file.seek(SeekFrom::Start(pos))?;
         let mut b = [0u8; 1];
         self.file.read_exact(&mut b)?;

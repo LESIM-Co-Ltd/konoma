@@ -1933,6 +1933,8 @@ struct State {
     reopened_as: Option<ReopenedAs>,
     /// The first line shown of a text.
     scroll: usize,
+    /// What a text that wraps keeps besides `scroll` (see `wrap_text`).
+    wrap: super::wrap_text::WrapWindow,
     change_at: Option<usize>,
     /// The text on screen has the caret (the file's text in the host's frame).
     caret_on: bool,
@@ -1952,7 +1954,7 @@ struct State {
     /// How the text and the documents look.
     display: super::Display,
     /// The number of lines of a text file, counted once.
-    counted: Option<(std::path::PathBuf, usize)>,
+    counted: Option<(std::path::PathBuf, super::window::Stamp, usize)>,
     /// The reader of a text file that measures where the window is, in bytes.
     win: Option<window::ByteWindow>,
     /// The height of the body at the last draw (the page of `PageUp` / `PageDown`).
@@ -2034,6 +2036,7 @@ pub(in crate::app) struct FileLoopState {
 #[derive(Clone)]
 pub(in crate::app) struct ViewPosition {
     scroll: usize,
+    skip: usize,
     change_at: Option<usize>,
     caret_on: bool,
     caret_line: usize,
@@ -2076,6 +2079,7 @@ impl FileLoopState {
         let State {
             // The position itself.
             scroll,
+            wrap,
             change_at,
             caret_on,
             caret_line,
@@ -2118,6 +2122,7 @@ impl FileLoopState {
         } = st;
         ViewPosition {
             scroll: *scroll,
+            skip: wrap.skip,
             change_at: *change_at,
             caret_on: *caret_on,
             caret_line: *caret_line,
@@ -2459,6 +2464,7 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                     if let Some(p) = back.take() {
                         let ViewPosition {
                             scroll,
+                            skip,
                             change_at,
                             caret_on,
                             caret_line,
@@ -2471,6 +2477,7 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                             own: _,
                         } = p;
                         st.scroll = scroll;
+                        st.wrap.skip = skip;
                         st.change_at = change_at;
                         st.caret_on = caret_on;
                         st.caret_line = caret_line;
@@ -3354,6 +3361,7 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                         if effect.relayout {
                             // The laid-out document and the kept text of a failed page are
                             // for the old wrap; the view is asked for again.
+                            st.wrap.restart();
                             st.doc = None;
                             st.failed_body = None;
                             own.wrap = o.wrap;
@@ -3454,6 +3462,8 @@ pub(in crate::app) fn run_file_with_preview<B: Backend, E: EventSource>(
                                     );
                                 st.scroll = position.top;
                                 st.caret_line = position.caret;
+                                st.wrap.skip = 0;
+                                st.wrap.moves.push(super::wrap_text::TextMove::Follow);
                             } else {
                                 st.scroll = target.scroll;
                                 st.change_at = target.block;
@@ -4046,6 +4056,11 @@ fn draw_frame_with_header<B: Backend>(
 
 /// The caret's moves over the text on screen: the host's, shared (`konoma_widgets::caret`).
 fn caret_by(m: Motion, st: &mut State) {
+    // Wrapping, a move counts screen rows: the next view, which has the lines, makes it.
+    if st.display.wrap {
+        st.wrap.moves.push(super::wrap_text::TextMove::Key(m));
+        return;
+    }
     let rows = st.text_rows;
     let page = i32::try_from(rows.saturating_sub(1).max(1)).unwrap_or(i32::MAX);
     let half = i32::try_from((rows / 2).max(1)).unwrap_or(i32::MAX);
@@ -4180,28 +4195,51 @@ fn frame_of_preview(
                 {
                     st.scroll = position.top;
                     st.caret_line = position.caret;
+                    st.wrap.skip = 0;
+                    st.wrap.moves.push(super::wrap_text::TextMove::Follow);
                 }
             }
             let marks = preview.as_deref().and_then(|p| p.line_marks());
+            // Wrapping, the window is counted in screen rows; the cells are those inside the
+            // frame.
+            let width = st.width.saturating_sub(2);
+            let wraps = st.display.wrap && width > 0 && rows > 0;
+            if !wraps {
+                st.wrap.skip = 0;
+                st.wrap.moves.clear();
+            }
             let framed = |st: &mut State, lines: Vec<Line>, extent| {
-                text_frame_with_gutter(st, lines, Some((name, lang, Some(extent))), true, marks)
+                let mut frame = text_frame_with_gutter(
+                    st,
+                    lines,
+                    Some((name, lang, Some(extent))),
+                    true,
+                    marks,
+                );
+                if let Frame::Text(f) = &mut frame {
+                    f.vscroll = u16::try_from(st.wrap.skip).unwrap_or(u16::MAX);
+                }
+                frame
             };
             let frame = match t.source {
                 TextSource::Owned(s) => {
                     let lens: Vec<u64> = s.split_inclusive('\n').map(|l| l.len() as u64).collect();
-                    clamp(st, lens.len(), rows);
-                    let extent = window::extent_of_lines(&lens, st.scroll, rows);
                     let lines: Vec<&str> = s.lines().collect();
-                    framed(
-                        st,
-                        lines
-                            .iter()
-                            .skip(st.scroll)
-                            .take(rows)
-                            .map(|l| Line::raw(window::clean_line(l.as_bytes())))
-                            .collect(),
-                        extent,
-                    )
+                    let line = |i: usize| {
+                        Line::raw(window::clean_line(
+                            lines.get(i).map_or(&b""[..], |l| l.as_bytes()),
+                        ))
+                    };
+                    let extent = if wraps {
+                        wrapped_extent(st, &lens, rows, marks, &mut |i| {
+                            ratatui_draw::into_line(line(i))
+                        })
+                    } else {
+                        clamp(st, lens.len(), rows);
+                        window::extent_of_lines(&lens, st.scroll, rows)
+                    };
+                    let end = lines.len().min(st.scroll.saturating_add(rows));
+                    framed(st, (st.scroll.min(end)..end).map(line).collect(), extent)
                 }
                 TextSource::Lines(all) => {
                     // The host writes the lines joined by a newline and windows that file.
@@ -4214,18 +4252,29 @@ fn frame_of_preview(
                                 + u64::from(i < last)
                         })
                         .collect();
-                    clamp(st, all.len(), rows);
-                    let extent = window::extent_of_lines(&lens, st.scroll, rows);
+                    let extent = if wraps {
+                        wrapped_extent(st, &lens, rows, marks, &mut |i| {
+                            all.get(i)
+                                .cloned()
+                                .map(ratatui_draw::into_line)
+                                .unwrap_or_default()
+                        })
+                    } else {
+                        clamp(st, all.len(), rows);
+                        window::extent_of_lines(&lens, st.scroll, rows)
+                    };
                     let shown = all.into_iter().skip(st.scroll).take(rows).collect();
                     framed(st, shown, extent)
                 }
                 TextSource::File(path) => {
                     st.file_text = true;
+                    // Counted once per version of the file.
+                    let stamp = window::stamp_of(&path);
                     let total = match &st.counted {
-                        Some((p, n)) if *p == path => *n,
+                        Some((p, s, n)) if *p == path && *s == stamp => *n,
                         _ => match window::count_lines(&path) {
                             Ok(n) => {
-                                st.counted = Some((path.clone(), n));
+                                st.counted = Some((path.clone(), stamp, n));
                                 n
                             }
                             Err(e) => {
@@ -4239,9 +4288,17 @@ fn frame_of_preview(
                             }
                         },
                     };
-                    clamp(st, total, rows);
-                    let extent = window::file_extent(&mut st.win, &path, st.scroll, rows);
-                    match window::read_window(&path, st.scroll, rows) {
+                    // Wrapping, the lines drawn are the very ones counted; both come from the
+                    // reader, which reads each once.
+                    let (extent, shown) = if wraps {
+                        let (extent, shown) = wrapped_file_extent(st, &path, total, rows, marks);
+                        (extent, Ok(shown))
+                    } else {
+                        clamp(st, total, rows);
+                        let extent = window::file_extent(&mut st.win, &path, st.scroll, rows);
+                        (extent, window::read_window(&path, st.scroll, rows))
+                    };
+                    match shown {
                         Ok(w) => framed(st, w.into_iter().map(Line::raw).collect(), extent),
                         Err(e) => Frame::Lines(vec![Line::raw(format!(
                             "[can not read {}: {e}]",
@@ -4584,6 +4641,85 @@ fn text_frame_with_gutter(
         }),
     })
 }
+
+/// Where the window of a wrapping text of `total` lines is: the waiting moves are made over the
+/// lines `raw` gives, and the first line and the caret are put in `st`.
+fn settle_wrapped(
+    st: &mut State,
+    total: usize,
+    rows: usize,
+    marks: Option<&Marks>,
+    raw: &mut dyn FnMut(usize) -> ratatui::text::Line<'static>,
+) -> super::wrap_text::Placed {
+    let mut cursor = super::wrap_text::Cursor {
+        top: st.scroll,
+        line: st.caret_line,
+        col: st.caret_col,
+    };
+    let shape = super::wrap_text::Shape {
+        total,
+        rows,
+        width: st.width.saturating_sub(2),
+        tab_width: st.display.tab_width,
+        marks,
+    };
+    let placed = st.wrap.settle(&mut cursor, &shape, raw);
+    st.lines = total;
+    st.total = total.saturating_sub(rows);
+    st.scroll = cursor.top;
+    st.caret_line = cursor.line;
+    st.caret_col = cursor.col;
+    placed
+}
+
+/// [`settle_wrapped`] for a text held in memory, whose lines are `lens` bytes long.
+fn wrapped_extent(
+    st: &mut State,
+    lens: &[u64],
+    rows: usize,
+    marks: Option<&Marks>,
+    raw: &mut dyn FnMut(usize) -> ratatui::text::Line<'static>,
+) -> konoma_widgets::scroll::ScrollExtent {
+    let placed = settle_wrapped(st, lens.len(), rows, marks, raw);
+    placed.extent(lens.iter().sum(), |line| lens.iter().take(line).sum())
+}
+
+/// [`settle_wrapped`] for a file: only the lines around the window and at the end are read.
+fn wrapped_file_extent(
+    st: &mut State,
+    path: &std::path::Path,
+    total: usize,
+    rows: usize,
+    marks: Option<&Marks>,
+) -> (konoma_widgets::scroll::ScrollExtent, Vec<String>) {
+    let mut slot = st.win.take();
+    let found = match window::byte_window(&mut slot, path) {
+        Some(w) => {
+            let (reader, anchor) = w.parts();
+            let len = reader.len();
+            let lines = std::cell::RefCell::new(konoma_widgets::wrap_view::FileLines::new(
+                reader, total, anchor,
+            ));
+            let line = |i| window::clean_line(lines.borrow_mut().get(i).as_bytes());
+            let placed = settle_wrapped(st, total, rows, marks, &mut |i| {
+                ratatui::text::Line::raw(line(i))
+            });
+            let end = total.min(st.scroll.saturating_add(rows));
+            let shown = (st.scroll.min(end)..end).map(line).collect();
+            let mut lines = lines.into_inner();
+            let extent = placed.extent(len, |line| lines.offset_of(line));
+            let top = (placed.top(), lines.offset_of(placed.top()));
+            w.set_anchor(top);
+            (extent, shown)
+        }
+        None => Default::default(),
+    };
+    st.win = slot;
+    found
+}
+
+/// The git marks of a text's lines.
+type Marks = std::collections::HashMap<u32, crate::host::project::preview_gutter::GutterMark>;
 
 /// Keep the last page full: the scroll is at most `total - rows`.
 fn clamp(st: &mut State, total: usize, rows: usize) {

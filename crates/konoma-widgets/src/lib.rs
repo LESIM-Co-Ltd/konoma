@@ -33,3 +33,4 @@ pub mod table;
 pub mod term_query;
 pub mod text;
 pub mod window;
+pub mod wrap_view;

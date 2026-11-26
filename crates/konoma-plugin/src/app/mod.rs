@@ -33,6 +33,7 @@ mod space;
 mod still;
 mod term;
 mod window;
+mod wrap_text;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
