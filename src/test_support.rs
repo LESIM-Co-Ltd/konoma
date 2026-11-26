@@ -7,6 +7,37 @@
 
 use std::cell::{Cell, RefCell};
 
+/// `(name, manifest directory)` of every package in this build's dependency graph, read from the
+/// package metadata that cargo prints (offline). The split-out crates are registry downloads, not
+/// directories under `crates/`, so a test that reads their sources finds them here.
+pub(crate) fn package_dirs() -> Vec<(String, std::path::PathBuf)> {
+    let tool = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let out = std::process::Command::new(tool)
+        .args(["metadata", "--format-version", "1", "--offline"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run the metadata command");
+    assert!(
+        out.status.success(),
+        "package metadata failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).expect("metadata is JSON");
+    meta["packages"]
+        .as_array()
+        .expect("packages array")
+        .iter()
+        .map(|p| {
+            let name = p["name"].as_str().expect("package name").to_owned();
+            let dir = std::path::Path::new(p["manifest_path"].as_str().expect("manifest path"))
+                .parent()
+                .expect("manifest has a directory")
+                .to_path_buf();
+            (name, dir)
+        })
+        .collect()
+}
+
 /// A media job's final answer, applying any layout announcements that precede it.
 #[track_caller]
 pub(crate) fn recv_media_final(
@@ -599,11 +630,7 @@ mod guard {
     const EXEMPT_FILES: &[&str] = &[
         "src/test_support.rs",
         "crates/konoma-test-support/src/lib.rs",
-        // (`pdf.rs` and `video.rs` live in `konoma-media-core` now; `src/preview/{pdf,video}.rs`
-        // are one-line re-exports with nothing to scan.)
-        "crates/konoma-media-core/src/pdf.rs",
         "src/preview/command.rs",
-        "crates/konoma-media-core/src/video.rs",
     ];
 
     /// Recursively collect every `.rs` file under `dir` (plain `std::fs`, no extra dependency —

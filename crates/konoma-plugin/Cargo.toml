@@ -85,8 +85,8 @@ konoma-host-core = { path = "../konoma-host-core", version = "0.1.0", optional =
 # Native file notifications of the project watcher (`project-host` feature).
 notify = { workspace = true, optional = true }
 # Shared diff data used by the project owner (`project-host` feature).
-konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0", optional = true }
-konoma-media-core = { path = "../konoma-media-core", version = "0.1.0", optional = true }
+konoma-vcs-core = { version = "0.1.0", optional = true }
+konoma-media-core = { version = "0.1.0", optional = true }
 
 [dev-dependencies]
 # Integration tests compile the library without cfg(test), like the root host's tests do.

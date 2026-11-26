@@ -222,7 +222,6 @@ jobs:
           for d in crates/*/; do
             cargo check -p "$(basename "$d")" || exit 1
           done
-          cargo check -p konoma-vcs-core --features git
           # Alone, so that the host's ratatui features do not hide what the crate itself needs
           # (it is the one crate plugin authors depend on).
           cargo check -p konoma-plugin-ratatui

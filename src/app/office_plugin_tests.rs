@@ -1,7 +1,7 @@
 //! The Word and presentation plugins on the host's plugin road: the representations the plugin
 //! offers (`R` cycles through them), the anchored pages (`J`/`K`, the status chip) and how the
 //! tab's choice reaches the plugin. The conversion and the drawing are tested in
-//! `crates/konoma-office`; the keys over real files in `e2e_tests/{word,slides,deck_view}.rs`.
+//! the `konoma-office` crate; the keys over real files in `e2e_tests/{word,slides,deck_view}.rs`.
 
 use super::*;
 use crate::preview::office::docx::pptx::SlideInfo;

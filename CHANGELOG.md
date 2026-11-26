@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+- konoma now depends on the split plugin and core crates (`konoma-table`, `konoma-code`, `konoma-markdown`, `konoma-mermaid`, `konoma-math`, `konoma-media`, `konoma-office`, `konoma-vcs` and their `*-core` crates) by their crates.io version, and their sources are removed from this repository.
+
 ## [0.32.0] - 2026-11-25
 
 - Plugin architecture, stage 5: the standard feature crates are published on crates.io (`konoma-base`, `konoma-svg`, `konoma-plugin`, `konoma-widgets` and the `*-core` / plugin crates). Eight of them (table, code, markdown, mermaid, math, media, office, vcs) also live in their own repositories under LESIM-Co-Ltd, split with their history.

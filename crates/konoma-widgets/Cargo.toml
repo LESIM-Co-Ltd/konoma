@@ -9,12 +9,12 @@ description = "konoma's display parts for ratatui: windowed file reading, kitty 
 
 [dependencies]
 konoma-base = { path = "../konoma-base", version = "0.1.0" }
-konoma-code-core = { path = "../konoma-code-core", version = "0.1.0" }
-konoma-markdown-core = { path = "../konoma-markdown-core", version = "0.1.0" }
+konoma-code-core = { version = "0.1.0" }
+konoma-markdown-core = { version = "0.1.0" }
 # The inline-image cache keeps the decode-failure reason and the decode queue ticket of each picture.
 konoma-svg = { path = "../konoma-svg", version = "0.1.0" }
-konoma-mermaid-core = { path = "../konoma-mermaid-core", version = "0.1.0" }
-konoma-vcs-core = { path = "../konoma-vcs-core", version = "0.1.0" }
+konoma-mermaid-core = { version = "0.1.0" }
+konoma-vcs-core = { version = "0.1.0" }
 ratatui.workspace = true
 # Image layout asks the resizer for an image's natural size in cells; the kitty module is a port of
 # this crate's kitty protocol path (with a compressed transmit added).
@@ -38,7 +38,7 @@ emojis.workspace = true
 
 [dev-dependencies]
 # The core's `cfg(test)` helpers and corpora, which this crate's own tests use.
-konoma-markdown-core = { path = "../konoma-markdown-core", features = ["test-hooks"] }
+konoma-markdown-core = { version = "0.1.0", features = ["test-hooks"] }
 konoma-test-support = { path = "../konoma-test-support" }
 
 [features]

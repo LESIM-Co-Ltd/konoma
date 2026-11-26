@@ -256,16 +256,15 @@ fn konoma_dependencies() -> BTreeSet<String> {
 
 fn program_names_by_dependency() -> (Vec<String>, Vec<String>) {
     let dependencies = konoma_dependencies();
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates");
     let mut standard = Vec::new();
     let mut other = Vec::new();
-    for e in std::fs::read_dir(crates).unwrap() {
-        let dir = e.unwrap().path();
-        let main = dir.join("src/main.rs");
-        if let Ok(src) = std::fs::read_to_string(&main) {
+    // Every konoma package of the dependency graph: workspace members and registry downloads.
+    for (name, dir) in crate::test_support::package_dirs() {
+        if !name.starts_with("konoma-") {
+            continue;
+        }
+        if let Ok(src) = std::fs::read_to_string(dir.join("src/main.rs")) {
             if src.contains("export!(@program") {
-                let manifest = read_manifest(&dir.join("Cargo.toml"));
-                let name = manifest["package"]["name"].as_str().unwrap().to_owned();
                 if dependencies.contains(&name) {
                     standard.push(name);
                 } else {

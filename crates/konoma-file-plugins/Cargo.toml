@@ -9,13 +9,13 @@ description = "The standard file plugins shared by konoma hosts"
 
 [dependencies]
 konoma-plugin = { path = "../konoma-plugin", version = "0.1.0", default-features = false }
-konoma-markdown = { path = "../konoma-markdown", version = "0.1.0", default-features = false }
-konoma-media = { path = "../konoma-media", version = "0.1.0", default-features = false }
-konoma-code = { path = "../konoma-code", version = "0.1.0", default-features = false }
-konoma-office = { path = "../konoma-office", version = "0.1.0", default-features = false }
-konoma-table = { path = "../konoma-table", version = "0.1.0", default-features = false }
-konoma-mermaid = { path = "../konoma-mermaid", version = "0.1.0", default-features = false }
-konoma-math = { path = "../konoma-math", version = "0.1.0", default-features = false }
+konoma-markdown = { version = "0.1.0", default-features = false }
+konoma-media = { version = "0.1.0", default-features = false }
+konoma-code = { version = "0.1.0", default-features = false }
+konoma-office = { version = "0.1.0", default-features = false }
+konoma-table = { version = "0.1.0", default-features = false }
+konoma-mermaid = { version = "0.1.0", default-features = false }
+konoma-math = { version = "0.1.0", default-features = false }
 
 [dev-dependencies]
 konoma-test-support = { path = "../konoma-test-support" }
