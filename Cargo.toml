@@ -23,6 +23,8 @@ exclude = [
     "/.github",
     "/about.toml",
     "/about.hbs",
+    # THIRD-PARTY-LICENSES.md の生成の仕組み。crate には生成物だけを同梱する。
+    "/licenses",
     "/assets",
     "/config.example.ja.toml",
     # ドキュメントサイト(Astro Starlight)。公開先は GitHub Pages なので crate に同梱しない。

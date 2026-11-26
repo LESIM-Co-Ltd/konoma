@@ -66,6 +66,6 @@ jobs:
           archive: $bin-$target
           tar: unix
           zip: windows
-          # Bundle docs alongside the binary in the archive.
-          include: README.md,LICENSE,CHANGELOG.md
+          # Bundle docs and license notices alongside the binary in the archive.
+          include: README.md,LICENSE,CHANGELOG.md,THIRD-PARTY-LICENSES.md
           token: ${{ secrets.GITHUB_TOKEN }}
