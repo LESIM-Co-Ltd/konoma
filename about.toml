@@ -1,5 +1,5 @@
 # cargo-about config for generating THIRD-PARTY-LICENSES.md.
-# Regenerate with: cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md
+# Regenerate with: sh licenses/third-party-licenses.sh
 #
 # Scope to what is actually linked into a shipped binary. konoma publishes prebuilt
 # binaries for all three of these (see .github/workflows/release.yml), so all three
