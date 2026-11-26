@@ -1070,12 +1070,23 @@ fn gif_color(b: &Buffer, c: RColor) -> bool {
 
 #[test]
 fn a_gif_frame_is_not_changed_before_its_delay_and_the_loop_wakes_by_the_delay() {
-    // Each transition is timed from the screen the loop drew. Only a lower bound is asserted
-    // (the delay is 120ms; 60ms leaves room for a frame seen late on a loaded machine): a
-    // frame that changed early is the failure, being late is not.
+    // A frame's timer starts when the loop picks the frame, and the screen shows it only after
+    // its encode lands, which takes any time: the gap between two changes on the screen bounds
+    // nothing. What bounds it is an instant before the first timer started (the canvas being
+    // handed out, ahead of its decode): the n-th change cannot be drawn sooner than n delays
+    // after it. A frame that changed early is the failure, being late is not.
+    let delay = Duration::from_millis(120);
+    let handed_out: Arc<std::sync::OnceLock<Instant>> = Arc::default();
+    let first = Arc::clone(&handed_out);
+    let script = move |n| {
+        if n == 0 {
+            first.set(Instant::now()).unwrap();
+        }
+        gif_script(n)
+    };
     let seen: Arc<Mutex<Vec<(Instant, RColor)>>> = Arc::default();
     let log = Arc::clone(&seen);
-    let out = run_pic(gif_script, half, move |_| {
+    let out = run_pic(script, half, move |_| {
         vec![step(
             move |b| {
                 let mut v = log.lock().unwrap();
@@ -1084,8 +1095,8 @@ fn a_gif_frame_is_not_changed_before_its_delay_and_the_loop_wakes_by_the_delay()
                         v.push((Instant::now(), c));
                     }
                 }
-                // red, blue, red again
-                v.len() >= 3
+                // red, blue, red, blue, red, blue
+                v.len() >= 6
             },
             None,
         )]
@@ -1093,9 +1104,10 @@ fn a_gif_frame_is_not_changed_before_its_delay_and_the_loop_wakes_by_the_delay()
     let seen = seen.lock().unwrap().clone();
     assert_eq!(seen[0].1, RColor::Rgb(255, 0, 0));
     assert_eq!(seen[1].1, RColor::Rgb(0, 0, 255));
-    for pair in seen.windows(2) {
-        let held = pair[1].0.duration_since(pair[0].0);
-        assert!(held >= Duration::from_millis(60), "changed after {held:?}");
+    let start = *handed_out.get().expect("the canvas was handed out");
+    for (n, (at, _)) in (0u32..).zip(&seen) {
+        let since = at.duration_since(start);
+        assert!(since >= delay * n, "change {n} drawn after only {since:?}");
     }
     // The wakes follow the frame delay: never zero, never past the delay (once the picture is
     // there; before that the decode's short poll).

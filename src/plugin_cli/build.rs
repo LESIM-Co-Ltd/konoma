@@ -1227,6 +1227,32 @@ mod tests {
         inherited_pipes(true);
     }
 
+    const TERM_MEMBER_ENV: &str = "KONOMA_TEST_TERM_MEMBER";
+
+    /// Not a test of its own: the live group member of the test below, run by re-executing this
+    /// test binary. It speaks on stderr (libtest owns stdout). A shell `trap` cannot play this
+    /// part: a TERM that lands after `echo ready` but before `read` blocks stays pending until
+    /// `read` gets a line, so the handler never reports it.
+    #[test]
+    #[ignore = "helper process of stopping_a_live_group_allows_its_term_handler_to_finish"]
+    fn term_member_process() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        if std::env::var_os(TERM_MEMBER_ENV).is_none() {
+            return;
+        }
+        let (mut term, wake) = UnixStream::pair().unwrap();
+        // Registered before "ready": a TERM from then on waits in the socket until it is read.
+        signal_hook::low_level::pipe::register(libc::SIGTERM, wake).unwrap();
+        let mut report = std::io::stderr();
+        report.write_all(b"ready\n").unwrap();
+        term.read_exact(&mut [0]).unwrap();
+        report.write_all(b"term\n").unwrap();
+        std::io::stdin().read_line(&mut String::new()).unwrap();
+        report.write_all(b"graceful\n").unwrap();
+        std::process::exit(0);
+    }
+
     #[test]
     fn stopping_a_live_group_allows_its_term_handler_to_finish() {
         use std::io::BufRead;
@@ -1243,14 +1269,18 @@ mod tests {
         output
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        let member = Command::new("/bin/sh")
+        let (_, module) = module_path!().split_once("::").unwrap();
+        let member = Command::new(std::env::current_exe().unwrap())
             .args([
-                "-c",
-                "trap 'echo term; read line; echo graceful; exit 0' TERM; echo ready; read line",
+                &format!("{module}::term_member_process"),
+                "--exact",
+                "--ignored",
             ])
+            .env(TERM_MEMBER_ENV, "1")
             .process_group(pgid as i32)
             .stdin(Stdio::piped())
-            .stdout(Stdio::from(OwnedFd::from(child_output)))
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(OwnedFd::from(child_output)))
             .spawn()
             .unwrap();
         let mut member = konoma_plugin::proc::process::ChildGuard::new(member);
