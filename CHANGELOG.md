@@ -14,6 +14,7 @@ All notable changes to konoma are documented in this file. The format is based o
 
 - A wrapped text or code preview with long lines no longer hides the last lines: `G` ends with the end of the last line on the bottom row, in konoma and in the standalone app. The position now counts screen rows, so the window follows the caret through `j`/`k`, the page and half-page keys, column moves, search matches and line jumps, and a line taller than the screen can be read through.
 - A pasted line number past the end of a file (`path:999`) now goes to the last line; before, the line numbers beside the text could stop matching it.
+- The process that draws SVG files now sends one "out of memory" reply when more than one of its threads reaches the memory limit, and that reply can no longer be written into, or cut off, another reply. The doubled reply was seen once in CI on Linux; konoma reads the first one and does not reuse that process, so the preview showed the same result.
 
 ## [0.32.0] - 2026-11-25
 

@@ -505,6 +505,24 @@ fn a_child_that_runs_too_long_is_killed_and_reaped() {
 }
 
 #[test]
+fn the_parent_reads_a_memory_answer_to_its_first_request_as_memory() {
+    let _g = serial();
+    let dir = unique_tmp("svg-proc-ready-memory");
+    let pid_file = dir.join("pid");
+    // What a child that hit its heap limit while saying it is ready writes: `READY`, then "memory",
+    // and it is gone. One byte of the request is read first, so the supervisor has certainly asked.
+    let body = format!(
+        "head -c 1 >/dev/null\nprintf 'KSR1\\{:03o}'\nexit 5",
+        SvgFail::Memory.code()
+    );
+    let exe = script(&dir, "oom", &body, &pid_file);
+    let r = run_with(&exe, Limits::default(), &tiny_request(), &never);
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Memory)));
+    assert!(gone(pid_of(&pid_file)));
+    no_children_left();
+}
+
+#[test]
 fn a_child_that_dies_by_a_signal_is_a_crash_not_a_hang() {
     let _g = serial();
     let dir = unique_tmp("svg-proc-crash");

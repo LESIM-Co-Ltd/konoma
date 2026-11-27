@@ -31,7 +31,10 @@
 // every `POLL_INTERVAL`), and the child counts its own heap (`GuardAlloc`, armed by `child_main`)
 // and ends itself with a "memory" answer the moment it would pass the same limit, which also
 // catches what grows between two looks of the parent (a few GB/s) and, on Linux, a refused
-// allocation (`RLIMIT_AS`) that would otherwise abort the process.
+// allocation (`RLIMIT_AS`) that would otherwise abort the process. That answer can come from any
+// thread, so everything the child writes goes through one gate (`REPLY`): at most one memory answer
+// however many threads reach the limit, never inside another message or cutting it off, and none
+// when the limit is hit while the request's own answer is being written.
 //
 // **The drawing clock starts when the child says it is ready, not when it is started.** The first
 // thing a new child writes, once it has hardened itself and armed its guards and before it reads a
@@ -51,7 +54,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::sync::{Condvar, Mutex};
@@ -1055,7 +1058,7 @@ pub fn child_main(args: &[std::ffi::OsString]) -> i32 {
     let mut out = answer_sink();
     // Everything that has to happen before the first request is done: from here on the parent
     // counts the drawing's time (see the module comment).
-    if out.write_all(READY).and_then(|_| out.flush()).is_err() {
+    if send_ready(&REPLY, &mut out, hold).is_err() {
         return 3;
     }
     loop {
@@ -1072,7 +1075,7 @@ pub fn child_main(args: &[std::ffi::OsString]) -> i32 {
         set_alarm(wall + Duration::from_secs(3));
         let answer = answer_to(&request);
         drop(request);
-        if out.write_all(&answer).and_then(|_| out.flush()).is_err() {
+        if send_reply(&REPLY, &mut out, &answer, hold).is_err() {
             return 3;
         }
     }
@@ -1258,6 +1261,89 @@ fn watch_parent() {
         });
 }
 
+// ---- child: who may write ------------------------------------------------------------------------
+
+// The state of the child's output, as bits of one atomic: the memory guard runs inside the
+// allocator on whichever thread hit the limit, so it can neither allocate nor take a lock.
+
+/// The main loop is in the middle of writing the answer to a request.
+const ANSWERING: u8 = 1;
+/// A thread has run out of memory and is going to end the process.
+const ENDING: u8 = 2;
+/// The main loop is in the middle of writing `READY`, which answers no request.
+const GREETING: u8 = 4;
+
+static REPLY: AtomicU8 = AtomicU8::new(0);
+
+/// What a thread does between two looks while it must neither write nor end the process.
+fn hold() {
+    // SAFETY: plain syscall; it does not allocate.
+    unsafe {
+        libc::usleep(1000);
+    }
+}
+
+/// Write `READY` from the main loop (see `write_gated`).
+fn send_ready(gate: &AtomicU8, out: &mut impl Write, wait: impl Fn()) -> std::io::Result<()> {
+    write_gated(gate, GREETING, out, READY, wait)
+}
+
+/// Write one whole answer from the main loop (see `write_gated`).
+fn send_reply(
+    gate: &AtomicU8,
+    out: &mut impl Write,
+    answer: &[u8],
+    wait: impl Fn(),
+) -> std::io::Result<()> {
+    write_gated(gate, ANSWERING, out, answer, wait)
+}
+
+/// Write one whole message from the main loop, marked in `gate` by `writing` while it is under way.
+/// Once a thread is ending the process nothing more is written, and this never returns: returning
+/// would let the main loop end the process while that thread is still writing. `wait` is `hold`
+/// outside the tests.
+fn write_gated(
+    gate: &AtomicU8,
+    writing: u8,
+    out: &mut impl Write,
+    bytes: &[u8],
+    wait: impl Fn(),
+) -> std::io::Result<()> {
+    if gate
+        .compare_exchange(0, writing, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        loop {
+            wait();
+        }
+    }
+    let written = out.write_all(bytes).and_then(|_| out.flush());
+    gate.fetch_and(!writing, Ordering::SeqCst);
+    written
+}
+
+/// A thread has run out of memory. Returns in exactly one thread, the first, which must then end the
+/// process; every later one stays here, since ending the process from it could cut off what the
+/// first is writing. If the main loop is writing, the first waits for that message to be complete.
+/// It then calls `send` (the "memory" answer), except after the answer to a request: that request
+/// has had its answer. `READY` answers no request, so "memory" still follows it. Nothing here
+/// allocates. (The main loop does not allocate while it writes, so the thread waited for is never
+/// this one.)
+fn memory_turn(gate: &AtomicU8, send: impl FnOnce(), wait: impl Fn()) {
+    let before = gate.fetch_or(ENDING, Ordering::SeqCst);
+    if before & ENDING != 0 {
+        loop {
+            wait();
+        }
+    }
+    while gate.load(Ordering::SeqCst) & (ANSWERING | GREETING) != 0 {
+        wait();
+    }
+    if before & ANSWERING == 0 {
+        send();
+    }
+}
+
 // ---- child: the memory guard ---------------------------------------------------------------------
 
 /// The heap limit of this process in bytes; 0 = no limit (every process but a drawing child).
@@ -1285,11 +1371,16 @@ fn heap_exhausted() -> ! {
     // The answer "memory", written by hand: this runs inside the allocator, so nothing here may
     // allocate, and the parent reads it like any other answer.
     let reply = [b'K', b'S', b'R', b'1', SvgFail::Memory.code()];
-    // SAFETY: plain syscalls on a static-sized buffer; `_exit` never returns.
-    unsafe {
-        let _ = libc::write(1, reply.as_ptr().cast(), reply.len());
-        libc::_exit(5)
-    }
+    memory_turn(
+        &REPLY,
+        // SAFETY: plain syscall on a static-sized buffer.
+        || unsafe {
+            let _ = libc::write(1, reply.as_ptr().cast(), reply.len());
+        },
+        hold,
+    );
+    // SAFETY: plain syscall; `_exit` never returns.
+    unsafe { libc::_exit(5) }
 }
 
 // SAFETY: every operation is the system allocator's own; the additions are two atomic counters
@@ -1549,6 +1640,255 @@ mod tests {
         assert!(!needs_fonts(
             b"<svg xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0L5 5\"/></svg>"
         ));
+    }
+
+    /// What the tests pass as `wait`: it leaves the waiting loop by unwinding (without the panic
+    /// hook), so "this thread stays there" is observed with no clock and no second thread.
+    fn stays() {
+        std::panic::resume_unwind(Box::new("waiting"));
+    }
+
+    /// Whether `f` ended up waiting instead of returning.
+    fn waited(f: impl FnOnce()) -> bool {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            .is_err_and(|e| e.downcast_ref::<&str>() == Some(&"waiting"))
+    }
+
+    /// Calls `during` in the middle of the write, after the first byte.
+    struct Interrupted<F: FnMut()> {
+        written: Vec<u8>,
+        during: F,
+    }
+
+    impl<F: FnMut()> Write for Interrupted<F> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.written.is_empty() {
+                self.written.push(buf[0]);
+                (self.during)();
+                return Ok(1);
+            }
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn only_the_first_thread_out_of_memory_answers_and_only_it_goes_on_to_end_the_process() {
+        let gate = AtomicU8::new(0);
+        let sent = std::cell::Cell::new(0);
+        let second_waited = std::cell::Cell::new(false);
+        let send = || sent.set(sent.get() + 1);
+        memory_turn(
+            &gate,
+            || {
+                // The second thread arrives while the first is writing.
+                second_waited.set(waited(|| memory_turn(&gate, send, stays)));
+                send();
+            },
+            stays,
+        );
+        assert!(second_waited.get(), "the late thread went on to _exit");
+        assert_eq!(sent.get(), 1);
+        // And one that arrives after the answer is written.
+        assert!(waited(|| memory_turn(&gate, send, stays)));
+        assert_eq!(sent.get(), 1);
+    }
+
+    #[test]
+    fn running_out_of_memory_during_an_answer_waits_for_it_and_adds_nothing() {
+        let gate = AtomicU8::new(0);
+        let sent = std::cell::Cell::new(false);
+        let waited_for_answer = std::cell::Cell::new(false);
+        let mut out = Interrupted {
+            written: Vec::new(),
+            during: || {
+                waited_for_answer.set(waited(|| memory_turn(&gate, || sent.set(true), stays)));
+            },
+        };
+        send_reply(&gate, &mut out, b"KSR1\x01", stays).unwrap();
+        assert!(waited_for_answer.get(), "would have ended mid-answer");
+        assert!(!sent.get(), "a second answer inside the first");
+        assert_eq!(out.written, b"KSR1\x01");
+        assert_eq!(gate.load(Ordering::SeqCst), ENDING);
+    }
+
+    #[test]
+    fn the_waiting_thread_goes_on_once_the_answer_is_complete() {
+        let gate = AtomicU8::new(ANSWERING);
+        let sent = std::cell::Cell::new(false);
+        let looks = std::cell::Cell::new(0);
+        memory_turn(
+            &gate,
+            || sent.set(true),
+            || {
+                looks.set(looks.get() + 1);
+                if looks.get() == 3 {
+                    gate.fetch_and(!ANSWERING, Ordering::SeqCst);
+                }
+            },
+        );
+        assert_eq!(looks.get(), 3);
+        assert!(!sent.get());
+    }
+
+    #[test]
+    fn running_out_of_memory_while_saying_ready_answers_memory_after_it() {
+        let gate = AtomicU8::new(GREETING);
+        let sent = std::cell::Cell::new(0);
+        let looks = std::cell::Cell::new(0);
+        memory_turn(
+            &gate,
+            || {
+                assert_eq!(gate.load(Ordering::SeqCst), ENDING, "sent inside `READY`");
+                sent.set(sent.get() + 1);
+            },
+            || {
+                looks.set(looks.get() + 1);
+                if looks.get() == 3 {
+                    gate.fetch_and(!GREETING, Ordering::SeqCst);
+                }
+            },
+        );
+        assert_eq!(looks.get(), 3);
+        assert_eq!(sent.get(), 1, "the parent is not told it was memory");
+    }
+
+    #[test]
+    fn no_answer_is_started_once_a_thread_is_ending_the_process() {
+        let gate = AtomicU8::new(0);
+        memory_turn(&gate, || {}, stays);
+        let mut out = Vec::new();
+        assert!(waited(|| {
+            let _ = send_reply(&gate, &mut out, b"KSR1\x01", stays);
+        }));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn answers_follow_one_another_while_memory_lasts() {
+        let gate = AtomicU8::new(0);
+        let mut out = Vec::new();
+        send_ready(&gate, &mut out, stays).unwrap();
+        send_reply(&gate, &mut out, b"KSR1\x01", stays).unwrap();
+        assert_eq!(out, b"KSRDYKSR1\x01");
+        assert_eq!(gate.load(Ordering::SeqCst), 0);
+    }
+
+    /// The child's main loop must not write around the gate.
+    #[test]
+    fn the_child_writes_only_through_the_gate() {
+        let src = include_str!("svg_proc.rs");
+        let body = src.split("\npub fn child_main(").nth(1).unwrap();
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert_eq!(
+            body.matches("send_ready(&REPLY, &mut out, hold)").count(),
+            1
+        );
+        assert_eq!(
+            body.matches("send_reply(&REPLY, &mut out, &answer, hold)")
+                .count(),
+            1
+        );
+        assert!(!body.contains("write_all"));
+    }
+
+    /// Which message the probe is writing when memory runs out: "answer" or "ready".
+    const PROBE_ENV: &str = "KONOMA_PROBE_HEAP_DURING_WRITE";
+    const PROBE_MARK: &[u8] = b"<probe>";
+
+    /// Unbuffered write to fd 1, as the child does.
+    fn raw_stdout(b: &[u8]) {
+        // SAFETY: plain syscall on a valid buffer.
+        let n = unsafe { libc::write(1, b.as_ptr().cast(), b.len()) };
+        assert_eq!(n, b.len() as isize);
+    }
+
+    /// Runs the real `heap_exhausted`, on a second thread, in the middle of the message named by
+    /// `during`. It ends its process, so it runs in one of its own (`heap_during_write_probe`).
+    /// The order is made by the gate, not by time: the write goes on only once the other thread has
+    /// announced itself. Returns what that process wrote and its exit code.
+    fn run_probe(during: &str) -> (Vec<u8>, Option<i32>) {
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "preview::svg_proc::tests::heap_during_write_probe",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(PROBE_ENV, during)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .unwrap();
+        let at = out
+            .stdout
+            .windows(PROBE_MARK.len())
+            .position(|w| w == PROBE_MARK)
+            .expect("the probe did not run");
+        (
+            out.stdout[at + PROBE_MARK.len()..].to_vec(),
+            out.status.code(),
+        )
+    }
+
+    #[test]
+    fn the_memory_guard_does_not_cut_into_an_answer_being_written() {
+        let (wrote, code) = run_probe("answer");
+        assert_eq!(wrote, b"first half|second half");
+        assert_eq!(code, Some(5));
+    }
+
+    #[test]
+    fn the_memory_guard_says_memory_after_a_ready_being_written() {
+        let (wrote, code) = run_probe("ready");
+        let mut want = READY.to_vec();
+        want.extend_from_slice(b"KSR1");
+        want.push(SvgFail::Memory.code());
+        assert_eq!(wrote, want);
+        assert_eq!(code, Some(5));
+    }
+
+    #[test]
+    #[ignore = "helper of the_memory_guard_* (runs as a process of its own)"]
+    fn heap_during_write_probe() {
+        let Ok(during) = std::env::var(PROBE_ENV) else {
+            return;
+        };
+        // Bounds the life of this process whatever goes wrong.
+        // SAFETY: plain syscall.
+        unsafe {
+            libc::alarm(30);
+        }
+        raw_stdout(PROBE_MARK);
+        struct Halved;
+        impl Write for Halved {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let (first, second) = buf.split_at(buf.len() / 2);
+                raw_stdout(first);
+                std::thread::spawn(|| heap_exhausted());
+                while REPLY.load(Ordering::SeqCst) & ENDING == 0 {
+                    hold();
+                }
+                raw_stdout(second);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        match during.as_str() {
+            "answer" => send_reply(&REPLY, &mut Halved, b"first half|second half", hold),
+            "ready" => send_ready(&REPLY, &mut Halved, hold),
+            other => panic!("unknown probe {other}"),
+        }
+        .unwrap();
+        // The other thread ends the process.
+        loop {
+            hold();
+        }
     }
 
     #[test]
